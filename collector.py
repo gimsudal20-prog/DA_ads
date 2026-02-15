@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Decoded Signature / Encoded Request)
+collector.py - 네이버 검색광고 수집기 (Final: Safe Comma Strategy)
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import hashlib
 import argparse
 import sys
 import urllib.parse
-import urllib.request
 import ssl
+import urllib.request
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List
 
@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 # -------------------------
-# 1. 환경변수 및 설정
+# 1. 환경변수 로딩
 # -------------------------
 def _load_env() -> str:
     load_dotenv(override=True)
@@ -55,54 +55,37 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (핵심 수정)
+# 2. 서명 및 API 요청 (쉼표 보존)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
-    # uri는 반드시 Decoded(순수 문자열) 상태여야 함!
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def request_api(method: str, path: str, customer_id: str, clean_params: dict = None) -> Any:
-    """
-    [핵심 전략]
-    1. clean_params: 인코딩 되지 않은 순수 딕셔너리
-    2. 서명용 URI: 파라미터를 인코딩하지 않고 조립 (fields=[...])
-    3. 전송용 URL: 파라미터를 인코딩해서 조립 (fields=%5B...%5D)
-    """
+def request_api(method: str, path: str, customer_id: str, params: dict = None) -> Any:
     
-    timestamp = str(int(time.time() * 1000))
-    
-    if clean_params:
-        # 1. 알파벳 순서 정렬 (fields -> ids -> timeRange)
-        sorted_keys = sorted(clean_params.keys())
-        
-        # 2. 서명용 URI 생성 (Decoded 상태 유지)
-        # 예: /stats?fields=["impCnt"]&ids=...
-        # 주의: 값에 포함된 쉼표(,)나 괄호([])를 인코딩하지 않음!
-        sign_parts = []
-        for k in sorted_keys:
-            sign_parts.append(f"{k}={clean_params[k]}")
-        sign_query = "&".join(sign_parts)
-        uri_to_sign = f"{path}?{sign_query}"
-        
-        # 3. 전송용 URL 생성 (Encoded 상태)
-        # 예: /stats?fields=%5B%22impCnt%22%5D&ids=...
-        send_parts = []
-        for k in sorted_keys:
-            # urllib.parse.quote로 특수문자 변환
-            encoded_val = urllib.parse.quote(str(clean_params[k]))
-            send_parts.append(f"{k}={encoded_val}")
-        send_query = "&".join(send_parts)
-        full_url = f"{BASE_URL}{path}?{send_query}"
-        
+    # URL 조립 (핵심: 쉼표를 인코딩하지 않음)
+    if params:
+        # 1. 파라미터별로 인코딩하되, 쉼표(,)와 콜론(:)은 safe 문자로 지정하여 변환 막음
+        # 네이버 API는 ids=1,2,3 처럼 쉼표가 살아있는 것을 원할 때가 많음
+        query_parts = []
+        # 알파벳 순서 정렬 (fields -> ids -> timeRange)
+        for k in sorted(params.keys()):
+            val = str(params[k])
+            # safe=',:' -> 쉼표와 콜론은 %2C, %3A로 바꾸지 말고 그냥 둬라!
+            encoded_val = urllib.parse.quote(val, safe=',:')
+            query_parts.append(f"{k}={encoded_val}")
+            
+        raw_query = "&".join(query_parts)
+        api_uri = f"{path}?{raw_query}"
     else:
-        # 파라미터가 없으면 단순함
-        uri_to_sign = path
-        full_url = f"{BASE_URL}{path}"
+        api_uri = path
     
-    # 4. 서명 생성 (Decoded URI 사용)
-    signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
+    full_url = f"{BASE_URL}{api_uri}"
+    
+    # 2. 서명 생성 (쉼표가 살아있는 api_uri 그대로 서명)
+    timestamp = str(int(time.time() * 1000))
+    signature = generate_signature(timestamp, method, api_uri, API_SECRET)
     
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
@@ -112,7 +95,7 @@ def request_api(method: str, path: str, customer_id: str, clean_params: dict = N
         "X-Signature": signature,
     }
 
-    # 5. 전송 (Encoded URL 사용)
+    # 3. 전송
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -127,12 +110,11 @@ def request_api(method: str, path: str, customer_id: str, clean_params: dict = N
         error_body = e.read().decode('utf-8')
         if e.code == 403:
             log(f"⛔ 권한 오류 (403): {error_body}")
-            # 디버깅용: 내가 뭘 서명했는지 확인
-            # log(f"   [Debug] Signed (Decoded): {uri_to_sign}")
-            # log(f"   [Debug] Sent   (Encoded): {full_url}")
+            # 디버깅: 서명한 주소 출력
+            # log(f"   [Debug] Signed URI: {api_uri}")
         elif e.code == 429:
              time.sleep(1)
-             return request_api(method, path, customer_id, clean_params)
+             return request_api(method, path, customer_id, params)
         else:
              log(f"⚠️ 요청 실패 ({e.code}): {error_body}")
         return None
@@ -168,7 +150,7 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON 문자열 (공백 제거)
+    # JSON 생성 (공백 제거)
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -179,15 +161,14 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         
-        # 인코딩 하지 않은 순수 딕셔너리를 넘깁니다.
-        # request_api 함수 안에서 '서명용'과 '전송용'으로 알아서 나눠서 처리합니다.
+        # 딕셔너리로 준비 (request_api 내부에서 쉼표 보존 인코딩 처리함)
         params = {
             "ids": ids_str,
             "fields": fields_json,
             "timeRange": time_range_json
         }
         
-        data = request_api("GET", "/stats", customer_id, clean_params=params)
+        data = request_api("GET", "/stats", customer_id, params=params)
         
         if data and "data" in data:
             results.extend(data["data"])
@@ -203,6 +184,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     dt_str = target_date.strftime("%Y-%m-%d")
     log(f"📅 데이터 수집 시작: {dt_str} (Customer: {customer_id})")
     
+    # 1. 캠페인
     campaigns = get_campaigns(customer_id)
     if not campaigns:
         log("   > 캠페인 조회 실패 또는 없음")
@@ -211,6 +193,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     camp_ids = [c["nccCampaignId"] for c in campaigns]
     log(f"   > 대상 캠페인: {len(camp_ids)}개")
     
+    # 2. 성과
     stats = get_stats(customer_id, camp_ids, dt_str)
     
     rows = []
