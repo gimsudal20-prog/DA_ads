@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Raw URL Construction)
+collector.py - 네이버 검색광고 수집기 (Final: Double-Tap Strategy)
 """
 
 from __future__ import annotations
@@ -55,16 +55,16 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (Raw URL 방식)
+# 2. 서명 및 API 요청 (양동 작전: Double Tap)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
+def get_headers(method: str, uri_to_sign: str, customer_id: str) -> Dict[str, str]:
     timestamp = str(int(time.time() * 1000))
-    signature = generate_signature(timestamp, method, uri, API_SECRET)
+    signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
     return {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Timestamp": timestamp,
@@ -73,47 +73,67 @@ def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
         "X-Signature": signature,
     }
 
-def request_api(method: str, path: str, customer_id: str, raw_query: str = None, retries=3) -> Any:
+def request_smart(method: str, path: str, customer_id: str, raw_query: str = None) -> Any:
     """
-    [핵심 수정]
-    requests 라이브러리에게 파라미터 조립을 맡기지 않고,
-    우리가 만든 raw_query 문자열을 그대로 주소 뒤에 붙여서 보냅니다.
-    이렇게 하면 서명한 URL과 실제 전송 URL이 100% 일치합니다.
+    [핵심 전략]
+    1. 먼저 '인코딩된 URL'로 서명해서 요청을 보냅니다. (표준)
+    2. 만약 403(서명오류)이 뜨면, 즉시 '디코딩된 URL'로 서명해서 다시 보냅니다. (네이버 특화)
+    이렇게 하면 둘 중 하나는 무조건 걸립니다.
     """
+    
+    # URL 조립
     if raw_query:
-        api_uri = f"{path}?{raw_query}"
+        # 실제 전송될 URL은 무조건 인코딩 된 상태여야 함 (HTTP 표준)
+        full_url_suffix = f"{path}?{raw_query}"
     else:
-        api_uri = path
-    
-    full_url = f"{BASE_URL}{api_uri}"
-    
-    # 이 api_uri 문자열 그대로 서명 생성
-    headers = get_headers(method, api_uri, customer_id)
+        full_url_suffix = path
+        
+    target_url = f"{BASE_URL}{full_url_suffix}"
     
     with requests.Session() as session:
-        for attempt in range(retries):
-            try:
-                # params=... 를 쓰지 않고 URL 자체를 완성해서 보냄
-                response = session.request(method, full_url, headers=headers, timeout=TIMEOUT)
-                
-                if response.status_code == 200:
-                    return response.json()
-                
-                if response.status_code == 429:
-                    time.sleep(1 * (attempt + 1))
-                    continue
-                
-                if response.status_code == 403:
-                    log(f"⛔ 권한 오류 (403): {response.text}")
-                    return None
+        # --- 시도 1: 인코딩 된 상태 그대로 서명 (표준 방식) ---
+        uri_attempt_1 = full_url_suffix
+        headers_1 = get_headers(method, uri_attempt_1, customer_id)
+        
+        try:
+            resp = session.request(method, target_url, headers=headers_1, timeout=TIMEOUT)
+            
+            if resp.status_code == 200:
+                return resp.json()
+            
+            if resp.status_code != 403:
+                # 403이 아니면 다른 문제(429 등)니까 처리하고 리턴
+                if resp.status_code == 429:
+                    time.sleep(1)
+                    return request_smart(method, path, customer_id, raw_query) # 재귀 재시도
+                return None 
 
-                response.raise_for_status()
+        except Exception:
+            pass # 네트워크 오류 등은 일단 무시하고 2번째 시도로
+
+        # --- 시도 2: 디코딩 된 상태로 서명 (네이버 호환 방식) ---
+        # 403 오류가 났다는 건 서명 기준이 다르다는 뜻.
+        # URL 인코딩(%5B 등)을 푼 상태로 서명을 다시 만듭니다.
+        uri_attempt_2 = urllib.parse.unquote(full_url_suffix)
+        headers_2 = get_headers(method, uri_attempt_2, customer_id)
+        
+        try:
+            # 전송 URL은 그대로(target_url), 헤더(서명)만 바꿔서 재전송
+            resp = session.request(method, target_url, headers=headers_2, timeout=TIMEOUT)
+            
+            if resp.status_code == 200:
+                # 성공했다면 "아, 이 방식이 맞구나" 하고 로그 남김 (나중을 위해)
+                # log(f"   [Success] Decoded Signature Worked!") 
+                return resp.json()
+            
+            if resp.status_code == 403:
+                log(f"⛔ 권한 오류 (403) - Final: {resp.text}")
+                return None
                 
-            except requests.exceptions.RequestException as e:
-                if attempt == retries - 1:
-                    log(f"⚠️ 요청 실패: {str(e)}")
-                    return None
-                time.sleep(0.5)
+        except Exception as e:
+            log(f"⚠️ 요청 실패: {str(e)}")
+            return None
+            
     return None
 
 # -------------------------
@@ -138,14 +158,13 @@ def init_db(engine: Engine):
         """))
 
 def get_campaigns(customer_id: str) -> List[dict]:
-    # 캠페인 목록은 쿼리 파라미터가 없으므로 간단함
-    data = request_api("GET", "/ncc/campaigns", customer_id)
+    data = request_smart("GET", "/ncc/campaigns", customer_id)
     return data if isinstance(data, list) else []
 
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # 1. JSON 문자열 생성 (공백 제거)
+    # 공백 제거된 JSON 생성
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -156,17 +175,18 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         
-        # 2. 여기서 직접 쿼리 스트링을 조립 (순서 고정, 인코딩 수동 제어)
-        # urllib.parse.quote를 사용하여 특수문자(:, ", [, ])를 안전하게 변환
-        encoded_ids = urllib.parse.quote(ids_str)
+        # URL 파라미터 수동 조립 (requests에 맡기지 않음)
+        # 중요: 여기서 알파벳 순서(fields -> ids -> timeRange)로 조립합니다.
+        # 인코딩도 여기서 확정지어서 보냅니다.
+        
         encoded_fields = urllib.parse.quote(fields_json)
+        encoded_ids = urllib.parse.quote(ids_str)
         encoded_time = urllib.parse.quote(time_range_json)
         
-        # 순서: fields -> ids -> timeRange (알파벳순 권장)
+        # 순서: fields -> ids -> timeRange
         raw_query = f"fields={encoded_fields}&ids={encoded_ids}&timeRange={encoded_time}"
         
-        # 3. 조립된 문자열을 그대로 넘김
-        data = request_api("GET", "/stats", customer_id, raw_query=raw_query)
+        data = request_smart("GET", "/stats", customer_id, raw_query=raw_query)
         
         if data and "data" in data:
             results.extend(data["data"])
