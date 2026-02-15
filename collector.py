@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v4.23 - Ad Creative(소재내용) Fill Fix)
+collector.py - 네이버 검색광고 수집기 (v4.24 - Invalid Signature Fix)
 
-✅ 해결된 문제(추가):
-1. [소재내용(dim_ad.ad_name) 공란]
-   - /ncc/ads 응답은 광고 타입에 따라 소재 문구가 최상위가 아니라 `ad`(중첩 객체) 안에 들어오는 경우가 많습니다.
-   - 기존 코드는 ad.get("name") / ad.get("title")만 읽어서, 대부분의 계정에서 소재내용이 비었습니다.
-   - 수정: 광고 객체에서 headline/title/description/landingUrl 등을 폭넓게 추출해 `creative_text`를 만들고,
-          dim_ad에 저장하도록 변경했습니다.
-   - 대시보드에서 "소재내용"은 dim_ad.creative_text(또는 ad_name)로 조인해서 표시하면 됩니다.
+✅ 이번 수정(v4.24):
+1) [403 invalid-signature 해결]
+   - 기존: Signature 생성 시 "querystring 제외 → 순수 path만 사용" (예: "/stats")
+   - 문제: requests가 실제로는 "/stats?ids=...&fields=...&timeRange=..." 형태로 요청을 보내므로,
+           서버가 검증하는 URI와 우리가 서명한 URI가 달라져 invalid-signature가 발생
+   - 해결: requests.PreparedRequest 로 만들어진 **실제 요청 path+query(prepped.path_url)** 로 서명
 
-2. [ROAS & Sales Fix 유지]
-   - cost = salesAmt, sales = convAmt, roas = (sales/cost*100)
+2) Secret/Key/customer_id는 strip() 적용 유지
 """
 
 from __future__ import annotations
@@ -125,24 +123,28 @@ if not API_KEY or not API_SECRET:
     die("❌ API 키/시크릿이 비어있습니다.")
 
 # -------------------------
-# Signature
+# Signature (FIXED)
 # -------------------------
 def now_millis() -> str:
     return str(int(time.time() * 1000))
 
-def sign_path_only(method: str, path: str, timestamp: str, secret: str) -> str:
-    msg = f"{timestamp}.{method}.{path}".encode("utf-8")
+def sign_uri(method: str, uri: str, timestamp: str, secret: str) -> str:
+    """
+    ✅ 네이버 서명은 서버가 검증하는 URI와 **완전히 동일**해야 함.
+    - uri: "/stats?ids=...&fields=...&timeRange=..." 처럼 path+query(prepped.path_url)
+    """
+    msg = f"{timestamp}.{method}.{uri}".encode("utf-8")
     dig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
     return base64.b64encode(dig).decode("utf-8")
 
-def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
+def make_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
     ts = now_millis()
-    sig = sign_path_only(method.upper(), path, ts, API_SECRET)
+    sig = sign_uri(method.upper(), uri, ts, API_SECRET)
     return {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Timestamp": ts,
         "X-API-KEY": API_KEY,
-        "X-Customer": str(customer_id),
+        "X-Customer": str(customer_id).strip(),
         "X-Signature": sig,
     }
 
@@ -173,7 +175,7 @@ def ensure_tables(engine: Engine):
     exec_sql(engine, """CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id));""")
     exec_sql(engine, """CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id));""")
 
-    # ✅ dim_ad 확장: 소재내용/랜딩 등을 저장
+    # dim_ad 확장
     exec_sql(engine, """CREATE TABLE IF NOT EXISTS dim_ad (
         customer_id TEXT,
         ad_id TEXT,
@@ -187,7 +189,6 @@ def ensure_tables(engine: Engine):
         creative_text TEXT,
         PRIMARY KEY(customer_id, ad_id)
     );""")
-    # 기존 테이블에 컬럼 추가(있으면 무시)
     try:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT"))
@@ -198,7 +199,7 @@ def ensure_tables(engine: Engine):
     except Exception:
         pass
 
-    # FACT tables - ROAS 컬럼 추가
+    # FACT tables
     exec_sql(engine, """
     CREATE TABLE IF NOT EXISTS fact_campaign_daily (
         dt DATE, customer_id TEXT, campaign_id TEXT,
@@ -278,15 +279,20 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             conn.execute(text(sql), rows[i:i + CHUNK_INSERT])
 
 # -------------------------
-# API Core
+# API Core (FIXED)
 # -------------------------
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, raise_error=True) -> Tuple[int, Any]:
+    """
+    ✅ 중요한 포인트:
+    - requests는 params를 붙여 실제로 "/path?..." 형태로 전송
+    - 서명도 그 **동일한 path+query(prepped.path_url)** 를 써야 함
+    """
     with requests.Session() as session:
         req = requests.Request(method, BASE_URL + path, params=params)
         prepped = session.prepare_request(req)
 
-        # ✅ Signature는 querystring 제외 → 순수 path만 사용
-        headers = make_headers(method, path, customer_id)
+        uri = prepped.path_url  # "/stats?ids=...&fields=...&timeRange=..."
+        headers = make_headers(method, uri, customer_id)
         prepped.headers.update(headers)
 
         try:
@@ -334,19 +340,13 @@ def list_ads(customer_id: str, adgroup_id: str) -> Tuple[bool, Any]:
     return ok, data
 
 # -------------------------
-# ✅ Ad(소재) 텍스트 추출
+# Ad creative fields
 # -------------------------
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
-    """
-    /ncc/ads 응답에서 광고 타입별로 소재 문구/랜딩 정보를 최대한 뽑아냅니다.
-    - 어떤 계정은 최상위에 title/name이 없고, ad_obj["ad"] 안에 headline/description/landingUrl 등이 들어옵니다.
-    """
     ad_inner = ad_obj.get("ad") if isinstance(ad_obj.get("ad"), dict) else {}
-    # 최상위/중첩 둘 다에서 후보 수집
     title = _pick(ad_obj, ["name", "title", "headline", "subject", "adName"], "") or _pick(ad_inner, ["headline", "title", "subject", "name"], "")
     desc = _pick(ad_obj, ["description", "desc", "adDescription"], "") or _pick(ad_inner, ["description", "desc", "adDescription"], "")
 
-    # 랜딩 URL 후보: 계정/광고타입마다 키가 다를 수 있어 넓게 잡음
     pc_url = _pick(ad_obj, ["pcLandingUrl", "pcFinalUrl", "finalUrl", "landingUrl", "linkUrl"], "") or _pick(ad_inner, ["pcLandingUrl", "pcFinalUrl", "finalUrl", "landingUrl", "linkUrl"], "")
     m_url = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "") or _pick(ad_inner, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "")
 
@@ -426,15 +426,9 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date, d2: date) -> Lis
 # FACT Helper: Parse & Calculate ROAS
 # -------------------------
 def _parse_and_calc_roas(r: dict, d_str: str, customer_id: str, id_key: str) -> dict:
-    """API 응답(r)에서 공통 필드를 추출하고 ROAS를 계산하여 반환"""
-
-    # ✅ 중요: Naver API "salesAmt" = Cost(비용), "convAmt" = Sales(매출)
     cost = int(float(r.get("salesAmt", 0) or 0))
     sales = int(float(r.get("convAmt", 0) or 0))
-
-    # ✅ ROAS 계산
     roas = (sales / cost * 100) if cost > 0 else 0.0
-
     stat_dt = r.get("statDt") or r.get("date") or r.get("dt") or d_str
 
     return {
@@ -589,7 +583,6 @@ def refresh_dim_for_account(engine: Engine, customer_id: str, account_name: str)
                             continue
 
                         fields = extract_ad_creative_fields(ad)
-                        # ad_name은 예전 호환용: title 우선
                         ad_name = fields["ad_title"] or (ad.get("name") or ad.get("title") or "")
 
                         ad_rows.append(
@@ -688,7 +681,6 @@ def main():
         else:
             print(f"=== {name} DIM refresh skip (TTL) ===")
 
-        # ✅ 기간 루프: 기간 조회 시 하루씩 끊어서 수집
         for single_date in daterange(d1, d2):
             refresh_fact_for_account_daily(engine, cid, name, single_date)
 
