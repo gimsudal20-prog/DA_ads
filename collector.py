@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Safe Comma Strategy)
+collector.py - 네이버 검색광고 수집기 (Final: Pre-Built String Strategy)
 """
 
 from __future__ import annotations
@@ -14,18 +14,15 @@ import hashlib
 import argparse
 import sys
 import urllib.parse
-import ssl
-import urllib.request
-from datetime import datetime, date, timedelta, timezone
+import requests
+from datetime import datetime, date, timedelta
 from typing import Any, Dict, List
-
-import pandas as pd
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from dotenv import load_dotenv
 
 # -------------------------
-# 1. 환경변수 로딩
+# 1. 환경변수 및 설정
 # -------------------------
 def _load_env() -> str:
     load_dotenv(override=True)
@@ -55,37 +52,30 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (쉼표 보존)
+# 2. 서명 생성 함수
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def request_api(method: str, path: str, customer_id: str, params: dict = None) -> Any:
-    
-    # URL 조립 (핵심: 쉼표를 인코딩하지 않음)
-    if params:
-        # 1. 파라미터별로 인코딩하되, 쉼표(,)와 콜론(:)은 safe 문자로 지정하여 변환 막음
-        # 네이버 API는 ids=1,2,3 처럼 쉼표가 살아있는 것을 원할 때가 많음
-        query_parts = []
-        # 알파벳 순서 정렬 (fields -> ids -> timeRange)
-        for k in sorted(params.keys()):
-            val = str(params[k])
-            # safe=',:' -> 쉼표와 콜론은 %2C, %3A로 바꾸지 말고 그냥 둬라!
-            encoded_val = urllib.parse.quote(val, safe=',:')
-            query_parts.append(f"{k}={encoded_val}")
-            
-        raw_query = "&".join(query_parts)
-        api_uri = f"{path}?{raw_query}"
-    else:
-        api_uri = path
-    
-    full_url = f"{BASE_URL}{api_uri}"
-    
-    # 2. 서명 생성 (쉼표가 살아있는 api_uri 그대로 서명)
+def request_api(method: str, path: str, customer_id: str, params_dict: dict = None) -> Any:
+    """
+    [핵심 해결책]
+    URL을 라이브러리에 맡기지 않고, 직접 문자열로 완성한 뒤(Encoded),
+    그 완성된 문자열로 서명하고, 그 문자열 그대로 전송합니다.
+    """
     timestamp = str(int(time.time() * 1000))
-    signature = generate_signature(timestamp, method, api_uri, API_SECRET)
+    
+    # 1. URL 쿼리 스트링을 직접 조립 (여기서 %2C, %5B 등으로 모두 변환됨)
+    if params_dict:
+        query_string = urllib.parse.urlencode(params_dict) 
+        uri_path = f"{path}?{query_string}"
+    else:
+        uri_path = path
+        
+    # 2. 조립된 uri_path (%문자 포함) 그대로 서명 생성
+    signature = generate_signature(timestamp, method, uri_path, API_SECRET)
     
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
@@ -95,31 +85,28 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None) -
         "X-Signature": signature,
     }
 
-    # 3. 전송
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    
-    req = urllib.request.Request(full_url, headers=headers, method=method)
+    # 3. requests가 URL을 건드리지 못하게 Full URL로 전송
+    full_url = f"{BASE_URL}{uri_path}"
     
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=60) as res:
-            if res.status == 200:
-                return json.loads(res.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8')
-        if e.code == 403:
-            log(f"⛔ 권한 오류 (403): {error_body}")
-            # 디버깅: 서명한 주소 출력
-            # log(f"   [Debug] Signed URI: {api_uri}")
-        elif e.code == 429:
-             time.sleep(1)
-             return request_api(method, path, customer_id, params)
-        else:
-             log(f"⚠️ 요청 실패 ({e.code}): {error_body}")
-        return None
+        # params 인자를 쓰지 않고 URL에 이미 포함시켜 보냄
+        response = requests.request(method, full_url, headers=headers, timeout=60)
+        
+        if response.status_code == 200:
+            return response.json()
+        
+        if response.status_code == 429:
+            time.sleep(1)
+            return request_api(method, path, customer_id, params_dict)
+            
+        if response.status_code == 403:
+            log(f"⛔ 권한 오류 (403): {response.text}")
+            return None
+            
+        response.raise_for_status()
+        
     except Exception as e:
-        log(f"⚠️ 네트워크 오류: {str(e)}")
+        log(f"⚠️ 요청 실패: {str(e)}")
         return None
 
 # -------------------------
@@ -150,7 +137,7 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON 생성 (공백 제거)
+    # JSON 문자열 (공백 제거)
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -161,14 +148,15 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         
-        # 딕셔너리로 준비 (request_api 내부에서 쉼표 보존 인코딩 처리함)
+        # 딕셔너리 생성
         params = {
             "ids": ids_str,
             "fields": fields_json,
             "timeRange": time_range_json
         }
         
-        data = request_api("GET", "/stats", customer_id, params=params)
+        # request_api 함수가 urlencode를 수행하여 '박제'함
+        data = request_api("GET", "/stats", customer_id, params_dict=params)
         
         if data and "data" in data:
             results.extend(data["data"])
