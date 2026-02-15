@@ -7,7 +7,7 @@ collector.py - 네이버 검색광고 수집기 (v4.24 - Invalid Signature Fix)
    - 기존: Signature 생성 시 "querystring 제외 → 순수 path만 사용" (예: "/stats")
    - 문제: requests가 실제로는 "/stats?ids=...&fields=...&timeRange=..." 형태로 요청을 보내므로,
            서버가 검증하는 URI와 우리가 서명한 URI가 달라져 invalid-signature가 발생
-   - 해결: requests.PreparedRequest 로 만들어진 **실제 요청 path+query(urlsplit(prepped.url).path)** 로 서명
+   - 해결: requests.PreparedRequest 로 만들어진 **실제 요청 path+query(prepped.path_url)** 로 서명
 
 2) Secret/Key/customer_id는 strip() 적용 유지
 """
@@ -131,7 +131,7 @@ def now_millis() -> str:
 def sign_uri(method: str, uri: str, timestamp: str, secret: str) -> str:
     """
     ✅ 네이버 서명은 서버가 검증하는 URI와 **완전히 동일**해야 함.
-    - uri: "/stats?ids=...&fields=...&timeRange=..." 처럼 path+query(urlsplit(prepped.url).path)
+    - uri: "/stats?ids=...&fields=...&timeRange=..." 처럼 path+query(prepped.path_url)
     """
     msg = f"{timestamp}.{method}.{uri}".encode("utf-8")
     dig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
@@ -285,13 +285,13 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
     """
     ✅ 중요한 포인트:
     - requests는 params를 붙여 실제로 "/path?..." 형태로 전송
-    - 서명도 그 **동일한 path+query(urlsplit(prepped.url).path)** 를 써야 함
+    - 서명도 그 **동일한 path+query(prepped.path_url)** 를 써야 함
     """
     with requests.Session() as session:
         req = requests.Request(method, BASE_URL + path, params=params)
         prepped = session.prepare_request(req)
 
-        uri = urlsplit(prepped.url).path  # "/stats?ids=...&fields=...&timeRange=..."
+        uri = prepped.path_url  # "/stats?ids=...&fields=...&timeRange=..."
         headers = make_headers(prepped.method, uri, customer_id)
         prepped.headers.update(headers)
 
@@ -369,7 +369,7 @@ def _fetch_stats_chunk_recursive(customer_id: str, ids: List[str], fields_json: 
     if not ids:
         return []
 
-    params = {"ids": ids, "fields": fields_json, "timeRange": time_range}
+    params = [("ids", ",".join(ids)), ("fields", fields_json), ("timeRange", time_range)]
     status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
 
     if status == 200:
@@ -688,6 +688,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
