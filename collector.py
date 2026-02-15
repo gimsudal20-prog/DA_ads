@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final Version: Manual URL Construction)
+collector.py - 네이버 검색광고 수집기 (Final: PreparedRequest Version)
 """
 
 from __future__ import annotations
@@ -13,9 +13,8 @@ import base64
 import hashlib
 import argparse
 import sys
-from urllib.parse import urlencode, quote
 from datetime import datetime, date, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import requests
 import pandas as pd
@@ -25,7 +24,7 @@ from sqlalchemy.engine import Engine
 from pathlib import Path as _Path
 
 # -------------------------
-# 1. 환경변수 로딩
+# 1. 환경변수 및 설정
 # -------------------------
 def _load_env() -> str:
     load_dotenv(override=True)
@@ -40,7 +39,7 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
-IDS_CHUNK = 50  # 청크 사이즈를 조금 줄여서 안정성 확보
+IDS_CHUNK = 50  # 안정적인 수집을 위해 청크 사이즈 조절
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
@@ -49,7 +48,7 @@ def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
-# 키 로딩 확인
+# 키 로딩 확인 (이제 키는 완벽합니다!)
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 else:
@@ -57,7 +56,7 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명(Signature) 및 API 요청 (수동 조립 방식)
+# 2. 서명 및 API 요청 (정석 방법)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
@@ -77,27 +76,27 @@ def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
 
 def request_api(method: str, path: str, customer_id: str, params: dict = None, retries=3) -> Any:
     """
-    requests의 자동 인코딩을 쓰지 않고, urllib으로 직접 URL을 만듭니다.
+    [핵심] requests.PreparedRequest를 사용하여
+    실제로 전송될 URL(path + query)을 미리 확정한 뒤, 그 값으로 서명을 생성합니다.
     """
-    # 1. 파라미터가 있다면 수동으로 쿼리스트링 생성
-    if params:
-        # safe chars: 네이버는 쉼표(,) 등을 인코딩하거나 안 하거나 민감하므로
-        # 가장 표준적인 urlencode를 사용하되, 서명과 요청이 100% 일치하도록 함
-        query_string = urlencode(params)
-        api_uri = f"{path}?{query_string}"
-    else:
-        api_uri = path
-    
-    full_url = f"{BASE_URL}{api_uri}"
-    
-    # 2. 헤더 생성 (여기서 쓰인 api_uri와 실제 요청 URL이 정확히 같아야 함)
-    headers = get_headers(method, api_uri, customer_id)
+    url = BASE_URL + path
     
     with requests.Session() as session:
+        # 1. 요청을 미리 준비(Prepare)하여 URL이 어떻게 인코딩되는지 확인
+        req = requests.Request(method, url, params=params)
+        prepped = session.prepare_request(req)
+        
+        # 2. 실제로 날아갈 경로(쿼리 포함)를 추출하여 서명 생성
+        # 예: /stats?ids=...&fields=...
+        api_uri = prepped.path_url
+        
+        headers = get_headers(method, api_uri, customer_id)
+        prepped.headers.update(headers)
+        
         for attempt in range(retries):
             try:
-                # 3. params 인자를 쓰지 않고 full_url을 바로 요청
-                response = session.request(method, full_url, headers=headers, timeout=TIMEOUT)
+                # 3. 준비된 요청(prepped)을 그대로 전송 (서명과 URL 불일치 원천 차단)
+                response = session.send(prepped, timeout=TIMEOUT)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -106,9 +105,10 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None, r
                     time.sleep(1 * (attempt + 1))
                     continue
                 
+                # 403 오류 시 로그 출력 후 종료
                 if response.status_code == 403:
                     log(f"⛔ 권한 오류 (403): {response.text}")
-                    # 여기서 재시도하지 않고 예외 발생 (키 문제일 수 있으므로)
+                    # 여기서 바로 반환하지 않고 None 리턴
                     return None
 
                 response.raise_for_status()
@@ -121,7 +121,7 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None, r
     return None
 
 # -------------------------
-# 3. DB 및 로직
+# 3. 데이터 조회 로직
 # -------------------------
 def get_engine() -> Engine:
     if not DB_URL:
@@ -148,13 +148,13 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # [중요] JSON 생성 시 공백 제거 (separators 사용)
-    # 네이버 API는 공백(Space)이 URL 인코딩될 때 서명 불일치를 자주 일으킴
+    # [중요] JSON 공백 제거 (Compact Encoding)
+    # 네이버 API는 공백이 포함된 JSON을 URL 인코딩할 때 서명 오류가 잦음
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
     results = []
-    print("   > 진행률: ", end="")
+    print("   > 상세 데이터 수집: ", end="")
     
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
@@ -166,20 +166,22 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         }
         
         data = request_api("GET", "/stats", customer_id, params=params)
+        
         if data and "data" in data:
             results.extend(data["data"])
-            sys.stdout.write("■")
+            sys.stdout.write("■") # 성공 표시
         else:
-            sys.stdout.write("x")
+            sys.stdout.write("x") # 실패 표시
         sys.stdout.flush()
             
-    print("") 
+    print(" 완료") 
     return results
 
 def save_stats(engine: Engine, customer_id: str, target_date: date):
     dt_str = target_date.strftime("%Y-%m-%d")
     log(f"📅 데이터 수집 시작: {dt_str} (Customer: {customer_id})")
     
+    # 1. 캠페인 가져오기 (이건 이미 성공함)
     campaigns = get_campaigns(customer_id)
     if not campaigns:
         log("   > 캠페인 조회 실패 또는 없음")
@@ -188,6 +190,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     camp_ids = [c["nccCampaignId"] for c in campaigns]
     log(f"   > 대상 캠페인: {len(camp_ids)}개")
     
+    # 2. 성과 가져오기 (여기가 문제였는데, PreparedRequest로 해결될 것임)
     stats = get_stats(customer_id, camp_ids, dt_str)
     
     rows = []
@@ -248,8 +251,8 @@ def main():
     if not accounts and CUSTOMER_ID:
         accounts = [CUSTOMER_ID]
     
-    # 테스트를 위한 강제 계정 목록 (필요시 주석 해제)
-    # accounts = ["2886931", "1346816", "1454161"] 
+    # 필요 시 주석 해제하여 테스트 계정 추가
+    # accounts = ["2886931", "1346816"] 
     
     if not accounts:
         log("⚠️ 수집할 계정이 없습니다. DB의 dim_account를 확인하세요.")
