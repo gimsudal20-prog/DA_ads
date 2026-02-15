@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Unquote Signature Fix)
+collector.py - 네이버 검색광고 수집기 (Fixed: Alphabetical Query Order)
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (Unquote 적용)
+# 2. 서명 및 API 요청 (알파벳 순서 강제 적용)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
@@ -73,33 +73,50 @@ def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
         "X-Signature": signature,
     }
 
-def request_api(method: str, path: str, customer_id: str, params: dict = None, retries=3) -> Any:
+def request_api(method: str, path: str, customer_id: str, query_params: dict = None, retries=3) -> Any:
     """
-    [핵심 수정 사항]
-    1. requests.prepare_request로 HTTP 표준 인코딩 URL을 생성합니다 (전송용).
-    2. 생성된 URL을 urllib.parse.unquote로 다시 풀어서 서명을 생성합니다 (인증용).
+    [핵심 수정] 
+    쿼리 파라미터를 알파벳 순서(fields -> ids -> timeRange)로 정렬하여 URL을 만듭니다.
+    서명용 URL: 인코딩 안 된 상태 (Clean)
+    전송용 URL: 인코딩 된 상태 (Encoded)
     """
-    url = BASE_URL + path
+    
+    # 1. 파라미터가 있다면 알파벳 순으로 정렬
+    if query_params:
+        sorted_keys = sorted(query_params.keys())
+        
+        # A. 서명용 (Clean String: 쉼표, 괄호 등 특수문자 유지)
+        # 예: fields=[...]&ids=...&timeRange={...}
+        clean_parts = []
+        for k in sorted_keys:
+            val = query_params[k]
+            clean_parts.append(f"{k}={val}")
+        clean_query = "&".join(clean_parts)
+        uri_to_sign = f"{path}?{clean_query}"
+        
+        # B. 전송용 (Encoded String: %5B, %2C 등으로 변환)
+        # requests가 좋아하도록 인코딩, 하지만 순서는 알파벳순 유지
+        encoded_parts = []
+        for k in sorted_keys:
+            val = query_params[k]
+            # safe chars: JSON 문자들을 안전하게 전송하기 위해 인코딩
+            encoded_val = urllib.parse.quote(str(val)) 
+            encoded_parts.append(f"{k}={encoded_val}")
+        encoded_query = "&".join(encoded_parts)
+        full_url = f"{BASE_URL}{path}?{encoded_query}"
+        
+    else:
+        uri_to_sign = path
+        full_url = f"{BASE_URL}{path}"
+
+    # 2. Clean URI로 서명 생성
+    headers = get_headers(method, uri_to_sign, customer_id)
     
     with requests.Session() as session:
-        # 1. 요청 준비 (여기서 URL 인코딩이 자동으로 일어남: %5B, %2C 등)
-        req = requests.Request(method, url, params=params)
-        prepped = session.prepare_request(req)
-        
-        # 2. 실제 전송될 URI (Encoded)
-        encoded_uri = prepped.path_url
-        
-        # 3. 서명용 URI (Decoded) - 네이버는 이걸 원합니다!
-        decoded_uri = urllib.parse.unquote(encoded_uri)
-        
-        # 4. Decoded URI로 서명 생성
-        headers = get_headers(method, decoded_uri, customer_id)
-        prepped.headers.update(headers)
-        
         for attempt in range(retries):
             try:
-                # 5. 전송은 Encoded 상태로 보냄
-                response = session.send(prepped, timeout=TIMEOUT)
+                # 3. 전송은 Encoded URL로, 헤더는 Clean Signature로
+                response = session.request(method, full_url, headers=headers, timeout=TIMEOUT)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -110,9 +127,9 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None, r
                 
                 if response.status_code == 403:
                     log(f"⛔ 권한 오류 (403): {response.text}")
-                    # 디버깅: 내가 뭘 서명했는지 확인
-                    # log(f"   [Debug] Signed(Decoded): {decoded_uri}")
-                    # log(f"   [Debug] Sent(Encoded):   {encoded_uri}")
+                    # 디버깅 정보 (필요시 확인용)
+                    # log(f"   [Debug] Signed: {uri_to_sign}")
+                    # log(f"   [Debug] Sent:   {full_url}")
                     return None
 
                 response.raise_for_status()
@@ -152,7 +169,7 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON 공백 제거
+    # JSON 공백 제거 (Compact)
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -162,13 +179,15 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
         
+        # 딕셔너리로 파라미터 준비
         params = {
             "ids": ",".join(chunk),
             "fields": fields_json,
             "timeRange": time_range_json
         }
         
-        data = request_api("GET", "/stats", customer_id, params=params)
+        # request_api 함수 내부에서 알파벳 순 정렬(fields -> ids -> timeRange) 처리됨
+        data = request_api("GET", "/stats", customer_id, query_params=params)
         
         if data and "data" in data:
             results.extend(data["data"])
