@@ -24,7 +24,7 @@ import base64
 import hashlib
 import argparse
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit  # (unused) but safe to keep
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -42,8 +42,10 @@ def die(msg: str):
     raise SystemExit(msg)
 
 def _mask(s: str) -> str:
-    if not s: return ""
-    if len(s) <= 8: return s[:2] + "***"
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return s[:2] + "***"
     return s[:4] + "***" + s[-4:]
 
 def _norm(s: str) -> str:
@@ -283,12 +285,8 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
         req = requests.Request(method, BASE_URL + path, params=params)
         prepped = session.prepare_request(req)
 
-        parsed = urlsplit(prepped.url)
-        path_for_sig = parsed.path
-        if parsed.query:
-            path_for_sig += "?" + parsed.query
-
-        headers = make_headers(method, path_for_sig, customer_id)
+        # ✅ Signature는 querystring 제외 → 순수 path만 사용
+        headers = make_headers(method, path, customer_id)
         prepped.headers.update(headers)
 
         try:
@@ -346,11 +344,11 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad") if isinstance(ad_obj.get("ad"), dict) else {}
     # 최상위/중첩 둘 다에서 후보 수집
     title = _pick(ad_obj, ["name", "title", "headline", "subject", "adName"], "") or _pick(ad_inner, ["headline", "title", "subject", "name"], "")
-    desc  = _pick(ad_obj, ["description", "desc", "adDescription"], "") or _pick(ad_inner, ["description", "desc", "adDescription"], "")
+    desc = _pick(ad_obj, ["description", "desc", "adDescription"], "") or _pick(ad_inner, ["description", "desc", "adDescription"], "")
 
     # 랜딩 URL 후보: 계정/광고타입마다 키가 다를 수 있어 넓게 잡음
     pc_url = _pick(ad_obj, ["pcLandingUrl", "pcFinalUrl", "finalUrl", "landingUrl", "linkUrl"], "") or _pick(ad_inner, ["pcLandingUrl", "pcFinalUrl", "finalUrl", "landingUrl", "linkUrl"], "")
-    m_url  = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "") or _pick(ad_inner, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "")
+    m_url = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "") or _pick(ad_inner, ["mobileLandingUrl", "mobileFinalUrl", "mobileUrl", "mLandingUrl"], "")
 
     creative_text = _join_nonempty([title, desc, pc_url or m_url])
 
@@ -394,8 +392,8 @@ def _fetch_stats_chunk_recursive(customer_id: str, ids: List[str], fields_json: 
         msg = str(data)[:200] if data else "Unknown"
         print(f"\n   ♻️ [오류 {status}] {msg} → {len(left)}/{len(right)}개로 쪼개서 재시도 중...", end="")
 
-    return _fetch_stats_chunk_recursive(customer_id, left, fields_json, time_range, depth+1) + \
-           _fetch_stats_chunk_recursive(customer_id, right, fields_json, time_range, depth+1)
+    return _fetch_stats_chunk_recursive(customer_id, left, fields_json, time_range, depth + 1) + \
+        _fetch_stats_chunk_recursive(customer_id, right, fields_json, time_range, depth + 1)
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date, d2: date) -> List[dict]:
     out: List[dict] = []
@@ -403,21 +401,21 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date, d2: date) -> Lis
     valid_ids = []
     for x in ids:
         s = str(x).strip()
-        if not s or s.lower() == 'nan':
+        if not s or s.lower() == "nan":
             continue
-        if s.startswith('nkw-') or s.startswith('nad-') or s.startswith('cmp-'):
+        if s.startswith("nkw-") or s.startswith("nad-") or s.startswith("cmp-"):
             valid_ids.append(s)
 
     if not valid_ids:
         return out
 
-    time_range = json.dumps({"since": str(d1), "until": str(d2)}, ensure_ascii=False, separators=(',', ':'))
-    fields = json.dumps(_STATS_FIELDS, ensure_ascii=False, separators=(',', ':'))
+    time_range = json.dumps({"since": str(d1), "until": str(d2)}, ensure_ascii=False, separators=(",", ":"))
+    fields = json.dumps(_STATS_FIELDS, ensure_ascii=False, separators=(",", ":"))
 
     print(f"  [총 {len(valid_ids)}개 ID를 {IDS_CHUNK}개씩 처리 중]", end=" ")
 
     for i in range(0, len(valid_ids), IDS_CHUNK):
-        chunk = valid_ids[i:i + IDS_CHUNK]
+        chunk = valid_ids[i : i + IDS_CHUNK]
         results = _fetch_stats_chunk_recursive(customer_id, chunk, fields, time_range)
         out.extend(results)
 
@@ -448,7 +446,7 @@ def _parse_and_calc_roas(r: dict, d_str: str, customer_id: str, id_key: str) -> 
         "cost": cost,
         "conv": float(r.get("ccnt", 0) or 0),
         "sales": sales,
-        "roas": roas
+        "roas": roas,
     }
 
 # -------------------------
@@ -470,12 +468,16 @@ def refresh_fact_for_account_daily(engine: Engine, customer_id: str, account_nam
 
     # 2. Keyword
     if not SKIP_KEYWORD_STATS:
-        kw = pd.read_sql(text(
-            "SELECT k.keyword_id FROM dim_keyword k "
-            "JOIN dim_adgroup g ON k.adgroup_id=g.adgroup_id "
-            "JOIN dim_campaign c ON g.campaign_id=c.campaign_id "
-            "WHERE c.customer_id=:cid AND (c.campaign_tp IN ('WEB_SITE','POWER_CONTENT') OR c.campaign_tp IS NULL)"
-        ), engine, params={"cid": str(customer_id)})
+        kw = pd.read_sql(
+            text(
+                "SELECT k.keyword_id FROM dim_keyword k "
+                "JOIN dim_adgroup g ON k.adgroup_id=g.adgroup_id "
+                "JOIN dim_campaign c ON g.campaign_id=c.campaign_id "
+                "WHERE c.customer_id=:cid AND (c.campaign_tp IN ('WEB_SITE','POWER_CONTENT') OR c.campaign_tp IS NULL)"
+            ),
+            engine,
+            params={"cid": str(customer_id)},
+        )
         kw_ids = kw["keyword_id"].astype(str).tolist() if not kw.empty else []
         if kw_ids:
             print(f"  >> 키워드 {len(kw_ids)}개 성과 수집...", end="")
@@ -486,12 +488,16 @@ def refresh_fact_for_account_daily(engine: Engine, customer_id: str, account_nam
 
     # 3. Ad
     if not SKIP_AD_STATS:
-        ad = pd.read_sql(text(
-            "SELECT a.ad_id FROM dim_ad a "
-            "JOIN dim_adgroup g ON a.adgroup_id=g.adgroup_id "
-            "JOIN dim_campaign c ON g.campaign_id=c.campaign_id "
-            "WHERE c.customer_id=:cid AND (c.campaign_tp IN ('WEB_SITE','POWER_CONTENT') OR c.campaign_tp IS NULL)"
-        ), engine, params={"cid": str(customer_id)})
+        ad = pd.read_sql(
+            text(
+                "SELECT a.ad_id FROM dim_ad a "
+                "JOIN dim_adgroup g ON a.adgroup_id=g.adgroup_id "
+                "JOIN dim_campaign c ON g.campaign_id=c.campaign_id "
+                "WHERE c.customer_id=:cid AND (c.campaign_tp IN ('WEB_SITE','POWER_CONTENT') OR c.campaign_tp IS NULL)"
+            ),
+            engine,
+            params={"cid": str(customer_id)},
+        )
         ad_ids = ad["ad_id"].astype(str).tolist() if not ad.empty else []
         if ad_ids:
             print(f"  >> 소재 {len(ad_ids)}개 성과 수집...", end="")
@@ -504,8 +510,8 @@ def should_refresh_dim(engine: Engine, customer_id: str, force_dim: bool) -> boo
     if force_dim:
         return True
     try:
-        ck = pd.read_sql(text('SELECT 1 FROM dim_keyword WHERE customer_id=:cid LIMIT 1'), engine, params={'cid': str(customer_id)})
-        ca = pd.read_sql(text('SELECT 1 FROM dim_ad WHERE customer_id=:cid LIMIT 1'), engine, params={'cid': str(customer_id)})
+        ck = pd.read_sql(text("SELECT 1 FROM dim_keyword WHERE customer_id=:cid LIMIT 1"), engine, params={"cid": str(customer_id)})
+        ca = pd.read_sql(text("SELECT 1 FROM dim_ad WHERE customer_id=:cid LIMIT 1"), engine, params={"cid": str(customer_id)})
         if ck.empty or ca.empty:
             return True
     except Exception:
@@ -531,7 +537,11 @@ def load_blocked(engine: Engine, customer_id: str) -> set[str]:
     return set(df["adgroup_id"].astype(str).tolist()) if not df.empty else set()
 
 def cache_blocked(engine: Engine, customer_id: str, adgroup_id: str, code: str):
-    exec_sql(engine, "INSERT INTO blocked_adgroups(customer_id, adgroup_id, code, last_seen) VALUES(:cid, :gid, :code, NOW()) ON CONFLICT (customer_id, adgroup_id) DO UPDATE SET code=EXCLUDED.code, last_seen=NOW()", {"cid": str(customer_id), "gid": str(adgroup_id), "code": str(code)})
+    exec_sql(
+        engine,
+        "INSERT INTO blocked_adgroups(customer_id, adgroup_id, code, last_seen) VALUES(:cid, :gid, :code, NOW()) ON CONFLICT (customer_id, adgroup_id) DO UPDATE SET code=EXCLUDED.code, last_seen=NOW()",
+        {"cid": str(customer_id), "gid": str(adgroup_id), "code": str(code)},
+    )
 
 def refresh_dim_for_account(engine: Engine, customer_id: str, account_name: str):
     print(f"=== {account_name} ({customer_id}) DIM refresh ===")
@@ -582,18 +592,20 @@ def refresh_dim_for_account(engine: Engine, customer_id: str, account_name: str)
                         # ad_name은 예전 호환용: title 우선
                         ad_name = fields["ad_title"] or (ad.get("name") or ad.get("title") or "")
 
-                        ad_rows.append({
-                            "customer_id": str(customer_id),
-                            "adgroup_id": gid,
-                            "ad_id": str(aid),
-                            "ad_name": ad_name,
-                            "status": ad.get("status") or "",
-                            "ad_title": fields["ad_title"],
-                            "ad_desc": fields["ad_desc"],
-                            "pc_landing_url": fields["pc_landing_url"],
-                            "mobile_landing_url": fields["mobile_landing_url"],
-                            "creative_text": fields["creative_text"],
-                        })
+                        ad_rows.append(
+                            {
+                                "customer_id": str(customer_id),
+                                "adgroup_id": gid,
+                                "ad_id": str(aid),
+                                "ad_name": ad_name,
+                                "status": ad.get("status") or "",
+                                "ad_title": fields["ad_title"],
+                                "ad_desc": fields["ad_desc"],
+                                "pc_landing_url": fields["pc_landing_url"],
+                                "mobile_landing_url": fields["mobile_landing_url"],
+                                "creative_text": fields["creative_text"],
+                            }
+                        )
                 else:
                     if "1018" in str(data) or "No permission" in str(data):
                         cache_blocked(engine, customer_id, gid, "1018")
