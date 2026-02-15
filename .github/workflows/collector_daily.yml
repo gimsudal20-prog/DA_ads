@@ -1,0 +1,40 @@
+name: Daily Naver Ads Collector
+
+on:
+  schedule:
+    - cron: "10 22 * * *"   # 매일 07:10 KST
+  workflow_dispatch: {}
+
+concurrency:
+  group: collector-daily
+  cancel-in-progress: false
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests python-dotenv sqlalchemy psycopg2-binary
+
+      - name: Run collector (yesterday, KST)
+        run: |
+          YESTERDAY=$(date -d "yesterday" +%F)
+          echo "Collect date = ${YESTERDAY}"
+          python collector.py --date "${YESTERDAY}"
