@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: PreparedRequest Version)
+collector.py - 네이버 검색광고 수집기 (Final: Manual URL Construction)
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import base64
 import hashlib
 import argparse
 import sys
+import urllib.parse
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List
 
@@ -21,7 +22,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from pathlib import Path as _Path
 
 # -------------------------
 # 1. 환경변수 및 설정
@@ -39,7 +39,7 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
-IDS_CHUNK = 50  # 안정적인 수집을 위해 청크 사이즈 조절
+IDS_CHUNK = 50 
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
@@ -48,7 +48,6 @@ def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
-# 키 로딩 확인 (이제 키는 완벽합니다!)
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 else:
@@ -56,7 +55,7 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (정석 방법)
+# 2. 서명 및 API 요청 (수동 URL 조립)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
@@ -76,27 +75,29 @@ def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
 
 def request_api(method: str, path: str, customer_id: str, params: dict = None, retries=3) -> Any:
     """
-    [핵심] requests.PreparedRequest를 사용하여
-    실제로 전송될 URL(path + query)을 미리 확정한 뒤, 그 값으로 서명을 생성합니다.
+    requests의 자동 파라미터 인코딩을 쓰지 않고, 
+    urllib.parse.urlencode를 사용하여 직접 URL을 조립합니다.
+    이렇게 해야 서명 대상 URL과 실제 전송 URL이 100% 일치합니다.
     """
-    url = BASE_URL + path
+    # 1. 쿼리 스트링 수동 생성
+    if params:
+        # urlencode를 사용하면 딕셔너리가 'key=value&key2=value2' 형태가 됨
+        # (특수문자도 표준 방식으로 안전하게 변환됨)
+        query_string = urllib.parse.urlencode(params)
+        api_uri = f"{path}?{query_string}"
+    else:
+        api_uri = path
+    
+    full_url = f"{BASE_URL}{api_uri}"
+    
+    # 2. 생성된 api_uri로 서명 (이제 불일치 가능성 0%)
+    headers = get_headers(method, api_uri, customer_id)
     
     with requests.Session() as session:
-        # 1. 요청을 미리 준비(Prepare)하여 URL이 어떻게 인코딩되는지 확인
-        req = requests.Request(method, url, params=params)
-        prepped = session.prepare_request(req)
-        
-        # 2. 실제로 날아갈 경로(쿼리 포함)를 추출하여 서명 생성
-        # 예: /stats?ids=...&fields=...
-        api_uri = prepped.path_url
-        
-        headers = get_headers(method, api_uri, customer_id)
-        prepped.headers.update(headers)
-        
         for attempt in range(retries):
             try:
-                # 3. 준비된 요청(prepped)을 그대로 전송 (서명과 URL 불일치 원천 차단)
-                response = session.send(prepped, timeout=TIMEOUT)
+                # 3. params 인자 대신 full_url을 직접 전송
+                response = session.request(method, full_url, headers=headers, timeout=TIMEOUT)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -105,10 +106,10 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None, r
                     time.sleep(1 * (attempt + 1))
                     continue
                 
-                # 403 오류 시 로그 출력 후 종료
                 if response.status_code == 403:
                     log(f"⛔ 권한 오류 (403): {response.text}")
-                    # 여기서 바로 반환하지 않고 None 리턴
+                    # 디버깅을 위해 서명에 쓴 URI 출력 (필요시 주석 해제)
+                    # log(f"   [Debug] Signed URI: {api_uri}")
                     return None
 
                 response.raise_for_status()
@@ -148,8 +149,7 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # [중요] JSON 공백 제거 (Compact Encoding)
-    # 네이버 API는 공백이 포함된 JSON을 URL 인코딩할 때 서명 오류가 잦음
+    # JSON 공백 제거 (중요)
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -159,6 +159,8 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
         
+        # 딕셔너리로 만들어서 request_api에 전달
+        # request_api 내부에서 urlencode로 변환됨
         params = {
             "ids": ",".join(chunk),
             "fields": fields_json,
@@ -169,9 +171,9 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         
         if data and "data" in data:
             results.extend(data["data"])
-            sys.stdout.write("■") # 성공 표시
+            sys.stdout.write("■")
         else:
-            sys.stdout.write("x") # 실패 표시
+            sys.stdout.write("x")
         sys.stdout.flush()
             
     print(" 완료") 
@@ -181,7 +183,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     dt_str = target_date.strftime("%Y-%m-%d")
     log(f"📅 데이터 수집 시작: {dt_str} (Customer: {customer_id})")
     
-    # 1. 캠페인 가져오기 (이건 이미 성공함)
+    # 1. 캠페인 가져오기
     campaigns = get_campaigns(customer_id)
     if not campaigns:
         log("   > 캠페인 조회 실패 또는 없음")
@@ -190,7 +192,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     camp_ids = [c["nccCampaignId"] for c in campaigns]
     log(f"   > 대상 캠페인: {len(camp_ids)}개")
     
-    # 2. 성과 가져오기 (여기가 문제였는데, PreparedRequest로 해결될 것임)
+    # 2. 성과 가져오기
     stats = get_stats(customer_id, camp_ids, dt_str)
     
     rows = []
@@ -250,10 +252,7 @@ def main():
     
     if not accounts and CUSTOMER_ID:
         accounts = [CUSTOMER_ID]
-    
-    # 필요 시 주석 해제하여 테스트 계정 추가
-    # accounts = ["2886931", "1346816"] 
-    
+        
     if not accounts:
         log("⚠️ 수집할 계정이 없습니다. DB의 dim_account를 확인하세요.")
         return
