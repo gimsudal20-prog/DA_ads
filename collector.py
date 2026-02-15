@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Manual URL Construction)
+collector.py - 네이버 검색광고 수집기 (Final: Unquote Signature Fix)
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (수동 URL 조립)
+# 2. 서명 및 API 요청 (Unquote 적용)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
@@ -75,29 +75,31 @@ def get_headers(method: str, uri: str, customer_id: str) -> Dict[str, str]:
 
 def request_api(method: str, path: str, customer_id: str, params: dict = None, retries=3) -> Any:
     """
-    requests의 자동 파라미터 인코딩을 쓰지 않고, 
-    urllib.parse.urlencode를 사용하여 직접 URL을 조립합니다.
-    이렇게 해야 서명 대상 URL과 실제 전송 URL이 100% 일치합니다.
+    [핵심 수정 사항]
+    1. requests.prepare_request로 HTTP 표준 인코딩 URL을 생성합니다 (전송용).
+    2. 생성된 URL을 urllib.parse.unquote로 다시 풀어서 서명을 생성합니다 (인증용).
     """
-    # 1. 쿼리 스트링 수동 생성
-    if params:
-        # urlencode를 사용하면 딕셔너리가 'key=value&key2=value2' 형태가 됨
-        # (특수문자도 표준 방식으로 안전하게 변환됨)
-        query_string = urllib.parse.urlencode(params)
-        api_uri = f"{path}?{query_string}"
-    else:
-        api_uri = path
-    
-    full_url = f"{BASE_URL}{api_uri}"
-    
-    # 2. 생성된 api_uri로 서명 (이제 불일치 가능성 0%)
-    headers = get_headers(method, api_uri, customer_id)
+    url = BASE_URL + path
     
     with requests.Session() as session:
+        # 1. 요청 준비 (여기서 URL 인코딩이 자동으로 일어남: %5B, %2C 등)
+        req = requests.Request(method, url, params=params)
+        prepped = session.prepare_request(req)
+        
+        # 2. 실제 전송될 URI (Encoded)
+        encoded_uri = prepped.path_url
+        
+        # 3. 서명용 URI (Decoded) - 네이버는 이걸 원합니다!
+        decoded_uri = urllib.parse.unquote(encoded_uri)
+        
+        # 4. Decoded URI로 서명 생성
+        headers = get_headers(method, decoded_uri, customer_id)
+        prepped.headers.update(headers)
+        
         for attempt in range(retries):
             try:
-                # 3. params 인자 대신 full_url을 직접 전송
-                response = session.request(method, full_url, headers=headers, timeout=TIMEOUT)
+                # 5. 전송은 Encoded 상태로 보냄
+                response = session.send(prepped, timeout=TIMEOUT)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -108,8 +110,9 @@ def request_api(method: str, path: str, customer_id: str, params: dict = None, r
                 
                 if response.status_code == 403:
                     log(f"⛔ 권한 오류 (403): {response.text}")
-                    # 디버깅을 위해 서명에 쓴 URI 출력 (필요시 주석 해제)
-                    # log(f"   [Debug] Signed URI: {api_uri}")
+                    # 디버깅: 내가 뭘 서명했는지 확인
+                    # log(f"   [Debug] Signed(Decoded): {decoded_uri}")
+                    # log(f"   [Debug] Sent(Encoded):   {encoded_uri}")
                     return None
 
                 response.raise_for_status()
@@ -149,7 +152,7 @@ def get_campaigns(customer_id: str) -> List[dict]:
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON 공백 제거 (중요)
+    # JSON 공백 제거
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -159,8 +162,6 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
         
-        # 딕셔너리로 만들어서 request_api에 전달
-        # request_api 내부에서 urlencode로 변환됨
         params = {
             "ids": ",".join(chunk),
             "fields": fields_json,
