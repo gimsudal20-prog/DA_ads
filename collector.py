@@ -24,6 +24,7 @@ import base64
 import hashlib
 import argparse
 import sys
+from urllib.parse import urlsplit
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -51,7 +52,7 @@ def _norm(s: str) -> str:
 def _pick(d: dict, keys: List[str], default=""):
     for k in keys:
         v = d.get(k)
-        if v is None: 
+        if v is None:
             continue
         v = str(v).strip()
         if v:
@@ -278,22 +279,31 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
 # API Core
 # -------------------------
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, raise_error=True) -> Tuple[int, Any]:
-    url = BASE_URL + path
-    headers = make_headers(method, path, customer_id)
-    try:
-        r = requests.request(method, url, headers=headers, params=params, timeout=TIMEOUT)
-        data = None
+    with requests.Session() as session:
+        req = requests.Request(method, BASE_URL + path, params=params)
+        prepped = session.prepare_request(req)
+
+        parsed = urlsplit(prepped.url)
+        path_for_sig = parsed.path
+        if parsed.query:
+            path_for_sig += "?" + parsed.query
+
+        headers = make_headers(method, path_for_sig, customer_id)
+        prepped.headers.update(headers)
+
         try:
-            data = r.json()
-        except Exception:
-            data = r.text
-        if raise_error and r.status_code >= 400:
-            raise requests.HTTPError(f"{r.status_code} {data}", response=r)
-        return r.status_code, data
-    except Exception as e:
-        if raise_error:
-            raise e
-        return 0, str(e)
+            r = session.send(prepped, timeout=TIMEOUT)
+            try:
+                data = r.json()
+            except Exception:
+                data = r.text
+            if raise_error and r.status_code >= 400:
+                raise requests.HTTPError(f"{r.status_code} {data}", response=r)
+            return r.status_code, data
+        except Exception as e:
+            if raise_error:
+                raise e
+            return 0, str(e)
 
 def safe_call(method: str, path: str, customer_id: str, params: dict | None = None) -> Tuple[bool, Any]:
     try:
