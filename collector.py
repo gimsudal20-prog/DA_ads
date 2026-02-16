@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Raw String Manual Construction)
+collector.py - 네이버 검색광고 수집기 (Version: DEBUG_FINAL_CHECK_v1)
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ DB_URL = os.getenv("DATABASE_URL", "").strip()
 CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 
 BASE_URL = "https://api.searchad.naver.com"
-IDS_CHUNK = 5 # 안전하게 5개씩만 요청 (URL 길이 문제 방지)
+IDS_CHUNK = 5 # 안전하게 5개씩만 요청
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
@@ -45,6 +45,12 @@ def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
+# --- 버전 확인용 로그 (필수) ---
+print("="*50)
+print("=== [VERSION: DEBUG_FINAL_CHECK_v1] ===")
+print("=== 이 로그가 안 보이면 코드가 업데이트되지 않은 것입니다 ===")
+print("="*50)
+
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 else:
@@ -52,43 +58,32 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 요청 (100% 수동 조립)
+# 2. 서명 및 요청 (디버깅 강화)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
-    # 서명 대상 URI를 로그로 남겨서 디버깅 가능하게 함
-    # log(f"DEBUG: Signing Base -> {timestamp}.{method}.{uri}")
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
 def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
-    """
-    [해결책]
-    URL 파라미터를 라이브러리에 맡기지 않고, 문자열로 직접 조립합니다.
-    그리고 '조립된 문자열 그대로' 서명하고 전송합니다.
-    """
     method = "GET"
     path = "/stats"
     timestamp = str(int(time.time() * 1000))
     
-    # 1. 파라미터 값 준비 (JSON 공백 제거 필수)
+    # 1. 파라미터 값 준비 (JSON 공백 제거)
     fields_val = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_val = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
-    # 2. URL 인코딩 (urllib.parse.quote 사용)
-    # 쉼표(,)도 %2C로 변환하는 것이 '표준'입니다. (Strategy A - Standard)
+    # 2. URL 인코딩 (모든 특수문자 변환)
     enc_ids = urllib.parse.quote(ids_str)
     enc_fields = urllib.parse.quote(fields_val)
     enc_time = urllib.parse.quote(time_val)
     
-    # 3. 쿼리 스트링 직접 조립 (알파벳 순서: fields -> ids -> timeRange)
-    # 이 순서는 네이버 API가 내부적으로 정렬하는 순서와 일치해야 함
+    # 3. 쿼리 스트링 조립 (알파벳 순서)
     query_string = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
-    
-    # 4. URI 생성
     uri_path = f"{path}?{query_string}"
     
-    # 5. 서명 생성 (이 문자열 그대로!)
+    # 4. 서명 생성
     signature = generate_signature(timestamp, method, uri_path, API_SECRET)
     
     headers = {
@@ -99,7 +94,7 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
         "X-Signature": signature,
     }
     
-    # 6. 전송 (requests 대신 urllib 사용으로 변조 방지)
+    # 5. 전송
     full_url = f"{BASE_URL}{uri_path}"
     
     ctx = ssl.create_default_context()
@@ -114,56 +109,20 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
                 return json.loads(res.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         if e.code == 403:
-            # 403이면 한 번만 더 '쉼표 유지' 방식으로 재시도 (Fallback)
-            # log("   ⚠️ 표준 방식 실패, 쉼표 유지 방식으로 재시도...")
-            return request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val)
+            # 실패 시 디버깅 정보 출력
+            log(f"⛔ 권한 오류 (403): {e.read().decode('utf-8')}")
+            log(f"   [DEBUG] Timestamp: {timestamp}")
+            log(f"   [DEBUG] Signed URI: {uri_path}")
         elif e.code == 429:
              time.sleep(1)
              return request_stats_manual(customer_id, ids_str, date_str)
         else:
              pass
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"⚠️ 오류: {e}")
     return None
 
-def request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val):
-    # 백업 전략: 쉼표(,)를 인코딩하지 않고 보냄
-    method = "GET"
-    path = "/stats"
-    timestamp = str(int(time.time() * 1000))
-    
-    enc_ids = urllib.parse.quote(ids_str, safe=',') # 쉼표 살림
-    enc_fields = urllib.parse.quote(fields_val)
-    enc_time = urllib.parse.quote(time_val)
-    
-    query_string = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
-    uri_path = f"{path}?{query_string}"
-    
-    signature = generate_signature(timestamp, method, uri_path, API_SECRET)
-    
-    headers = {
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Timestamp": timestamp,
-        "X-API-KEY": API_KEY,
-        "X-Customer": str(customer_id),
-        "X-Signature": signature,
-    }
-    
-    full_url = f"{BASE_URL}{uri_path}"
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    req = urllib.request.Request(full_url, headers=headers, method=method)
-    
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=60) as res:
-            if res.status == 200:
-                return json.loads(res.read().decode('utf-8'))
-    except Exception:
-        pass
-    return None
-
-# 캠페인 목록 조회 (이건 이미 잘 됨)
+# 캠페인 목록 조회
 def request_campaigns(customer_id: str) -> List[dict]:
     method = "GET"
     uri = "/ncc/campaigns"
@@ -188,8 +147,8 @@ def request_campaigns(customer_id: str) -> List[dict]:
         with urllib.request.urlopen(req, context=ctx, timeout=60) as res:
             if res.status == 200:
                 return json.loads(res.read().decode('utf-8'))
-    except Exception as e:
-        log(f"⚠️ 캠페인 조회 실패: {e}")
+    except Exception:
+        pass
     return []
 
 # -------------------------
@@ -219,12 +178,10 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     results = []
     print("   > 상세 데이터 수집: ", end="")
     
-    # URL 길이 이슈 방지를 위해 5개씩 끊어서 요청
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         
-        # 여기서 request_stats_manual 호출
         data = request_stats_manual(customer_id, ids_str, date_str)
         
         if data and "data" in data:
