@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Final: Brute Force Strategy)
+collector.py - 네이버 검색광고 수집기 (Strict Consistency Version)
 """
 
 from __future__ import annotations
@@ -14,18 +14,15 @@ import hashlib
 import argparse
 import sys
 import urllib.parse
-import ssl
-import urllib.request
+import requests
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List
-
-import pandas as pd
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from dotenv import load_dotenv
 
 # -------------------------
-# 1. 환경변수 로딩
+# 1. 환경변수 및 설정
 # -------------------------
 def _load_env() -> str:
     load_dotenv(override=True)
@@ -55,17 +52,44 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 생성 함수
+# 2. 서명 및 API 요청 (엄격한 일치)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def send_http_request(method: str, full_url: str, signature_uri: str, customer_id: str) -> Any:
-    """실제 HTTP 요청 전송 (urllib 사용)"""
+def request_api(method: str, path: str, customer_id: str, params_dict: dict = None) -> Any:
+    """
+    [핵심 전략]
+    requests 라이브러리의 자동 처리를 믿지 않고,
+    우리가 직접 URL을 조립하여 '서명 대상'과 '전송 대상'을 100% 일치시킵니다.
+    """
+    
+    # 1. 쿼리 스트링 수동 조립
+    if params_dict:
+        # (1) 키 순서 정렬 (알파벳순)
+        sorted_keys = sorted(params_dict.keys())
+        
+        query_parts = []
+        for k in sorted_keys:
+            # (2) 값 무조건 인코딩 (쉼표, 괄호, 따옴표 등 전부 %XX로 변환)
+            val = str(params_dict[k])
+            encoded_val = urllib.parse.quote(val) 
+            query_parts.append(f"{k}={encoded_val}")
+            
+        # (3) & 로 연결
+        query_string = "&".join(query_parts)
+        api_uri = f"{path}?{query_string}"
+    else:
+        api_uri = path
+        
+    # 2. 공통 타임스탬프 생성
     timestamp = str(int(time.time() * 1000))
-    signature = generate_signature(timestamp, method, signature_uri, API_SECRET)
+    
+    # 3. 서명 생성 (조립된 api_uri 그대로 사용)
+    # 예: /stats?fields=%5B...%5D&ids=1%2C2...
+    signature = generate_signature(timestamp, method, api_uri, API_SECRET)
     
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
@@ -74,82 +98,39 @@ def send_http_request(method: str, full_url: str, signature_uri: str, customer_i
         "X-Customer": str(customer_id),
         "X-Signature": signature,
     }
-    
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    
-    req = urllib.request.Request(full_url, headers=headers, method=method)
+
+    # 4. 전송 (조립된 api_uri를 Base URL 뒤에 붙여서 그대로 전송)
+    full_url = f"{BASE_URL}{api_uri}"
     
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as res:
-            if res.status == 200:
-                return json.loads(res.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            return "403_FAIL"
-        elif e.code == 429:
-            time.sleep(1)
-            return send_http_request(method, full_url, signature_uri, customer_id)
-    except Exception:
-        pass
-    return None
-
-def request_smart(method: str, path: str, customer_id: str, params: dict = None) -> Any:
-    """
-    [핵심 전략: 무차별 대입]
-    4가지 다른 URL 조합을 모두 생성해서 하나씩 찔러봅니다.
-    하나라도 성공하면 즉시 데이터를 반환합니다.
-    """
-    if not params:
-        return send_http_request(method, f"{BASE_URL}{path}", path, customer_id)
-
-    # 기본 재료 준비 (알파벳 정렬)
-    sorted_keys = sorted(params.keys())
-    
-    # 1. 완전 인코딩 (Standard)
-    # ids=1%2C2 / fields=%5B...%5D
-    parts_encoded = [f"{k}={urllib.parse.quote(str(params[k]))}" for k in sorted_keys]
-    query_encoded = "&".join(parts_encoded)
-    
-    # 2. 쉼표/콜론 유지 (Safe Comma)
-    # ids=1,2 / fields=%5B...%5D
-    parts_safe = [f"{k}={urllib.parse.quote(str(params[k]), safe=',:')}" for k in sorted_keys]
-    query_safe = "&".join(parts_safe)
-    
-    # --- 전략 4가지 실행 ---
-    
-    # 전략 A: 전송(Encoded) + 서명(Encoded) -> 가장 표준
-    full_url = f"{BASE_URL}{path}?{query_encoded}"
-    res = send_http_request(method, full_url, f"{path}?{query_encoded}", customer_id)
-    if res and res != "403_FAIL": return res
-
-    # 전략 B: 전송(Encoded) + 서명(Safe/Decoded) -> 네이버가 좋아할 확률 90%
-    # 전송은 표준으로 하되, 서명은 '원본'을 기준으로 함
-    res = send_http_request(method, full_url, f"{path}?{query_safe}", customer_id)
-    if res and res != "403_FAIL": 
-        # log("   🎉 전략 B(Decoded Signature) 성공!")
-        return res
+        # params 인자 사용 안 함 (이미 URL에 포함됨)
+        response = requests.request(method, full_url, headers=headers, timeout=60)
         
-    # 전략 C: 전송(Safe) + 서명(Safe) -> 구버전 호환
-    full_url_safe = f"{BASE_URL}{path}?{query_safe}"
-    res = send_http_request(method, full_url_safe, f"{path}?{query_safe}", customer_id)
-    if res and res != "403_FAIL": 
-        # log("   🎉 전략 C(Safe Comma) 성공!")
-        return res
-
-    # 전략 D: 전송(Safe) + 서명(Encoded) -> 희박하지만 가능성 있음
-    res = send_http_request(method, full_url_safe, f"{path}?{query_encoded}", customer_id)
-    if res and res != "403_FAIL": return res
-
-    log("⛔ 4가지 전략 모두 403 오류. API 키 권한이나 계정 상태를 확인해야 합니다.")
-    return None
+        if response.status_code == 200:
+            return response.json()
+            
+        if response.status_code == 429: # Too Many Requests
+            time.sleep(1)
+            return request_api(method, path, customer_id, params_dict)
+            
+        if response.status_code == 403:
+            log(f"⛔ 권한 오류 (403): {response.text}")
+            # 디버깅: 실패 시 우리가 보낸 주소 확인
+            # log(f"   [Debug] URI: {api_uri}")
+            return None
+            
+        response.raise_for_status()
+        
+    except Exception as e:
+        log(f"⚠️ 요청 실패: {str(e)}")
+        return None
 
 # -------------------------
 # 3. 데이터 조회 로직
 # -------------------------
 def get_engine() -> Engine:
     if not DB_URL:
+        log("⚠️ DB_URL 없음: 메모리 DB 사용")
         return create_engine("sqlite:///:memory:", future=True)
     return create_engine(DB_URL, pool_pre_ping=True, future=True)
 
@@ -166,13 +147,14 @@ def init_db(engine: Engine):
         """))
 
 def get_campaigns(customer_id: str) -> List[dict]:
-    data = request_smart("GET", "/ncc/campaigns", customer_id)
+    data = request_api("GET", "/ncc/campaigns", customer_id)
     return data if isinstance(data, list) else []
 
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON (공백 제거)
+    # JSON 문자열 생성 (공백 제거: Compact JSON)
+    # 예: {"since":"2023-01-01","until":"2023-01-01"}
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -183,15 +165,15 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         
-        # 딕셔너리로 준비
+        # 딕셔너리 준비
+        # request_api 내부에서 모든 값을 %XX로 인코딩합니다. (쉼표 포함)
         params = {
             "ids": ids_str,
             "fields": fields_json,
             "timeRange": time_range_json
         }
         
-        # 4가지 전략 동시 시도
-        data = request_smart("GET", "/stats", customer_id, params=params)
+        data = request_api("GET", "/stats", customer_id, params_dict=params)
         
         if data and "data" in data:
             results.extend(data["data"])
@@ -207,6 +189,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     dt_str = target_date.strftime("%Y-%m-%d")
     log(f"📅 데이터 수집 시작: {dt_str} (Customer: {customer_id})")
     
+    # 1. 캠페인
     campaigns = get_campaigns(customer_id)
     if not campaigns:
         log("   > 캠페인 조회 실패 또는 없음")
@@ -215,6 +198,7 @@ def save_stats(engine: Engine, customer_id: str, target_date: date):
     camp_ids = [c["nccCampaignId"] for c in campaigns]
     log(f"   > 대상 캠페인: {len(camp_ids)}개")
     
+    # 2. 성과
     stats = get_stats(customer_id, camp_ids, dt_str)
     
     rows = []
