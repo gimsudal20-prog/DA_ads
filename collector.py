@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Version: FINAL_SUCCESS_v6)
+collector.py - 네이버 검색광고 수집기 (Version: FINAL_PATH_ONLY_SIGNATURE)
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: FINAL_SUCCESS_v6] ===")
-print("=== 해결책: 서명은 Raw String, 전송은 Encoded String ===")
+print("=== [VERSION: FINAL_PATH_ONLY_SIGNATURE] ===")
+print("=== 서명할 때 쿼리 스트링을 제외하고 경로만 서명합니다 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -61,7 +61,6 @@ else:
 # 2. 서명 및 요청 (핵심 수정)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
-    # uri는 반드시 '인코딩 되지 않은 순수 문자열'이어야 합니다.
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
@@ -71,45 +70,38 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
     path = "/stats"
     timestamp = str(int(time.time() * 1000))
     
-    # 1. 파라미터 값 준비 (JSON 공백 제거 & 키 정렬)
-    # sort_keys=True로 순서를 고정하여 서명 불일치 방지
-    fields_val = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'), sort_keys=True)
-    time_val = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'), sort_keys=True)
+    # 1. 파라미터 값 준비 (JSON 공백 제거)
+    fields_val = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
+    time_val = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
-    # ---------------------------------------------------------
-    # [핵심] 서명용 vs 전송용 분리
-    # ---------------------------------------------------------
-    
-    # A. 서명용 URI (Raw String): 특수문자를 인코딩하지 않음!
-    # 예: /stats?fields=["impCnt"]&ids=1,2&timeRange={...}
-    # 파라미터 순서: fields -> ids -> timeRange (알파벳순)
-    raw_query = f"fields={fields_val}&ids={ids_str}&timeRange={time_val}"
-    uri_to_sign = f"{path}?{raw_query}"
-    
-    # B. 전송용 URL (Encoded String): 특수문자를 %XX로 변환!
-    # 예: /stats?fields=%5B%22impCnt%22%5D...
-    # urllib.parse.quote() 사용
+    # 2. 전송용 URL 생성 (표준 인코딩)
     enc_ids = urllib.parse.quote(ids_str)
     enc_fields = urllib.parse.quote(fields_val)
     enc_time = urllib.parse.quote(time_val)
     
+    # URL에는 파라미터를 붙임
     req_query = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
     full_url = f"{BASE_URL}{path}?{req_query}"
     
     # ---------------------------------------------------------
+    # [핵심] 서명할 때는 파라미터를 뺍니다!
+    # ---------------------------------------------------------
+    # 기존: uri_to_sign = "/stats?fields=..."
+    # 변경: uri_to_sign = "/stats"
+    uri_to_sign = path 
     
-    # 2. 서명 생성 (순수 문자열 사용)
     signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
     
     headers = {
-        "Content-Type": "application/json; charset=UTF-8",
+        # GET 요청에는 Content-Type이 필요 없는 경우가 많아 제거해봅니다 (혹시 몰라 주석처리)
+        # "Content-Type": "application/json; charset=UTF-8",
         "X-Timestamp": timestamp,
         "X-API-KEY": API_KEY,
         "X-Customer": str(customer_id),
         "X-Signature": signature,
     }
     
-    # 3. 전송 (인코딩된 URL 사용)
+    # SSL 설정
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -122,15 +114,54 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
                 return json.loads(res.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         if e.code == 403:
-            # 실패 시 상세 로그 출력
-            log(f"🔥 HTTP Error 403: {e.read().decode('utf-8')}")
-            # log(f"   [Signed] {uri_to_sign}")
-            # log(f"   [Sent]   {full_url}")
+            # 만약 "경로만 서명" 방식이 틀렸다면, 
+            # 마지막 보루로 "전체 URL 서명"을 하되 헤더만 바꿔서 재시도
+            log(f"🔥 Path Only 서명 실패 (403): {e.read().decode('utf-8')}")
+            return request_stats_retry_full_sign(customer_id, ids_str, fields_val, time_val)
         elif e.code == 429:
              time.sleep(1)
              return request_stats_manual(customer_id, ids_str, date_str)
         else:
-             pass
+             log(f"⚠️ HTTP Error {e.code}: {e.read().decode('utf-8')}")
+    except Exception as e:
+        log(f"⚠️ 오류: {e}")
+    return None
+
+def request_stats_retry_full_sign(customer_id, ids_str, fields_val, time_val):
+    # Fallback: 전체 URL 서명 (하지만 이번엔 쿼리 순서를 바꾸지 않고 그대로)
+    method = "GET"
+    path = "/stats"
+    timestamp = str(int(time.time() * 1000))
+    
+    enc_ids = urllib.parse.quote(ids_str)
+    enc_fields = urllib.parse.quote(fields_val)
+    enc_time = urllib.parse.quote(time_val)
+    
+    # 전송용 & 서명용 동일하게 사용
+    query_string = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
+    uri_to_sign = f"{path}?{query_string}"
+    
+    signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
+    
+    headers = {
+        "X-Timestamp": timestamp,
+        "X-API-KEY": API_KEY,
+        "X-Customer": str(customer_id),
+        "X-Signature": signature,
+    }
+    
+    full_url = f"{BASE_URL}{uri_to_sign}"
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(full_url, headers=headers, method=method)
+    
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=60) as res:
+            if res.status == 200:
+                return json.loads(res.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        log(f"🔥 [재시도 실패] HTTP Error {e.code}: {e.read().decode('utf-8')}")
     except Exception:
         pass
     return None
@@ -139,11 +170,9 @@ def request_campaigns(customer_id: str) -> List[dict]:
     method = "GET"
     uri = "/ncc/campaigns"
     timestamp = str(int(time.time() * 1000))
-    # 캠페인 목록은 파라미터가 없어서 Raw/Encoded 구분이 필요 없음
     signature = generate_signature(timestamp, method, uri, API_SECRET)
     
     headers = {
-        "Content-Type": "application/json; charset=UTF-8",
         "X-Timestamp": timestamp,
         "X-API-KEY": API_KEY,
         "X-Customer": str(customer_id),
@@ -169,7 +198,6 @@ def request_campaigns(customer_id: str) -> List[dict]:
 # -------------------------
 def get_engine() -> Engine:
     if not DB_URL:
-        log("⚠️ DB_URL 없음: 메모리 DB 사용")
         return create_engine("sqlite:///:memory:", future=True)
     return create_engine(DB_URL, pool_pre_ping=True, future=True)
 
