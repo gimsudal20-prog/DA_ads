@@ -1,7 +1,7 @@
-name: Backfill Data (Manual)
+name: Manual Backfill (Jan-Feb)
 
 on:
-  workflow_dispatch: # 수동으로 버튼 눌러서 실행
+  workflow_dispatch: # 수동 실행 버튼
 
 jobs:
   run-backfill:
@@ -11,10 +11,10 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      CUSTOMER_ID: "1346816" # 본인 ID 확인!
+      CUSTOMER_ID: "1346816" # 본인 ID 확인
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,26 +24,27 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install requests python-dotenv sqlalchemy psycopg2-binary
 
-      - name: Run Backfill Loop (Jan 1 - Feb 14)
+      - name: Run Backfill Loop (Python)
+        shell: python
         run: |
-          # 시작일과 종료일 설정
-          start_date="2026-01-01"
-          end_date="2026-02-14"
+          import subprocess
+          import time
+          from datetime import date, timedelta
 
-          current="$start_date"
-          while [ "$current" != $(date -d "$end_date + 1 day" +%F) ]; do
-            echo "-----------------------------------"
-            echo "🚀 수집 시작: $current"
-            python collector.py --date "$current"
-            
-            # 네이버 서버 부하 방지를 위해 3초 쉬기
-            sleep 3
-            
-            # 다음 날짜로 이동
-            current=$(date -d "$current + 1 day" +%F)
-          done
-          #test
+          # 시작일과 종료일 설정 (여기만 고치면 됩니다)
+          start_date = date(2026, 1, 1)
+          end_date = date(2026, 2, 14)
+
+          current = start_date
+          while current <= end_date:
+              d_str = current.strftime("%Y-%m-%d")
+              print(f"🚀 [수집 시작] 날짜: {d_str}")
+              
+              # collector.py 실행
+              subprocess.run(["python", "collector.py", "--date", d_str])
+              
+              # 하루 증가
+              current += timedelta(days=1)
+              time.sleep(1) # 서버 보호를 위해 1초 휴식
