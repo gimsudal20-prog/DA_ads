@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v8.1: 필터 롤백 + Merge 오류 수정 + 속도 유지)
+app.py - 네이버 검색광고 통합 대시보드 (v8.2: NameError 수정 + 중복 제거 + 최적화)
 """
 
 import os
@@ -52,6 +52,69 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_XLSX = os.environ.get("ACCOUNTS_XLSX", os.path.join(APP_DIR, "accounts.xlsx"))
 
 # -----------------------------
+# Helpers: Common (Moved to Top)
+# -----------------------------
+def render_live_clock(tz: str = "Asia/Seoul"):
+    components.html(f"""<div style='text-align:right; font-size:12px; color:#666;'><span id='clock'></span></div><script>setInterval(()=>document.getElementById('clock').innerText=new Date().toLocaleString('ko-KR',{{timeZone:'{tz}'}}),1000)</script>""", height=30)
+
+# [수정] 변수명 통일 (output)
+def df_to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name=sheet_name[:31])
+    return output.getvalue()
+
+def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str = "data", key_prefix: str = "") -> None:
+    if df is None or df.empty: return
+    c1, c2 = st.columns([1, 8])
+    with c1:
+        st.download_button(
+            "XLSX", 
+            data=df_to_xlsx_bytes(df, sheet_name), 
+            file_name=f"{filename_base}.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_xlsx", 
+            use_container_width=True
+        )
+    with c2: st.caption("다운로드")
+
+def format_currency(val):
+    try: return f"{int(float(val)):,}원"
+    except: return "0원"
+
+def format_roas(val):
+    try: return "-" if pd.isna(val) else f"{float(val):.0f}%"
+    except: return "-"
+
+def add_rates(g):
+    g = g.copy()
+    g["ctr"] = (g["clk"] / g["imp"].replace({0: pd.NA})) * 100
+    g["cpc"] = g["cost"] / g["clk"].replace({0: pd.NA})
+    g["cpa"] = g["cost"] / g["conv"].replace({0: pd.NA})
+    if "sales" not in g.columns: g["sales"] = 0
+    g["roas"] = (g["sales"] / g["cost"].replace({0: pd.NA})) * 100
+    return g
+
+def calculate_delta(curr, prev):
+    if prev == 0: return None, "off"
+    diff = curr - prev
+    return f"{diff:+,.0f}", "normal"
+
+def campaign_tp_to_label(tp):
+    map_ = {"web": "파워링크", "shop": "쇼핑검색", "place": "플레이스", "brand": "브랜드", "content": "파워콘텐츠"}
+    tp = str(tp).lower()
+    for k, v in map_.items():
+        if k in tp: return v
+    return tp
+
+def get_campaign_type_options(dim):
+    if dim.empty: return []
+    raw = dim.get("campaign_type_label", pd.Series([], dtype=str))
+    present = set([x.strip() for x in raw.dropna().astype(str).tolist() if x and "기타" not in x])
+    order = ["파워링크", "쇼핑검색", "파워콘텐츠", "플레이스", "브랜드검색"]
+    return [x for x in order if x in present] + sorted([x for x in present if x not in order])
+
+# -----------------------------
 # Database Connection
 # -----------------------------
 def get_database_url() -> str:
@@ -73,7 +136,7 @@ def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, future=True)
 
 # -----------------------------
-# Helpers: DB & Data
+# Data Loaders (Optimized)
 # -----------------------------
 def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     with engine.connect() as conn:
@@ -96,10 +159,6 @@ def get_table_columns(engine, table: str) -> set:
         return set([c["name"].lower() for c in cols])
     except: return set()
 
-# -----------------------------
-# Optimized Data Loaders (SQL Grouping)
-# -----------------------------
-
 # [최적화 1] 차트용 일별 데이터
 @st.cache_data(ttl=600, show_spinner=False)
 def get_trend_data(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]]) -> pd.DataFrame:
@@ -107,7 +166,6 @@ def get_trend_data(_engine, table: str, d1: date, d2: date, ids: Optional[List[i
     cols = get_table_columns(_engine, table)
     sales_col = "sales" if "sales" in cols else "0"
     
-    # DB에서 날짜별로 그룹핑
     sql = f"""
         SELECT dt, SUM(cost) as cost, SUM({sales_col}) as sales, 
                SUM(imp) as imp, SUM(clk) as clk, SUM(conv) as conv
@@ -120,14 +178,13 @@ def get_trend_data(_engine, table: str, d1: date, d2: date, ids: Optional[List[i
     
     return sql_read(_engine, sql, {"d1":str(d1), "d2":str(d2)})
 
-# [최적화 2] 합계 데이터 (테이블용) - 키워드/소재 탭 속도 개선 핵심
+# [최적화 2] 합계 데이터 (테이블용)
 @st.cache_data(ttl=600, show_spinner=False)
 def get_aggregated_stats(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]], id_col: str) -> pd.DataFrame:
     if not table_exists(_engine, table): return pd.DataFrame()
     cols = get_table_columns(_engine, table)
     sales_col = "sales" if "sales" in cols else "0"
     
-    # DB에서 ID별로 합쳐서 가져옴
     sql = f"""
         SELECT customer_id, {id_col}, 
                SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
@@ -141,7 +198,7 @@ def get_aggregated_stats(_engine, table: str, d1: date, d2: date, ids: Optional[
     
     return sql_read(_engine, sql, {"d1":str(d1), "d2":str(d2)})
 
-# [기존 로직 유지] 캠페인은 데이터가 적으므로 전체 로드 (상세 분석용)
+# [기존 로직 유지] 캠페인은 데이터가 적으므로 전체 로드
 @st.cache_data(ttl=600, show_spinner=False)
 def load_fact_raw(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]]) -> pd.DataFrame:
     if not table_exists(_engine, table): return pd.DataFrame()
@@ -196,59 +253,11 @@ def get_recent_avg_cost(_engine, d1: date, d2: date) -> pd.DataFrame:
     return tmp[["customer_id", "avg_cost"]]
 
 # -----------------------------
-# Helpers: Common
+# Filters
 # -----------------------------
-def render_live_clock(tz: str = "Asia/Seoul"):
-    components.html(f"""<div style='text-align:right; font-size:12px; color:#666;'><span id='clock'></span></div><script>setInterval(()=>document.getElementById('clock').innerText=new Date().toLocaleString('ko-KR',{{timeZone:'{tz}'}}),1000)</script>""", height=30)
-
-def df_to_xlsx_bytes(df, sheet="data"):
-    output = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w: df.to_excel(w, index=False, sheet_name=sheet[:31])
-    return out.getvalue()
-
-def render_download_compact(df, fname):
-    if df is None or df.empty: return
-    c1, c2 = st.columns([1,8])
-    with c1: st.download_button("XLSX", df_to_xlsx_bytes(df), f"{fname}.xlsx", key=f"dl_{fname}")
-    with c2: st.caption("다운로드")
-
-def format_currency(val):
-    try: return f"{int(float(val)):,}원"
-    except: return "0원"
-
-def format_roas(val):
-    try: return "-" if pd.isna(val) else f"{float(val):.0f}%"
-    except: return "-"
-
-def add_rates(g):
-    g = g.copy()
-    g["ctr"] = (g["clk"] / g["imp"].replace({0: pd.NA})) * 100
-    g["cpc"] = g["cost"] / g["clk"].replace({0: pd.NA})
-    g["cpa"] = g["cost"] / g["conv"].replace({0: pd.NA})
-    if "sales" not in g.columns: g["sales"] = 0
-    g["roas"] = (g["sales"] / g["cost"].replace({0: pd.NA})) * 100
-    return g
-
-def calculate_delta(curr, prev):
-    if prev == 0: return None, "off"
-    diff = curr - prev
-    return f"{diff:+,.0f}", "normal"
-
-def campaign_tp_to_label(tp):
-    map_ = {"web": "파워링크", "shop": "쇼핑검색", "place": "플레이스", "brand": "브랜드", "content": "파워콘텐츠"}
-    tp = str(tp).lower()
-    for k, v in map_.items():
-        if k in tp: return v
-    return tp
-
-def get_campaign_type_options(dim):
-    if dim.empty: return []
-    return sorted(list(set(dim["campaign_type_label"].dropna().unique())))
-
 def apply_type_filter(df, dim_campaign, type_sel):
     if df.empty or not type_sel: return df
     
-    # [Merge 오류 방지] 형변환
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("int64")
     dim_campaign["customer_id"] = pd.to_numeric(dim_campaign["customer_id"], errors="coerce").astype("int64")
     
@@ -262,7 +271,6 @@ def apply_type_filter_kw_ad(_engine, df, dim_campaign, type_sel, level="keyword"
     dim_grp = sql_read(_engine, "SELECT customer_id, adgroup_id, campaign_id FROM dim_adgroup")
     if dim_grp.empty: return df
     
-    # [Merge 오류 방지] 형변환
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("int64")
     dim_grp["customer_id"] = pd.to_numeric(dim_grp["customer_id"], errors="coerce").astype("int64")
     dim_campaign["customer_id"] = pd.to_numeric(dim_campaign["customer_id"], errors="coerce").astype("int64")
@@ -304,7 +312,6 @@ def sidebar_filters(meta, type_opts):
         elif mgr_sel: sel_ids = filtered_meta["customer_id"].tolist()
         
     with st.sidebar.expander("기간", expanded=True):
-        # [기본값: 어제] -> 초기 로딩 속도 최적화
         p = st.selectbox("기간", ["오늘", "어제", "최근 7일", "최근 30일", "직접 선택"], index=1)
         today = date.today()
         if p=="오늘": s=e=today
@@ -333,7 +340,6 @@ def page_budget(meta, engine, f):
     biz = get_latest_bizmoney(engine)
     yst_cost = get_trend_data(engine, "fact_campaign_daily", date.today()-timedelta(days=1), date.today()-timedelta(days=1), None)
     if not yst_cost.empty:
-        # yst_cost는 날짜별 sum이므로 customer_id별 sum을 구하려면 aggregated stats 필요
         yst_df = sql_read(engine, "SELECT customer_id, SUM(cost) as y_cost FROM fact_campaign_daily WHERE dt = :d GROUP BY customer_id", {"d":str(date.today()-timedelta(days=1))})
         yst_df["customer_id"] = pd.to_numeric(yst_df["customer_id"], errors="coerce").fillna(0).astype("int64")
     else: yst_df = pd.DataFrame()
@@ -373,7 +379,6 @@ def page_budget(meta, engine, f):
     st.divider()
     st.markdown(f"### 📅 월 예산 관리 ({f['end'].month}월)")
     
-    # [오류 수정] 숫자 포맷팅 안전하게 변경
     view["monthly_budget"] = view["monthly_budget"].fillna(0).astype(int)
     view["current_month_cost"] = view["current_month_cost"].fillna(0).astype(int)
     view["usage_pct"] = (view["current_month_cost"] / view["monthly_budget"].replace(0, 1) * 100)
@@ -390,7 +395,6 @@ def page_budget(meta, engine, f):
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        # [오류 수정] format="%d" 사용
         edited = st.data_editor(
             view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost", "usage_pct", "status_icon"]],
             use_container_width=True, hide_index=True,
@@ -428,16 +432,16 @@ def page_perf_campaign(meta, engine, f, dim_camp, type_sel):
     st.markdown("## 🚀 성과 (캠페인)")
     ids = f["ids"]
     
-    # [최적화] 차트용 일별 데이터
-    trend_df = get_trend_data(engine, "fact_campaign_daily", f["start"], f["end"], ids)
+    # [수정 2] 대시보드 내부 필터
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", st.session_state.get("type_opts", []), placeholder="유형 선택") if 'type_opts' in st.session_state else []
     
-    # [최적화] 테이블용: 합계 데이터 로드 후 필터 적용
+    trend_df = get_trend_data(engine, "fact_campaign_daily", f["start"], f["end"], ids)
     agg_df = load_fact_raw(engine, "fact_campaign_daily", f["start"], f["end"], ids)
     agg_df = apply_type_filter(agg_df, dim_camp, type_sel)
     
     if agg_df.empty: st.warning("데이터 없음"); return
     
-    # Metrics
     sums = agg_df[["cost","sales","conv","imp","clk"]].sum()
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("광고비", format_currency(sums["cost"]))
@@ -459,8 +463,6 @@ def page_perf_campaign(meta, engine, f, dim_camp, type_sel):
         
     with t2:
         g = agg_df.groupby(["customer_id","campaign_id"], as_index=False)[["imp","clk","cost","conv","sales"]].sum()
-        
-        # [ValueError Fix] Merge 전 타입 강제 변환
         g["customer_id"] = g["customer_id"].astype("int64")
         meta["customer_id"] = meta["customer_id"].astype("int64")
         dim_camp["customer_id"] = dim_camp["customer_id"].astype("int64")
@@ -471,7 +473,6 @@ def page_perf_campaign(meta, engine, f, dim_camp, type_sel):
         show = g[["account_name", "campaign_name", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]].copy()
         show.rename(columns={"account_name":"업체명", "campaign_name":"캠페인", "imp":"노출", "clk":"클릭", "ctr":"CTR", "cpc":"CPC", "cost":"광고비", "conv":"전환", "cpa":"CPA", "sales":"매출", "roas":"ROAS"}, inplace=True)
         
-        # 포맷팅
         show["광고비"] = show["광고비"].apply(format_currency)
         show["매출"] = show["매출"].apply(format_currency)
         show["CPC"] = show["CPC"].apply(format_currency)
@@ -488,13 +489,15 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_sel):
     st.markdown("## 🔑 성과 (키워드)")
     ids = f["ids"]
     
-    # [최적화 3] get_aggregated_stats 사용 -> 속도 개선의 핵심
+    # [수정 2] 대시보드 내부 필터
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", st.session_state.get("type_opts", []), placeholder="유형 선택") if 'type_opts' in st.session_state else []
+
     df = get_aggregated_stats(engine, "fact_keyword_daily", f["start"], f["end"], ids, "keyword_id")
     df = apply_type_filter_kw_ad(engine, df, dim_camp, type_sel, "keyword")
     
     if df.empty: st.warning("데이터 없음"); return
     
-    # 키워드명 매핑
     kw_ids = tuple(df["keyword_id"].unique())
     if kw_ids:
         if len(kw_ids)==1: clause = f"= '{kw_ids[0]}'"
@@ -502,14 +505,12 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_sel):
         dim_kw = sql_read(engine, f"SELECT keyword_id, keyword FROM dim_keyword WHERE keyword_id {clause}")
         df = df.merge(dim_kw, on="keyword_id", how="left")
     
-    # [ValueError Fix]
     df["customer_id"] = df["customer_id"].astype("int64")
     meta["customer_id"] = meta["customer_id"].astype("int64")
     
     df = add_rates(df)
     df = df.merge(meta[["customer_id","account_name"]], on="customer_id")
     
-    # [복구] Top 10 랭킹 (3단 분리)
     st.subheader("🏆 키워드 Top 10 랭킹")
     top_cost = df.sort_values("cost", ascending=False).head(10)
     top_clk = df.sort_values("clk", ascending=False).head(10)
@@ -536,13 +537,11 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_sel):
 
     st.divider()
     
-    # 전체 리스트
     st.subheader("📋 전체 키워드 리스트")
     show = df.sort_values("cost", ascending=False).head(1000)
     show = show[["account_name", "keyword", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]].copy()
     show.rename(columns={"account_name":"업체명", "keyword":"키워드", "imp":"노출", "clk":"클릭", "ctr":"CTR", "cpc":"CPC", "cost":"광고비", "conv":"전환", "cpa":"CPA", "sales":"매출", "roas":"ROAS"}, inplace=True)
     
-    # 포맷팅
     show["광고비"] = show["광고비"].apply(format_currency)
     show["매출"] = show["매출"].apply(format_currency)
     show["CPC"] = show["CPC"].apply(format_currency)
@@ -552,13 +551,17 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_sel):
     for c in ["노출", "클릭", "전환"]: show[c] = show[c].apply(lambda x: f"{int(x):,}")
     
     st.dataframe(show, use_container_width=True, hide_index=True)
+    render_download_compact(show, "keyword_report")
 
 
 def page_perf_ad(meta, engine, f, dim_camp, type_sel):
     st.markdown("## 🖼️ 성과 (소재)")
     ids = f["ids"]
     
-    # [최적화 3] get_aggregated_stats 사용
+    # [수정 2] 대시보드 내부 필터
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", st.session_state.get("type_opts", []), placeholder="유형 선택") if 'type_opts' in st.session_state else []
+
     df = get_aggregated_stats(engine, "fact_ad_daily", f["start"], f["end"], ids, "ad_id")
     df = apply_type_filter_kw_ad(engine, df, dim_camp, type_sel, "ad")
     
@@ -573,7 +576,6 @@ def page_perf_ad(meta, engine, f, dim_camp, type_sel):
         dim_ad = sql_read(engine, f"SELECT ad_id, {name_col} as ad_name FROM dim_ad WHERE ad_id {clause}")
         df = df.merge(dim_ad, on="ad_id", how="left")
 
-    # [ValueError Fix]
     df["customer_id"] = df["customer_id"].astype("int64")
     meta["customer_id"] = meta["customer_id"].astype("int64")
 
@@ -590,6 +592,7 @@ def page_perf_ad(meta, engine, f, dim_camp, type_sel):
     show["ROAS"] = show["ROAS"].apply(lambda x: f"{x:.0f}%")
     
     st.dataframe(show, use_container_width=True, hide_index=True, column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")})
+    render_download_compact(show, "ad_report")
 
 
 def page_settings(engine):
@@ -613,6 +616,8 @@ def main():
         dim_camp["campaign_type_label"] = dim_camp["campaign_tp"].apply(campaign_tp_to_label)
 
     type_opts = get_campaign_type_options(dim_camp)
+    st.session_state['type_opts'] = type_opts # 세션에 저장해두고 각 페이지에서 씀
+    
     f = sidebar_filters(meta, type_opts)
     
     page = st.sidebar.radio("메뉴", ["예산/잔액", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정"])
