@@ -1,6 +1,6 @@
- # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Version: DIAGNOSTIC_MODE_v5)
+collector.py - 네이버 검색광고 수집기 (Version: DIAGNOSTIC_MODE_v5.1)
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").s
 API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 
-# [수정] 로그에서 확인된 유효한 고객 ID를 강제로 넣었습니다.
+# [하드코딩] 로그에서 확인된 유효한 고객 ID
 TEST_CUSTOMER_ID = "1346816" 
 
 def log(msg: str):
@@ -39,8 +39,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: DIAGNOSTIC_MODE_v5] ===")
-print("=== ID 하드코딩: 환경변수 없이 진단을 수행합니다 ===")
+print("=== [VERSION: DIAGNOSTIC_MODE_v5.1] ===")
+print("=== 함수명 오류 수정 완료 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -51,7 +51,7 @@ def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def send_request(method: str, uri: str, customer_id: str) -> Any:
+def send_request(method: str, uri: str, customer_id: str) -> dict:
     timestamp = str(int(time.time() * 1000))
     signature = generate_signature(timestamp, method, uri, API_SECRET)
     
@@ -65,7 +65,7 @@ def send_request(method: str, uri: str, customer_id: str) -> Any:
     
     full_url = f"{BASE_URL}{uri}"
     
-    # SSL 인증서 무시 (Github Runner 환경 이슈 방지)
+    # SSL 인증서 무시
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -81,7 +81,8 @@ def send_request(method: str, uri: str, customer_id: str) -> Any:
     except Exception as e:
         return 999, str(e)
 
-def run_diagnostics():
+# 함수 이름을 main으로 변경했습니다!
+def main():
     customer_id = TEST_CUSTOMER_ID
     log(f"🔍 진단 시작 (Target ID: {customer_id})")
 
@@ -95,14 +96,12 @@ def run_diagnostics():
     else:
         log(f"   ❌ 실패! (code={code})")
         log(f"      Response: {body}")
-        return # 여기서 실패하면 뒤에는 볼 것도 없음
+        return
 
     # ---------------------------------------------------------
     # TEST 2: /stats (파라미터 없음)
     # ---------------------------------------------------------
     log("\n[TEST 2] 통계 API 깡통 요청 (/stats)")
-    # 파라미터 없이 호출했을 때 400 Bad Request가 뜨면 서명은 통과한 것임.
-    # 403 Forbidden이 뜨면 서명 자체가 틀린 것임.
     code, body = send_request("GET", "/stats", customer_id)
     
     if code == 400:
@@ -117,10 +116,14 @@ def run_diagnostics():
     # TEST 3: /stats (단순 파라미터)
     # ---------------------------------------------------------
     log("\n[TEST 3] 통계 API 단순 파라미터 (fields=['impCnt'])")
-    # 특수문자 [], " 가 들어간 URL을 네이버가 어떻게 받아들이는지 확인
-    fields_json = json.dumps(["impCnt"]) # ["impCnt"]
-    enc_fields = urllib.parse.quote(fields_json) # %5B%22impCnt%22%5D
     
+    # 1. JSON 생성
+    fields_json = json.dumps(["impCnt"]) 
+    
+    # 2. 인코딩 (%5B%22impCnt%22%5D)
+    enc_fields = urllib.parse.quote(fields_json) 
+    
+    # 3. URI 조립
     uri = f"/stats?fields={enc_fields}"
     
     code, body = send_request("GET", uri, customer_id)
@@ -131,6 +134,8 @@ def run_diagnostics():
         log("   ❌ 실패! (403 Forbidden -> 특수문자 서명 방식 불일치)")
         log(f"      URI: {uri}")
         log(f"      Detail: {body}")
+    else:
+        log(f"   ⚠️ 의외의 결과: code={code} / {body}")
 
 if __name__ == "__main__":
     main()
