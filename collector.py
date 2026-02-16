@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Strict Consistency Version)
+collector.py - 네이버 검색광고 수집기 (Final: Prepared Request Hook)
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import base64
 import hashlib
 import argparse
 import sys
-import urllib.parse
 import requests
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List
@@ -22,7 +21,7 @@ from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
 
 # -------------------------
-# 1. 환경변수 및 설정
+# 1. 환경변수 로딩
 # -------------------------
 def _load_env() -> str:
     load_dotenv(override=True)
@@ -52,78 +51,67 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 API 요청 (엄격한 일치)
+# 2. API 요청 로직 (Prepared Request Hook)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
 
-def request_api(method: str, path: str, customer_id: str, params_dict: dict = None) -> Any:
+def request_api(method: str, path: str, customer_id: str, params: dict = None) -> Any:
     """
-    [핵심 전략]
-    requests 라이브러리의 자동 처리를 믿지 않고,
-    우리가 직접 URL을 조립하여 '서명 대상'과 '전송 대상'을 100% 일치시킵니다.
+    [핵심 해결책]
+    requests 라이브러리가 URL을 어떻게 인코딩하든 상관없이,
+    '실제로 전송될 URL'을 미리 뽑아내서 서명합니다.
+    이러면 서명 불일치가 발생할 수 없습니다.
     """
+    url = f"{BASE_URL}{path}"
     
-    # 1. 쿼리 스트링 수동 조립
-    if params_dict:
-        # (1) 키 순서 정렬 (알파벳순)
-        sorted_keys = sorted(params_dict.keys())
-        
-        query_parts = []
-        for k in sorted_keys:
-            # (2) 값 무조건 인코딩 (쉼표, 괄호, 따옴표 등 전부 %XX로 변환)
-            val = str(params_dict[k])
-            encoded_val = urllib.parse.quote(val) 
-            query_parts.append(f"{k}={encoded_val}")
-            
-        # (3) & 로 연결
-        query_string = "&".join(query_parts)
-        api_uri = f"{path}?{query_string}"
-    else:
-        api_uri = path
-        
-    # 2. 공통 타임스탬프 생성
+    # 1. 요청 객체를 미리 만듭니다 (전송 X)
+    req = requests.Request(method, url, params=params)
+    
+    # 2. 라이브러리가 URL을 인코딩하도록 시킵니다.
+    # 이 시점에서 ids=A,B가 될지 ids=A%2CB가 될지 결정됩니다.
+    prepped = req.prepare()
+    
+    # 3. 결정된 URL 경로(쿼리 포함)를 추출합니다.
+    # 예: /stats?ids=...&fields=...
+    path_url = prepped.path_url
+    
+    # 4. 그 경로 그대로 서명합니다.
     timestamp = str(int(time.time() * 1000))
+    signature = generate_signature(timestamp, method, path_url, API_SECRET)
     
-    # 3. 서명 생성 (조립된 api_uri 그대로 사용)
-    # 예: /stats?fields=%5B...%5D&ids=1%2C2...
-    signature = generate_signature(timestamp, method, api_uri, API_SECRET)
+    # 5. 헤더를 주입합니다.
+    prepped.headers['Content-Type'] = 'application/json; charset=UTF-8'
+    prepped.headers['X-Timestamp'] = timestamp
+    prepped.headers['X-API-KEY'] = API_KEY
+    prepped.headers['X-Customer'] = str(customer_id)
+    prepped.headers['X-Signature'] = signature
     
-    headers = {
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Timestamp": timestamp,
-        "X-API-KEY": API_KEY,
-        "X-Customer": str(customer_id),
-        "X-Signature": signature,
-    }
-
-    # 4. 전송 (조립된 api_uri를 Base URL 뒤에 붙여서 그대로 전송)
-    full_url = f"{BASE_URL}{api_uri}"
-    
-    try:
-        # params 인자 사용 안 함 (이미 URL에 포함됨)
-        response = requests.request(method, full_url, headers=headers, timeout=60)
-        
-        if response.status_code == 200:
-            return response.json()
+    # 6. 준비된 요청을 전송합니다.
+    with requests.Session() as session:
+        try:
+            response = session.send(prepped, timeout=60)
             
-        if response.status_code == 429: # Too Many Requests
-            time.sleep(1)
-            return request_api(method, path, customer_id, params_dict)
+            if response.status_code == 200:
+                return response.json()
             
-        if response.status_code == 403:
-            log(f"⛔ 권한 오류 (403): {response.text}")
-            # 디버깅: 실패 시 우리가 보낸 주소 확인
-            # log(f"   [Debug] URI: {api_uri}")
+            if response.status_code == 429:
+                time.sleep(1)
+                return request_api(method, path, customer_id, params)
+                
+            if response.status_code == 403:
+                log(f"⛔ 권한 오류 (403): {response.text}")
+                # 디버깅: 실제 서명한 주소가 뭔지 로그에 남김
+                # log(f"   [Debug] Signed Path: {path_url}")
+                return None
+            
+            response.raise_for_status()
+            
+        except Exception as e:
+            log(f"⚠️ 요청 실패: {str(e)}")
             return None
-            
-        response.raise_for_status()
-        
-    except Exception as e:
-        log(f"⚠️ 요청 실패: {str(e)}")
-        return None
 
 # -------------------------
 # 3. 데이터 조회 로직
@@ -147,14 +135,14 @@ def init_db(engine: Engine):
         """))
 
 def get_campaigns(customer_id: str) -> List[dict]:
+    # 캠페인 목록 조회 (params 없음)
     data = request_api("GET", "/ncc/campaigns", customer_id)
     return data if isinstance(data, list) else []
 
 def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
     if not ids: return []
     
-    # JSON 문자열 생성 (공백 제거: Compact JSON)
-    # 예: {"since":"2023-01-01","until":"2023-01-01"}
+    # JSON 문자열 (공백 제거)
     fields_json = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_range_json = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
@@ -166,14 +154,14 @@ def get_stats(customer_id: str, ids: List[str], date_str: str) -> List[dict]:
         ids_str = ",".join(chunk)
         
         # 딕셔너리 준비
-        # request_api 내부에서 모든 값을 %XX로 인코딩합니다. (쉼표 포함)
+        # requests.Request가 알아서 인코딩할 것입니다.
         params = {
             "ids": ids_str,
             "fields": fields_json,
             "timeRange": time_range_json
         }
         
-        data = request_api("GET", "/stats", customer_id, params_dict=params)
+        data = request_api("GET", "/stats", customer_id, params=params)
         
         if data and "data" in data:
             results.extend(data["data"])
