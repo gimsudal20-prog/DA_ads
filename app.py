@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.0: 기본 기간 '어제' 설정 + UI/캐싱 최적화)
+app.py - 네이버 검색광고 통합 대시보드 (v7.1: 드롭다운 한글화 + 필터 연동 강화)
 """
 
 import os
@@ -525,11 +525,11 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
-    tmp = tmp.dropna(subset=["customer_id"]).copy()
+    tmp = tmp.dropna(subset=["customer_id"])
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
     
     if customer_ids:
-        tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])].copy()
+        tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])]
 
     g = tmp.groupby("customer_id", as_index=False)["cost"].sum()
     g["avg_cost"] = g["cost"].astype(float) / max((d2 - d1).days + 1, 1)
@@ -537,31 +537,39 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
 
 
 # --------------------
-# Sidebar
+# Sidebar (수정: 드롭다운 한글화 및 연동)
 # --------------------
 def sidebar_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
     st.sidebar.title("필터")
 
     with st.sidebar.expander("업체/담당자", expanded=True):
         q = st.text_input("업체명 검색", placeholder="예: 실리콘플러스")
+        
+        # 담당자 목록 생성
         managers = sorted([m for m in meta["manager"].fillna("").unique().tolist() if str(m).strip()])
-        manager_sel = st.multiselect("담당자", options=managers, default=[])
+        # [수정] placeholder 한글화
+        manager_sel = st.multiselect("담당자", options=managers, default=[], placeholder="담당자를 선택하세요")
 
+        # 필터링 로직 (담당자 선택 시 업체 목록 필터링)
         tmp = meta.copy()
         if q:
             tmp = tmp[tmp["account_name"].str.contains(q, case=False, na=False)]
         if manager_sel:
             tmp = tmp[tmp["manager"].isin(manager_sel)]
 
+        # 업체 목록 생성 (담당자 선택 결과 반영)
         opt = tmp[["account_name", "customer_id"]].copy()
-        opt["label"] = opt["account_name"]
-        labels = opt["label"].tolist()
-        company_sel_labels = st.multiselect("업체", options=labels, default=[])
+        # 가나다순 정렬
+        opt = opt.sort_values("account_name")
+        labels = opt["account_name"].tolist()
+        
+        # [수정] placeholder 한글화
+        company_sel_labels = st.multiselect("업체", options=labels, default=[], placeholder="업체를 선택하세요")
 
-        sel_ids = opt[opt["label"].isin(company_sel_labels)]["customer_id"].astype(int).tolist() if company_sel_labels else []
+        sel_ids = opt[opt["account_name"].isin(company_sel_labels)]["customer_id"].astype(int).tolist() if company_sel_labels else []
 
     with st.sidebar.expander("기간", expanded=True):
-        # ✅ [변경점] index=2 (최근 7일) -> index=1 (어제) 로 변경하여 기본 로딩 속도 향상
+        # [기본값 변경] index=1 ('어제')로 변경하여 초기 로딩 속도 향상
         period = st.selectbox("기간", ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"], index=1)
         today = date.today()
 
@@ -585,7 +593,8 @@ def sidebar_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
         st.caption(f"선택 기간: {start} ~ {end}")
 
     with st.sidebar.expander("광고유형", expanded=True):
-        type_sel = st.multiselect("검색광고 종류", options=type_opts, default=[])
+        # [수정] placeholder 한글화
+        type_sel = st.multiselect("검색광고 종류", options=type_opts, default=[], placeholder="유형을 선택하세요")
         st.caption("※ '기타' 유형은 자동으로 제외됩니다.")
 
     return {"q": q, "manager_sel": manager_sel, "selected_customer_ids": sel_ids, "start": start, "end": end, "type_sel": type_sel}
@@ -902,7 +911,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                     changed += 1
             if changed:
                 st.success(f"{changed}건 수정 완료.")
-                st.cache_data.clear() # 예산 업데이트시 캐시 삭제
+                st.cache_data.clear() # 예산 수정 시 캐시 초기화
                 st.rerun()
             else:
                 st.info("변경 없음.")
