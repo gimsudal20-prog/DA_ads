@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.8: 포맷 오류 수정 + 내부 필터 + SQL 그룹핑 최적화)
+app.py - 네이버 검색광고 통합 대시보드 (v8.0: UI 원상복구 + 내부필터 + 속도최적화)
 """
 
 import os
@@ -38,8 +38,6 @@ GLOBAL_UI_CSS = """
   section[data-testid="stSidebar"] { padding-top: 8px; }
   thead tr th:first-child { display:none }
   tbody th { display:none }
-  /* 드롭다운 등 위젯 간격 조정 */
-  div[data-testid="stMultiSelect"] { margin-bottom: 10px; }
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
@@ -102,16 +100,17 @@ def get_table_columns(engine, table: str) -> set:
 # Optimized Data Loaders (SQL Grouping)
 # -----------------------------
 
-# [최적화 1] 차트용 일별 데이터 (가벼움)
+# [최적화 1] 일별 데이터 (차트용)
 @st.cache_data(ttl=600, show_spinner=False)
 def get_trend_data(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]]) -> pd.DataFrame:
     if not table_exists(_engine, table): return pd.DataFrame()
     cols = get_table_columns(_engine, table)
     sales_col = "sales" if "sales" in cols else "0"
     
-    # DB에서 날짜별로 그룹핑해서 가져옴 (전송량 최소화)
+    # DB에서 날짜별로 그룹핑
     sql = f"""
-        SELECT dt, SUM(cost) as cost, SUM({sales_col}) as sales
+        SELECT dt, SUM(cost) as cost, SUM({sales_col}) as sales, 
+               SUM(imp) as imp, SUM(clk) as clk, SUM(conv) as conv
         FROM {table}
         WHERE dt BETWEEN :d1 AND :d2
     """
@@ -121,14 +120,14 @@ def get_trend_data(_engine, table: str, d1: date, d2: date, ids: Optional[List[i
     
     return sql_read(_engine, sql, {"d1":str(d1), "d2":str(d2)})
 
-# [최적화 2] 테이블용 합계 데이터 (가장 중요: 키워드/소재 탭 속도 개선의 핵심)
+# [최적화 2] 합계 데이터 (테이블용) - 키워드/소재 탭 속도 개선 핵심
 @st.cache_data(ttl=600, show_spinner=False)
 def get_aggregated_stats(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]], id_col: str) -> pd.DataFrame:
     if not table_exists(_engine, table): return pd.DataFrame()
     cols = get_table_columns(_engine, table)
     sales_col = "sales" if "sales" in cols else "0"
     
-    # DB에서 ID별로 합쳐서 가져옴 (파이썬 연산 제거)
+    # DB에서 ID별로 합쳐서 가져옴
     sql = f"""
         SELECT customer_id, {id_col}, 
                SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
@@ -140,6 +139,14 @@ def get_aggregated_stats(_engine, table: str, d1: date, d2: date, ids: Optional[
         sql += f" AND customer_id IN ({','.join(map(str, ids))})"
     sql += f" GROUP BY customer_id, {id_col}"
     
+    return sql_read(_engine, sql, {"d1":str(d1), "d2":str(d2)})
+
+# [기존 로직 유지] 캠페인은 데이터가 적으므로 전체 로드 (상세 분석용)
+@st.cache_data(ttl=600, show_spinner=False)
+def load_fact_raw(_engine, table: str, d1: date, d2: date, ids: Optional[List[int]]) -> pd.DataFrame:
+    if not table_exists(_engine, table): return pd.DataFrame()
+    sql = f"SELECT * FROM {table} WHERE dt BETWEEN :d1 AND :d2"
+    if ids: sql += f" AND customer_id IN ({','.join(map(str, ids))})"
     return sql_read(_engine, sql, {"d1":str(d1), "d2":str(d2)})
 
 @st.cache_data(ttl=3600)
@@ -189,21 +196,23 @@ def get_recent_avg_cost(_engine, d1: date, d2: date) -> pd.DataFrame:
     return tmp[["customer_id", "avg_cost"]]
 
 # -----------------------------
-# Common Helpers
+# Helpers: Common
 # -----------------------------
+def df_to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+    return output.getvalue()
+
+def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str = "data", key_prefix: str = "") -> None:
+    if df is None or df.empty: return
+    c1, c2 = st.columns([1, 8])
+    with c1:
+        st.download_button("XLSX", data=df_to_xlsx_bytes(df, sheet_name), file_name=f"{filename_base}.xlsx", key=f"{key_prefix}_xlsx", use_container_width=True)
+    with c2: st.caption("다운로드")
+
 def render_live_clock(tz: str = "Asia/Seoul"):
     components.html(f"""<div style='text-align:right; font-size:12px; color:#666;'><span id='clock'></span></div><script>setInterval(()=>document.getElementById('clock').innerText=new Date().toLocaleString('ko-KR',{{timeZone:'{tz}'}}),1000)</script>""", height=30)
-
-def df_to_xlsx_bytes(df, sheet="data"):
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w: df.to_excel(w, index=False, sheet_name=sheet[:31])
-    return out.getvalue()
-
-def render_download_compact(df, fname):
-    if df is None or df.empty: return
-    c1, c2 = st.columns([1,8])
-    with c1: st.download_button("XLSX", df_to_xlsx_bytes(df), f"{fname}.xlsx", key=f"dl_{fname}")
-    with c2: st.caption("다운로드")
 
 def format_currency(val):
     try: return f"{int(float(val)):,}원"
@@ -213,7 +222,14 @@ def format_roas(val):
     try: return "-" if pd.isna(val) else f"{float(val):.0f}%"
     except: return "-"
 
-def add_rates(g):
+def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
+    if df is None or df.empty or col not in df.columns: return df
+    out = df.copy()
+    s = pd.to_numeric(out[col], errors="coerce")
+    out[col] = s.apply(lambda x: "" if pd.isna(x) else ("0%" if float(x)==0 else f"{float(x):.1f}%"))
+    return out
+
+def add_rates(g: pd.DataFrame) -> pd.DataFrame:
     g = g.copy()
     g["ctr"] = (g["clk"] / g["imp"].replace({0: pd.NA})) * 100
     g["cpc"] = g["cost"] / g["clk"].replace({0: pd.NA})
@@ -222,10 +238,12 @@ def add_rates(g):
     g["roas"] = (g["sales"] / g["cost"].replace({0: pd.NA})) * 100
     return g
 
-def calculate_delta(curr, prev):
+def calculate_delta(curr, prev, is_percent=False, inverse=False):
     if prev == 0: return None, "off"
     diff = curr - prev
-    return f"{diff:+,.0f}", "normal"
+    val = f"{diff:+.1f}%p" if is_percent else f"{diff:+,.0f}"
+    color = "inverse" if inverse else "normal"
+    return val, color
 
 def campaign_tp_to_label(tp):
     map_ = {"web": "파워링크", "shop": "쇼핑검색", "place": "플레이스", "brand": "브랜드", "content": "파워콘텐츠"}
@@ -236,8 +254,14 @@ def campaign_tp_to_label(tp):
 
 def get_campaign_type_options(dim):
     if dim.empty: return []
-    return sorted(list(set(dim["campaign_type_label"].dropna().unique())))
+    raw = dim.get("campaign_type_label", pd.Series([], dtype=str))
+    present = set([x.strip() for x in raw.dropna().astype(str).tolist() if x and "기타" not in x])
+    order = ["파워링크", "쇼핑검색", "파워콘텐츠", "플레이스", "브랜드검색"]
+    return [x for x in order if x in present] + sorted([x for x in present if x not in order])
 
+# -----------------------------
+# Filters (Fixed)
+# -----------------------------
 def apply_type_filter(df, dim_campaign, type_sel):
     if df.empty or not type_sel: return df
     tmp = df.merge(dim_campaign[["customer_id", "campaign_id", "campaign_type_label"]], on=["customer_id", "campaign_id"], how="left")
@@ -263,14 +287,14 @@ def apply_type_filter_kw_ad(_engine, df, dim_campaign, type_sel, level="keyword"
     return tmp[tmp["campaign_type_label"].isin(type_sel)].drop(columns=["campaign_type_label"])
 
 # -----------------------------
-# Sidebar
+# Sidebar (Fixed Dropdowns)
 # -----------------------------
 def sidebar_filters(meta, type_opts):
     st.sidebar.title("필터")
     with st.sidebar.expander("업체/담당자", expanded=True):
         q = st.text_input("업체명 검색")
         managers = sorted([x for x in meta["manager"].dropna().unique() if x])
-        # 한글 Placeholder
+        # [한글화] placeholder 추가
         mgr_sel = st.multiselect("담당자", managers, placeholder="담당자 선택")
         
         filtered_meta = meta.copy()
@@ -278,7 +302,7 @@ def sidebar_filters(meta, type_opts):
         if mgr_sel: filtered_meta = filtered_meta[filtered_meta["manager"].isin(mgr_sel)]
         
         cust_opts = sorted(filtered_meta["account_name"].tolist())
-        # 한글 Placeholder
+        # [한글화] placeholder 추가
         cust_sel = st.multiselect("업체", cust_opts, placeholder="업체 선택 (복수 가능)")
         
         sel_ids = []
@@ -286,7 +310,7 @@ def sidebar_filters(meta, type_opts):
         elif mgr_sel: sel_ids = filtered_meta["customer_id"].tolist()
         
     with st.sidebar.expander("기간", expanded=True):
-        # 기본값: 어제 (Index 1) -> 속도 향상
+        # [기본값] 어제로 변경 (Index 1) -> 속도 향상
         p = st.selectbox("기간", ["오늘", "어제", "최근 7일", "최근 30일", "직접 선택"], index=1)
         today = date.today()
         if p=="오늘": s=e=today
@@ -297,7 +321,6 @@ def sidebar_filters(meta, type_opts):
             c1,c2=st.columns(2)
             s=c1.date_input("시작"); e=c2.date_input("종료")
     
-    # 사이드바에는 글로벌 광고유형 필터 제거 (요청하신 대로 대시보드 내부로 이동)
     return {"start": s, "end": e, "ids": sel_ids}
 
 # -----------------------------
@@ -314,7 +337,6 @@ def page_budget(meta, engine, f):
     yst_cost = get_trend_data(engine, "fact_campaign_daily", date.today()-timedelta(days=1), date.today()-timedelta(days=1), None)
     if not yst_cost.empty:
         # yst_cost는 날짜별 sum이므로 customer_id별 sum을 구하려면 aggregated stats 필요
-        # 예산 페이지용 간이 쿼리
         yst_df = sql_read(engine, "SELECT customer_id, SUM(cost) as y_cost FROM fact_campaign_daily WHERE dt = :d GROUP BY customer_id", {"d":str(date.today()-timedelta(days=1))})
     else: yst_df = pd.DataFrame()
 
@@ -355,59 +377,71 @@ def page_budget(meta, engine, f):
     st.divider()
     st.markdown(f"### 📅 월 예산 관리 ({f['end'].month}월)")
     
-    # [수정 1: 포맷 에러 해결] 정수형으로 강제 변환 및 포맷 문자열 수정
+    # [수정 1: 숫자 포맷 오류 해결]
     view["monthly_budget"] = view["monthly_budget"].fillna(0).astype(int)
     view["current_month_cost"] = view["current_month_cost"].fillna(0).astype(int)
     view["usage_pct"] = (view["current_month_cost"] / view["monthly_budget"].replace(0, 1) * 100)
     
-    # 상태 아이콘
     def get_status(rate, budget):
-        if budget == 0: return "⚪ 미설정"
-        if rate >= 100: return "🔴 초과"
-        if rate >= 90: return "🟡 주의"
-        return "🟢 적정"
-    view["status_icon"] = view.apply(lambda r: get_status(r["usage_pct"], r["monthly_budget"]), axis=1)
+        if budget == 0: return ("⚪ 미설정", "미설정", 3)
+        if rate >= 100: return ("🔴 초과", "초과", 0)
+        if rate >= 90: return ("🟡 주의", "주의", 1)
+        return ("🟢 적정", "적정", 2)
+    
+    tmp = view.apply(lambda r: get_status(r["usage_pct"], r["monthly_budget"]), axis=1, result_type="expand")
+    view["status_icon"], view["status_text"], view["_rank"] = tmp[0], tmp[1], tmp[2]
+    view = view.sort_values(["_rank", "usage_pct"], ascending=[True, False])
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        # [수정 1] format="%.0f" 또는 "%d"를 사용하여 에러 방지
+        # format="%d" 로 변경하여 sprintf 오류 제거
         edited = st.data_editor(
             view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost", "usage_pct", "status_icon"]],
             use_container_width=True, hide_index=True,
             column_config={
                 "customer_id": st.column_config.NumberColumn("CID", disabled=True),
                 "account_name": st.column_config.TextColumn("업체명", disabled=True),
-                "monthly_budget": st.column_config.NumberColumn("월 예산", format="%d", min_value=0, step=10000), # 콤마 제거된 정수 포맷
+                "monthly_budget": st.column_config.NumberColumn("월 예산 (원)", format="%d", min_value=0, step=10000),
                 "current_month_cost": st.column_config.NumberColumn(f"{f['end'].month}월 사용액", format="%d", disabled=True),
                 "usage_pct": st.column_config.NumberColumn("집행률", format="%.1f%%", disabled=True),
                 "status_icon": st.column_config.TextColumn("상태", disabled=True)
             }
         )
     with c2:
+        # [복구] 상태 가이드 박스 되살림
+        st.markdown(
+            """
+        <div style="padding:12px 14px; border-radius:12px; background-color:rgba(2,132,199,0.06); font-size:14px;">
+          <b>상태 가이드</b><br><br>
+          🟢 <b>적정</b> : 집행률 90% 미만<br>
+          🟡 <b>주의</b> : 집행률 90% 이상<br>
+          🔴 <b>초과</b> : 집행률 100% 이상<br>
+          ⚪ <b>미설정</b> : 월 예산 0원
+        </div>
+        """, unsafe_allow_html=True)
+        
         if st.button("💾 예산 저장", type="primary", use_container_width=True):
             with engine.begin() as conn:
                 for _, r in edited.iterrows():
                     cid, val = int(r["customer_id"]), int(r["monthly_budget"])
                     conn.execute(text("UPDATE dim_account_meta SET monthly_budget=:b, updated_at=now() WHERE customer_id=:c"), {"b":val, "c":cid})
             st.cache_data.clear()
-            st.success("저장 완료")
-            st.rerun()
+            st.success("저장 완료"); st.rerun()
 
 
 def page_perf_campaign(meta, engine, f, dim_camp, type_opts):
     st.markdown("## 🚀 성과 (캠페인)")
     ids = f["ids"]
     
-    # [수정 2: 대시보드 내부 필터]
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        type_sel = st.multiselect("광고유형 필터", type_opts, placeholder="유형 선택 (전체 보기)")
+    # [수정 2] 대시보드 내부 필터 추가
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", type_opts, placeholder="유형 선택")
     
-    # [최적화] 차트용 데이터는 일별 로딩
+    # [최적화] 차트용: 일별 데이터
     trend_df = get_trend_data(engine, "fact_campaign_daily", f["start"], f["end"], ids)
     
-    # [최적화] 테이블용 데이터는 합계 로딩 (매우 빠름)
-    agg_df = get_aggregated_stats(engine, "fact_campaign_daily", f["start"], f["end"], ids, "campaign_id")
+    # [최적화] 테이블용: 합계 데이터
+    agg_df = load_fact_raw(engine, "fact_campaign_daily", f["start"], f["end"], ids)
     agg_df = apply_type_filter(agg_df, dim_camp, type_sel)
     
     if agg_df.empty: st.warning("데이터 없음"); return
@@ -433,13 +467,14 @@ def page_perf_campaign(meta, engine, f, dim_camp, type_opts):
         else: st.info("차트 데이터 없음")
         
     with t2:
-        df = add_rates(agg_df)
-        df = df.merge(meta[["customer_id","account_name"]], on="customer_id").merge(dim_camp, on=["customer_id","campaign_id"], how="left")
+        g = agg_df.groupby(["customer_id","campaign_id"], as_index=False)[["imp","clk","cost","conv","sales"]].sum()
+        g = add_rates(g)
+        g = g.merge(meta[["customer_id","account_name"]], on="customer_id").merge(dim_camp, on=["customer_id","campaign_id"], how="left")
         
-        show = df[["account_name", "campaign_name", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]].copy()
+        show = g[["account_name", "campaign_name", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]].copy()
         show.rename(columns={"account_name":"업체명", "campaign_name":"캠페인", "imp":"노출", "clk":"클릭", "ctr":"CTR", "cpc":"CPC", "cost":"광고비", "conv":"전환", "cpa":"CPA", "sales":"매출", "roas":"ROAS"}, inplace=True)
         
-        # 포맷팅 (String 변환)
+        # 포맷팅
         show["광고비"] = show["광고비"].apply(format_currency)
         show["매출"] = show["매출"].apply(format_currency)
         show["CPC"] = show["CPC"].apply(format_currency)
@@ -456,18 +491,17 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_opts):
     st.markdown("## 🔑 성과 (키워드)")
     ids = f["ids"]
     
-    # [수정 2: 대시보드 내부 필터]
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        type_sel = st.multiselect("광고유형 필터", type_opts, placeholder="유형 선택")
+    # [수정 2] 대시보드 내부 필터
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", type_opts, placeholder="유형 선택")
 
-    # [최적화 3] load_aggregated_stats 사용 -> 속도 개선의 핵심
+    # [최적화 3] get_aggregated_stats 사용 (속도 향상 핵심)
     df = get_aggregated_stats(engine, "fact_keyword_daily", f["start"], f["end"], ids, "keyword_id")
     df = apply_type_filter_kw_ad(engine, df, dim_camp, type_sel, "keyword")
     
     if df.empty: st.warning("데이터 없음"); return
     
-    # 이름 매핑 (필요한 ID만 조회)
+    # 이름 매핑
     kw_ids = tuple(df["keyword_id"].unique())
     if kw_ids:
         if len(kw_ids)==1: clause = f"= '{kw_ids[0]}'"
@@ -478,17 +512,47 @@ def page_perf_keyword(meta, engine, f, dim_camp, type_opts):
     df = add_rates(df)
     df = df.merge(meta[["customer_id","account_name"]], on="customer_id")
     
-    st.subheader("🏆 키워드 Top 20 (광고비 기준)")
-    top = df.sort_values("cost", ascending=False).head(20)
+    # [복구] Top 10 랭킹 (3단 분리)
+    st.subheader("🏆 키워드 Top 10 랭킹")
+    top_cost = df.sort_values("cost", ascending=False).head(10)
+    top_clk = df.sort_values("clk", ascending=False).head(10)
+    top_conv = df.sort_values("conv", ascending=False).head(10)
     
-    show = top[["account_name", "keyword", "imp", "clk", "ctr", "cost", "conv", "roas"]].copy()
-    show.rename(columns={"account_name":"업체명", "keyword":"키워드", "imp":"노출", "clk":"클릭", "ctr":"CTR", "cost":"광고비", "conv":"전환", "roas":"ROAS"}, inplace=True)
+    c1, c2, c3 = st.columns(3)
+    def bg(x): return ["background-color:#f0f9ff"]*len(x)
+
+    with c1:
+        st.markdown("**💸 지출 Top**")
+        d1 = top_cost[["keyword", "cost", "roas"]].copy()
+        d1["cost"] = d1["cost"].apply(format_currency); d1["roas"] = d1["roas"].apply(lambda x: f"{x:.0f}%")
+        st.dataframe(d1.style.apply(bg, axis=1), hide_index=True)
+    with c2:
+        st.markdown("**🖱️ 클릭 Top**")
+        d2 = top_clk[["keyword", "clk", "ctr"]].copy()
+        d2["clk"] = d2["clk"].apply(lambda x: f"{int(x):,}"); d2["ctr"] = d2["ctr"].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(d2.style.apply(bg, axis=1), hide_index=True)
+    with c3:
+        st.markdown("**🎯 전환 Top**")
+        d3 = top_conv[["keyword", "conv", "cpa"]].copy()
+        d3["conv"] = d3["conv"].apply(lambda x: f"{int(x):,}"); d3["cpa"] = d3["cpa"].apply(format_currency)
+        st.dataframe(d3.style.apply(bg, axis=1), hide_index=True)
+
+    st.divider()
     
+    # 전체 리스트
+    st.subheader("📋 전체 키워드 리스트")
+    show = df.sort_values("cost", ascending=False).head(1000)
+    show = show[["account_name", "keyword", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]].copy()
+    show.rename(columns={"account_name":"업체명", "keyword":"키워드", "imp":"노출", "clk":"클릭", "ctr":"CTR", "cpc":"CPC", "cost":"광고비", "conv":"전환", "cpa":"CPA", "sales":"매출", "roas":"ROAS"}, inplace=True)
+    
+    # 포맷팅
     show["광고비"] = show["광고비"].apply(format_currency)
+    show["매출"] = show["매출"].apply(format_currency)
+    show["CPC"] = show["CPC"].apply(format_currency)
+    show["CPA"] = show["CPA"].apply(format_currency)
     show["ROAS"] = show["ROAS"].apply(lambda x: f"{x:.0f}%")
     show["CTR"] = show["CTR"].apply(lambda x: f"{x:.2f}%")
-    show["노출"] = show["노출"].apply(lambda x: f"{int(x):,}")
-    show["클릭"] = show["클릭"].apply(lambda x: f"{int(x):,}")
+    for c in ["노출", "클릭", "전환"]: show[c] = show[c].apply(lambda x: f"{int(x):,}")
     
     st.dataframe(show, use_container_width=True, hide_index=True)
 
@@ -497,12 +561,11 @@ def page_perf_ad(meta, engine, f, dim_camp, type_opts):
     st.markdown("## 🖼️ 성과 (소재)")
     ids = f["ids"]
     
-    # [수정 2: 대시보드 내부 필터]
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        type_sel = st.multiselect("광고유형 필터", type_opts, placeholder="유형 선택")
+    # [수정 2] 대시보드 내부 필터
+    c1, c2 = st.columns([1, 4])
+    with c1: type_sel = st.multiselect("광고유형", type_opts, placeholder="유형 선택")
 
-    # [최적화 3] load_aggregated_stats 사용
+    # [최적화 3] get_aggregated_stats 사용
     df = get_aggregated_stats(engine, "fact_ad_daily", f["start"], f["end"], ids, "ad_id")
     df = apply_type_filter_kw_ad(engine, df, dim_camp, type_sel, "ad")
     
@@ -524,7 +587,7 @@ def page_perf_ad(meta, engine, f, dim_camp, type_opts):
     top = df.sort_values("cost", ascending=False).head(20)
     
     show = top[["account_name", "ad_name", "cost", "roas", "conv", "clk"]].copy()
-    show.rename(columns={"account_name":"업체명", "ad_name":"소재내용", "cost":"광고비", "roas":"ROAS", "conv":"전환", "clk":"클릭"}, inplace=True)
+    show.rename(columns={"account_name":"업체명", "ad_name":"소재내용", "cost":"광고비", "roas":"ROAS", "conv":"전환수", "clk":"클릭수"}, inplace=True)
     
     show["광고비"] = show["광고비"].apply(format_currency)
     show["ROAS"] = show["ROAS"].apply(lambda x: f"{x:.0f}%")
