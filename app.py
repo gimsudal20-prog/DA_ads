@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v6.9: 원본 UI 유지 + 캐싱 최적화 적용)
+app.py - 네이버 검색광고 통합 대시보드 (v7.0: 기본 기간 '어제' 설정 + UI/캐싱 최적화)
 """
 
 import os
@@ -138,7 +138,7 @@ def get_database_url() -> str:
         db_url = db_url + f"{joiner}sslmode=require"
     return db_url
 
-# [최적화 1] DB 연결 객체 캐싱 (새로고침 시 재연결 방지)
+# [최적화 1] DB 연결 객체 캐싱
 @st.cache_resource(show_spinner=False)
 def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, future=True)
@@ -439,11 +439,11 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
     return {"meta": int(len(acc)), "dim": int(len(dim_rows))}
 
 
-# [최적화 2] 계정 메타 정보 캐싱 (1시간)
+# [최적화 2] 계정 메타 조회 캐싱 (1시간)
 @st.cache_data(ttl=3600)
 def get_meta(_engine) -> pd.DataFrame:
     df = sql_read(
-        _engine, # _engine을 사용하여 해싱 제외
+        _engine,
         """
     SELECT customer_id, account_name, manager, monthly_budget, updated_at
     FROM dim_account_meta
@@ -455,7 +455,7 @@ def get_meta(_engine) -> pd.DataFrame:
     return df
 
 
-# [최적화 3] 비즈머니 잔액 캐싱 (5분)
+# [최적화 3] 비즈머니 조회 캐싱 (5분)
 @st.cache_data(ttl=300)
 def get_latest_bizmoney(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "fact_bizmoney_daily"):
@@ -511,13 +511,13 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 # --------------------
 # 추가: 최근 N일 평균 cost
 # --------------------
-# [최적화 5] 최근 평균 비용 캐싱 (10분)
+# [최적화 5] 평균 비용 조회 캐싱 (10분)
 @st.cache_data(ttl=600)
 def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
-    # 원래 코드의 로직(load_fact 사용) 대신 직접 쿼리하여 재귀 호출 방지 및 속도 향상
+    # load_fact 대신 직접 쿼리하여 재귀 호출 방지 및 속도 향상
     sql = f"SELECT customer_id, cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2"
     tmp = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
@@ -525,11 +525,11 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
-    tmp = tmp.dropna(subset=["customer_id"])
+    tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
     
     if customer_ids:
-        tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])]
+        tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])].copy()
 
     g = tmp.groupby("customer_id", as_index=False)["cost"].sum()
     g["avg_cost"] = g["cost"].astype(float) / max((d2 - d1).days + 1, 1)
@@ -561,7 +561,8 @@ def sidebar_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
         sel_ids = opt[opt["label"].isin(company_sel_labels)]["customer_id"].astype(int).tolist() if company_sel_labels else []
 
     with st.sidebar.expander("기간", expanded=True):
-        period = st.selectbox("기간", ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"], index=2)
+        # ✅ [변경점] index=2 (최근 7일) -> index=1 (어제) 로 변경하여 기본 로딩 속도 향상
+        period = st.selectbox("기간", ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"], index=1)
         today = date.today()
 
         if period == "오늘":
@@ -600,8 +601,7 @@ def resolve_selected_ids(meta: pd.DataFrame, f: Dict) -> List[int]:
 # --------------------
 # Loaders
 # --------------------
-# [최적화 6 - 핵심] 주요 데이터 로딩 함수 캐싱 (10분)
-# _engine으로 이름 변경하여 해싱 제외
+# [최적화 6 - 핵심] 주요 팩트 데이터 로딩 캐싱 (10분)
 @st.cache_data(ttl=600, show_spinner=False)
 def load_fact(_engine, table: str, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     if not table_exists(_engine, table):
@@ -671,9 +671,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     yesterday = date.today() - timedelta(days=1)
     df_yst = pd.DataFrame()
     if table_exists(engine, "fact_campaign_daily"):
-        # 여기서도 load_fact(캐싱된 버전)을 활용하면 좋지만, 
-        # 원본 로직 유지를 위해 필요한 부분만 engine -> _engine 으로 생각하여 호출
-        # (호출 시점엔 그냥 engine 넘기면 됨)
+        # load_fact 캐싱 활용 가능 (engine -> _engine 인자 매핑은 streamlit이 알아서 처리 안함, 직접 호출시 주의)
+        # 하지만 여기선 원본 유지 + 캐시된 함수 호출을 위해 명시적으로 engine 전달
         df_yst = load_fact(engine, "fact_campaign_daily", yesterday, yesterday)
         if not df_yst.empty:
              df_yst = df_yst.groupby("customer_id", as_index=False)["cost"].sum().rename(columns={"cost": "y_cost"})
@@ -903,7 +902,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                     changed += 1
             if changed:
                 st.success(f"{changed}건 수정 완료.")
-                st.cache_data.clear() # 예산 수정 시 캐시 초기화
+                st.cache_data.clear() # 예산 업데이트시 캐시 삭제
                 st.rerun()
             else:
                 st.info("변경 없음.")
