@@ -11,7 +11,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      CUSTOMER_ID: "1346816" # 본인 ID 확인
+      CUSTOMER_ID: "1346816" # 본인 ID
 
     steps:
       - name: Checkout code
@@ -24,7 +24,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv sqlalchemy psycopg2-binary
+          python -m pip install --upgrade pip
+          # 아래 줄에 pandas와 openpyxl을 추가했습니다!
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run Backfill Loop (Python)
         shell: python
@@ -33,7 +35,7 @@ jobs:
           import time
           from datetime import date, timedelta
 
-          # 시작일과 종료일 설정 (여기만 고치면 됩니다)
+          # 시작일과 종료일 설정 (1월 1일 ~ 2월 14일)
           start_date = date(2026, 1, 1)
           end_date = date(2026, 2, 14)
 
