@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (Version: DEBUG_SHOW_ME_THE_ERROR)
+collector.py - 네이버 검색광고 수집기 (Version: FINAL_SIGNATURE_FIX)
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: DEBUG_SHOW_ME_THE_ERROR] ===")
-print("=== 이제 모든 에러 메시지가 출력됩니다 ===")
+print("=== [VERSION: FINAL_SIGNATURE_FIX] ===")
+print("=== 서명 생성 로직을 Raw String 기반으로 수정했습니다 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -58,9 +58,11 @@ else:
     log(f"🔑 Secret Loaded: Len={len(API_SECRET)}, Prefix={API_SECRET[:4]}..., Suffix=...{API_SECRET[-2:]}")
 
 # -------------------------
-# 2. 서명 및 요청
+# 2. 서명 및 요청 (핵심 수정)
 # -------------------------
 def generate_signature(timestamp: str, method: str, uri: str, secret_key: str) -> str:
+    # uri는 반드시 '인코딩 되지 않은 순수 문자열'이어야 합니다.
+    # 예: /stats?ids=1,2&fields=["impCnt"]
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
     return base64.b64encode(hash.digest()).decode("utf-8")
@@ -70,21 +72,28 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
     path = "/stats"
     timestamp = str(int(time.time() * 1000))
     
-    # 1. 파라미터 준비
+    # 1. 파라미터 값 준비 (JSON 공백 제거)
     fields_val = json.dumps(["impCnt","clkCnt","salesAmt","ccnt","convAmt"], separators=(',', ':'))
     time_val = json.dumps({"since": date_str, "until": date_str}, separators=(',', ':'))
     
-    # 2. URL 인코딩 (Standard)
+    # 2. [서명용] 쿼리 스트링 (인코딩 X, 순수 문자열)
+    # 네이버 서명은 인코딩 전의 원본 문자열을 기준으로 생성해야 함
+    # 예: fields=["impCnt"]
+    raw_query = f"fields={fields_val}&ids={ids_str}&timeRange={time_val}"
+    uri_to_sign = f"{path}?{raw_query}"
+    
+    # 3. [전송용] 쿼리 스트링 (인코딩 O, 전송용 문자열)
+    # 실제 HTTP 요청은 인코딩해서 보내야 함
+    # 예: fields=%5B%22impCnt%22%5D
     enc_ids = urllib.parse.quote(ids_str)
     enc_fields = urllib.parse.quote(fields_val)
     enc_time = urllib.parse.quote(time_val)
     
-    # 3. 쿼리 스트링 조립
-    query_string = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
-    uri_path = f"{path}?{query_string}"
+    req_query = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
+    full_url = f"{BASE_URL}{path}?{req_query}"
     
-    # 4. 서명 생성
-    signature = generate_signature(timestamp, method, uri_path, API_SECRET)
+    # 4. 서명 생성 (순수 문자열 사용)
+    signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
     
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
@@ -94,8 +103,7 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
         "X-Signature": signature,
     }
     
-    full_url = f"{BASE_URL}{uri_path}"
-    
+    # 5. 전송 (인코딩된 URL 사용)
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -107,32 +115,38 @@ def request_stats_manual(customer_id: str, ids_str: str, date_str: str) -> Any:
             if res.status == 200:
                 return json.loads(res.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        # [중요] 에러 내용을 숨기지 않고 전부 출력합니다.
         err_msg = e.read().decode('utf-8')
-        log(f"🔥 HTTP Error {e.code}: {err_msg}")
-        
-        # 403일 경우에만 재시도 로직을 타보겠습니다.
         if e.code == 403:
-             log("   -> 쉼표 유지 방식으로 재시도합니다...")
-             return request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val)
+            log(f"🔥 HTTP Error 403: {err_msg}")
+            # 디버깅: 서명에 쓴 문자열과 전송한 문자열 비교
+            # log(f"   [Signed] {uri_to_sign}")
+            # log(f"   [Sent]   {full_url}")
+            
+            # 실패 시 재시도 로직 (혹시라도 네이버가 인코딩된 걸 원할 경우를 대비)
+            return request_stats_retry_encoded_sign(customer_id, ids_str, fields_val, time_val)
+        elif e.code == 429:
+             time.sleep(1)
+             return request_stats_manual(customer_id, ids_str, date_str)
+        else:
+             log(f"⚠️ HTTP Error {e.code}: {err_msg}")
     except Exception as e:
         log(f"⚠️ 일반 오류: {e}")
     return None
 
-def request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val):
+def request_stats_retry_encoded_sign(customer_id, ids_str, fields_val, time_val):
+    # 재시도: 이번엔 인코딩된 문자열로 서명해봄 (Strategy B)
     method = "GET"
     path = "/stats"
     timestamp = str(int(time.time() * 1000))
     
-    # safe=',' 옵션 사용
-    enc_ids = urllib.parse.quote(ids_str, safe=',') 
+    enc_ids = urllib.parse.quote(ids_str)
     enc_fields = urllib.parse.quote(fields_val)
     enc_time = urllib.parse.quote(time_val)
     
-    query_string = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
-    uri_path = f"{path}?{query_string}"
+    req_query = f"fields={enc_fields}&ids={enc_ids}&timeRange={enc_time}"
+    uri_to_sign = f"{path}?{req_query}" # 인코딩된 걸로 서명
     
-    signature = generate_signature(timestamp, method, uri_path, API_SECRET)
+    signature = generate_signature(timestamp, method, uri_to_sign, API_SECRET)
     
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
@@ -142,7 +156,7 @@ def request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val):
         "X-Signature": signature,
     }
     
-    full_url = f"{BASE_URL}{uri_path}"
+    full_url = f"{BASE_URL}{path}?{req_query}"
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -153,11 +167,9 @@ def request_stats_retry_safe_comma(customer_id, ids_str, fields_val, time_val):
             if res.status == 200:
                 return json.loads(res.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        # 여기도 에러 출력
-        err_msg = e.read().decode('utf-8')
-        log(f"🔥 [재시도 실패] HTTP Error {e.code}: {err_msg}")
-    except Exception as e:
-        log(f"⚠️ [재시도 오류] {e}")
+        log(f"🔥 [재시도 실패] HTTP Error {e.code}: {e.read().decode('utf-8')}")
+    except Exception:
+        pass
     return None
 
 def request_campaigns(customer_id: str) -> List[dict]:
