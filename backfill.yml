@@ -46,3 +46,4 @@ jobs:
             # 다음 날짜로 이동
             current=$(date -d "$current + 1 day" +%F)
           done
+          #test
