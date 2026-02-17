@@ -27,10 +27,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ▼▼▼ [추가된 부분] pip 캐싱 설정 ▼▼▼
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          # 우분투 러너의 표준 pip 캐시 경로
+          path: ~/.cache/pip
+          # requirements.txt 해시값으로 키 생성 (파일 변경 시 캐시 갱신)
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      # ▲▲▲ [추가된 부분 끝] ▲▲▲
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # requirements.txt에 없는 추가 패키지가 있다면 여기서 설치 (현재는 중복이나 안전을 위해 유지)
           pip install requests python-dotenv sqlalchemy psycopg2-binary
 
       - name: Run collector (yesterday, KST)
