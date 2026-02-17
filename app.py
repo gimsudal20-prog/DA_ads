@@ -129,6 +129,20 @@ GLOBAL_UI_CSS = """
   /* Hide index in st.dataframe/st.table */
   thead tr th:first-child { display:none }
   tbody th { display:none }
+
+  /* ✅ Website-mode: hide Streamlit chrome (hamburger, toolbar, footer) */
+  #MainMenu { visibility: hidden; }
+  footer { visibility: hidden; }
+  header { visibility: hidden; }
+  [data-testid="stToolbar"] { display: none; }
+  [data-testid="stDecoration"] { display: none; }
+  [data-testid="stStatusWidget"] { display: none; }
+  [data-testid="stSidebarCollapsedControl"] { display: none; }
+  [data-testid="collapsedControl"] { display: none; }
+  [data-testid="stHeader"] { display: none; }
+
+  /* Remove extra top padding that header used to occupy */
+  .block-container { padding-top: 1.2rem; }
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
@@ -658,53 +672,37 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     """
     최근 N일 평균 소진(일평균).
-    - Postgres에서는 가능하면 SQL에서 바로 customer_id 필터 + 집계를 수행(빠름)
-    - ANY 바인딩 타입 이슈/환경차로 실패하면 자동으로 fallback(필터 없는 집계 → Pandas 필터)
+
+    ✅ 안정성 최우선(ProgrammingError 회피):
+    - customer_id 타입(TEXT/BIGINT 등) 차이로 ANY(:ids) 바인딩이 깨지는 케이스가 있어서,
+      SQL에서는 기간 집계만 수행 → pandas에서 customer_id로 필터합니다.
+    - 그래도 원천 데이터를 통째로 가져오지 않도록, SQL에서 SUM 집계까지는 수행합니다(빠름).
     """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     days = max((d2 - d1).days + 1, 1)
 
-    sql_base = """
+    sql = """
     SELECT customer_id, SUM(cost) AS total_cost
     FROM fact_campaign_daily
     WHERE dt BETWEEN :d1 AND :d2
+    GROUP BY customer_id
     """
-    params: Dict[str, object] = {"d1": str(d1), "d2": str(d2)}
-
-    use_sql_filter = False
-    dialect = (getattr(getattr(_engine, "dialect", None), "name", "") or "").lower()
-
-    if customer_ids and "postgres" in dialect:
-        cid_type = get_column_type(_engine, "fact_campaign_daily", "customer_id")
-        # customer_id가 TEXT류면 text[]로, 아니면 bigint[]로 캐스팅해서 ANY() 타입 에러를 피합니다.
-        if any(t in cid_type for t in ["text", "char", "varchar"]):
-            sql = sql_base + " AND customer_id = ANY(:ids::text[])\n"
-            params["ids"] = [str(x) for x in customer_ids]
-        else:
-            sql = sql_base + " AND customer_id = ANY(:ids::bigint[])\n"
-            params["ids"] = [int(x) for x in customer_ids]
-        sql += " GROUP BY customer_id"
-        try:
-            tmp = sql_read(_engine, sql, params)
-            use_sql_filter = True
-        except Exception:
-            use_sql_filter = False
-
-    if not use_sql_filter:
-        tmp = sql_read(_engine, sql_base + " GROUP BY customer_id", params)
+    tmp = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if tmp.empty:
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
+    # customer_id가 TEXT여도 숫자로 변환해서 표준화
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
     tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
     tmp["total_cost"] = pd.to_numeric(tmp["total_cost"], errors="coerce").fillna(0.0)
 
-    if customer_ids and not use_sql_filter:
-        tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])].copy()
+    if customer_ids:
+        ids = [int(x) for x in customer_ids]
+        tmp = tmp[tmp["customer_id"].isin(ids)].copy()
 
     tmp["avg_cost"] = tmp["total_cost"].astype(float) / float(days)
     return tmp[["customer_id", "avg_cost"]]
@@ -771,45 +769,20 @@ def resolve_selected_ids(meta: pd.DataFrame, f: Dict) -> List[int]:
     return sel_ids
 
 
-# --------------------
-# [요청 2] 대시보드 영역 "빠른 필터" (드롭다운)
-# --------------------
-def dashboard_quick_filters(meta: pd.DataFrame, type_opts: List[str], f: Dict, key_prefix: str) -> Dict:
-    """
-    사이드바 필터와 별개로, 대시보드 상단에 드롭다운 필터 제공.
-    - 선택값이 있으면 그 값으로 덮어쓰기
-    - 선택 안 하면 사이드바 선택값 유지
-    """
+def filter_meta(meta: pd.DataFrame, f: Dict) -> pd.DataFrame:
+    """사이드바 필터(q/담당자/업체 선택)를 meta에 적용한 결과를 반환."""
     if meta is None or meta.empty:
-        return {"ids": resolve_selected_ids(meta, f), "type_sel": f.get("type_sel", [])}
+        return pd.DataFrame(columns=list(meta.columns) if meta is not None else [])
+    df = meta.copy()
+    if f.get("q"):
+        df = df[df["account_name"].astype(str).str.contains(str(f["q"]), case=False, na=False)]
+    if f.get("manager_sel"):
+        df = df[df["manager"].isin(f["manager_sel"])]
+    if f.get("selected_customer_ids"):
+        df = df[df["customer_id"].isin([int(x) for x in f["selected_customer_ids"]])]
+    return df
 
-    with st.expander("⚡ 빠른 필터 (대시보드)", expanded=False):
-        c1, c2, c3 = st.columns([3, 2, 2])
 
-        managers = sorted([m for m in meta["manager"].fillna("").unique().tolist() if str(m).strip()])
-        with c2:
-            dash_mgr = st.multiselect("담당자(대시보드)", options=managers, default=[], key=f"{key_prefix}_mgr")
-
-        tmp = meta.copy()
-        if dash_mgr:
-            tmp = tmp[tmp["manager"].isin(dash_mgr)]
-
-        companies = tmp.sort_values("account_name")["account_name"].astype(str).tolist()
-        with c1:
-            dash_companies = st.multiselect("업체(대시보드)", options=companies, default=[], key=f"{key_prefix}_co")
-
-        with c3:
-            dash_types = st.multiselect("광고유형(대시보드)", options=type_opts, default=[], key=f"{key_prefix}_tp")
-
-    if dash_companies:
-        ids = meta[meta["account_name"].isin(dash_companies)]["customer_id"].astype(int).tolist()
-    elif dash_mgr:
-        ids = meta[meta["manager"].isin(dash_mgr)]["customer_id"].astype(int).tolist()
-    else:
-        ids = resolve_selected_ids(meta, f)
-
-    type_sel = dash_types if dash_types else f.get("type_sel", [])
-    return {"ids": ids, "type_sel": type_sel}
 
 
 # --------------------
@@ -933,22 +906,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
 
-    qf = dashboard_quick_filters(meta, type_opts, f, key_prefix="budget")
-    sel_ids = qf["ids"]
+    # (빠른 필터 제거) 사이드바 필터만 적용
+    df = filter_meta(meta, f)
+    sel_ids = df["customer_id"].astype(int).tolist()
 
     # ✅ 보고서 헤더 느낌(필터칩)
     render_filter_chips(f["start"], f["end"], sel_ids, f.get("manager_sel", []), f.get("q", ""))
-
-    df = meta.copy()
-    if sel_ids:
-        df = df[df["customer_id"].isin(sel_ids)]
-    else:
-        if f["manager_sel"]:
-            df = df[df["manager"].isin(f["manager_sel"])]
-        if f["q"]:
-            df = df[df["account_name"].str.contains(f["q"], case=False, na=False)]
-        if f["selected_customer_ids"]:
-            df = df[df["customer_id"].isin(f["selected_customer_ids"])]
 
     biz = get_latest_bizmoney(engine)
 
@@ -1233,9 +1196,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Dat
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     type_opts = get_campaign_type_options(dim_campaign)
-    qf = dashboard_quick_filters(meta, type_opts, f, key_prefix="camp")
-    sel_ids = qf["ids"]
-    type_sel = qf["type_sel"]
+    dfm = filter_meta(meta, f)
+    sel_ids = dfm["customer_id"].astype(int).tolist() if (dfm is not None and not dfm.empty) else []
+    type_sel = f.get("type_sel", [])
 
     fact = load_fact(engine, "fact_campaign_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
     fact = apply_type_filter_to_fact(fact, dim_campaign, type_sel)
@@ -1505,9 +1468,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     type_opts = get_campaign_type_options(dim_campaign)
-    qf = dashboard_quick_filters(meta, type_opts, f, key_prefix="kwdash")
-    sel_ids = qf["ids"]
-    type_sel = qf["type_sel"]
+    dfm = filter_meta(meta, f)
+    sel_ids = dfm["customer_id"].astype(int).tolist() if (dfm is not None and not dfm.empty) else []
+    type_sel = f.get("type_sel", [])
 
     fact = load_fact(engine, "fact_keyword_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
     fact = apply_type_filter_to_kw_ad_fact_fast(engine, fact, type_sel, level="keyword")
@@ -1646,9 +1609,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.DataFrame
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     type_opts = get_campaign_type_options(dim_campaign)
-    qf = dashboard_quick_filters(meta, type_opts, f, key_prefix="addash")
-    sel_ids = qf["ids"]
-    type_sel = qf["type_sel"]
+    dfm = filter_meta(meta, f)
+    sel_ids = dfm["customer_id"].astype(int).tolist() if (dfm is not None and not dfm.empty) else []
+    type_sel = f.get("type_sel", [])
 
     fact = load_fact(engine, "fact_ad_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
     fact = apply_type_filter_to_kw_ad_fact_fast(engine, fact, type_sel, level="ad")
