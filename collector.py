@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v8.5 - 초고속 대용량 처리 엔진)
-- 개선 1: API 동시 조회 5개 -> 50개로 확대 (수집 속도 10배 향상)
-- 개선 2: Temp Table 방식 Bulk Upsert 적용 (2만개 키워드 저장 1시간 -> 10초 단축)
+collector.py - 네이버 검색광고 수집기 (v8.6 - 업체명 표시 기능 추가)
+- 개선 1: 로그에 Customer ID와 함께 '업체명'을 표시하여 가독성 향상
+- 유지: v8.5의 초고속 수집/저장 엔진 (API 50개 조회, Bulk Upsert)
 """
 
 from __future__ import annotations
@@ -41,8 +41,7 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
 SLEEP_BETWEEN_CALLS = 0.05 
-# ✅ [속도 개선 1] 5 -> 50으로 증가 (API 호출 횟수 1/10로 감소)
-IDS_CHUNK = 50 
+IDS_CHUNK = 50  # 속도 최적화 (50개씩 조회)
 
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: v8.5_SUPER_SPEED] ===")
-print("=== 대용량 계정(2만+ 키워드) 초고속 수집 ===")
+print("=== [VERSION: v8.6_NAME_DISPLAY] ===")
+print("=== 업체명 표시 + 초고속 수집 엔진 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -160,30 +159,19 @@ def ensure_tables(engine: Engine):
             )
         """))
 
-# ✅ [속도 개선 2] 임시 테이블을 이용한 초고속 일괄 저장 (Upsert)
+# 초고속 Bulk Upsert
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
-    
-    # 1. Pandas DataFrame으로 변환 및 중복 제거
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
-    
-    # 2. 임시 테이블 이름 생성
     temp_table = f"tmp_{table}_{int(time.time())}"
     
     try:
         with engine.begin() as conn:
-            # 3. 빈 임시 테이블 생성 (구조 복사)
-            # to_sql을 이용해 스키마에 맞는 빈 테이블을 먼저 만듦
             df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
-            
-            # 4. 임시 테이블에 데이터 때려넣기 (method='multi'가 핵심 속도)
             df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
             
-            # 5. 본 테이블로 Upsert (Conflict 발생 시 Update, 없으면 Insert)
             cols = ", ".join([f'"{c}"' for c in df.columns])
             pk_clause = ", ".join([f'"{c}"' for c in pk_cols])
-            
-            # 업데이트할 컬럼들 (PK 제외)
             set_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in df.columns if c not in pk_cols])
             
             if set_clause:
@@ -193,24 +181,18 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
                 
             conn.execute(text(sql))
             conn.execute(text(f'DROP TABLE {temp_table}'))
-            
     except Exception as e:
         log(f"⚠️ Upsert Error in {table}: {e}")
 
-# ✅ [속도 개선 3] Fact 테이블 초고속 저장
+# 초고속 Fact 저장
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
-    
-    # PK 식별
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last')
     
     try:
         with engine.begin() as conn:
-            # 1. 해당 날짜/계정 데이터 삭제
             conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
-            
-            # 2. 초고속 삽입 (method='multi')
             df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
     except Exception as e:
         log(f"⚠️ Fact Insert Error in {table}: {e}")
@@ -240,15 +222,12 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         for k in keys:
             if d.get(k): return str(d.get(k))
         return ""
-
     title = _pick(ad_obj, ["name", "title", "headline", "adName"]) or _pick(ad_inner, ["headline", "title", "name"])
     desc  = _pick(ad_obj, ["description", "desc", "adDescription"]) or _pick(ad_inner, ["description", "desc"])
     pc_url = _pick(ad_obj, ["pcLandingUrl", "pcFinalUrl", "landingUrl"]) or _pick(ad_inner, ["pcLandingUrl", "landingUrl"])
     m_url  = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl"]) or _pick(ad_inner, ["mobileLandingUrl"])
-
     creative_text = f"{title} | {desc}"
     if pc_url: creative_text += f" | {pc_url}"
-    
     return {
         "ad_title": title, "ad_desc": desc,
         "pc_landing_url": pc_url, "mobile_landing_url": m_url,
@@ -256,7 +235,7 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     }
 
 # -------------------------
-# 5. 성과 조회 (Stats)
+# 5. 성과 조회
 # -------------------------
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
@@ -265,27 +244,23 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
     
-    # ✅ [속도 개선] IDS_CHUNK(50) 단위로 조회
     for i in range(0, len(ids), IDS_CHUNK):
         chunk = ids[i:i+IDS_CHUNK]
         ids_str = ",".join(chunk)
         params = {"ids": ids_str, "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        
         if status == 200 and isinstance(data, dict) and "data" in data:
             out.extend(data["data"])
             sys.stdout.write("■")
         else:
             sys.stdout.write("x")
         sys.stdout.flush()
-        
     return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
     cost = int(float(r.get("salesAmt", 0) or 0))
     sales = int(float(r.get("convAmt", 0) or 0))
     roas = (sales / cost * 100) if cost > 0 else 0.0
-    
     return {
         "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
         "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
@@ -295,8 +270,9 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
 # -------------------------
 # 6. 메인 로직
 # -------------------------
-def process_account(engine: Engine, customer_id: str, target_date: date):
-    log(f"🚀 처리 시작: {customer_id} ({target_date})")
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
+    # ✅ [수정] 로그에 업체명 표시
+    log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
     camp_list = list_campaigns(customer_id)
     log(f"   > 캠페인 {len(camp_list)}개 발견")
@@ -312,7 +288,6 @@ def process_account(engine: Engine, customer_id: str, target_date: date):
             "customer_id": customer_id, "campaign_id": cid, 
             "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
         })
-        
         ags = list_adgroups(customer_id, cid)
         for g in ags:
             gid = g.get("nccAdgroupId")
@@ -321,7 +296,6 @@ def process_account(engine: Engine, customer_id: str, target_date: date):
                 "customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid,
                 "adgroup_name": g.get("name"), "status": g.get("status")
             })
-            
             if not SKIP_KEYWORD_DIM:
                 kws = list_keywords(customer_id, gid)
                 for k in kws:
@@ -332,7 +306,6 @@ def process_account(engine: Engine, customer_id: str, target_date: date):
                             "customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid,
                             "keyword": k.get("keyword"), "status": k.get("status")
                         })
-            
             if not SKIP_AD_DIM:
                 ads = list_ads(customer_id, gid)
                 for a in ads:
@@ -346,36 +319,29 @@ def process_account(engine: Engine, customer_id: str, target_date: date):
                             **fields
                         })
 
-    # DIM 저장 (초고속 배치)
     log("   > 구조 데이터(DIM) DB 저장 중...")
     upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
     upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-    
     if kw_rows:
-        log(f"     - 키워드 {len(kw_rows)}개 저장 중... (초고속)")
+        log(f"     - 키워드 {len(kw_rows)}개 저장 중...")
         upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-        
     if ad_rows:
-        log(f"     - 소재 {len(ad_rows)}개 저장 중... (초고속)")
+        log(f"     - 소재 {len(ad_rows)}개 저장 중...")
         upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
-    # FACT 수집
-    log(f"   > 성과 데이터(FACT) 수집 시작... (날짜: {target_date})")
-    
+    log(f"   > 성과 데이터(FACT) 수집 시작...")
     if target_camp_ids:
         print(f"     [캠페인 {len(target_camp_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_camp_ids, target_date)
         rows = [parse_stats(r, target_date, customer_id, "campaign_id") for r in raw]
         replace_fact_range(engine, "fact_campaign_daily", rows, customer_id, target_date)
         print(" 완료")
-
     if target_kw_ids and not SKIP_KEYWORD_STATS:
         print(f"     [키워드 {len(target_kw_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_kw_ids, target_date)
         rows = [parse_stats(r, target_date, customer_id, "keyword_id") for r in raw]
         replace_fact_range(engine, "fact_keyword_daily", rows, customer_id, target_date)
         print(" 완료")
-        
     if target_ad_ids and not SKIP_AD_STATS:
         print(f"     [소재 {len(target_ad_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_ad_ids, target_date)
@@ -397,28 +363,35 @@ def main():
     else:
         target_date = date.today() - timedelta(days=1)
         
-    accounts = []
+    accounts_info = []
     if args.customer_id:
-        accounts = [args.customer_id]
+        # 단일 타겟 실행 시, 이름은 임의로 설정 (DB조회 안함)
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
         try:
             with engine.connect() as conn:
-                result = conn.execute(text("SELECT customer_id FROM dim_account"))
-                accounts = [row[0] for row in result]
+                # ✅ [수정] 업체명(account_name)도 함께 조회
+                result = conn.execute(text("SELECT customer_id, account_name FROM dim_account"))
+                accounts_info = [{"id": row[0], "name": row[1] or "Unknown"} for row in result]
         except Exception:
             pass
-        if not accounts and CUSTOMER_ID:
-            accounts = [CUSTOMER_ID]
         
-    if not accounts:
+        # DB에 계정 없으면 환경변수 사용
+        if not accounts_info and CUSTOMER_ID:
+            accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
+
+    if not accounts_info:
         log("⚠️ 수집할 계정이 없습니다.")
         return
 
-    for cid in accounts:
+    log(f"📋 수집 대상 계정: {len(accounts_info)}개")
+
+    for acc in accounts_info:
         try:
-            process_account(engine, cid, target_date)
+            # ✅ [수정] process_account에 이름 전달
+            process_account(engine, acc["id"], acc["name"], target_date)
         except Exception as e:
-            log(f"❌ 오류 발생 ({cid}): {e}")
+            log(f"❌ 오류 발생 ({acc['name']} - {acc['id']}): {e}")
             import traceback
             traceback.print_exc()
 
