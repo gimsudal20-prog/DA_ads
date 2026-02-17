@@ -71,7 +71,7 @@ st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page
 # BUILD TAG (배포 확인용)
 # -----------------------------
 # Streamlit Cloud에서 코드가 실제로 교체/배포됐는지 한눈에 확인하려고 넣어둠.
-BUILD_TAG = "v7.0.8 (2026-02-17)"
+BUILD_TAG = "v7.0.9 (2026-02-17)"
 
 # -----------------------------
 # CONFIG / THRESHOLDS
@@ -773,36 +773,69 @@ def load_keyword_agg(_engine, d1: date, d2: date, customer_ids: Optional[List[in
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_keyword_dim_join(_engine, customer_ids: List[int], keyword_ids: List[str]) -> pd.DataFrame:
-    """Load only the dimension rows needed for the current keyword top-N."""
+    """
+    키워드 탭 속도/안정성용 DIM 조인.
+
+    Streamlit Cloud + (pandas.read_sql + SQLAlchemy expanding bind) 조합에서
+    간헐적으로 ProgrammingError(파라미터 바인딩/타입) 이슈가 발생하는 케이스가 있어,
+    1차로 IN (...) 형태의 안전한 SQL 문자열(정수/ID만)로 조인을 시도하고,
+    실패 시 expanding bind 방식으로 한 번 더 시도합니다.
+    """
     if not (table_exists(_engine, "dim_keyword") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
         return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
 
-    if not customer_ids or not keyword_ids:
+    # normalize ids
+    cids = sorted({int(x) for x in customer_ids if pd.notna(x)})
+    kwids = [str(x) for x in keyword_ids if (x is not None and str(x).strip() and str(x).strip().lower() not in ("nan", "<na>"))]
+    kwids = sorted(set(kwids))
+
+    if (not cids) or (not kwids):
         return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
 
-    sql = """
+    # 1) safer path: build IN (...) directly (values come from DB results, not from user input)
+    cid_sql = ",".join(str(x) for x in cids)
+    kw_sql = ",".join("'" + str(x).replace("'", "''") + "'" for x in kwids)
+
+    sql_inline = f"""
     SELECT
       k.customer_id,
       k.keyword_id,
       k.keyword,
       g.adgroup_name,
       c.campaign_name,
-      c.campaign_tp
+      COALESCE(NULLIF(TRIM(c.campaign_tp), ''), '') AS campaign_tp
     FROM dim_keyword k
     LEFT JOIN dim_adgroup g
       ON k.customer_id = g.customer_id AND k.adgroup_id = g.adgroup_id
     LEFT JOIN dim_campaign c
       ON g.customer_id = c.customer_id AND g.campaign_id = c.campaign_id
-    WHERE k.customer_id IN :customer_ids
-      AND k.keyword_id  IN :keyword_ids
+    WHERE k.customer_id IN ({cid_sql})
+      AND k.keyword_id IN ({kw_sql})
     """
 
-    params = {
-        "customer_ids": [int(x) for x in customer_ids],
-        "keyword_ids": [str(x) for x in keyword_ids],
-    }
+    try:
+        df = sql_read(_engine, sql_inline)
+    except Exception:
+        # 2) fallback: expanding bindparams
+        sql = """
+        SELECT
+          k.customer_id,
+          k.keyword_id,
+          k.keyword,
+          g.adgroup_name,
+          c.campaign_name,
+          COALESCE(NULLIF(TRIM(c.campaign_tp), ''), '') AS campaign_tp
+        FROM dim_keyword k
+        LEFT JOIN dim_adgroup g
+          ON k.customer_id = g.customer_id AND k.adgroup_id = g.adgroup_id
+        LEFT JOIN dim_campaign c
+          ON g.customer_id = c.customer_id AND g.campaign_id = c.campaign_id
+        WHERE k.customer_id IN :customer_ids
+          AND k.keyword_id IN :keyword_ids
+        """
+        params = {"customer_ids": cids, "keyword_ids": kwids}
+        df = sql_read(_engine, sql, params=params, expanding_keys={"customer_ids", "keyword_ids"})
 
-    df = sql_read(_engine, sql, params=params, expanding_keys={"customer_ids", "keyword_ids"})
     if df.empty:
         return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
 
@@ -813,60 +846,11 @@ def load_keyword_dim_join(_engine, customer_ids: List[int], keyword_ids: List[st
     df["keyword"] = df.get("keyword", "").fillna("").astype(str)
     df["adgroup_name"] = df.get("adgroup_name", "").fillna("").astype(str)
     df["campaign_name"] = df.get("campaign_name", "").fillna("").astype(str)
-    df["campaign_tp"] = df.get("campaign_tp", "").fillna("").astype(str)
 
     df["campaign_type_label"] = df["campaign_tp"].apply(campaign_tp_to_label)
     df.loc[df["campaign_type_label"].astype(str).str.strip() == "", "campaign_type_label"] = "기타"
 
     return df[["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"]].drop_duplicates()
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_dim_campaign(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_campaign"):
-        return pd.DataFrame()
-    df = sql_read(_engine, "SELECT customer_id, campaign_id, campaign_name, campaign_tp FROM dim_campaign")
-    if df.empty:
-        return df
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    df["campaign_type_label"] = df["campaign_tp"].apply(campaign_tp_to_label)
-    df.loc[df["campaign_type_label"].astype(str).str.strip() == "", "campaign_type_label"] = "기타"
-    return df
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_dim_keyword(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_keyword"):
-        return pd.DataFrame()
-    df = sql_read(_engine, "SELECT customer_id, keyword_id, keyword, adgroup_id FROM dim_keyword")
-    if not df.empty:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    return df
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_dim_adgroup(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_adgroup"):
-        return pd.DataFrame()
-    df = sql_read(_engine, "SELECT customer_id, adgroup_id, campaign_id, adgroup_name FROM dim_adgroup")
-    if not df.empty:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    return df
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_dim_ad(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_ad"):
-        return pd.DataFrame()
-    cols = get_table_columns(_engine, "dim_ad")
-    if "creative_text" in cols:
-        df = sql_read(_engine, "SELECT customer_id, ad_id, COALESCE(NULLIF(creative_text,''), NULLIF(ad_name,''), '') AS ad_name, adgroup_id FROM dim_ad")
-    else:
-        df = sql_read(_engine, "SELECT customer_id, ad_id, ad_name, adgroup_id FROM dim_ad")
-    if not df.empty:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    return df
-
 
 def add_rates(g: pd.DataFrame) -> pd.DataFrame:
     g = g.copy()
@@ -1402,7 +1386,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     # ✅ 핵심 속도 개선:
     # 1) 일별 원본을 통째로 불러오지 않고, DB에서 먼저 keyword 단위로 SUM 집계
     # 2) 비용 기준 상위 N(여유분 포함)만 가져와서 화면 렌더링 부담 최소화
-    pre_limit = min(max(int(top_n) * 5, 2000), 10000)
+    pre_limit = min(max(int(top_n) * 2, 1000), 4000)
     agg = load_keyword_agg(engine, f["start"], f["end"], customer_ids=sel_ids if sel_ids else None, limit=pre_limit)
 
     if agg.empty:
@@ -1412,7 +1396,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     # 필요 범위만 DIM 조인(Top-N 후보에 해당하는 키워드만)
     cids = agg["customer_id"].dropna().astype(int).unique().tolist()
     kwids = agg["keyword_id"].astype(str).unique().tolist()
-    dimj = load_keyword_dim_join(engine, cids, kwids)
+    try:
+        dimj = load_keyword_dim_join(engine, cids, kwids)
+    except Exception as e:
+        dimj = pd.DataFrame()
+        st.warning(f"키워드 DIM 조인 실패(표시는 계속 진행): {e}")
 
     g = agg.merge(dimj, on=["customer_id", "keyword_id"], how="left")
     g = g.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
