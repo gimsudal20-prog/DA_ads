@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""app.py - 네이버 검색광고 통합 대시보드 (v7.2.4)
+"""app.py - 네이버 검색광고 통합 대시보드 (v7.3.0)
 
 ✅ 이번 버전 핵심
 - NameError(page_budget/page_perf_*) 방지: 전체 함수 포함된 단일 파일
@@ -24,6 +24,15 @@ import streamlit as st
 from sqlalchemy import create_engine, inspect, text
 from dotenv import load_dotenv
 
+from sqlalchemy.engine import Engine as SAEngine
+
+# -----------------------------
+# Streamlit cache hashing helpers
+# -----------------------------
+# SQLAlchemy Engine objects are expensive/unstable to hash on Streamlit Cloud.
+# We treat the engine as a constant cache key to ensure cache hits across reruns.
+CACHE_HASH_FUNCS = {SAEngine: lambda _: "SQLALCHEMY_ENGINE"}
+
 load_dotenv()
 
 # -----------------------------
@@ -31,7 +40,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.2.4 (2026-02-17)"
+BUILD_TAG = "v7.3.0 (2026-02-17)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -144,22 +153,40 @@ def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
         conn.execute(text(sql), params or {})
 
 
-def table_exists(engine, table: str, schema: str = "public") -> bool:
-    try:
-        insp = inspect(engine)
-        return table in set(insp.get_table_names(schema=schema))
-    except Exception:
-        return False
 
-
-def get_table_columns(engine, table: str, schema: str = "public") -> set:
+@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+def _cached_table_names(_engine: SAEngine, schema: str = "public") -> set[str]:
     try:
-        insp = inspect(engine)
-        cols = insp.get_columns(table, schema=schema)
-        return {str(c.get("name", "")).lower() for c in cols}
+        return set(inspect(_engine).get_table_names(schema=schema))
     except Exception:
         return set()
 
+def table_exists(engine: SAEngine, table: str, schema: str = "public") -> bool:
+    return table in _cached_table_names(engine, schema=schema)
+
+@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+def get_table_columns(_engine: SAEngine, table: str, schema: str = "public") -> list[str]:
+    try:
+        return [c["name"] for c in inspect(_engine).get_columns(table, schema=schema)]
+    except Exception:
+        return []
+
+@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+def get_column_type(_engine: SAEngine, table: str, column: str, schema: str = "public") -> str:
+    """Return Postgres data_type string from information_schema (fallback: empty string)."""
+    sql = """
+    SELECT data_type
+    FROM information_schema.columns
+    WHERE table_schema = %(schema)s AND table_name = %(table)s AND column_name = %(column)s
+    LIMIT 1
+    """
+    try:
+        df = sql_read(_engine, sql, {"schema": schema, "table": table, "column": column})
+        if not df.empty:
+            return str(df.iloc[0]["data_type"])
+    except Exception:
+        pass
+    return ""
 
 def _sql_in_str_list(values: List[int]) -> str:
     """TEXT/BIGINT 혼재를 안전하게 처리하려고, 항상 문자열 리터럴로 IN 리스트를 만듭니다."""
@@ -367,7 +394,7 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
     return {"meta": int(len(acc))}
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_account_meta"):
         return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
@@ -405,7 +432,7 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
 # DIM loaders
 # -----------------------------
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"):
         return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
@@ -459,7 +486,8 @@ def render_data_freshness(engine) -> None:
 # Filters (main area)
 # -----------------------------
 
-def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
+def build_filters(engine: SAEngine, meta: pd.DataFrame, type_opts: List[str]) -> Dict:
+    did_apply = False
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
     default_start = default_end
@@ -535,6 +563,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
         apply_btn = st.button("적용", use_container_width=True)
 
     if apply_btn:
+        did_apply = True
         st.session_state["filters_applied"] = {
             "q": q,
             "manager": manager_sel,
@@ -565,6 +594,15 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
 
     f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
 
+    # 캐시 워밍업: 필터 적용 직후 자주 쓰는 쿼리를 한 번 돌려서
+    # 페이지 이동 시(메인→키워드→소재 등) 체감 속도를 1초 안쪽으로 끌어옵니다.
+    if did_apply:
+        try:
+            with st.spinner("캐시 준비 중... (한 번만)"):
+                warm_cache(engine, f)
+        except Exception:
+            pass
+
     return f
 
 
@@ -572,7 +610,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
 # Budget queries
 # -----------------------------
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_latest_bizmoney(_engine, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_bizmoney_daily"):
         return pd.DataFrame(columns=["customer_id", "bizmoney_balance", "last_update"])
@@ -600,7 +638,7 @@ def query_latest_bizmoney(_engine, cids: Tuple[int, ...]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_yesterday_cost(_engine, yesterday: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "y_cost"])
@@ -626,7 +664,7 @@ def query_yesterday_cost(_engine, yesterday: date, cids: Tuple[int, ...]) -> pd.
     return df
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_recent_avg_cost(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
@@ -658,7 +696,7 @@ def query_recent_avg_cost(_engine, d1: date, d2: date, cids: Tuple[int, ...]) ->
     return df[["customer_id", "avg_cost"]]
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_monthly_cost(_engine, target_date: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "current_month_cost"])
@@ -694,11 +732,57 @@ def query_monthly_cost(_engine, target_date: date, cids: Tuple[int, ...]) -> pd.
 # Perf queries (TOP N)
 # -----------------------------
 
+
+
+def warm_cache(engine: SAEngine, f: Dict) -> None:
+    """Warm common caches so page transitions feel instant."""
+    try:
+        _ = load_dim_campaign(engine)
+    except Exception:
+        pass
+
+    cids = tuple(f.get("selected_customer_ids") or [])
+    d1 = f.get("start")
+    d2 = f.get("end")
+    if d1 is None or d2 is None:
+        return
+
+    # Budget page
+    try:
+        _ = query_latest_bizmoney(engine, cids)
+        _ = query_yesterday_cost(engine, str(d2 - timedelta(days=1)), cids)
+        d2_avg = d2 - timedelta(days=1)
+        d1_avg = max(d1, d2_avg - timedelta(days=2))
+        _ = query_recent_avg_cost(engine, str(d1_avg), str(d2_avg), cids)
+        month_start = d1.replace(day=1)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        _ = query_monthly_cost(engine, str(month_start), str(month_end), cids)
+    except Exception:
+        pass
+
+    # Perf pages (TopN)
+    type_sel = f.get("type_sel") or "전체"
+    topn_kw = int(f.get("top_n_keyword") or 300)
+    topn_ad = int(f.get("top_n_ad") or 300)
+    topn_cp = int(f.get("top_n_campaign") or 300)
+    try:
+        _ = query_campaign_topn(engine, str(d1), str(d2), cids, type_sel, topn_cp)
+    except Exception:
+        pass
+    try:
+        _ = query_keyword_bundle(engine, str(d1), str(d2), cids, type_sel, topn_kw)
+    except Exception:
+        pass
+    try:
+        _ = query_ad_topn(engine, str(d1), str(d2), cids, type_sel, topn_ad)
+    except Exception:
+        pass
+
 def _fact_has_sales(_engine, fact_table: str) -> bool:
     return "sales" in get_table_columns(_engine, fact_table)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
@@ -762,7 +846,7 @@ def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_keyword_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
@@ -842,7 +926,7 @@ def query_keyword_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
@@ -1205,7 +1289,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -1521,7 +1605,7 @@ def main():
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
 
-    f = build_filters(meta, type_opts)
+    f = build_filters(engine, meta, type_opts)
 
     page = st.selectbox("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"], index=0)
 
