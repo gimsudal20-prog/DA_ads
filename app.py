@@ -129,20 +129,6 @@ GLOBAL_UI_CSS = """
   /* Hide index in st.dataframe/st.table */
   thead tr th:first-child { display:none }
   tbody th { display:none }
-
-  /* ✅ Website-mode: hide Streamlit chrome (hamburger, toolbar, footer) */
-  #MainMenu { visibility: hidden; }
-  footer { visibility: hidden; }
-  header { visibility: hidden; }
-  [data-testid="stToolbar"] { display: none; }
-  [data-testid="stDecoration"] { display: none; }
-  [data-testid="stStatusWidget"] { display: none; }
-  [data-testid="stSidebarCollapsedControl"] { display: none; }
-  [data-testid="collapsedControl"] { display: none; }
-  [data-testid="stHeader"] { display: none; }
-
-  /* Remove extra top padding that header used to occupy */
-  .block-container { padding-top: 1.2rem; }
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
