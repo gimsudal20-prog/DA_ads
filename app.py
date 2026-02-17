@@ -70,7 +70,7 @@ st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page
 # BUILD TAG (배포 확인용)
 # -----------------------------
 # Streamlit Cloud에서 코드가 실제로 교체/배포됐는지 한눈에 확인하려고 넣어둠.
-BUILD_TAG = "v7.0.5 (2026-02-17)"
+BUILD_TAG = "v7.0.6 (2026-02-17) - avgcost param fix"
 
 # -----------------------------
 # CONFIG / THRESHOLDS
@@ -558,35 +558,77 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_recent_avg_cost(_engine, d1: date, d2: date) -> pd.DataFrame:
+def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     """
-    ✅ ProgrammingError 방지 버전
-    - customer_ids를 SQL 파라미터로 넘기지 않음(ANY/IN 제거)
-    - 기간 내 customer_id별 SUM(cost)만 SQL로 집계 → pandas에서 customer_ids 필터
+    최근 평균 소진(일 평균).
+
+    ✅ ProgrammingError 방지/호환 버전
+    - 과거 코드가 customer_ids를 넘겨도 동작(시그니처 호환)
+    - 가능하면 SQL에서 customer_id 필터를 적용하되, Postgres에서 안전하게 동작하도록
+      SQLAlchemy expanding bindparam(IN)을 사용
+    - 어떤 이유로든 SQL 실행이 실패하면(권한/컬럼/파라미터 문제 등) 예산 페이지가
+      통째로 죽지 않도록 빈 DF로 안전 복귀
     """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     if d2 < d1:
-        # 역전되면 하루로 고정
         d1 = d2
 
-    sql = """
+    # 기간 일수(최소 1)
+    days = max((d2 - d1).days + 1, 1)
+
+    # customer_ids 정리(있으면 int 리스트로)
+    ids: List[int] = []
+    if customer_ids:
+        try:
+            ids = [int(x) for x in customer_ids if str(x).strip() != ""]
+        except Exception:
+            ids = []
+
+    base_sql = """
     SELECT customer_id, SUM(cost) AS sum_cost
     FROM fact_campaign_daily
     WHERE dt BETWEEN :d1 AND :d2
-    GROUP BY customer_id
     """
-    tmp = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
-    if tmp.empty:
+    params = {"d1": str(d1), "d2": str(d2)}
+
+    # 1) 가능한 경우: IN (:customer_ids...) 형태로 안전하게 필터
+    try:
+        if ids:
+            from sqlalchemy import bindparam  # local import (streamlit cache 안전)
+            sql = base_sql + " AND customer_id IN :customer_ids\nGROUP BY customer_id"
+            stmt = text(sql).bindparams(bindparam("customer_ids", expanding=True))
+            params2 = {**params, "customer_ids": ids}
+        else:
+            sql = base_sql + "\nGROUP BY customer_id"
+            stmt = text(sql)
+            params2 = params
+
+        with _engine.connect() as conn:
+            tmp = pd.read_sql(stmt, conn, params=params2)
+    except Exception:
+        # 2) 폴백: customer_ids 필터 없이 집계 후 pandas에서 필터
+        try:
+            sql = base_sql + "\nGROUP BY customer_id"
+            with _engine.connect() as conn:
+                tmp = pd.read_sql(text(sql), conn, params=params)
+            if ids and not tmp.empty and "customer_id" in tmp.columns:
+                tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
+                tmp = tmp.dropna(subset=["customer_id"]).copy()
+                tmp["customer_id"] = tmp["customer_id"].astype("int64")
+                tmp = tmp[tmp["customer_id"].isin(ids)].copy()
+        except Exception:
+            return pd.DataFrame(columns=["customer_id", "avg_cost"])
+
+    if tmp is None or tmp.empty:
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
     tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
 
-    days = max((d2 - d1).days + 1, 1)
     tmp["avg_cost"] = pd.to_numeric(tmp["sum_cost"], errors="coerce").fillna(0).astype(float) / float(days)
     return tmp[["customer_id", "avg_cost"]]
 
