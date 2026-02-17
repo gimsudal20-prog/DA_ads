@@ -241,6 +241,18 @@ def get_table_columns(engine, table: str, schema: str = "public") -> set:
     except Exception:
         return set()
 
+def get_column_type(engine, table: str, column: str, schema: str = "public") -> str:
+    """Return lowercased SQLAlchemy type string for a column (best-effort)."""
+    try:
+        insp = inspect(engine)
+        cols = insp.get_columns(table, schema=schema)
+        for c in cols:
+            if str(c.get("name", "")).lower() == str(column).lower():
+                return str(c.get("type", "")).lower()
+    except Exception:
+        return ""
+    return ""
+
 
 # --------------------
 # Utilities (Formatters)
@@ -645,14 +657,16 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 @st.cache_data(ttl=600, show_spinner=False)
 def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     """
-    최근 N일 평균 소진(일평균) - DB에서 바로 집계해서 가져옵니다 (속도 개선).
+    최근 N일 평균 소진(일평균).
+    - Postgres에서는 가능하면 SQL에서 바로 customer_id 필터 + 집계를 수행(빠름)
+    - ANY 바인딩 타입 이슈/환경차로 실패하면 자동으로 fallback(필터 없는 집계 → Pandas 필터)
     """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     days = max((d2 - d1).days + 1, 1)
 
-    sql = """
+    sql_base = """
     SELECT customer_id, SUM(cost) AS total_cost
     FROM fact_campaign_daily
     WHERE dt BETWEEN :d1 AND :d2
@@ -660,18 +674,26 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
     params: Dict[str, object] = {"d1": str(d1), "d2": str(d2)}
 
     use_sql_filter = False
-    try:
-        dialect = (getattr(getattr(_engine, "dialect", None), "name", "") or "").lower()
-        if customer_ids and "postgres" in dialect:
-            sql += " AND customer_id = ANY(:ids)\n"
+    dialect = (getattr(getattr(_engine, "dialect", None), "name", "") or "").lower()
+
+    if customer_ids and "postgres" in dialect:
+        cid_type = get_column_type(_engine, "fact_campaign_daily", "customer_id")
+        # customer_id가 TEXT류면 text[]로, 아니면 bigint[]로 캐스팅해서 ANY() 타입 에러를 피합니다.
+        if any(t in cid_type for t in ["text", "char", "varchar"]):
+            sql = sql_base + " AND customer_id = ANY(:ids::text[])\n"
+            params["ids"] = [str(x) for x in customer_ids]
+        else:
+            sql = sql_base + " AND customer_id = ANY(:ids::bigint[])\n"
             params["ids"] = [int(x) for x in customer_ids]
+        sql += " GROUP BY customer_id"
+        try:
+            tmp = sql_read(_engine, sql, params)
             use_sql_filter = True
-    except Exception:
-        use_sql_filter = False
+        except Exception:
+            use_sql_filter = False
 
-    sql += " GROUP BY customer_id"
-
-    tmp = sql_read(_engine, sql, params)
+    if not use_sql_filter:
+        tmp = sql_read(_engine, sql_base + " GROUP BY customer_id", params)
 
     if tmp.empty:
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
@@ -681,12 +703,12 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
     tmp["total_cost"] = pd.to_numeric(tmp["total_cost"], errors="coerce").fillna(0.0)
 
-    # Postgres가 아니거나 ANY 바인딩이 불가한 환경이면 Pandas에서 필터
     if customer_ids and not use_sql_filter:
         tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])].copy()
 
     tmp["avg_cost"] = tmp["total_cost"].astype(float) / float(days)
     return tmp[["customer_id", "avg_cost"]]
+
 
 # --------------------
 # Sidebar
