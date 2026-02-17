@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import altair as alt
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text, inspect, bindparam
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,6 +25,7 @@ load_dotenv()
 # -----------------------------
 # Download helpers
 # -----------------------------
+@st.cache_data(ttl=600, show_spinner=False)
 def df_to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -70,7 +71,7 @@ st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page
 # BUILD TAG (배포 확인용)
 # -----------------------------
 # Streamlit Cloud에서 코드가 실제로 교체/배포됐는지 한눈에 확인하려고 넣어둠.
-BUILD_TAG = "v7.0.6 (2026-02-17) - avgcost param fix"
+BUILD_TAG = "v7.0.8 (2026-02-17)"
 
 # -----------------------------
 # CONFIG / THRESHOLDS
@@ -165,9 +166,19 @@ def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, future=True)
 
 
-def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+def sql_read(engine, sql: str, params: Optional[dict] = None, expanding_keys: Optional[set] = None) -> pd.DataFrame:
+    """
+    SQL reader with optional expanding list params (IN :param) to avoid ProgrammingError.
+    - expanding_keys: set of param names that should be expanded.
+    """
+    params = params or {}
+    stmt = text(sql)
+    if expanding_keys:
+        for k in expanding_keys:
+            if k in params:
+                stmt = stmt.bindparams(bindparam(k, expanding=True))
     with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn, params=params or {})
+        return pd.read_sql(stmt, conn, params=params)
 
 
 def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
@@ -560,14 +571,11 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 @st.cache_data(ttl=600, show_spinner=False)
 def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
     """
-    최근 평균 소진(일 평균).
+    ✅ 초안/배포 환경 차이로 IN/ANY 파라미터가 깨지면서 ProgrammingError가 나는 케이스가 있어서,
+    **SQL에서는 리스트 바인딩/집계를 아예 하지 않고** 기간 범위의 raw row를 가져온 뒤 pandas로 평균소진을 계산합니다.
 
-    ✅ ProgrammingError 방지/호환 버전
-    - 과거 코드가 customer_ids를 넘겨도 동작(시그니처 호환)
-    - 가능하면 SQL에서 customer_id 필터를 적용하되, Postgres에서 안전하게 동작하도록
-      SQLAlchemy expanding bindparam(IN)을 사용
-    - 어떤 이유로든 SQL 실행이 실패하면(권한/컬럼/파라미터 문제 등) 예산 페이지가
-      통째로 죽지 않도록 빈 DF로 안전 복귀
+    - customer_ids는 pandas에서만 필터링
+    - cost가 text여도 pd.to_numeric(errors='coerce')로 안전 처리
     """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
@@ -575,62 +583,30 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
     if d2 < d1:
         d1 = d2
 
-    # 기간 일수(최소 1)
-    days = max((d2 - d1).days + 1, 1)
-
-    # customer_ids 정리(있으면 int 리스트로)
-    ids: List[int] = []
-    if customer_ids:
-        try:
-            ids = [int(x) for x in customer_ids if str(x).strip() != ""]
-        except Exception:
-            ids = []
-
-    base_sql = """
-    SELECT customer_id, SUM(cost) AS sum_cost
+    sql = """
+    SELECT customer_id, cost
     FROM fact_campaign_daily
     WHERE dt BETWEEN :d1 AND :d2
     """
 
-    params = {"d1": str(d1), "d2": str(d2)}
-
-    # 1) 가능한 경우: IN (:customer_ids...) 형태로 안전하게 필터
-    try:
-        if ids:
-            from sqlalchemy import bindparam  # local import (streamlit cache 안전)
-            sql = base_sql + " AND customer_id IN :customer_ids\nGROUP BY customer_id"
-            stmt = text(sql).bindparams(bindparam("customer_ids", expanding=True))
-            params2 = {**params, "customer_ids": ids}
-        else:
-            sql = base_sql + "\nGROUP BY customer_id"
-            stmt = text(sql)
-            params2 = params
-
-        with _engine.connect() as conn:
-            tmp = pd.read_sql(stmt, conn, params=params2)
-    except Exception:
-        # 2) 폴백: customer_ids 필터 없이 집계 후 pandas에서 필터
-        try:
-            sql = base_sql + "\nGROUP BY customer_id"
-            with _engine.connect() as conn:
-                tmp = pd.read_sql(text(sql), conn, params=params)
-            if ids and not tmp.empty and "customer_id" in tmp.columns:
-                tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
-                tmp = tmp.dropna(subset=["customer_id"]).copy()
-                tmp["customer_id"] = tmp["customer_id"].astype("int64")
-                tmp = tmp[tmp["customer_id"].isin(ids)].copy()
-        except Exception:
-            return pd.DataFrame(columns=["customer_id", "avg_cost"])
-
-    if tmp is None or tmp.empty:
+    tmp = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    if tmp.empty:
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
     tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
 
-    tmp["avg_cost"] = pd.to_numeric(tmp["sum_cost"], errors="coerce").fillna(0).astype(float) / float(days)
-    return tmp[["customer_id", "avg_cost"]]
+    if customer_ids:
+        allow = set(int(x) for x in customer_ids)
+        tmp = tmp[tmp["customer_id"].isin(allow)].copy()
+
+    tmp["cost"] = pd.to_numeric(tmp.get("cost", 0), errors="coerce").fillna(0.0)
+
+    days = max((d2 - d1).days + 1, 1)
+    g = tmp.groupby("customer_id", as_index=False)["cost"].sum().rename(columns={"cost": "sum_cost"})
+    g["avg_cost"] = g["sum_cost"].astype(float) / float(days)
+    return g[["customer_id", "avg_cost"]]
 
 
 # --------------------
@@ -728,6 +704,121 @@ def load_fact(_engine, table: str, d1: date, d2: date, customer_ids: Optional[Li
         df = df[df["customer_id"].isin([int(x) for x in customer_ids])].copy()
 
     return df
+
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cols_cached(_engine, table: str, schema: str = "public") -> List[str]:
+    # Inspector is a bit heavy; cache table columns for fast schema checks.
+    cols = get_table_columns(_engine, table, schema=schema)
+    return sorted(list(cols))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_keyword_agg(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None, limit: int = 5000) -> pd.DataFrame:
+    """Fast path for keyword tab:
+    - Aggregate in SQL (reduce row count massively)
+    - Optional customer_ids filter via expanding params
+    - Limit by cost desc to keep it snappy
+    """
+    if not table_exists(_engine, "fact_keyword_daily"):
+        return pd.DataFrame(columns=["customer_id", "keyword_id", "imp", "clk", "cost", "conv", "sales"])
+
+    cols = set(get_cols_cached(_engine, "fact_keyword_daily"))
+    sales_expr = "SUM(COALESCE(sales,0)) AS sales" if "sales" in cols else "0::bigint AS sales"
+
+    sql = f"""
+    SELECT
+      customer_id,
+      keyword_id,
+      SUM(imp)  AS imp,
+      SUM(clk)  AS clk,
+      SUM(cost) AS cost,
+      SUM(conv) AS conv,
+      {sales_expr}
+    FROM fact_keyword_daily
+    WHERE dt BETWEEN :d1 AND :d2
+    """
+
+    params: Dict = {"d1": str(d1), "d2": str(d2), "limit": int(limit)}
+    expanding = set()
+
+    if customer_ids:
+        sql += " AND customer_id IN :customer_ids\n"
+        params["customer_ids"] = [int(x) for x in customer_ids]
+        expanding.add("customer_ids")
+
+    sql += """
+    GROUP BY customer_id, keyword_id
+    ORDER BY SUM(cost) DESC
+    LIMIT :limit
+    """
+
+    df = sql_read(_engine, sql, params=params, expanding_keys=expanding)
+
+    if df.empty:
+        return pd.DataFrame(columns=["customer_id", "keyword_id", "imp", "clk", "cost", "conv", "sales"])
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["customer_id"]).copy()
+    df["customer_id"] = df["customer_id"].astype("int64")
+
+    # Ensure numeric
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_keyword_dim_join(_engine, customer_ids: List[int], keyword_ids: List[str]) -> pd.DataFrame:
+    """Load only the dimension rows needed for the current keyword top-N."""
+    if not (table_exists(_engine, "dim_keyword") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+        return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
+
+    if not customer_ids or not keyword_ids:
+        return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
+
+    sql = """
+    SELECT
+      k.customer_id,
+      k.keyword_id,
+      k.keyword,
+      g.adgroup_name,
+      c.campaign_name,
+      c.campaign_tp
+    FROM dim_keyword k
+    LEFT JOIN dim_adgroup g
+      ON k.customer_id = g.customer_id AND k.adgroup_id = g.adgroup_id
+    LEFT JOIN dim_campaign c
+      ON g.customer_id = c.customer_id AND g.campaign_id = c.campaign_id
+    WHERE k.customer_id IN :customer_ids
+      AND k.keyword_id  IN :keyword_ids
+    """
+
+    params = {
+        "customer_ids": [int(x) for x in customer_ids],
+        "keyword_ids": [str(x) for x in keyword_ids],
+    }
+
+    df = sql_read(_engine, sql, params=params, expanding_keys={"customer_ids", "keyword_ids"})
+    if df.empty:
+        return pd.DataFrame(columns=["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"])
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["customer_id"]).copy()
+    df["customer_id"] = df["customer_id"].astype("int64")
+
+    df["keyword"] = df.get("keyword", "").fillna("").astype(str)
+    df["adgroup_name"] = df.get("adgroup_name", "").fillna("").astype(str)
+    df["campaign_name"] = df.get("campaign_name", "").fillna("").astype(str)
+    df["campaign_tp"] = df.get("campaign_tp", "").fillna("").astype(str)
+
+    df["campaign_type_label"] = df["campaign_tp"].apply(campaign_tp_to_label)
+    df.loc[df["campaign_type_label"].astype(str).str.strip() == "", "campaign_type_label"] = "기타"
+
+    return df[["customer_id", "keyword_id", "keyword", "adgroup_name", "campaign_name", "campaign_tp", "campaign_type_label"]].drop_duplicates()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1297,6 +1388,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Dat
 # --------------------
 # Page: Keyword
 # --------------------
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.DataFrame):
     st.markdown("## 🔑 성과 대시보드 (키워드)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
@@ -1304,41 +1396,53 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     type_sel = f.get("type_sel", [])
     sel_ids = resolve_selected_ids(meta, f)
 
-    fact = load_fact(engine, "fact_keyword_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
-    fact = apply_type_filter_to_kw_ad_fact_fast(engine, fact, type_sel, level="keyword")
+    st.subheader("📋 전체 키워드 리스트")
+    top_n = st.slider("표시 개수(광고비 기준 Top N)", 50, 2000, 300, 50)
 
-    if fact.empty:
+    # ✅ 핵심 속도 개선:
+    # 1) 일별 원본을 통째로 불러오지 않고, DB에서 먼저 keyword 단위로 SUM 집계
+    # 2) 비용 기준 상위 N(여유분 포함)만 가져와서 화면 렌더링 부담 최소화
+    pre_limit = min(max(int(top_n) * 5, 2000), 10000)
+    agg = load_keyword_agg(engine, f["start"], f["end"], customer_ids=sel_ids if sel_ids else None, limit=pre_limit)
+
+    if agg.empty:
         st.warning("데이터 없음")
         return
 
-    dim_kw = load_dim_keyword(engine)
-    dim_grp = load_dim_adgroup(engine)
-    dim_cmp = dim_campaign[["customer_id", "campaign_id", "campaign_name"]].copy() if not dim_campaign.empty else pd.DataFrame()
+    # 필요 범위만 DIM 조인(Top-N 후보에 해당하는 키워드만)
+    cids = agg["customer_id"].dropna().astype(int).unique().tolist()
+    kwids = agg["keyword_id"].astype(str).unique().tolist()
+    dimj = load_keyword_dim_join(engine, cids, kwids)
 
-    for d in [dim_kw, dim_grp, dim_cmp]:
-        if not d.empty:
-            d["customer_id"] = pd.to_numeric(d["customer_id"], errors="coerce").fillna(0).astype("int64")
-
-    g = fact.groupby(["customer_id", "keyword_id"], as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum()
-    g = add_rates(g)
+    g = agg.merge(dimj, on=["customer_id", "keyword_id"], how="left")
     g = g.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
-    if not dim_kw.empty:
-        if not dim_grp.empty:
-            dim_kw = dim_kw.merge(dim_grp, on=["customer_id", "adgroup_id"], how="left")
-        if not dim_cmp.empty and "campaign_id" in dim_kw.columns:
-            dim_kw = dim_kw.merge(dim_cmp, on=["customer_id", "campaign_id"], how="left")
-        g = g.merge(dim_kw, on=["customer_id", "keyword_id"], how="left")
+    # 캠페인 타입 라벨 정리 + '기타' 자동 제외
+    if "campaign_type_label" not in g.columns:
+        if "campaign_tp" in g.columns:
+            g["campaign_type_label"] = g["campaign_tp"].apply(campaign_tp_to_label)
+        else:
+            g["campaign_type_label"] = "기타"
 
+    g["campaign_type_label"] = g["campaign_type_label"].fillna("").astype(str).str.strip()
+    g.loc[g["campaign_type_label"] == "", "campaign_type_label"] = "기타"
+    g = g[g["campaign_type_label"] != "기타"].copy()
+
+    # 광고유형 선택 시 필터
+    if type_sel:
+        g = g[g["campaign_type_label"].isin(type_sel)].copy()
+
+    # 필터 후 Top-N 확정
+    g = g.sort_values("cost", ascending=False).head(int(top_n)).copy()
+
+    g = add_rates(g)
+
+    # 표시용 컬럼 보정
     g["keyword"] = g.get("keyword", pd.Series([""] * len(g))).fillna("")
     g["adgroup_name"] = g.get("adgroup_name", pd.Series([""] * len(g))).fillna("")
     g["campaign_name"] = g.get("campaign_name", pd.Series([""] * len(g))).fillna("")
 
-    st.subheader("📋 전체 키워드 리스트")
-    top_n = st.slider("표시 개수(광고비 기준 Top N)", 50, 2000, 300, 50)
-    g2 = g.sort_values("cost", ascending=False).head(int(top_n)).copy()
-
-    show = g2.copy()
+    show = g.copy()
     show["cost"] = show["cost"].apply(format_currency)
     if "sales" in show.columns:
         show["sales"] = show["sales"].apply(format_currency)
@@ -1372,9 +1476,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     render_download_compact(view_df, f"성과_키워드_{f['start']}_{f['end']}", "keyword", "kw")
 
 
-# --------------------
-# Page: Ad
-# --------------------
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.DataFrame):
     st.markdown("## 성과 대시보드 (소재/광고)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
@@ -1457,7 +1558,7 @@ def page_settings(engine):
 
 def main():
     st.title("네이버 검색광고 통합 대시보드")
-    st.caption(f"빌드: {BUILD_TAG}")
+    st.caption(f"빌드: {BUILD_TAG} · 파일: {__file__}")
     try:
         engine = get_engine()
     except Exception as e:
