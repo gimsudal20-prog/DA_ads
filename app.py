@@ -41,7 +41,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.2 (2026-02-17) - Drilldown + 자동진단"
+BUILD_TAG = "v7.3.3 (2026-02-17) - Mobile CSS Fix"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -69,7 +69,7 @@ GLOBAL_UI_CSS = """
   .b-yellow { background: rgba(234,179,8,0.16); color: rgb(161,98,7); }
   .b-green { background: rgba(34,197,94,0.12); color: rgb(21,128,61); }
   .b-gray { background: rgba(148,163,184,0.18); color: rgb(51,65,85); }
-</style>
+
 
   /* TOP5 카드 */
   .topcard { padding: 10px 12px; border-radius: 14px;
@@ -81,6 +81,7 @@ GLOBAL_UI_CSS = """
   .topcard-list li { display:flex; justify-content:space-between; gap:10px; margin: 0 0 4px 0; }
   .topcard-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 72%; }
   .topcard-val { font-variant-numeric: tabular-nums; white-space:nowrap; }
+</style>
 """
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
