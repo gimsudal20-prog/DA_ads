@@ -27,7 +27,7 @@ load_dotenv()
 # -----------------------------
 # BUILD TAG (배포 확인용)
 # -----------------------------
-BUILD_TAG = "v7.2.1 (2026-02-17) - Faster keyword/ad SQL + Index helper + Mobile-friendly filters"
+BUILD_TAG = "v7.2.2 (2026-02-17) - Fix TEXT vs INT IN-clause (customer_id) + restore budget/keyword queries"
 # -----------------------------
 # CONFIG / THRESHOLDS
 # -----------------------------
@@ -492,10 +492,26 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
 # SQL helpers: safe literal IN (...)
 # -----------------------------
 def _sql_in_int(values: Tuple[int, ...]) -> str:
+    """Return an SQL IN (...) list for integer-like IDs.
+
+    NOTE: Many of our tables store IDs as TEXT in Postgres.
+    To avoid errors like `operator does not exist: text = integer`,
+    we emit quoted literals (type 'unknown'), e.g. ('420332','360788').
+    Postgres can compare these both to TEXT columns (no cast) and to INT columns (implicit cast).
+    """
     if not values:
         return ""
-    vals = ",".join(str(int(v)) for v in values)
+    safe = []
+    for v in values:
+        try:
+            safe.append(str(int(v)))
+        except Exception:
+            continue
+    if not safe:
+        return ""
+    vals = ",".join(f"'{v}'" for v in safe)
     return f"({vals})"
+
 
 def _sql_in_text(values: Tuple[str, ...]) -> str:
     if not values:
