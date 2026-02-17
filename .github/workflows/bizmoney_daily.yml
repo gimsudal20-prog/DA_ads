@@ -1,0 +1,44 @@
+name: Daily BizMoney Collector
+
+on:
+  schedule:
+    # 한국 시간 02:00 (UTC 17:00 전날)
+    - cron: "0 17 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-bizmoney:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      # 필요시 특정 ID만 수집하려면 아래 주석 해제
+      # CUSTOMER_ID: "내_광고주_ID"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv sqlalchemy psycopg2-binary
+
+      - name: Run BizMoney Collector
+        run: |
+          python collect_bizmoney.py
