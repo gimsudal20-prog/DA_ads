@@ -16,6 +16,7 @@
 import os
 import re
 import io
+import html
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -40,7 +41,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.0 (2026-02-17)"
+BUILD_TAG = "v7.3.1 (TOP5 카드 추가)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -69,6 +70,17 @@ GLOBAL_UI_CSS = """
   .b-green { background: rgba(34,197,94,0.12); color: rgb(21,128,61); }
   .b-gray { background: rgba(148,163,184,0.18); color: rgb(51,65,85); }
 </style>
+
+  /* TOP5 카드 */
+  .topcard { padding: 10px 12px; border-radius: 14px;
+            background: rgba(15, 23, 42, 0.04);
+            border: 1px solid rgba(15, 23, 42, 0.08); }
+  .topcard-title { font-size: 13px; font-weight: 800; margin-bottom: 6px; letter-spacing:-0.2px; }
+  .topcard-sub { font-size: 11px; color: rgba(49,51,63,0.65); margin-top:-4px; margin-bottom:6px; }
+  .topcard-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; }
+  .topcard-list li { display:flex; justify-content:space-between; gap:10px; margin: 0 0 4px 0; }
+  .topcard-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 72%; }
+  .topcard-val { font-variant-numeric: tabular-nums; white-space:nowrap; }
 """
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
@@ -252,6 +264,105 @@ def parse_currency(val_str) -> int:
         return 0
     s = re.sub(r"[^\d]", "", str(val_str))
     return int(s) if s else 0
+
+
+
+# --------------------
+# UI helpers (TOP5 cards)
+# --------------------
+def _truncate_text(s: str, max_len: int = 34) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\n", " ").replace("\r", " ").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _fmt_int(val) -> str:
+    try:
+        return f"{int(float(val)):,}"
+    except Exception:
+        return "-"
+
+
+def _fmt_pct1(val) -> str:
+    try:
+        return f"{float(val):.1f}%"
+    except Exception:
+        return "-"
+
+
+def _fmt_pct0(val) -> str:
+    try:
+        return f"{float(val):.0f}%"
+    except Exception:
+        return "-"
+
+
+def render_top5_cards(df: pd.DataFrame, label_col: str, cards: List[Dict], sub: str = "") -> None:
+    """Render 5-item ranked lists in small cards."""
+    if df is None or df.empty or label_col not in df.columns:
+        return
+
+    cols = st.columns(len(cards))
+    for i, spec in enumerate(cards):
+        title = spec.get("title", "")
+        metric_col = spec.get("metric_col", "")
+        sort_dir = (spec.get("sort", "desc") or "desc").lower()
+        fmt = spec.get("fmt", lambda x: str(x))
+        flt = spec.get("filter", None)
+
+        tmp = df.copy()
+        if callable(flt):
+            try:
+                tmp = tmp[flt(tmp)].copy()
+            except Exception:
+                pass
+
+        if metric_col not in tmp.columns:
+            with cols[i]:
+                st.markdown(
+                    f"<div class='topcard'><div class='topcard-title'>{html.escape(title)}</div><div class='topcard-sub'>데이터 없음</div></div>",
+                    unsafe_allow_html=True,
+                )
+            continue
+
+        tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce")
+        tmp = tmp.dropna(subset=[metric_col]).copy()
+        if tmp.empty:
+            with cols[i]:
+                st.markdown(
+                    f"<div class='topcard'><div class='topcard-title'>{html.escape(title)}</div><div class='topcard-sub'>데이터 없음</div></div>",
+                    unsafe_allow_html=True,
+                )
+            continue
+
+        asc = sort_dir == "asc"
+        tmp = tmp.sort_values(metric_col, ascending=asc).head(5)
+
+        items = []
+        for _, r in tmp.iterrows():
+            name = _truncate_text(r.get(label_col, ""), 36)
+            val = fmt(r.get(metric_col))
+            items.append(
+                f"<li><span class='topcard-name'>{html.escape(str(name))}</span><span class='topcard-val'>{html.escape(str(val))}</span></li>"
+            )
+        items_html = "\n".join(items)
+
+        sub_html = f"<div class='topcard-sub'>{html.escape(sub)}</div>" if sub else ""
+        card_html = f"""
+<div class='topcard'>
+  <div class='topcard-title'>{html.escape(title)}</div>
+  {sub_html}
+  <ol class='topcard-list'>
+    {items_html}
+  </ol>
+</div>
+"""
+
+        with cols[i]:
+            st.markdown(card_html, unsafe_allow_html=True)
+
 
 
 # -----------------------------
@@ -1249,6 +1360,24 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
 
+    # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
+    df_top = df.copy()
+    df_top["_label"] = df_top.get("account_name", "").astype(str).str.strip() + " · " + df_top.get("campaign_name", "").astype(str).str.strip()
+    render_top5_cards(
+        df_top,
+        label_col="_label",
+        sub="현재 화면 TopN 기준",
+        cards=[
+            {"title": "광고비 TOP5", "metric_col": "cost", "sort": "desc", "fmt": format_currency},
+            {"title": "전환 TOP5", "metric_col": "conv", "sort": "desc", "fmt": _fmt_int},
+            {"title": "ROAS TOP5", "metric_col": "roas", "sort": "desc", "fmt": _fmt_pct0,
+             "filter": lambda t: pd.to_numeric(t.get("cost"), errors="coerce").fillna(0) > 0},
+            {"title": "CPA 최저 TOP5", "metric_col": "cpa", "sort": "asc", "fmt": format_currency,
+             "filter": lambda t: pd.to_numeric(t.get("conv"), errors="coerce").fillna(0) > 0},
+        ],
+    )
+    st.divider()
+
     disp = df.copy()
     disp["cost"] = disp["cost"].apply(format_currency)
     disp["sales"] = disp["sales"].apply(format_currency)
@@ -1501,6 +1630,23 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
+
+    # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
+    df_top = df.copy()
+    df_top["_label"] = df_top.get("account_name", "").astype(str).str.strip() + " · " + df_top.get("ad_name", "").astype(str).apply(lambda x: _truncate_text(x, 28))
+    render_top5_cards(
+        df_top,
+        label_col="_label",
+        sub="현재 화면 TopN 기준",
+        cards=[
+            {"title": "광고비 TOP5", "metric_col": "cost", "sort": "desc", "fmt": format_currency},
+            {"title": "전환 TOP5", "metric_col": "conv", "sort": "desc", "fmt": _fmt_int},
+            {"title": "CTR TOP5", "metric_col": "ctr", "sort": "desc", "fmt": _fmt_pct1},
+            {"title": "ROAS TOP5", "metric_col": "roas", "sort": "desc", "fmt": _fmt_pct0,
+             "filter": lambda t: pd.to_numeric(t.get("cost"), errors="coerce").fillna(0) > 0},
+        ],
+    )
+    st.divider()
 
     disp = df.copy()
     disp["cost"] = disp["cost"].apply(format_currency)
