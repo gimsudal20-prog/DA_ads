@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.0.1: 예산 포맷 오류 수정 + 대시보드 빠른필터 + 속도 최적화)
+app.py - 네이버 검색광고 통합 대시보드 (v7.0.2: 예산 페이지 UI 카드화 + 필터칩 + 비즈머니 탭 + 집행률 Progress + 저장 UX 개선)
 """
 
 import os
 import re
 import io
 from datetime import date, timedelta
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict
 
 import pandas as pd
 import streamlit as st
@@ -75,18 +75,90 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 GLOBAL_UI_CSS = """
 <style>
   h2, h3 { letter-spacing: -0.2px; }
-  div[data-testid="stMetric"] { padding: 10px 12px; border-radius: 14px; background: rgba(2, 132, 199, 0.06); }
+
+  /* ✅ Metric card polish */
+  div[data-testid="stMetric"] {
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(2, 132, 199, 0.06);
+    transition: transform .08s ease;
+  }
+  div[data-testid="stMetric"]:hover { transform: translateY(-1px); }
+
+  /* ✅ Badges */
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; margin-right:6px; }
   .b-red { background: rgba(239,68,68,0.12); color: rgb(185,28,28); }
   .b-yellow { background: rgba(234,179,8,0.16); color: rgb(161,98,7); }
   .b-green { background: rgba(34,197,94,0.12); color: rgb(21,128,61); }
   .b-gray { background: rgba(148,163,184,0.18); color: rgb(51,65,85); }
+
+  /* ✅ Report-style Cards */
+  .card {
+    background: #fff;
+    border: 1px solid rgba(148,163,184,0.25);
+    border-radius: 16px;
+    padding: 14px 16px;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+    margin-bottom: 12px;
+  }
+  .card-head{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin-bottom:10px;
+  }
+  .card-title{
+    font-size: 14px; font-weight: 900;
+    color: rgba(17,24,39,0.90);
+    margin: 0;
+  }
+  .subtle { color: rgba(17,24,39,0.55); font-size: 12px; }
+
+  /* ✅ Filter chips */
+  .chiprow{ display:flex; flex-wrap:wrap; gap:6px; margin: 6px 0 10px; }
+  .chip{
+    display:inline-flex; align-items:center; gap:6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: rgba(148,163,184,0.16);
+    color: rgba(17,24,39,0.72);
+    font-size: 12px; font-weight: 700;
+  }
+  .chip .k{ color: rgba(17,24,39,0.55); font-weight: 900; }
+
+  /* Sidebar spacing */
   section[data-testid="stSidebar"] { padding-top: 8px; }
+
+  /* Hide index in st.dataframe/st.table */
   thead tr th:first-child { display:none }
   tbody th { display:none }
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+
+# -----------------------------
+# Card / Chip helpers
+# -----------------------------
+def card_open(title: str, right_html: str = ""):
+    st.markdown(
+        f'<div class="card"><div class="card-head"><div class="card-title">{title}</div><div>{right_html}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def card_close():
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_filter_chips(start: date, end: date, ids: List[int], manager_sel: List[str], q: str = ""):
+    chips = []
+    chips.append(("기간", f"{start.strftime('%m-%d')} ~ {end.strftime('%m-%d')}"))
+    if ids:
+        chips.append(("업체", f"{len(ids)}개"))
+    if manager_sel:
+        label = " · ".join(manager_sel[:2]) + ("…" if len(manager_sel) > 2 else "")
+        chips.append(("담당자", label))
+    if q:
+        chips.append(("검색", q))
+    html = "".join([f'<span class="chip"><span class="k">{k}</span>{v}</span>' for k, v in chips])
+    st.markdown(f'<div class="chiprow">{html}</div>', unsafe_allow_html=True)
 
 
 def render_live_clock(tz: str = "Asia/Seoul"):
@@ -648,7 +720,6 @@ def dashboard_quick_filters(meta: pd.DataFrame, type_opts: List[str], f: Dict, k
         with c2:
             dash_mgr = st.multiselect("담당자(대시보드)", options=managers, default=[], key=f"{key_prefix}_mgr")
 
-        # manager 기준으로 업체 옵션도 줄여줌
         tmp = meta.copy()
         if dash_mgr:
             tmp = tmp[tmp["manager"].isin(dash_mgr)]
@@ -660,7 +731,6 @@ def dashboard_quick_filters(meta: pd.DataFrame, type_opts: List[str], f: Dict, k
         with c3:
             dash_types = st.multiselect("광고유형(대시보드)", options=type_opts, default=[], key=f"{key_prefix}_tp")
 
-    # ids 결정 로직
     if dash_companies:
         ids = meta[meta["account_name"].isin(dash_companies)]["customer_id"].astype(int).tolist()
     elif dash_mgr:
@@ -680,6 +750,7 @@ FACT_COLS = {
     "fact_keyword_daily": ["dt", "customer_id", "keyword_id", "imp", "clk", "cost", "conv", "sales"],
     "fact_ad_daily": ["dt", "customer_id", "ad_id", "imp", "clk", "cost", "conv", "sales"],
 }
+
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_fact(_engine, table: str, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
@@ -792,15 +863,16 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
 
-    # ✅ [요청2] 대시보드 빠른필터
     qf = dashboard_quick_filters(meta, type_opts, f, key_prefix="budget")
     sel_ids = qf["ids"]
+
+    # ✅ 보고서 헤더 느낌(필터칩)
+    render_filter_chips(f["start"], f["end"], sel_ids, f.get("manager_sel", []), f.get("q", ""))
 
     df = meta.copy()
     if sel_ids:
         df = df[df["customer_id"].isin(sel_ids)]
     else:
-        # 사이드바 검색/담당자/업체도 유지
         if f["manager_sel"]:
             df = df[df["manager"].isin(f["manager_sel"])]
         if f["q"]:
@@ -886,75 +958,76 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     )
     count_over_budget = int((budget_view["usage_rate"] >= 1.0).sum())
 
-    st.markdown("### 🔍 전체 계정 요약 (Command Center)")
+    # ✅ Command Center KPI (Card)
+    card_open("🔍 전체 계정 요약 (Command Center)", right_html=f'<span class="subtle">기준일: {f["end"]}</span>')
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("총 비즈머니 잔액", format_currency(total_balance))
     c2.metric(f"{f['end'].month}월 총 사용액", format_currency(total_month_cost))
     c3.metric("충전 필요 계정", f"{count_low_balance}건", delta_color="inverse")
     c4.metric("예산 초과 계정", f"{count_over_budget}건", delta_color="inverse", delta="100% 이상" if count_over_budget > 0 else None)
+    card_close()
 
-    st.divider()
-
-    st.markdown("### 💳 비즈머니 잔액 현황")
-    need_topup = count_low_balance
-    ok_topup = int(len(biz_view) - need_topup)
-    st.markdown(
-        f'<span class="badge b-red">충전필요 {need_topup}건</span>'
-        f'<span class="badge b-green">여유 {ok_topup}건</span>',
-        unsafe_allow_html=True,
-    )
-
-    show_only_topup = st.checkbox(
-        "충전필요만 보기",
-        value=st.session_state.get("show_only_topup", False),
-        key="show_only_topup",
-    )
-
+    # -----------------
+    # Bizmoney section (Tabs)
+    # -----------------
     biz_view["_rank"] = biz_view["상태"].apply(lambda s: 0 if "충전필요" in str(s) else 1)
     biz_view = biz_view.sort_values(["_rank", "bizmoney_balance", "account_name"]).drop(columns=["_rank"])
 
-    if show_only_topup:
-        biz_view = biz_view[biz_view["상태"].str.contains("충전필요", na=False)].copy()
+    need_topup = int((biz_view["상태"].str.contains("충전필요")).sum())
+    ok_topup = int(len(biz_view) - need_topup)
 
-    def _style_biz(row):
-        return ["background-color: rgba(239,68,68,0.08); font-weight: 700;"] * len(row) if "충전필요" in str(row.get("상태", "")) else [""] * len(row)
-
-    st.dataframe(
-        biz_view[
-            [
-                "account_name",
-                "manager",
-                "bizmoney_fmt",
-                "avg_cost_fmt",
-                "days_cover_fmt",
-                "y_cost_fmt",
-                "상태",
-                "last_update",
-            ]
-        ].style.apply(_style_biz, axis=1),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "account_name": "업체명",
-            "manager": "담당자",
-            "bizmoney_fmt": st.column_config.TextColumn("비즈머니 잔액"),
-            "avg_cost_fmt": st.column_config.TextColumn(f"최근{TOPUP_AVG_DAYS}일 평균소진"),
-            "days_cover_fmt": st.column_config.TextColumn("D-소진"),
-            "y_cost_fmt": st.column_config.TextColumn("전일 소진액"),
-            "상태": "상태",
-            "last_update": "확인일자",
-        },
+    right_badges = (
+        f'<span class="badge b-red">충전필요 {need_topup}건</span>'
+        f'<span class="badge b-green">여유 {ok_topup}건</span>'
     )
+    card_open("💳 비즈머니 잔액 현황", right_html=right_badges)
 
-    st.divider()
+    tab_need, tab_all = st.tabs([f"🔴 충전필요 ({need_topup})", f"🟢 전체 ({len(biz_view)})"])
 
-    st.markdown(f"### 📅 월 예산 관리 ({f['end'].strftime('%Y년 %m월')} 기준)")
+    def render_biz_table(df_):
+        def _style_biz(row):
+            return ["background-color: rgba(239,68,68,0.08); font-weight: 800;"] * len(row) if "충전필요" in str(row.get("상태", "")) else [""] * len(row)
 
+        st.dataframe(
+            df_[
+                [
+                    "account_name",
+                    "manager",
+                    "bizmoney_fmt",
+                    "avg_cost_fmt",
+                    "days_cover_fmt",
+                    "y_cost_fmt",
+                    "상태",
+                    "last_update",
+                ]
+            ].style.apply(_style_biz, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "account_name": "업체명",
+                "manager": "담당자",
+                "bizmoney_fmt": st.column_config.TextColumn("비즈머니 잔액"),
+                "avg_cost_fmt": st.column_config.TextColumn(f"최근{TOPUP_AVG_DAYS}일 평균소진"),
+                "days_cover_fmt": st.column_config.TextColumn("D-소진"),
+                "y_cost_fmt": st.column_config.TextColumn("전일 소진액"),
+                "상태": "상태",
+                "last_update": "확인일자",
+            },
+        )
+
+    with tab_need:
+        render_biz_table(biz_view[biz_view["상태"].str.contains("충전필요", na=False)].copy())
+
+    with tab_all:
+        render_biz_table(biz_view.copy())
+
+    card_close()
+
+    # -----------------
+    # Monthly budget section (Card)
+    # -----------------
     budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
 
-    # ✅ [요청1] 에러 제거 + 콤마 표시:
-    # - monthly_budget_raw / current_month_cost_val을 NumberColumn으로 표시하던 부분에서 "format=%,d" 제거
-    # - 대신 편집 가능한 예산은 Text로(콤마 포함) 받고 저장 시 parse_currency로 변환
     budget_view["monthly_budget_edit"] = budget_view["monthly_budget_val"].apply(format_number_commas)
     budget_view["current_month_cost_disp"] = budget_view["current_month_cost_val"].apply(format_number_commas)
 
@@ -975,12 +1048,14 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     cnt_over = int((budget_view["status_text"] == "초과").sum())
     cnt_warn = int((budget_view["status_text"] == "주의").sum())
     cnt_unset = int((budget_view["status_text"] == "미설정").sum())
-    st.markdown(
+
+    badges = (
         f'<span class="badge b-red">초과 {cnt_over}건</span>'
         f'<span class="badge b-yellow">주의 {cnt_warn}건</span>'
-        f'<span class="badge b-gray">미설정 {cnt_unset}건</span>',
-        unsafe_allow_html=True,
+        f'<span class="badge b-gray">미설정 {cnt_unset}건</span>'
     )
+
+    card_open(f"📅 월 예산 관리 ({f['end'].strftime('%Y년 %m월')} 기준)", right_html=badges)
 
     budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
@@ -992,8 +1067,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                     "customer_id",
                     "account_name",
                     "manager",
-                    "monthly_budget_edit",      # ✅ 콤마 텍스트 편집
-                    "current_month_cost_disp",  # ✅ 콤마 표시(읽기전용)
+                    "monthly_budget_edit",
+                    "current_month_cost_disp",
                     "usage_pct",
                     "status_icon",
                 ]
@@ -1006,10 +1081,18 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                 "manager": st.column_config.TextColumn("담당자", disabled=True),
                 "monthly_budget_edit": st.column_config.TextColumn("월 예산 (원)", help="예: 500,000", max_chars=20),
                 "current_month_cost_disp": st.column_config.TextColumn(f"{f['end'].month}월 사용액", disabled=True),
-                "usage_pct": st.column_config.NumberColumn("집행률", format="%.1f%%", disabled=True),
+                # ✅ Progress bar로 시각화
+                "usage_pct": st.column_config.ProgressColumn(
+                    "집행률",
+                    min_value=0.0,
+                    max_value=120.0,
+                    format="%.1f%%",
+                    help="월 사용액 / 월 예산",
+                    disabled=True,
+                ),
                 "status_icon": st.column_config.TextColumn("상태", disabled=True),
             },
-            key="budget_editor_v7",
+            key="budget_editor_v7_02",
         )
 
     with c2:
@@ -1034,25 +1117,30 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
 
         if st.button("💾 예산 저장 및 업데이트", type="primary", use_container_width=True):
             orig_budget = budget_view.set_index("customer_id")["monthly_budget_val"].to_dict()
-            changed = 0
-            for _, r in edited.iterrows():
-                cid = int(r.get("customer_id", 0))
-                if cid == 0:
-                    continue
 
-                # ✅ 콤마 텍스트 -> 숫자
-                new_val = parse_currency(r.get("monthly_budget_edit", "0"))
+            edited2 = edited.copy()
+            edited2["new_budget_val"] = edited2["monthly_budget_edit"].apply(parse_currency)
+            edited2["old_budget_val"] = edited2["customer_id"].map(orig_budget).fillna(0).astype(int)
+            changed_rows = edited2[edited2["new_budget_val"] != edited2["old_budget_val"]].copy()
 
-                if new_val != int(orig_budget.get(cid, 0)):
-                    update_monthly_budget(engine, cid, new_val)
-                    changed += 1
-
-            if changed:
-                st.success(f"{changed}건 수정 완료.")
-                st.cache_data.clear()  # 예산 업데이트시 캐시 삭제
-                st.rerun()
-            else:
+            if changed_rows.empty:
                 st.info("변경 없음.")
+                card_close()
+                return
+
+            for _, r in changed_rows.iterrows():
+                cid = int(r["customer_id"])
+                update_monthly_budget(engine, cid, int(r["new_budget_val"]))
+
+            st.success(f"{len(changed_rows)}건 수정 완료.")
+            # ✅ 전체 cache clear 대신 meta 캐시만 clear
+            try:
+                get_meta.clear()
+            except Exception:
+                pass
+            st.rerun()
+
+    card_close()
 
 
 # --------------------
@@ -1340,8 +1428,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.Data
     type_sel = qf["type_sel"]
 
     fact = load_fact(engine, "fact_keyword_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
-
-    # ✅ [요청3] 속도: 기존 함수 대신 fast path(캐시된 맵)로 타입필터
     fact = apply_type_filter_to_kw_ad_fact_fast(engine, fact, type_sel, level="keyword")
 
     if fact.empty:
@@ -1483,8 +1569,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict, dim_campaign: pd.DataFrame
     type_sel = qf["type_sel"]
 
     fact = load_fact(engine, "fact_ad_daily", f["start"], f["end"], customer_ids=sel_ids if sel_ids else None)
-
-    # ✅ [요청3] 속도: fast path(캐시된 맵)로 타입필터
     fact = apply_type_filter_to_kw_ad_fact_fast(engine, fact, type_sel, level="ad")
 
     if fact.empty:
