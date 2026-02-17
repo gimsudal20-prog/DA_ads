@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.0.4: 예산 오류(ProgrammingError) 해결 + 웹사이트 모드 UI)
+app.py - 네이버 검색광고 통합 대시보드 (v7.0.3: 예산 오류(ProgrammingError) 해결 + 웹사이트 모드 UI)
 - 예산/잔액 페이지의 최근평균소진 계산에서 발생하던 SQLAlchemy ProgrammingError 해결:
   * customer_ids를 SQL 파라미터로 넘기지 않고(ANY/IN 제거), 기간 집계만 SQL로 처리 후 pandas에서 필터링
 - "빠른 필터(대시보드)" 완전 제거
@@ -65,6 +65,12 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
 
 
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
+
+# -----------------------------
+# BUILD TAG (배포 확인용)
+# -----------------------------
+# Streamlit Cloud에서 코드가 실제로 교체/배포됐는지 한눈에 확인하려고 넣어둠.
+BUILD_TAG = "v7.0.5 (2026-02-17)"
 
 # -----------------------------
 # CONFIG / THRESHOLDS
@@ -552,7 +558,7 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
+def get_recent_avg_cost(_engine, d1: date, d2: date) -> pd.DataFrame:
     """
     ✅ ProgrammingError 방지 버전
     - customer_ids를 SQL 파라미터로 넘기지 않음(ANY/IN 제거)
@@ -579,11 +585,6 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
     tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
-
-    if customer_ids:
-        ids = [int(x) for x in customer_ids if str(x).strip()]
-        if ids:
-            tmp = tmp[tmp["customer_id"].isin(ids)].copy()
 
     days = max((d2 - d1).days + 1, 1)
     tmp["avg_cost"] = pd.to_numeric(tmp["sum_cost"], errors="coerce").fillna(0).astype(float) / float(days)
@@ -808,7 +809,14 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     if TOPUP_AVG_DAYS > 0:
         d2 = f["end"] - timedelta(days=1)
         d1 = d2 - timedelta(days=TOPUP_AVG_DAYS - 1)
-        avg_df = get_recent_avg_cost(engine, d1, d2, customer_ids=df["customer_id"].tolist())
+        # ✅ SQL 파라미터로 customer_id 리스트를 넘기면 환경에 따라 ProgrammingError가 날 수 있어
+        #    기간만 SQL로 집계하고(함수 내부), 이후 merge 단계에서 자연스럽게 선택 계정만 남도록 처리.
+        #    혹시 DB/권한/스키마 문제로 실패해도, 예산 페이지가 전체 다운되지 않도록 방어.
+        try:
+            avg_df = get_recent_avg_cost(engine, d1, d2)
+        except Exception as e:
+            avg_df = pd.DataFrame()
+            st.warning(f"최근 평균소진 계산 실패(표시는 계속 진행): {e}")
 
     if not avg_df.empty:
         biz_view = biz_view.merge(avg_df, on="customer_id", how="left")
@@ -1407,7 +1415,7 @@ def page_settings(engine):
 
 def main():
     st.title("네이버 검색광고 통합 대시보드")
-    st.caption("빌드: v7.0.4 (avg_cost SQL 파라미터 제거 + 웹사이트 모드)")
+    st.caption(f"빌드: {BUILD_TAG}")
     try:
         engine = get_engine()
     except Exception as e:
