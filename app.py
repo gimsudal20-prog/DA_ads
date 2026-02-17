@@ -32,7 +32,7 @@ load_dotenv()
 # Page config / build tag
 # =============================
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
-BUILD_TAG = "v7.1.1 (2026-02-17)"
+BUILD_TAG = "v7.1.3 (2026-02-17) - cid 타입 자동판별 + 키워드/예산 ProgrammingError/속도 개선"
 
 # =============================
 # Global UI CSS (Website mode)
@@ -214,6 +214,39 @@ def sql_in_strs(values: List[Any]) -> str:
         return "(NULL)"
     uniq = sorted(set(vals))
     return "(" + ",".join("'" + x + "'" for x in uniq) + ")"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_column_type(_engine, table: str, column: str, schema: str = "public") -> str:
+    """Return lowercased column type string (best-effort)."""
+    try:
+        insp = inspect(_engine)
+        cols = insp.get_columns(table, schema=schema)
+        for c in cols:
+            if str(c.get("name", "")).lower() == str(column).lower():
+                return str(c.get("type", "")).lower()
+    except Exception:
+        return ""
+    return ""
+
+def customer_id_filter_sql(_engine, table: str, customer_ids, col_expr: str = "customer_id") -> str:
+    """
+    customer_id 컬럼 타입(TEXT/BIGINT 등) 환경차이를 자동으로 흡수해서
+    IN 필터가 ProgrammingError로 터지지 않게 만드는 안전 필터.
+    - INT 계열이면: col_expr IN (1,2,3)
+    - TEXT 계열이면: col_expr IN ('1','2','3')
+    - 타입을 못 찾으면: col_expr::text IN ('1','2','3') (안전 fallback)
+    """
+    cids = _to_int_list(customer_ids)
+    if not cids:
+        return ""
+    t = get_column_type(_engine, table, "customer_id")
+    if t and "int" in t:
+        return f" AND {col_expr} IN {sql_in_ints(cids)} "
+    if t and ("char" in t or "text" in t or "uuid" in t):
+        return f" AND {col_expr} IN {sql_in_strs([str(x) for x in cids])} "
+    # unknown type → safest
+    return f" AND {col_expr}::text IN {sql_in_strs([str(x) for x in cids])} "
 
 # =============================
 # Utilities / formatters
@@ -496,9 +529,12 @@ def get_recent_avg_cost(_engine, d1: date, d2: date) -> pd.DataFrame:
 # Aggregation loaders for speed (Top N)
 # =============================
 def _customer_filter_sql(customer_ids: Optional[List[int]]) -> str:
-    if customer_ids:
-        return f" AND customer_id IN {sql_in_ints(customer_ids)} "
-    return ""
+    cids = _to_int_list(customer_ids)
+    if not cids:
+        return ""
+    # customer_id 컬럼 타입(TEXT/BIGINT) 환경 차이로 인한 ProgrammingError 방지
+    cid_sql = sql_in_strs([str(x) for x in cids])
+    return f" AND customer_id::text IN {cid_sql} "
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_campaign_agg(_engine, d1: date, d2: date, customer_ids: Optional[List[int]], type_sel: List[str]) -> pd.DataFrame:
@@ -506,6 +542,7 @@ def load_campaign_agg(_engine, d1: date, d2: date, customer_ids: Optional[List[i
         return pd.DataFrame()
 
     # aggregate
+    cid_filter = customer_id_filter_sql(_engine, "fact_campaign_daily", customer_ids, col_expr="customer_id")
     sql = f"""
     SELECT customer_id, campaign_id,
            SUM(imp) AS imp,
@@ -515,7 +552,7 @@ def load_campaign_agg(_engine, d1: date, d2: date, customer_ids: Optional[List[i
            SUM(COALESCE(sales,0)) AS sales
     FROM fact_campaign_daily
     WHERE dt BETWEEN :d1 AND :d2
-    {_customer_filter_sql(customer_ids)}
+    {cid_filter}
     GROUP BY customer_id, campaign_id
     """
     fact = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
@@ -542,6 +579,7 @@ def load_keyword_agg_topn(_engine, d1: date, d2: date, customer_ids: Optional[Li
         return pd.DataFrame()
 
     top_n = int(max(min(top_n, 2000), 50))
+    cid_filter = customer_id_filter_sql(_engine, "fact_keyword_daily", customer_ids, col_expr="customer_id")
     sql = f"""
     SELECT customer_id, keyword_id,
            SUM(imp) AS imp,
@@ -551,7 +589,7 @@ def load_keyword_agg_topn(_engine, d1: date, d2: date, customer_ids: Optional[Li
            SUM(COALESCE(sales,0)) AS sales
     FROM fact_keyword_daily
     WHERE dt BETWEEN :d1 AND :d2
-    {_customer_filter_sql(customer_ids)}
+    {cid_filter}
     GROUP BY customer_id, keyword_id
     ORDER BY SUM(cost) DESC
     LIMIT :lim
@@ -585,6 +623,7 @@ def load_ad_agg_topn(_engine, d1: date, d2: date, customer_ids: Optional[List[in
         return pd.DataFrame()
 
     top_n = int(max(min(top_n, 2000), 50))
+    cid_filter = customer_id_filter_sql(_engine, "fact_ad_daily", customer_ids, col_expr="customer_id")
     sql = f"""
     SELECT customer_id, ad_id,
            SUM(imp) AS imp,
@@ -594,7 +633,7 @@ def load_ad_agg_topn(_engine, d1: date, d2: date, customer_ids: Optional[List[in
            SUM(COALESCE(sales,0)) AS sales
     FROM fact_ad_daily
     WHERE dt BETWEEN :d1 AND :d2
-    {_customer_filter_sql(customer_ids)}
+    {cid_filter}
     GROUP BY customer_id, ad_id
     ORDER BY SUM(cost) DESC
     LIMIT :lim
@@ -639,7 +678,7 @@ def load_keyword_dim_join(_engine, customer_ids: List[int], keyword_ids: List[st
 
     cid_filter = ""
     if cids:
-        cid_filter = f" AND k.customer_id IN {sql_in_ints(cids)} "
+        cid_filter = customer_id_filter_sql(_engine, "dim_keyword", cids, col_expr="k.customer_id")
 
     sql = f"""
     SELECT
@@ -685,7 +724,7 @@ def load_ad_dim_join(_engine, customer_ids: List[int], ad_ids: List[str]) -> pd.
 
     cid_filter = ""
     if cids:
-        cid_filter = f" AND a.customer_id IN {sql_in_ints(cids)} "
+        cid_filter = customer_id_filter_sql(_engine, "dim_ad", cids, col_expr="a.customer_id")
 
     cols = get_table_columns(_engine, "dim_ad")
     if "creative_text" in cols:
@@ -827,11 +866,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict[str, Any]):
     yesterday = date.today() - timedelta(days=1)
     y_cost = pd.DataFrame(columns=["customer_id", "y_cost"])
     if table_exists(engine, "fact_campaign_daily") and not df.empty:
-        cid_sql = sql_in_ints(df["customer_id"].astype(int).tolist())
+        cid_filter = customer_id_filter_sql(engine, "fact_campaign_daily", df["customer_id"].astype(int).tolist(), col_expr="customer_id")
         sql = f"""
         SELECT customer_id, SUM(cost) AS y_cost
         FROM fact_campaign_daily
-        WHERE dt = :d AND customer_id IN {cid_sql}
+      WHERE dt = :d {cid_filter}
         GROUP BY customer_id
         """
         y_cost = sql_read(engine, sql, {"d": str(yesterday)})
