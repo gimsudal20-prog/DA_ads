@@ -22,6 +22,16 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ▼▼▼ [추가된 부분] pip 캐싱 설정 ▼▼▼
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      # ▲▲▲ [추가된 부분 끝] ▲▲▲
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
