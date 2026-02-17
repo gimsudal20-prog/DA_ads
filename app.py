@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""app.py - 네이버 검색광고 통합 대시보드 (v7.3.0)
+"""app.py - 네이버 검색광고 통합 대시보드 (v7.2.4)
 
 ✅ 이번 버전 핵심
 - NameError(page_budget/page_perf_*) 방지: 전체 함수 포함된 단일 파일
@@ -16,7 +16,6 @@
 import os
 import re
 import io
-import html
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -25,15 +24,6 @@ import streamlit as st
 from sqlalchemy import create_engine, inspect, text
 from dotenv import load_dotenv
 
-from sqlalchemy.engine import Engine as SAEngine
-
-# -----------------------------
-# Streamlit cache hashing helpers
-# -----------------------------
-# SQLAlchemy Engine objects are expensive/unstable to hash on Streamlit Cloud.
-# We treat the engine as a constant cache key to ensure cache hits across reruns.
-CACHE_HASH_FUNCS = {SAEngine: lambda _: "SQLALCHEMY_ENGINE"}
-
 load_dotenv()
 
 # -----------------------------
@@ -41,7 +31,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.3 (2026-02-17) - Mobile CSS Fix"
+BUILD_TAG = "v7.2.4 (2026-02-17)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -69,18 +59,6 @@ GLOBAL_UI_CSS = """
   .b-yellow { background: rgba(234,179,8,0.16); color: rgb(161,98,7); }
   .b-green { background: rgba(34,197,94,0.12); color: rgb(21,128,61); }
   .b-gray { background: rgba(148,163,184,0.18); color: rgb(51,65,85); }
-
-
-  /* TOP5 카드 */
-  .topcard { padding: 10px 12px; border-radius: 14px;
-            background: rgba(15, 23, 42, 0.04);
-            border: 1px solid rgba(15, 23, 42, 0.08); }
-  .topcard-title { font-size: 13px; font-weight: 800; margin-bottom: 6px; letter-spacing:-0.2px; }
-  .topcard-sub { font-size: 11px; color: rgba(49,51,63,0.65); margin-top:-4px; margin-bottom:6px; }
-  .topcard-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; }
-  .topcard-list li { display:flex; justify-content:space-between; gap:10px; margin: 0 0 4px 0; }
-  .topcard-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 72%; }
-  .topcard-val { font-variant-numeric: tabular-nums; white-space:nowrap; }
 </style>
 """
 
@@ -166,40 +144,22 @@ def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
         conn.execute(text(sql), params or {})
 
 
-
-@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
-def _cached_table_names(_engine: SAEngine, schema: str = "public") -> set[str]:
+def table_exists(engine, table: str, schema: str = "public") -> bool:
     try:
-        return set(inspect(_engine).get_table_names(schema=schema))
+        insp = inspect(engine)
+        return table in set(insp.get_table_names(schema=schema))
+    except Exception:
+        return False
+
+
+def get_table_columns(engine, table: str, schema: str = "public") -> set:
+    try:
+        insp = inspect(engine)
+        cols = insp.get_columns(table, schema=schema)
+        return {str(c.get("name", "")).lower() for c in cols}
     except Exception:
         return set()
 
-def table_exists(engine: SAEngine, table: str, schema: str = "public") -> bool:
-    return table in _cached_table_names(engine, schema=schema)
-
-@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
-def get_table_columns(_engine: SAEngine, table: str, schema: str = "public") -> list[str]:
-    try:
-        return [c["name"] for c in inspect(_engine).get_columns(table, schema=schema)]
-    except Exception:
-        return []
-
-@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
-def get_column_type(_engine: SAEngine, table: str, column: str, schema: str = "public") -> str:
-    """Return Postgres data_type string from information_schema (fallback: empty string)."""
-    sql = """
-    SELECT data_type
-    FROM information_schema.columns
-    WHERE table_schema = %(schema)s AND table_name = %(table)s AND column_name = %(column)s
-    LIMIT 1
-    """
-    try:
-        df = sql_read(_engine, sql, {"schema": schema, "table": table, "column": column})
-        if not df.empty:
-            return str(df.iloc[0]["data_type"])
-    except Exception:
-        pass
-    return ""
 
 def _sql_in_str_list(values: List[int]) -> str:
     """TEXT/BIGINT 혼재를 안전하게 처리하려고, 항상 문자열 리터럴로 IN 리스트를 만듭니다."""
@@ -265,105 +225,6 @@ def parse_currency(val_str) -> int:
         return 0
     s = re.sub(r"[^\d]", "", str(val_str))
     return int(s) if s else 0
-
-
-
-# --------------------
-# UI helpers (TOP5 cards)
-# --------------------
-def _truncate_text(s: str, max_len: int = 34) -> str:
-    s = "" if s is None else str(s)
-    s = s.replace("\n", " ").replace("\r", " ").strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 1] + "…"
-
-
-def _fmt_int(val) -> str:
-    try:
-        return f"{int(float(val)):,}"
-    except Exception:
-        return "-"
-
-
-def _fmt_pct1(val) -> str:
-    try:
-        return f"{float(val):.1f}%"
-    except Exception:
-        return "-"
-
-
-def _fmt_pct0(val) -> str:
-    try:
-        return f"{float(val):.0f}%"
-    except Exception:
-        return "-"
-
-
-def render_top5_cards(df: pd.DataFrame, label_col: str, cards: List[Dict], sub: str = "") -> None:
-    """Render 5-item ranked lists in small cards."""
-    if df is None or df.empty or label_col not in df.columns:
-        return
-
-    cols = st.columns(len(cards))
-    for i, spec in enumerate(cards):
-        title = spec.get("title", "")
-        metric_col = spec.get("metric_col", "")
-        sort_dir = (spec.get("sort", "desc") or "desc").lower()
-        fmt = spec.get("fmt", lambda x: str(x))
-        flt = spec.get("filter", None)
-
-        tmp = df.copy()
-        if callable(flt):
-            try:
-                tmp = tmp[flt(tmp)].copy()
-            except Exception:
-                pass
-
-        if metric_col not in tmp.columns:
-            with cols[i]:
-                st.markdown(
-                    f"<div class='topcard'><div class='topcard-title'>{html.escape(title)}</div><div class='topcard-sub'>데이터 없음</div></div>",
-                    unsafe_allow_html=True,
-                )
-            continue
-
-        tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce")
-        tmp = tmp.dropna(subset=[metric_col]).copy()
-        if tmp.empty:
-            with cols[i]:
-                st.markdown(
-                    f"<div class='topcard'><div class='topcard-title'>{html.escape(title)}</div><div class='topcard-sub'>데이터 없음</div></div>",
-                    unsafe_allow_html=True,
-                )
-            continue
-
-        asc = sort_dir == "asc"
-        tmp = tmp.sort_values(metric_col, ascending=asc).head(5)
-
-        items = []
-        for _, r in tmp.iterrows():
-            name = _truncate_text(r.get(label_col, ""), 36)
-            val = fmt(r.get(metric_col))
-            items.append(
-                f"<li><span class='topcard-name'>{html.escape(str(name))}</span><span class='topcard-val'>{html.escape(str(val))}</span></li>"
-            )
-        items_html = "\n".join(items)
-
-        sub_html = f"<div class='topcard-sub'>{html.escape(sub)}</div>" if sub else ""
-        card_html = f"""
-<div class='topcard'>
-  <div class='topcard-title'>{html.escape(title)}</div>
-  {sub_html}
-  <ol class='topcard-list'>
-    {items_html}
-  </ol>
-</div>
-"""
-
-        with cols[i]:
-            st.markdown(card_html, unsafe_allow_html=True)
-
 
 
 # -----------------------------
@@ -506,7 +367,7 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
     return {"meta": int(len(acc))}
 
 
-@st.cache_data(ttl=600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=600, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_account_meta"):
         return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
@@ -544,7 +405,7 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
 # DIM loaders
 # -----------------------------
 
-@st.cache_data(ttl=3600, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"):
         return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
@@ -598,8 +459,7 @@ def render_data_freshness(engine) -> None:
 # Filters (main area)
 # -----------------------------
 
-def build_filters(engine: SAEngine, meta: pd.DataFrame, type_opts: List[str]) -> Dict:
-    did_apply = False
+def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
     default_start = default_end
@@ -675,7 +535,6 @@ def build_filters(engine: SAEngine, meta: pd.DataFrame, type_opts: List[str]) ->
         apply_btn = st.button("적용", use_container_width=True)
 
     if apply_btn:
-        did_apply = True
         st.session_state["filters_applied"] = {
             "q": q,
             "manager": manager_sel,
@@ -706,15 +565,6 @@ def build_filters(engine: SAEngine, meta: pd.DataFrame, type_opts: List[str]) ->
 
     f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
 
-    # 캐시 워밍업: 필터 적용 직후 자주 쓰는 쿼리를 한 번 돌려서
-    # 페이지 이동 시(메인→키워드→소재 등) 체감 속도를 1초 안쪽으로 끌어옵니다.
-    if did_apply:
-        try:
-            with st.spinner("캐시 준비 중... (한 번만)"):
-                warm_cache(engine, f)
-        except Exception:
-            pass
-
     return f
 
 
@@ -722,7 +572,7 @@ def build_filters(engine: SAEngine, meta: pd.DataFrame, type_opts: List[str]) ->
 # Budget queries
 # -----------------------------
 
-@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=180, show_spinner=False)
 def query_latest_bizmoney(_engine, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_bizmoney_daily"):
         return pd.DataFrame(columns=["customer_id", "bizmoney_balance", "last_update"])
@@ -750,7 +600,7 @@ def query_latest_bizmoney(_engine, cids: Tuple[int, ...]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=180, show_spinner=False)
 def query_yesterday_cost(_engine, yesterday: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "y_cost"])
@@ -776,7 +626,7 @@ def query_yesterday_cost(_engine, yesterday: date, cids: Tuple[int, ...]) -> pd.
     return df
 
 
-@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=180, show_spinner=False)
 def query_recent_avg_cost(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
@@ -808,7 +658,7 @@ def query_recent_avg_cost(_engine, d1: date, d2: date, cids: Tuple[int, ...]) ->
     return df[["customer_id", "avg_cost"]]
 
 
-@st.cache_data(ttl=180, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=180, show_spinner=False)
 def query_monthly_cost(_engine, target_date: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "current_month_cost"])
@@ -844,57 +694,11 @@ def query_monthly_cost(_engine, target_date: date, cids: Tuple[int, ...]) -> pd.
 # Perf queries (TOP N)
 # -----------------------------
 
-
-
-def warm_cache(engine: SAEngine, f: Dict) -> None:
-    """Warm common caches so page transitions feel instant."""
-    try:
-        _ = load_dim_campaign(engine)
-    except Exception:
-        pass
-
-    cids = tuple(f.get("selected_customer_ids") or [])
-    d1 = f.get("start")
-    d2 = f.get("end")
-    if d1 is None or d2 is None:
-        return
-
-    # Budget page
-    try:
-        _ = query_latest_bizmoney(engine, cids)
-        _ = query_yesterday_cost(engine, str(d2 - timedelta(days=1)), cids)
-        d2_avg = d2 - timedelta(days=1)
-        d1_avg = max(d1, d2_avg - timedelta(days=2))
-        _ = query_recent_avg_cost(engine, str(d1_avg), str(d2_avg), cids)
-        month_start = d1.replace(day=1)
-        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-        _ = query_monthly_cost(engine, str(month_start), str(month_end), cids)
-    except Exception:
-        pass
-
-    # Perf pages (TopN)
-    type_sel = f.get("type_sel") or "전체"
-    topn_kw = int(f.get("top_n_keyword") or 300)
-    topn_ad = int(f.get("top_n_ad") or 300)
-    topn_cp = int(f.get("top_n_campaign") or 300)
-    try:
-        _ = query_campaign_topn(engine, str(d1), str(d2), cids, type_sel, topn_cp)
-    except Exception:
-        pass
-    try:
-        _ = query_keyword_bundle(engine, str(d1), str(d2), cids, type_sel, topn_kw)
-    except Exception:
-        pass
-    try:
-        _ = query_ad_topn(engine, str(d1), str(d2), cids, type_sel, topn_ad)
-    except Exception:
-        pass
-
 def _fact_has_sales(_engine, fact_table: str) -> bool:
     return "sales" in get_table_columns(_engine, fact_table)
 
 
-@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=300, show_spinner=False)
 def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
@@ -958,7 +762,7 @@ def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=300, show_spinner=False)
 def query_keyword_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
@@ -1038,7 +842,7 @@ def query_keyword_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=300, show_spinner=False)
 def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
@@ -1089,8 +893,6 @@ def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: 
     SELECT
       a2.*,
       {ad_text_expr} AS ad_name,
-      ad.adgroup_id::text AS adgroup_id,
-      g.campaign_id::text AS campaign_id,
       COALESCE(NULLIF(g.adgroup_name,''), '') AS adgroup_name,
       COALESCE(NULLIF(c.campaign_name,''), '') AS campaign_name,
       COALESCE(NULLIF(c.campaign_tp,''), '') AS campaign_tp
@@ -1143,75 +945,6 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------
 # Pages
 # -----------------------------
-
-# --------------------
-# Drilldown (Page Navigation) helpers
-# --------------------
-def nav_to(page_name: str, **kwargs):
-    """Set session_state and jump to another page (single-file app selectbox)."""
-    for k, v in (kwargs or {}).items():
-        st.session_state[k] = v
-    st.session_state["page_select"] = page_name
-    st.rerun()
-
-
-def clear_drill(*keys: str):
-    for k in keys:
-        if k in st.session_state:
-            del st.session_state[k]
-
-
-# --------------------
-# Auto Diagnosis (rule-based, fast)
-# --------------------
-def diagnose_row(curr: dict) -> str:
-    """Rule-based diagnostics using current-period metrics only (fast)."""
-    try:
-        imp = float(curr.get("imp", 0) or 0)
-        clk = float(curr.get("clk", 0) or 0)
-        cost = float(curr.get("cost", 0) or 0)
-        conv = float(curr.get("conv", 0) or 0)
-        roas = float(curr.get("roas", 0) or 0)
-        cpa = float(curr.get("cpa", 0) or 0)
-        ctr = float(curr.get("ctr", 0) or 0)
-        cpc = float(curr.get("cpc", 0) or 0)
-    except Exception:
-        return ""
-
-    tags = []
-
-    # 규모/의미 있는 경우에만 경고
-    if cost >= 50000 and conv == 0:
-        tags.append("전환없음")
-    if conv > 0 and cpa >= 100000:
-        tags.append("CPA높음")
-    if cost >= 50000 and roas > 0 and roas < 200:
-        tags.append("ROAS낮음")
-    if imp >= 3000 and ctr > 0 and ctr < 1.0:
-        tags.append("CTR낮음")
-    if clk >= 30 and cpc > 0 and cpc >= 200:
-        tags.append("CPC높음")
-
-    # 좋은 신호(선택)
-    if cost >= 50000 and conv >= 5 and roas >= 500:
-        tags.append("ROAS좋음")
-
-    return " · ".join(tags)
-
-
-def attach_diagnosis(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-    cols = set(out.columns)
-    need = {"imp","clk","cost","conv","ctr","cpc","cpa","roas"}
-    if not need.issubset(cols):
-        # 진단에 필요한 컬럼이 없으면 그대로 반환
-        return out
-    out["diagnosis"] = out.apply(lambda r: diagnose_row(r.to_dict()), axis=1)
-    return out
-
-
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 / 잔액 관리")
@@ -1431,49 +1164,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
-    df = attach_diagnosis(df)
-    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="camp_only_issue")
-    if show_only_issue:
-        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
-
-    # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
-    df_top = df.copy()
-    df_top["_label"] = df_top.get("account_name", "").astype(str).str.strip() + " · " + df_top.get("campaign_name", "").astype(str).str.strip()
-    render_top5_cards(
-        df_top,
-        label_col="_label",
-        sub="현재 화면 TopN 기준",
-        cards=[
-            {"title": "광고비 TOP5", "metric_col": "cost", "sort": "desc", "fmt": format_currency},
-            {"title": "전환 TOP5", "metric_col": "conv", "sort": "desc", "fmt": _fmt_int},
-            {"title": "ROAS TOP5", "metric_col": "roas", "sort": "desc", "fmt": _fmt_pct0,
-             "filter": lambda t: pd.to_numeric(t.get("cost"), errors="coerce").fillna(0) > 0},
-            {"title": "CPA 최저 TOP5", "metric_col": "cpa", "sort": "asc", "fmt": format_currency,
-             "filter": lambda t: pd.to_numeric(t.get("conv"), errors="coerce").fillna(0) > 0},
-        ],
-    )
-    
-    # 빠른 이동(드릴다운)
-    with st.expander("🔎 빠른 이동 (캠페인 → 키워드/소재)", expanded=False):
-        sel = df.sort_values("cost", ascending=False).head(50)
-        if sel.empty:
-            st.info("이동할 캠페인이 없습니다.")
-        else:
-            # 표시용 옵션
-            opt_map = {f"{r['campaign_name']} | {format_currency(r['cost'])}": str(r['campaign_id']) for _, r in sel.iterrows()}
-            pick = st.selectbox("캠페인 선택", options=list(opt_map.keys()), index=0, key="drill_pick_campaign")
-            camp_id = opt_map.get(pick)
-            c1, c2, c3 = st.columns([1,1,3])
-            with c1:
-                if st.button("→ 키워드", use_container_width=True):
-                    nav_to("성과(키워드)", drill_campaign_id=camp_id)
-            with c2:
-                if st.button("→ 소재", use_container_width=True):
-                    nav_to("성과(소재)", drill_campaign_id=camp_id)
-            with c3:
-                st.caption("※ 다른 페이지에서 캠페인 필터가 자동 적용됩니다. (상단 버튼으로 해제 가능)")
-
-    st.divider()
 
     disp = df.copy()
     disp["cost"] = disp["cost"].apply(format_currency)
@@ -1487,7 +1177,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "account_name": "업체명",
             "manager": "담당자",
             "campaign_type": "광고유형",
-            "diagnosis": "진단",
             "campaign_name": "캠페인",
             "imp": "노출",
             "clk": "클릭",
@@ -1507,7 +1196,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = disp["CTR(%)"].astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    cols = ["업체명", "담당자", "광고유형", "캠페인", "진단", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
     st.dataframe(view_df, use_container_width=True, hide_index=True)
@@ -1516,7 +1205,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
 
-@st.cache_data(ttl=300, show_spinner=False, hash_funcs=CACHE_HASH_FUNCS)
+@st.cache_data(ttl=300, show_spinner=False)
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -1582,8 +1271,6 @@ def query_keyword_bundle(
             COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
             COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
             COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
-            g.campaign_id::text AS campaign_id,
-            k.adgroup_id::text AS adgroup_id,
             CASE
                 WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
                 WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
@@ -1626,17 +1313,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     st.markdown("## 키워드 성과")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
-    drill_camp = st.session_state.get("drill_campaign_id")
-    if drill_camp:
-        st.info(f"🔎 드릴다운 필터 적용됨: campaign_id = {drill_camp}")
-        if st.button("드릴다운 해제", key="clear_drill_kw"):
-            clear_drill("drill_campaign_id")
-            st.rerun()
-
-    if drill_camp:
-        if st.button("→ 소재(드릴다운)", key="to_ad_from_kw"):
-            nav_to("성과(소재)", drill_campaign_id=drill_camp)
-
     # 필터 적용된 고객 리스트(없으면 전체)
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", []) or [])
@@ -1646,10 +1322,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     # ✅ 한 번의 쿼리로: TopN(광고비) + 클릭TOP10 + 전환TOP10
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
-
-    # Drilldown 필터: 캠페인 고정 (캠페인→키워드 이동 시)
-    if drill_camp and (bundle is not None) and (not bundle.empty) and ("campaign_id" in bundle.columns):
-        bundle = bundle[bundle["campaign_id"].astype(str) == str(drill_camp)].copy()
     if bundle is None or bundle.empty:
         st.warning("데이터 없음")
         return
@@ -1698,10 +1370,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     df["customer_id"] = df["customer_id"].astype("int64")
 
     df = add_rates(df)
-    df = attach_diagnosis(df)
-    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="kw_only_issue")
-    if show_only_issue:
-        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
     df = df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
     view = df.rename(
@@ -1711,7 +1379,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             "campaign_type_label": "캠페인유형",
             "campaign_name": "캠페인",
             "adgroup_name": "광고그룹",
-            "diagnosis": "진단",
             "keyword": "키워드",
             "imp": "노출",
             "clk": "클릭",
@@ -1732,59 +1399,24 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     view["ROAS(%)"] = view["ROAS(%)"].apply(format_roas)
     view = finalize_ctr_col(view, "CTR(%)")
 
-    cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드", "진단", "노출", "클릭", "CTR(%)", "CPC", "비용", "전환", "CPA", "매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드", "노출", "클릭", "CTR(%)", "CPC", "비용", "전환", "CPA", "매출", "ROAS(%)"]
     st.dataframe(view[cols], use_container_width=True, hide_index=True)
     render_download_compact(view[cols], f"키워드성과_{f['start']}_{f['end']}", "keyword", "kw")
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 🧩 성과 (소재)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
-    drill_camp = st.session_state.get("drill_campaign_id")
-    if drill_camp:
-        st.info(f"🔎 드릴다운 필터 적용됨: campaign_id = {drill_camp}")
-        if st.button("드릴다운 해제", key="clear_drill_ad"):
-            clear_drill("drill_campaign_id")
-            st.rerun()
-
-    if drill_camp:
-        if st.button("→ 키워드(드릴다운)", key="to_kw_from_ad"):
-            nav_to("성과(키워드)", drill_campaign_id=drill_camp)
-
     top_n = int(f.get("top_n_ad", 100))
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     df = query_ad_topn(engine, f["start"], f["end"], cids, type_sel, top_n)
-
-    if drill_camp and (df is not None) and (not df.empty) and ("campaign_id" in df.columns):
-        df = df[df["campaign_id"].astype(str) == str(drill_camp)].copy()
     if df is None or df.empty:
         st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
         return
 
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
-    df = attach_diagnosis(df)
-    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="ad_only_issue")
-    if show_only_issue:
-        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
-
-    # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
-    df_top = df.copy()
-    df_top["_label"] = df_top.get("account_name", "").astype(str).str.strip() + " · " + df_top.get("ad_name", "").astype(str).apply(lambda x: _truncate_text(x, 28))
-    render_top5_cards(
-        df_top,
-        label_col="_label",
-        sub="현재 화면 TopN 기준",
-        cards=[
-            {"title": "광고비 TOP5", "metric_col": "cost", "sort": "desc", "fmt": format_currency},
-            {"title": "전환 TOP5", "metric_col": "conv", "sort": "desc", "fmt": _fmt_int},
-            {"title": "CTR TOP5", "metric_col": "ctr", "sort": "desc", "fmt": _fmt_pct1},
-            {"title": "ROAS TOP5", "metric_col": "roas", "sort": "desc", "fmt": _fmt_pct0,
-             "filter": lambda t: pd.to_numeric(t.get("cost"), errors="coerce").fillna(0) > 0},
-        ],
-    )
-    st.divider()
 
     disp = df.copy()
     disp["cost"] = disp["cost"].apply(format_currency)
@@ -1800,7 +1432,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             "campaign_name": "캠페인",
             "adgroup_name": "광고그룹",
             "ad_id": "소재ID",
-            "diagnosis": "진단",
             "ad_name": "소재내용",
             "imp": "노출",
             "clk": "클릭",
@@ -1820,7 +1451,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = disp["CTR(%)"].astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "진단", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
     st.dataframe(
@@ -1890,14 +1521,9 @@ def main():
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
 
-    f = build_filters(engine, meta, type_opts)
+    f = build_filters(meta, type_opts)
 
-    pages = ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"]
-
-    if "page_select" not in st.session_state:
-        st.session_state["page_select"] = pages[0]
-
-    page = st.selectbox("메뉴", pages, key="page_select")
+    page = st.selectbox("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"], index=0)
 
     st.divider()
 
