@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-collect_bizmoney.py - 네이버 검색광고 비즈머니(잔액) 수집기 (디버깅 모드)
+collect_bizmoney.py - 네이버 검색광고 비즈머니(잔액) 전용 수집기
+- 수정사항: JSON 키 값 대소문자 수정 (bizMoney -> bizmoney)
 """
 
 import os
@@ -9,12 +10,12 @@ import time
 import hmac
 import base64
 import hashlib
-import json
 import requests
 from datetime import date
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
+# 1. 환경변수 로드
 load_dotenv()
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
@@ -27,6 +28,7 @@ if not API_KEY or not API_SECRET:
     print("❌ API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
     sys.exit(1)
 
+# 2. API 서명 및 헤더 생성
 def get_header(method, uri, customer_id):
     timestamp = str(int(time.time() * 1000))
     signature = hmac.new(
@@ -43,20 +45,16 @@ def get_header(method, uri, customer_id):
         "X-Signature": base64.b64encode(signature).decode('utf-8'),
     }
 
+# 3. 비즈머니 조회 함수
 def get_bizmoney(customer_id):
     uri = "/billing/bizmoney"
     try:
         r = requests.get(BASE_URL + uri, headers=get_header("GET", uri, customer_id), timeout=10)
         
-        # ▼▼▼ [디버깅] 응답 내용 강제 출력 ▼▼▼
         if r.status_code == 200:
             data = r.json()
-            balance = int(data.get("bizMoney", 0))
-            
-            # 0원이면 의심스러우니까 원본 데이터를 출력해봄
-            if balance == 0:
-                print(f"❓ {customer_id}: 0원 응답 받음 -> 원본: {json.dumps(data, ensure_ascii=False)}")
-                
+            # ✅ [수정] 대소문자 수정: bizMoney -> bizmoney
+            balance = int(data.get("bizmoney", 0))
             return balance
         else:
             print(f"⚠️ [API Error] {customer_id}: {r.status_code} - {r.text[:200]}")
@@ -66,6 +64,7 @@ def get_bizmoney(customer_id):
         print(f"⚠️ [System Error] {customer_id}: {e}")
         return None
 
+# 4. 메인 로직
 def main():
     if not DB_URL:
         print("❌ DATABASE_URL이 없습니다.")
@@ -73,15 +72,18 @@ def main():
 
     engine = create_engine(DB_URL)
     
-    # 테이블 생성
+    # 테이블 생성 (없으면)
     with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS fact_bizmoney_daily (
-                dt DATE, customer_id TEXT, bizmoney_balance BIGINT, PRIMARY KEY(dt, customer_id)
+                dt DATE, 
+                customer_id TEXT, 
+                bizmoney_balance BIGINT, 
+                PRIMARY KEY(dt, customer_id)
             )
         """))
 
-    # 계정 목록 조회
+    # 수집 대상 계정 가져오기 (dim_account 테이블 활용)
     accounts = []
     try:
         with engine.connect() as conn:
@@ -90,12 +92,14 @@ def main():
     except Exception:
         pass
 
+    # DB에 계정이 없으면 환경변수 단일 계정 사용
     if not accounts and CUSTOMER_ID:
         accounts = [{"id": CUSTOMER_ID, "name": "Target Account"}]
 
-    print(f"📋 수집 대상: {len(accounts)}개 계정")
+    print(f"📋 비즈머니 수집 대상: {len(accounts)}개 계정")
     
     today = date.today()
+    success_count = 0
     
     for acc in accounts:
         cid = acc["id"]
@@ -103,17 +107,24 @@ def main():
         
         balance = get_bizmoney(cid)
         
+        # 에러(None)인 경우 건너뜀
         if balance is None:
-            continue # 에러면 저장 안 함
+            print(f"❌ {name}({cid}): 수집 실패")
+            continue
 
+        # 정상 저장
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO fact_bizmoney_daily (dt, customer_id, bizmoney_balance)
                 VALUES (:dt, :cid, :bal)
-                ON CONFLICT (dt, customer_id) DO UPDATE SET bizmoney_balance = EXCLUDED.bizmoney_balance
+                ON CONFLICT (dt, customer_id) 
+                DO UPDATE SET bizmoney_balance = EXCLUDED.bizmoney_balance
             """), {"dt": today, "cid": cid, "bal": balance})
             
-        print(f"✅ {name}({cid}): {balance:,}원 저장")
+        print(f"✅ {name}({cid}): {balance:,}원 저장 완료")
+        success_count += 1
+
+    print(f"🚀 전체 완료: 성공 {success_count} / 전체 {len(accounts)}")
 
 if __name__ == "__main__":
     main()
