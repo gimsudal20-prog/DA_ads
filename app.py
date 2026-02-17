@@ -551,8 +551,33 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
     return {"meta": int(len(acc)), "dim": int(len(dim_rows))}
 
 
+# --------------------
+# Fast bootstrap (avoid reading accounts.xlsx every rerun)
+# --------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_meta(_engine) -> pd.DataFrame:
+def ensure_seeded(_engine, accounts_path: str) -> None:
+    """
+    dim_account_meta가 비어있는 경우에만 accounts.xlsx를 읽어서 1회 시드합니다.
+    (평소 rerun에서는 Excel I/O를 피해서 속도 개선)
+    """
+    try:
+        if table_exists(_engine, "dim_account_meta"):
+            chk = sql_read(_engine, "SELECT 1 AS ok FROM dim_account_meta LIMIT 1")
+            if not chk.empty:
+                return
+    except Exception:
+        # 테이블/권한/연결 이슈가 있어도 아래 시드 시도에서 처리
+        pass
+
+    try:
+        seed_from_accounts_xlsx(_engine)
+    except Exception:
+        pass
+
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_meta(_engine, token: int = 0) -> pd.DataFrame:
     df = sql_read(
         _engine,
         """
@@ -619,11 +644,34 @@ def get_monthly_cost(_engine, target_date: date) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List[int]] = None) -> pd.DataFrame:
+    """
+    최근 N일 평균 소진(일평균) - DB에서 바로 집계해서 가져옵니다 (속도 개선).
+    """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
 
-    sql = "SELECT customer_id, cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2"
-    tmp = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    days = max((d2 - d1).days + 1, 1)
+
+    sql = """
+    SELECT customer_id, SUM(cost) AS total_cost
+    FROM fact_campaign_daily
+    WHERE dt BETWEEN :d1 AND :d2
+    """
+    params: Dict[str, object] = {"d1": str(d1), "d2": str(d2)}
+
+    use_sql_filter = False
+    try:
+        dialect = (getattr(getattr(_engine, "dialect", None), "name", "") or "").lower()
+        if customer_ids and "postgres" in dialect:
+            sql += " AND customer_id = ANY(:ids)\n"
+            params["ids"] = [int(x) for x in customer_ids]
+            use_sql_filter = True
+    except Exception:
+        use_sql_filter = False
+
+    sql += " GROUP BY customer_id"
+
+    tmp = sql_read(_engine, sql, params)
 
     if tmp.empty:
         return pd.DataFrame(columns=["customer_id", "avg_cost"])
@@ -631,14 +679,14 @@ def get_recent_avg_cost(_engine, d1: date, d2: date, customer_ids: Optional[List
     tmp["customer_id"] = pd.to_numeric(tmp["customer_id"], errors="coerce").astype("Int64")
     tmp = tmp.dropna(subset=["customer_id"]).copy()
     tmp["customer_id"] = tmp["customer_id"].astype("int64")
+    tmp["total_cost"] = pd.to_numeric(tmp["total_cost"], errors="coerce").fillna(0.0)
 
-    if customer_ids:
+    # Postgres가 아니거나 ANY 바인딩이 불가한 환경이면 Pandas에서 필터
+    if customer_ids and not use_sql_filter:
         tmp = tmp[tmp["customer_id"].isin([int(x) for x in customer_ids])].copy()
 
-    g = tmp.groupby("customer_id", as_index=False)["cost"].sum()
-    g["avg_cost"] = g["cost"].astype(float) / max((d2 - d1).days + 1, 1)
-    return g[["customer_id", "avg_cost"]]
-
+    tmp["avg_cost"] = tmp["total_cost"].astype(float) / float(days)
+    return tmp[["customer_id", "avg_cost"]]
 
 # --------------------
 # Sidebar
@@ -910,31 +958,32 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
         d2 = f["end"] - timedelta(days=1)
         d1 = d2 - timedelta(days=TOPUP_AVG_DAYS - 1)
         avg_df = get_recent_avg_cost(engine, d1, d2, customer_ids=df["customer_id"].tolist())
-
     if not avg_df.empty:
         biz_view = biz_view.merge(avg_df, on="customer_id", how="left")
         biz_view["avg_cost"] = biz_view["avg_cost"].fillna(0.0)
     else:
         biz_view["avg_cost"] = 0.0
 
-    biz_view["days_cover"] = biz_view.apply(
-        lambda r: (float(r["bizmoney_balance"]) / float(r["avg_cost"])) if float(r["avg_cost"]) > 0 else None, axis=1
-    )
+    # ✅ 속도 개선: row-wise apply → vectorized
+    bal = pd.to_numeric(biz_view.get("bizmoney_balance", 0), errors="coerce").fillna(0.0).astype(float)
+    avg = pd.to_numeric(biz_view.get("avg_cost", 0), errors="coerce").fillna(0.0).astype(float)
 
-    biz_view["threshold"] = biz_view["avg_cost"] * float(TOPUP_DAYS_COVER)
-    biz_view["threshold"] = biz_view["threshold"].fillna(0).astype(float)
-    biz_view["threshold"] = biz_view["threshold"].apply(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+    biz_view["days_cover"] = bal / avg.where(avg > 0)
+    biz_view["threshold"] = (avg * float(TOPUP_DAYS_COVER)).clip(lower=float(TOPUP_STATIC_THRESHOLD))
 
-    biz_view["상태"] = biz_view.apply(
-        lambda r: "🔴 충전필요" if float(r["bizmoney_balance"]) < float(r["threshold"]) else "🟢 여유", axis=1
-    )
+    biz_view["상태"] = "🟢 여유"
+    biz_view.loc[bal < biz_view["threshold"], "상태"] = "🔴 충전필요"
 
     biz_view["bizmoney_fmt"] = biz_view["bizmoney_balance"].apply(format_currency)
     biz_view["y_cost_fmt"] = biz_view["y_cost"].apply(format_currency)
     biz_view["avg_cost_fmt"] = biz_view["avg_cost"].apply(format_currency)
 
     def _fmt_days(d):
-        if pd.isna(d) or d is None:
+        if pd.isna(d):
+            return "-"
+        try:
+            d = float(d)
+        except Exception:
             return "-"
         if d > 99:
             return "99+일"
@@ -982,25 +1031,22 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     )
     card_open("💳 비즈머니 잔액 현황", right_html=right_badges)
 
-    tab_need, tab_all = st.tabs([f"🔴 충전필요 ({need_topup})", f"🟢 전체 ({len(biz_view)})"])
+    tab_need, tab_all = st.tabs(["🔴 충전필요", "전체"])
 
     def render_biz_table(df_):
-        def _style_biz(row):
-            return ["background-color: rgba(239,68,68,0.08); font-weight: 800;"] * len(row) if "충전필요" in str(row.get("상태", "")) else [""] * len(row)
-
+        # ✅ 속도 개선: Styler(행별 스타일) 제거 → 렌더링 가볍게
+        cols = [
+            "account_name",
+            "manager",
+            "bizmoney_fmt",
+            "avg_cost_fmt",
+            "days_cover_fmt",
+            "y_cost_fmt",
+            "상태",
+            "last_update",
+        ]
         st.dataframe(
-            df_[
-                [
-                    "account_name",
-                    "manager",
-                    "bizmoney_fmt",
-                    "avg_cost_fmt",
-                    "days_cover_fmt",
-                    "y_cost_fmt",
-                    "상태",
-                    "last_update",
-                ]
-            ].style.apply(_style_biz, axis=1),
+            df_[cols],
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -1014,6 +1060,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                 "last_update": "확인일자",
             },
         )
+
 
     with tab_need:
         render_biz_table(biz_view[biz_view["상태"].str.contains("충전필요", na=False)].copy())
@@ -1031,19 +1078,21 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     budget_view["monthly_budget_edit"] = budget_view["monthly_budget_val"].apply(format_number_commas)
     budget_view["current_month_cost_disp"] = budget_view["current_month_cost_val"].apply(format_number_commas)
 
-    def get_status(rate, budget):
-        if budget == 0:
-            return ("⚪ 미설정", "미설정", 3)
-        if rate >= 1.0:
-            return ("🔴 초과", "초과", 0)
-        if rate >= 0.9:
-            return ("🟡 주의", "주의", 1)
-        return ("🟢 적정", "적정", 2)
+    # ✅ 속도 개선: apply → vectorized
+    rate = pd.to_numeric(budget_view["usage_rate"], errors="coerce").fillna(0.0)
+    bud = pd.to_numeric(budget_view["monthly_budget_val"], errors="coerce").fillna(0).astype(int)
 
-    tmp = budget_view.apply(lambda r: get_status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
-    budget_view["status_icon"] = tmp[0]
-    budget_view["status_text"] = tmp[1]
-    budget_view["_rank"] = tmp[2].astype(int)
+    status_text = pd.Series("적정", index=budget_view.index)
+    status_text.loc[bud == 0] = "미설정"
+    status_text.loc[(bud > 0) & (rate >= 1.0)] = "초과"
+    status_text.loc[(bud > 0) & (rate >= 0.9) & (rate < 1.0)] = "주의"
+
+    icon_map = {"미설정": "⚪ 미설정", "초과": "🔴 초과", "주의": "🟡 주의", "적정": "🟢 적정"}
+    rank_map = {"초과": 0, "주의": 1, "적정": 2, "미설정": 3}
+
+    budget_view["status_text"] = status_text
+    budget_view["status_icon"] = status_text.map(icon_map).fillna("🟢 적정")
+    budget_view["_rank"] = status_text.map(rank_map).fillna(999).astype(int)
 
     cnt_over = int((budget_view["status_text"] == "초과").sum())
     cnt_warn = int((budget_view["status_text"] == "주의").sum())
@@ -1058,11 +1107,26 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
     card_open(f"📅 월 예산 관리 ({f['end'].strftime('%Y년 %m월')} 기준)", right_html=badges)
 
     budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+    # ✅ 성능: 계정 수가 많으면 data_editor가 느려질 수 있어요 → 표시 행 수 제한
+    budget_view_disp = budget_view
+    max_rows = int(len(budget_view))
+    if max_rows > 500:
+        st.caption("※ 계정 수가 많아 표가 느려질 수 있어요. 아래 '표시 행 수'를 줄이면 빨라집니다.")
+    if max_rows > 80:
+        default_rows = min(400, max_rows)
+        show_rows = st.slider(
+            "표시 행 수(성능)",
+            min_value=50,
+            max_value=max_rows,
+            value=default_rows,
+            step=50,
+        )
+        budget_view_disp = budget_view.head(int(show_rows)).copy()
 
     c1, c2 = st.columns([3, 1])
     with c1:
         edited = st.data_editor(
-            budget_view[
+            budget_view_disp[
                 [
                     "customer_id",
                     "account_name",
@@ -1132,11 +1196,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                 update_monthly_budget(engine, cid, int(r["new_budget_val"]))
 
             st.success(f"{len(changed_rows)}건 수정 완료.")
-            # ✅ 전체 cache clear 대신 meta 캐시만 clear
-            try:
-                get_meta.clear()
-            except Exception:
-                pass
+            # ✅ meta만 갱신 (전체 캐시 clear 안 함)
+            st.session_state["meta_token"] = int(st.session_state.get("meta_token", 0)) + 1
             st.rerun()
 
     card_close()
@@ -1637,6 +1698,7 @@ def page_settings(engine):
     if st.button("🔁 accounts.xlsx → DB 동기화"):
         res = seed_from_accounts_xlsx(engine)
         st.success(f"완료: meta {res['meta']}건")
+        st.session_state["meta_token"] = int(st.session_state.get("meta_token", 0)) + 1
         st.rerun()
 
 
@@ -1644,16 +1706,13 @@ def main():
     st.title("네이버 검색광고 통합 대시보드")
     try:
         engine = get_engine()
+        if "meta_token" not in st.session_state:
+            st.session_state["meta_token"] = 0
     except Exception as e:
         st.error(str(e))
         return
-
-    try:
-        seed_from_accounts_xlsx(engine)
-    except Exception:
-        pass
-
-    meta = get_meta(engine)
+    ensure_seeded(engine, ACCOUNTS_XLSX)
+    meta = get_meta(engine, st.session_state.get("meta_token", 0))
     dim_campaign = load_dim_campaign(engine)
 
     type_opts = get_campaign_type_options(dim_campaign)
