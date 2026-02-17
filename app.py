@@ -31,8 +31,13 @@ load_dotenv()
 # =============================
 # Page config / build tag
 # =============================
-st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
-BUILD_TAG = "v7.1.3 (2026-02-17) - cid 타입 자동판별 + 키워드/예산 ProgrammingError/속도 개선"
+st.set_page_config(
+    page_title="네이버 검색광고 통합 대시보드",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+BUILD_TAG = "v7.1.4 (2026-02-17) - 모바일 필터/메뉴 본문 노출(사이드바 제거)"
 
 # =============================
 # Global UI CSS (Website mode)
@@ -47,7 +52,11 @@ GLOBAL_UI_CSS = """
   div[data-testid="stDecoration"] { display: none; }
   div[data-testid="stStatusWidget"] { visibility: hidden; height: 0px; }
 
-  section[data-testid="stSidebar"] { padding-top: 8px; }
+  /* ✅ 모바일에서도 필터/메뉴가 보이도록: 사이드바(햄버거 의존) 자체를 숨기고, 본문에 필터/메뉴를 둠 */
+  section[data-testid="stSidebar"] { display: none !important; }
+  section[data-testid="stSidebar"] * { display: none !important; }
+
+
 
   /* index column 숨김 */
   thead tr th:first-child { display:none }
@@ -786,54 +795,84 @@ def calculate_delta(curr: float, prev: float, is_percent: bool = False, inverse:
 # =============================
 # Sidebar filters
 # =============================
-def sidebar_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict[str, Any]:
-    st.sidebar.title("필터")
+def filters_panel(meta: pd.DataFrame, type_opts: List[str]) -> Dict[str, Any]:
+    """✅ 모바일에서도 보이는 본문 필터 패널(사이드바 의존 제거)."""
+    with st.expander("🔎 필터", expanded=True):
+        c1, c2 = st.columns([1, 1])
 
-    with st.sidebar.expander("업체/담당자", expanded=True):
-        q = st.text_input("업체명 검색", placeholder="예: 실리콘플러스")
-        managers = sorted([m for m in meta.get("manager", pd.Series([], dtype=str)).fillna("").unique().tolist() if str(m).strip()])
-        manager_sel = st.multiselect("담당자", options=managers, default=[])
+        with c1:
+            st.markdown("#### 업체 / 담당자")
+            q = st.text_input("업체명 검색", placeholder="예: 실리콘플러스", key="flt_q")
 
-        tmp = meta.copy()
-        if q:
-            tmp = tmp[tmp["account_name"].str.contains(q, case=False, na=False)]
-        if manager_sel:
-            tmp = tmp[tmp["manager"].isin(manager_sel)]
+            managers = sorted(
+                [
+                    m
+                    for m in meta.get("manager", pd.Series([], dtype=str)).fillna("").unique().tolist()
+                    if str(m).strip()
+                ]
+            )
+            manager_sel = st.multiselect("담당자", options=managers, default=[], key="flt_manager")
 
-        opt = tmp[["account_name", "customer_id"]].copy() if not tmp.empty else pd.DataFrame(columns=["account_name","customer_id"])
-        opt["label"] = opt["account_name"]
-        labels = opt["label"].tolist()
-        company_sel_labels = st.multiselect("업체", options=labels, default=[])
-        sel_ids = opt[opt["label"].isin(company_sel_labels)]["customer_id"].astype(int).tolist() if company_sel_labels else []
+            tmp = meta.copy()
+            if q:
+                tmp = tmp[tmp["account_name"].str.contains(q, case=False, na=False)]
+            if manager_sel:
+                tmp = tmp[tmp["manager"].isin(manager_sel)]
 
-    with st.sidebar.expander("기간", expanded=True):
-        period = st.selectbox("기간", ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"], index=1)
-        today = date.today()
+            opt = (
+                tmp[["account_name", "customer_id"]].copy()
+                if not tmp.empty
+                else pd.DataFrame(columns=["account_name", "customer_id"])
+            )
+            opt["label"] = opt["account_name"]
+            labels = opt["label"].tolist()
+            company_sel_labels = st.multiselect("업체", options=labels, default=[], key="flt_company")
+            sel_ids = (
+                opt[opt["label"].isin(company_sel_labels)]["customer_id"].astype(int).tolist()
+                if company_sel_labels
+                else []
+            )
 
-        if period == "오늘":
-            start, end = today, today
-        elif period == "어제":
-            end = today - timedelta(days=1)
-            start = end
-        elif period.startswith("최근 7일"):
-            end = today - timedelta(days=1)
-            start = end - timedelta(days=6)
-        elif period.startswith("최근 30일"):
-            end = today - timedelta(days=1)
-            start = end - timedelta(days=29)
-        else:
-            c1, c2 = st.columns(2)
-            start = c1.date_input("시작일", value=today - timedelta(days=7))
-            end = c2.date_input("종료일", value=today - timedelta(days=1))
-            if end < start:
-                st.warning("종료일은 시작일 이후여야 합니다.")
-        st.caption(f"선택 기간: {start} ~ {end}")
+        with c2:
+            st.markdown("#### 기간 / 광고유형")
+            period = st.selectbox(
+                "기간",
+                ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"],
+                index=1,
+                key="flt_period",
+            )
+            today = date.today()
 
-    with st.sidebar.expander("광고유형", expanded=True):
-        type_sel = st.multiselect("검색광고 종류", options=type_opts, default=[])
-        st.caption("※ '기타' 유형은 자동으로 제외됩니다.")
+            if period == "오늘":
+                start, end = today, today
+            elif period == "어제":
+                end = today - timedelta(days=1)
+                start = end
+            elif period.startswith("최근 7일"):
+                end = today - timedelta(days=1)
+                start = end - timedelta(days=6)
+            elif period.startswith("최근 30일"):
+                end = today - timedelta(days=1)
+                start = end - timedelta(days=29)
+            else:
+                d1c, d2c = st.columns(2)
+                start = d1c.date_input("시작일", value=today - timedelta(days=7), key="flt_start")
+                end = d2c.date_input("종료일", value=today - timedelta(days=1), key="flt_end")
+                if end < start:
+                    st.warning("종료일은 시작일 이후여야 합니다.")
+            st.caption(f"선택 기간: {start} ~ {end}")
 
-    return {"q": q, "manager_sel": manager_sel, "selected_customer_ids": sel_ids, "start": start, "end": end, "type_sel": type_sel}
+            type_sel = st.multiselect("검색광고 종류", options=type_opts, default=[], key="flt_type")
+            st.caption("※ '기타' 유형은 자동으로 제외됩니다.")
+
+    return {
+        "q": q,
+        "manager_sel": manager_sel,
+        "selected_customer_ids": sel_ids,
+        "start": start,
+        "end": end,
+        "type_sel": type_sel,
+    }
 
 def resolve_selected_ids(meta: pd.DataFrame, f: Dict[str, Any]) -> List[int]:
     sel_ids = f.get("selected_customer_ids", [])
@@ -1348,10 +1387,20 @@ def main():
         # 그래도 실행은 가능하지만 필터/표시가 빈 상태일 수 있음.
 
     dim_campaign = load_dim_campaign(engine)
-    type_opts = get_campaign_type_options(dim_campaign)
-    f = sidebar_filters(meta if not meta.empty else pd.DataFrame(columns=["account_name","customer_id","manager"]), type_opts)
 
-    page = st.sidebar.radio("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"])
+    page = st.radio(
+        "메뉴",
+        ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="page_nav",
+    )
+
+    type_opts = get_campaign_type_options(dim_campaign)
+    f = filters_panel(
+        meta if not meta.empty else pd.DataFrame(columns=["account_name", "customer_id", "manager"]),
+        type_opts,
+    )
 
     if page == "전체 예산/잔액 관리":
         page_budget(meta, engine, f)
