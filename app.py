@@ -41,7 +41,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.1 (TOP5 카드 추가)"
+BUILD_TAG = "v7.3.2 (2026-02-17) - Drilldown + 자동진단"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -1088,6 +1088,8 @@ def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: 
     SELECT
       a2.*,
       {ad_text_expr} AS ad_name,
+      ad.adgroup_id::text AS adgroup_id,
+      g.campaign_id::text AS campaign_id,
       COALESCE(NULLIF(g.adgroup_name,''), '') AS adgroup_name,
       COALESCE(NULLIF(c.campaign_name,''), '') AS campaign_name,
       COALESCE(NULLIF(c.campaign_tp,''), '') AS campaign_tp
@@ -1140,6 +1142,75 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------
 # Pages
 # -----------------------------
+
+# --------------------
+# Drilldown (Page Navigation) helpers
+# --------------------
+def nav_to(page_name: str, **kwargs):
+    """Set session_state and jump to another page (single-file app selectbox)."""
+    for k, v in (kwargs or {}).items():
+        st.session_state[k] = v
+    st.session_state["page_select"] = page_name
+    st.rerun()
+
+
+def clear_drill(*keys: str):
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+
+
+# --------------------
+# Auto Diagnosis (rule-based, fast)
+# --------------------
+def diagnose_row(curr: dict) -> str:
+    """Rule-based diagnostics using current-period metrics only (fast)."""
+    try:
+        imp = float(curr.get("imp", 0) or 0)
+        clk = float(curr.get("clk", 0) or 0)
+        cost = float(curr.get("cost", 0) or 0)
+        conv = float(curr.get("conv", 0) or 0)
+        roas = float(curr.get("roas", 0) or 0)
+        cpa = float(curr.get("cpa", 0) or 0)
+        ctr = float(curr.get("ctr", 0) or 0)
+        cpc = float(curr.get("cpc", 0) or 0)
+    except Exception:
+        return ""
+
+    tags = []
+
+    # 규모/의미 있는 경우에만 경고
+    if cost >= 50000 and conv == 0:
+        tags.append("전환없음")
+    if conv > 0 and cpa >= 100000:
+        tags.append("CPA높음")
+    if cost >= 50000 and roas > 0 and roas < 200:
+        tags.append("ROAS낮음")
+    if imp >= 3000 and ctr > 0 and ctr < 1.0:
+        tags.append("CTR낮음")
+    if clk >= 30 and cpc > 0 and cpc >= 200:
+        tags.append("CPC높음")
+
+    # 좋은 신호(선택)
+    if cost >= 50000 and conv >= 5 and roas >= 500:
+        tags.append("ROAS좋음")
+
+    return " · ".join(tags)
+
+
+def attach_diagnosis(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    cols = set(out.columns)
+    need = {"imp","clk","cost","conv","ctr","cpc","cpa","roas"}
+    if not need.issubset(cols):
+        # 진단에 필요한 컬럼이 없으면 그대로 반환
+        return out
+    out["diagnosis"] = out.apply(lambda r: diagnose_row(r.to_dict()), axis=1)
+    return out
+
+
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 / 잔액 관리")
@@ -1359,6 +1430,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
+    df = attach_diagnosis(df)
+    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="camp_only_issue")
+    if show_only_issue:
+        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
 
     # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
     df_top = df.copy()
@@ -1376,6 +1451,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
              "filter": lambda t: pd.to_numeric(t.get("conv"), errors="coerce").fillna(0) > 0},
         ],
     )
+    
+    # 빠른 이동(드릴다운)
+    with st.expander("🔎 빠른 이동 (캠페인 → 키워드/소재)", expanded=False):
+        sel = df.sort_values("cost", ascending=False).head(50)
+        if sel.empty:
+            st.info("이동할 캠페인이 없습니다.")
+        else:
+            # 표시용 옵션
+            opt_map = {f"{r['campaign_name']} | {format_currency(r['cost'])}": str(r['campaign_id']) for _, r in sel.iterrows()}
+            pick = st.selectbox("캠페인 선택", options=list(opt_map.keys()), index=0, key="drill_pick_campaign")
+            camp_id = opt_map.get(pick)
+            c1, c2, c3 = st.columns([1,1,3])
+            with c1:
+                if st.button("→ 키워드", use_container_width=True):
+                    nav_to("성과(키워드)", drill_campaign_id=camp_id)
+            with c2:
+                if st.button("→ 소재", use_container_width=True):
+                    nav_to("성과(소재)", drill_campaign_id=camp_id)
+            with c3:
+                st.caption("※ 다른 페이지에서 캠페인 필터가 자동 적용됩니다. (상단 버튼으로 해제 가능)")
+
     st.divider()
 
     disp = df.copy()
@@ -1390,6 +1486,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "account_name": "업체명",
             "manager": "담당자",
             "campaign_type": "광고유형",
+            "diagnosis": "진단",
             "campaign_name": "캠페인",
             "imp": "노출",
             "clk": "클릭",
@@ -1409,7 +1506,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = disp["CTR(%)"].astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    cols = ["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "광고유형", "캠페인", "진단", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
     st.dataframe(view_df, use_container_width=True, hide_index=True)
@@ -1484,6 +1581,8 @@ def query_keyword_bundle(
             COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
             COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
             COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+            g.campaign_id::text AS campaign_id,
+            k.adgroup_id::text AS adgroup_id,
             CASE
                 WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
                 WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
@@ -1526,6 +1625,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     st.markdown("## 키워드 성과")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
+    drill_camp = st.session_state.get("drill_campaign_id")
+    if drill_camp:
+        st.info(f"🔎 드릴다운 필터 적용됨: campaign_id = {drill_camp}")
+        if st.button("드릴다운 해제", key="clear_drill_kw"):
+            clear_drill("drill_campaign_id")
+            st.rerun()
+
+    if drill_camp:
+        if st.button("→ 소재(드릴다운)", key="to_ad_from_kw"):
+            nav_to("성과(소재)", drill_campaign_id=drill_camp)
+
     # 필터 적용된 고객 리스트(없으면 전체)
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", []) or [])
@@ -1535,6 +1645,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     # ✅ 한 번의 쿼리로: TopN(광고비) + 클릭TOP10 + 전환TOP10
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
+
+    # Drilldown 필터: 캠페인 고정 (캠페인→키워드 이동 시)
+    if drill_camp and (bundle is not None) and (not bundle.empty) and ("campaign_id" in bundle.columns):
+        bundle = bundle[bundle["campaign_id"].astype(str) == str(drill_camp)].copy()
     if bundle is None or bundle.empty:
         st.warning("데이터 없음")
         return
@@ -1583,6 +1697,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     df["customer_id"] = df["customer_id"].astype("int64")
 
     df = add_rates(df)
+    df = attach_diagnosis(df)
+    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="kw_only_issue")
+    if show_only_issue:
+        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
     df = df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
     view = df.rename(
@@ -1592,6 +1710,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             "campaign_type_label": "캠페인유형",
             "campaign_name": "캠페인",
             "adgroup_name": "광고그룹",
+            "diagnosis": "진단",
             "keyword": "키워드",
             "imp": "노출",
             "clk": "클릭",
@@ -1612,24 +1731,42 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     view["ROAS(%)"] = view["ROAS(%)"].apply(format_roas)
     view = finalize_ctr_col(view, "CTR(%)")
 
-    cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드", "노출", "클릭", "CTR(%)", "CPC", "비용", "전환", "CPA", "매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드", "진단", "노출", "클릭", "CTR(%)", "CPC", "비용", "전환", "CPA", "매출", "ROAS(%)"]
     st.dataframe(view[cols], use_container_width=True, hide_index=True)
     render_download_compact(view[cols], f"키워드성과_{f['start']}_{f['end']}", "keyword", "kw")
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 🧩 성과 (소재)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
+    drill_camp = st.session_state.get("drill_campaign_id")
+    if drill_camp:
+        st.info(f"🔎 드릴다운 필터 적용됨: campaign_id = {drill_camp}")
+        if st.button("드릴다운 해제", key="clear_drill_ad"):
+            clear_drill("drill_campaign_id")
+            st.rerun()
+
+    if drill_camp:
+        if st.button("→ 키워드(드릴다운)", key="to_kw_from_ad"):
+            nav_to("성과(키워드)", drill_campaign_id=drill_camp)
+
     top_n = int(f.get("top_n_ad", 100))
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     df = query_ad_topn(engine, f["start"], f["end"], cids, type_sel, top_n)
+
+    if drill_camp and (df is not None) and (not df.empty) and ("campaign_id" in df.columns):
+        df = df[df["campaign_id"].astype(str) == str(drill_camp)].copy()
     if df is None or df.empty:
         st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
         return
 
     df = _perf_common_merge_meta(df, meta)
     df = add_rates(df)
+    df = attach_diagnosis(df)
+    show_only_issue = st.checkbox("⚠️ 이슈만 보기(진단)", value=False, key="ad_only_issue")
+    if show_only_issue:
+        df = df[df.get("diagnosis","").astype(str).str.len() > 0].copy()
 
     # 🏅 성과 TOP5 (현재 로딩된 TopN 기준)
     df_top = df.copy()
@@ -1662,6 +1799,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             "campaign_name": "캠페인",
             "adgroup_name": "광고그룹",
             "ad_id": "소재ID",
+            "diagnosis": "진단",
             "ad_name": "소재내용",
             "imp": "노출",
             "clk": "클릭",
@@ -1681,7 +1819,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = disp["CTR(%)"].astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "진단", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
     st.dataframe(
@@ -1753,7 +1891,12 @@ def main():
 
     f = build_filters(engine, meta, type_opts)
 
-    page = st.selectbox("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"], index=0)
+    pages = ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"]
+
+    if "page_select" not in st.session_state:
+        st.session_state["page_select"] = pages[0]
+
+    page = st.selectbox("메뉴", pages, key="page_select")
 
     st.divider()
 
