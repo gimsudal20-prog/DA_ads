@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 collect_bizmoney.py - 네이버 검색광고 비즈머니(잔액) 전용 수집기
+- 수정사항: API 호출 에러 시 0원으로 저장하지 않고 건너뜀
+- 수정사항: 에러 로그(상태코드, 메시지) 상세 출력
 """
 
 import os
@@ -44,19 +46,22 @@ def get_header(method, uri, customer_id):
         "X-Signature": base64.b64encode(signature).decode('utf-8'),
     }
 
-# 3. 비즈머니 조회 함수
+# 3. 비즈머니 조회 함수 (수정됨)
 def get_bizmoney(customer_id):
     uri = "/billing/bizmoney"
     try:
         r = requests.get(BASE_URL + uri, headers=get_header("GET", uri, customer_id), timeout=10)
+        
         if r.status_code == 200:
             return int(r.json().get("bizMoney", 0))
         else:
-            print(f"⚠️ [Error] {customer_id}: {r.status_code} - {r.text[:100]}")
-            return 0
+            # 에러 발생 시 로그 출력 후 None 반환 (0 반환 아님)
+            print(f"⚠️ [API Error] {customer_id}: {r.status_code} - {r.text[:200]}")
+            return None
+            
     except Exception as e:
-        print(f"⚠️ [Exception] {customer_id}: {e}")
-        return 0
+        print(f"⚠️ [System Error] {customer_id}: {e}")
+        return None
 
 # 4. 메인 로직
 def main():
@@ -93,6 +98,7 @@ def main():
     print(f"📋 비즈머니 수집 대상: {len(accounts)}개 계정")
     
     today = date.today()
+    success_count = 0
     
     for acc in accounts:
         cid = acc["id"]
@@ -100,7 +106,12 @@ def main():
         
         balance = get_bizmoney(cid)
         
-        # DB 저장 (Upsert)
+        # [중요] 에러(None)인 경우 저장하지 않고 건너뜀
+        if balance is None:
+            print(f"❌ {name}({cid}): 수집 실패 (로그 확인 필요)")
+            continue
+
+        # 정상 값인 경우에만 저장
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO fact_bizmoney_daily (dt, customer_id, bizmoney_balance)
@@ -110,6 +121,9 @@ def main():
             """), {"dt": today, "cid": cid, "bal": balance})
             
         print(f"✅ {name}({cid}): {balance:,}원 저장 완료")
+        success_count += 1
+
+    print(f"🚀 전체 완료: 성공 {success_count} / 전체 {len(accounts)}")
 
 if __name__ == "__main__":
     main()
