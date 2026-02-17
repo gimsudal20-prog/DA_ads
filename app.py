@@ -13,7 +13,7 @@ import os
 import re
 import io
 from datetime import date, timedelta
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 
 import pandas as pd
 import streamlit as st
@@ -27,8 +27,7 @@ load_dotenv()
 # -----------------------------
 # BUILD TAG (배포 확인용)
 # -----------------------------
-BUILD_TAG = "v7.2.0 (2026-02-17)"
-
+BUILD_TAG = "v7.2.1 (2026-02-17) - Faster keyword/ad SQL + Index helper + Mobile-friendly filters"
 # -----------------------------
 # CONFIG / THRESHOLDS
 # -----------------------------
@@ -154,6 +153,79 @@ def get_table_columns(engine, table: str, schema: str = "public") -> set:
         return set([str(c.get("name", "")).lower() for c in cols])
     except Exception:
         return set()
+
+# -----------------------------
+# DB maintenance helpers (optional)
+# -----------------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def get_table_max_dt(_engine, table: str) -> Optional[str]:
+    """Return MAX(dt) for a fact table (YYYY-MM-DD)."""
+    if not table_exists(_engine, table):
+        return None
+    try:
+        df = sql_read(_engine, f"SELECT MAX(dt) AS max_dt FROM {table}")
+        if df is None or df.empty:
+            return None
+        v = df.loc[0, "max_dt"]
+        return str(v) if pd.notna(v) else None
+    except Exception:
+        return None
+
+def render_data_freshness(_engine) -> None:
+    """Small status badges for data freshness."""
+    items = [
+        ("fact_campaign_daily", "캠페인"),
+        ("fact_keyword_daily", "키워드"),
+        ("fact_ad_daily", "소재"),
+        ("fact_bizmoney_daily", "비즈머니"),
+    ]
+    pills = []
+    for t, label in items:
+        md = get_table_max_dt(_engine, t)
+        pills.append(f"<span class='pill'>{label}: {md or '-'} </span>")
+    st.markdown("<div style='display:flex; gap:6px; flex-wrap:wrap; margin:2px 0 10px 0;'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
+
+def create_perf_indexes(_engine) -> Dict[str, Any]:
+    """Create commonly-needed indexes (IF NOT EXISTS)."""
+    ddls = [
+        # fact tables
+        ("idx_fcd_dt_customer", "CREATE INDEX IF NOT EXISTS idx_fcd_dt_customer ON public.fact_campaign_daily (dt, customer_id)"),
+        ("idx_fcd_customer_campaign_dt", "CREATE INDEX IF NOT EXISTS idx_fcd_customer_campaign_dt ON public.fact_campaign_daily (customer_id, campaign_id, dt)"),
+        ("idx_fkd_dt_customer", "CREATE INDEX IF NOT EXISTS idx_fkd_dt_customer ON public.fact_keyword_daily (dt, customer_id)"),
+        ("idx_fkd_customer_keyword_dt", "CREATE INDEX IF NOT EXISTS idx_fkd_customer_keyword_dt ON public.fact_keyword_daily (customer_id, keyword_id, dt)"),
+        ("idx_fad_dt_customer", "CREATE INDEX IF NOT EXISTS idx_fad_dt_customer ON public.fact_ad_daily (dt, customer_id)"),
+        ("idx_fad_customer_ad_dt", "CREATE INDEX IF NOT EXISTS idx_fad_customer_ad_dt ON public.fact_ad_daily (customer_id, ad_id, dt)"),
+        ("idx_fbm_customer_dt", "CREATE INDEX IF NOT EXISTS idx_fbm_customer_dt ON public.fact_bizmoney_daily (customer_id, dt)"),
+        # dim tables (join keys)
+        ("idx_dim_campaign_pk", "CREATE INDEX IF NOT EXISTS idx_dim_campaign_pk ON public.dim_campaign (customer_id, campaign_id)"),
+        ("idx_dim_adgroup_pk", "CREATE INDEX IF NOT EXISTS idx_dim_adgroup_pk ON public.dim_adgroup (customer_id, adgroup_id)"),
+        ("idx_dim_keyword_pk", "CREATE INDEX IF NOT EXISTS idx_dim_keyword_pk ON public.dim_keyword (customer_id, keyword_id)"),
+        ("idx_dim_ad_pk", "CREATE INDEX IF NOT EXISTS idx_dim_ad_pk ON public.dim_ad (customer_id, ad_id)"),
+    ]
+
+    ok, fail = [], []
+    for name, ddl in ddls:
+        try:
+            sql_exec(_engine, ddl)
+            ok.append(name)
+        except Exception as e:
+            fail.append({"name": name, "error": str(e)})
+
+    return {"ok": ok, "fail": fail}
+
+def analyze_perf_tables(_engine) -> Dict[str, Any]:
+    """Try ANALYZE (may require privileges)."""
+    targets = ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily", "dim_campaign", "dim_adgroup", "dim_keyword", "dim_ad"]
+    ok, fail = [], []
+    for t in targets:
+        if not table_exists(_engine, t):
+            continue
+        try:
+            sql_exec(_engine, f"ANALYZE {t}")
+            ok.append(t)
+        except Exception as e:
+            fail.append({"table": t, "error": str(e)})
+    return {"ok": ok, "fail": fail}
 
 # -----------------------------
 # Utilities
@@ -604,309 +676,313 @@ def query_campaign_daily_sum(_engine, d1: date, d2: date, customer_ids: Tuple[in
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
-def query_keyword_topn(_engine, d1: date, d2: date, customer_ids: Tuple[int, ...], type_sel: Tuple[str, ...], topn: int) -> pd.DataFrame:
+@st.cache_data(ttl=600, show_spinner=False)
+def query_keyword_topn(
+    _engine,
+    d1: date,
+    d2: date,
+    customer_ids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    top_n: int,
+) -> pd.DataFrame:
+    """Keyword Top-N aggregated in DB, then (optionally) filtered in Python.
+
+    Speed tricks:
+    - Aggregate first (fact), limit early (top CTE), then join dims only for those rows.
+    - Avoid SQLAlchemy 'expanding' bind issues by using a safe literal IN clause for customer_ids.
+    """
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
 
-    has_kw = table_exists(_engine, "dim_keyword")
-    has_ag = table_exists(_engine, "dim_adgroup")
-    has_cp = table_exists(_engine, "dim_campaign")
+    cid_clause = ""
+    if customer_ids:
+        cid_clause = f"AND customer_id IN {_sql_in_int(tuple(customer_ids))}"
 
-    cid_clause = f" AND f.customer_id IN {_sql_in_int(customer_ids)}" if customer_ids else ""
-    # 타입필터는 dim_campaign 없으면 적용 불가
-    type_clause = ""
-    ctype = campaign_type_case_sql("cp.campaign_tp")
-
-    if has_cp and type_sel:
-        type_clause = f" AND {ctype} IN {_sql_in_text(type_sel)}"
-
-    kw_cte = ""
-    ag_cte = ""
-    cp_cte = ""
-    join_kw = ""
-    join_ag = ""
-    join_cp = ""
-    select_dim = "''::text AS keyword, ''::text AS adgroup_name, ''::text AS campaign_name, '기타'::text AS campaign_type_label"
-
-    if has_kw:
-        kw_cte = """
-        , kw AS (
-          SELECT DISTINCT ON (customer_id, keyword_id)
-                 customer_id, keyword_id, keyword, adgroup_id
-          FROM dim_keyword
-        )
-        """
-        join_kw = "LEFT JOIN kw ON a.customer_id = kw.customer_id AND a.keyword_id = kw.keyword_id"
-
-    if has_ag:
-        ag_cte = """
-        , ag AS (
-          SELECT DISTINCT ON (customer_id, adgroup_id)
-                 customer_id, adgroup_id, adgroup_name, campaign_id
-          FROM dim_adgroup
-        )
-        """
-        if has_kw:
-            join_ag = "LEFT JOIN ag ON kw.customer_id = ag.customer_id AND kw.adgroup_id = ag.adgroup_id"
-        else:
-            # dim_keyword 없으면 adgroup 연결 불가
-            join_ag = ""
-
-    if has_cp:
-        cp_cte = """
-        , cp AS (
-          SELECT DISTINCT ON (customer_id, campaign_id)
-                 customer_id, campaign_id, campaign_name, campaign_tp
-          FROM dim_campaign
-        )
-        """
-        if has_ag and has_kw:
-            join_cp = "LEFT JOIN cp ON ag.customer_id = cp.customer_id AND ag.campaign_id = cp.campaign_id"
-        else:
-            join_cp = ""
-
-    if has_kw and has_ag and has_cp:
-        select_dim = f"""
-        COALESCE(kw.keyword,'') AS keyword,
-        COALESCE(ag.adgroup_name,'') AS adgroup_name,
-        COALESCE(cp.campaign_name,'') AS campaign_name,
-        {ctype} AS campaign_type_label
-        """
-
-    # 타입 제외(기타) — dim이 있을 때만 의미 있음
-    etc_clause = ""
-    if has_kw and has_ag and has_cp:
-        etc_clause = f" AND {ctype} <> '기타' "
+    # If type filter is used, oversample a bit so filtering doesn't empty the list.
+    probe_lim = int(max(50, top_n)) * (5 if (type_sel and len(type_sel) > 0) else 1)
 
     sql = f"""
     WITH agg AS (
-      SELECT f.customer_id, f.keyword_id,
-             SUM(f.imp) AS imp, SUM(f.clk) AS clk, SUM(f.cost) AS cost,
-             SUM(f.conv) AS conv, SUM(COALESCE(f.sales,0)) AS sales
-      FROM fact_keyword_daily f
-      WHERE f.dt BETWEEN :d1 AND :d2
-      {cid_clause}
-      GROUP BY f.customer_id, f.keyword_id
+        SELECT
+            customer_id,
+            keyword_id,
+            SUM(imp) AS imp,
+            SUM(clk) AS clk,
+            SUM(cost) AS cost,
+            SUM(conv) AS conv,
+            SUM(COALESCE(sales, 0)) AS sales
+        FROM fact_keyword_daily
+        WHERE dt BETWEEN :d1 AND :d2
+          {cid_clause}
+        GROUP BY customer_id, keyword_id
+    ),
+    top AS (
+        SELECT * FROM agg
+        ORDER BY cost DESC
+        LIMIT :probe_lim
+    ),
+    kw AS (
+        SELECT
+            k.customer_id,
+            k.keyword_id,
+            MAX(k.keyword) AS keyword,
+            MAX(k.adgroup_id) AS adgroup_id
+        FROM dim_keyword k
+        JOIN top t
+          ON t.customer_id = k.customer_id
+         AND t.keyword_id  = k.keyword_id
+        GROUP BY k.customer_id, k.keyword_id
+    ),
+    ag AS (
+        SELECT
+            g.customer_id,
+            g.adgroup_id,
+            MAX(g.adgroup_name) AS adgroup_name,
+            MAX(g.campaign_id)  AS campaign_id
+        FROM dim_adgroup g
+        JOIN kw
+          ON kw.customer_id = g.customer_id
+         AND kw.adgroup_id  = g.adgroup_id
+        GROUP BY g.customer_id, g.adgroup_id
+    ),
+    cp AS (
+        SELECT
+            c.customer_id,
+            c.campaign_id,
+            MAX(c.campaign_name) AS campaign_name,
+            MAX(c.campaign_tp)   AS campaign_tp
+        FROM dim_campaign c
+        JOIN ag
+          ON ag.customer_id = c.customer_id
+         AND ag.campaign_id = c.campaign_id
+        GROUP BY c.customer_id, c.campaign_id
     )
-    {kw_cte}
-    {ag_cte}
-    {cp_cte}
-    SELECT a.customer_id, a.keyword_id, a.imp, a.clk, a.cost, a.conv, a.sales,
-           {select_dim}
-    FROM agg a
-    {join_kw}
-    {join_ag}
-    {join_cp}
-    WHERE 1=1
-    {etc_clause}
-    {type_clause}
-    ORDER BY a.cost DESC
-    LIMIT :lim
+    SELECT
+        t.customer_id,
+        t.keyword_id,
+        t.imp, t.clk, t.cost, t.conv, t.sales,
+        COALESCE(kw.keyword, '')       AS keyword,
+        COALESCE(ag.adgroup_name, '')  AS adgroup_name,
+        COALESCE(cp.campaign_name, '') AS campaign_name,
+        COALESCE(cp.campaign_tp, '')   AS campaign_tp
+    FROM top t
+    LEFT JOIN kw ON kw.customer_id = t.customer_id AND kw.keyword_id = t.keyword_id
+    LEFT JOIN ag ON ag.customer_id = kw.customer_id AND ag.adgroup_id = kw.adgroup_id
+    LEFT JOIN cp ON cp.customer_id = ag.customer_id AND cp.campaign_id = ag.campaign_id
+    ORDER BY t.cost DESC
     """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim": int(topn)})
-    if not df.empty:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    return df
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "probe_lim": probe_lim})
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["campaign_type"] = df.get("campaign_tp", "").apply(campaign_tp_to_label)
+    # remove '기타' by default (요청 기준)
+    df = df[df["campaign_type"] != "기타"]
+
+    if type_sel:
+        df = df[df["campaign_type"].isin(type_sel)]
+
+    df = df.sort_values("cost", ascending=False).head(int(top_n))
+    return df.reset_index(drop=True)
 
 @st.cache_data(ttl=600, show_spinner=False)
-def query_ad_topn(_engine, d1: date, d2: date, customer_ids: Tuple[int, ...], type_sel: Tuple[str, ...], topn: int) -> pd.DataFrame:
+def query_ad_topn(
+    _engine,
+    d1: date,
+    d2: date,
+    customer_ids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    top_n: int,
+) -> pd.DataFrame:
+    """Ad (creative) Top-N aggregated in DB, then (optionally) filtered in Python."""
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
 
-    has_ad = table_exists(_engine, "dim_ad")
-    has_ag = table_exists(_engine, "dim_adgroup")
-    has_cp = table_exists(_engine, "dim_campaign")
+    cid_clause = ""
+    if customer_ids:
+        cid_clause = f"AND customer_id IN {_sql_in_int(tuple(customer_ids))}"
 
-    cid_clause = f" AND f.customer_id IN {_sql_in_int(customer_ids)}" if customer_ids else ""
-    ctype = campaign_type_case_sql("cp.campaign_tp")
-    type_clause = f" AND {ctype} IN {_sql_in_text(type_sel)}" if (has_cp and type_sel) else ""
-
-    ad_cte = ""
-    ag_cte = ""
-    cp_cte = ""
-    join_ad = ""
-    join_ag = ""
-    join_cp = ""
-
-    cols = get_table_columns(_engine, "dim_ad") if has_ad else set()
-    if has_ad:
-        if "creative_text" in cols:
-            ad_cte = """
-            , ad AS (
-              SELECT DISTINCT ON (customer_id, ad_id)
-                     customer_id, ad_id,
-                     COALESCE(NULLIF(creative_text,''), NULLIF(ad_name,''), '') AS ad_name,
-                     adgroup_id
-              FROM dim_ad
-            )
-            """
-        else:
-            ad_cte = """
-            , ad AS (
-              SELECT DISTINCT ON (customer_id, ad_id)
-                     customer_id, ad_id,
-                     COALESCE(ad_name,'') AS ad_name,
-                     adgroup_id
-              FROM dim_ad
-            )
-            """
-        join_ad = "LEFT JOIN ad ON a.customer_id = ad.customer_id AND a.ad_id = ad.ad_id"
-
-    if has_ag:
-        ag_cte = """
-        , ag AS (
-          SELECT DISTINCT ON (customer_id, adgroup_id)
-                 customer_id, adgroup_id, adgroup_name, campaign_id
-          FROM dim_adgroup
-        )
-        """
-        if has_ad:
-            join_ag = "LEFT JOIN ag ON ad.customer_id = ag.customer_id AND ad.adgroup_id = ag.adgroup_id"
-
-    if has_cp:
-        cp_cte = """
-        , cp AS (
-          SELECT DISTINCT ON (customer_id, campaign_id)
-                 customer_id, campaign_id, campaign_name, campaign_tp
-          FROM dim_campaign
-        )
-        """
-        if has_ad and has_ag:
-            join_cp = "LEFT JOIN cp ON ag.customer_id = cp.customer_id AND ag.campaign_id = cp.campaign_id"
-
-    select_dim = "''::text AS ad_name, ''::text AS adgroup_name, ''::text AS campaign_name, '기타'::text AS campaign_type_label"
-    etc_clause = ""
-    if has_ad and has_ag and has_cp:
-        select_dim = f"""
-        COALESCE(ad.ad_name,'') AS ad_name,
-        COALESCE(ag.adgroup_name,'') AS adgroup_name,
-        COALESCE(cp.campaign_name,'') AS campaign_name,
-        {ctype} AS campaign_type_label
-        """
-        etc_clause = f" AND {ctype} <> '기타' "
+    probe_lim = int(max(50, top_n)) * (5 if (type_sel and len(type_sel) > 0) else 1)
 
     sql = f"""
     WITH agg AS (
-      SELECT f.customer_id, f.ad_id,
-             SUM(f.imp) AS imp, SUM(f.clk) AS clk, SUM(f.cost) AS cost,
-             SUM(f.conv) AS conv, SUM(COALESCE(f.sales,0)) AS sales
-      FROM fact_ad_daily f
-      WHERE f.dt BETWEEN :d1 AND :d2
-      {cid_clause}
-      GROUP BY f.customer_id, f.ad_id
+        SELECT
+            customer_id,
+            ad_id,
+            SUM(imp) AS imp,
+            SUM(clk) AS clk,
+            SUM(cost) AS cost,
+            SUM(conv) AS conv,
+            SUM(COALESCE(sales, 0)) AS sales
+        FROM fact_ad_daily
+        WHERE dt BETWEEN :d1 AND :d2
+          {cid_clause}
+        GROUP BY customer_id, ad_id
+    ),
+    top AS (
+        SELECT * FROM agg
+        ORDER BY cost DESC
+        LIMIT :probe_lim
+    ),
+    ad AS (
+        SELECT
+            a.customer_id,
+            a.ad_id,
+            MAX(a.ad_name)   AS ad_name,
+            MAX(a.adgroup_id) AS adgroup_id
+        FROM dim_ad a
+        JOIN top t
+          ON t.customer_id = a.customer_id
+         AND t.ad_id       = a.ad_id
+        GROUP BY a.customer_id, a.ad_id
+    ),
+    ag AS (
+        SELECT
+            g.customer_id,
+            g.adgroup_id,
+            MAX(g.adgroup_name) AS adgroup_name,
+            MAX(g.campaign_id)  AS campaign_id
+        FROM dim_adgroup g
+        JOIN ad
+          ON ad.customer_id = g.customer_id
+         AND ad.adgroup_id  = g.adgroup_id
+        GROUP BY g.customer_id, g.adgroup_id
+    ),
+    cp AS (
+        SELECT
+            c.customer_id,
+            c.campaign_id,
+            MAX(c.campaign_name) AS campaign_name,
+            MAX(c.campaign_tp)   AS campaign_tp
+        FROM dim_campaign c
+        JOIN ag
+          ON ag.customer_id = c.customer_id
+         AND ag.campaign_id = c.campaign_id
+        GROUP BY c.customer_id, c.campaign_id
     )
-    {ad_cte}
-    {ag_cte}
-    {cp_cte}
-    SELECT a.customer_id, a.ad_id, a.imp, a.clk, a.cost, a.conv, a.sales,
-           {select_dim}
-    FROM agg a
-    {join_ad}
-    {join_ag}
-    {join_cp}
-    WHERE 1=1
-    {etc_clause}
-    {type_clause}
-    ORDER BY a.cost DESC
-    LIMIT :lim
+    SELECT
+        t.customer_id,
+        t.ad_id,
+        t.imp, t.clk, t.cost, t.conv, t.sales,
+        COALESCE(ad.ad_name, '')       AS ad_name,
+        COALESCE(ag.adgroup_name, '')  AS adgroup_name,
+        COALESCE(cp.campaign_name, '') AS campaign_name,
+        COALESCE(cp.campaign_tp, '')   AS campaign_tp
+    FROM top t
+    LEFT JOIN ad ON ad.customer_id = t.customer_id AND ad.ad_id = t.ad_id
+    LEFT JOIN ag ON ag.customer_id = ad.customer_id AND ag.adgroup_id = ad.adgroup_id
+    LEFT JOIN cp ON cp.customer_id = ag.customer_id AND cp.campaign_id = ag.campaign_id
+    ORDER BY t.cost DESC
     """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim": int(topn)})
-    if not df.empty:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    return df
 
-# -----------------------------
-# Filters (mobile-friendly, always visible)
-# -----------------------------
-def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
-    # session defaults
-    if "filters" not in st.session_state:
-        today = date.today()
-        y = today - timedelta(days=1)
-        st.session_state["filters"] = {
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "probe_lim": probe_lim})
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["campaign_type"] = df.get("campaign_tp", "").apply(campaign_tp_to_label)
+    df = df[df["campaign_type"] != "기타"]
+    if type_sel:
+        df = df[df["campaign_type"].isin(type_sel)]
+
+    df = df.sort_values("cost", ascending=False).head(int(top_n))
+    return df.reset_index(drop=True)
+
+def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict[str, Any]:
+    """Render filters in the main area (mobile-friendly) and return applied filter dict."""
+
+    # ----- init state -----
+    if "filters_applied" not in st.session_state:
+        st.session_state["filters_applied"] = {
             "q": "",
-            "manager_sel": [],
-            "company_sel": [],
-            "period": "어제",
-            "start": y,
-            "end": y,
-            "type_sel": [],
+            "manager": [],
+            "account": [],
+            "types": [t for t in type_opts if t != "기타"],
+            "period_mode": "어제",
+            "d1": date.today() - timedelta(days=1),
+            "d2": date.today() - timedelta(days=1),
+            "top_n_kw": 300,
+            "top_n_ad": 300,
         }
 
-    cur = st.session_state["filters"]
-    managers = sorted([m for m in meta.get("manager", pd.Series([], dtype=str)).fillna("").unique().tolist() if str(m).strip()])
-    companies = meta.get("account_name", pd.Series([], dtype=str)).fillna("").astype(str).tolist()
+    f = st.session_state["filters_applied"].copy()
 
-    st.markdown("### 필터")
-    st.markdown('<div class="filter-wrap">', unsafe_allow_html=True)
+    # ----- UI -----
+    st.markdown("### 🔎 필터")
+    st.caption("모바일에서도 보이도록 본문 상단에 고정 배치했습니다. 기간이 길수록(특히 30일+) 키워드/소재가 느려질 수 있어요.")
+
     with st.form("filters_form", clear_on_submit=False):
-        c1, c2 = st.columns([1.2, 1])
-        with c1:
-            q = st.text_input("업체명 검색", value=cur.get("q", ""), placeholder="예: 실리콘플러스")
-            company_sel = st.multiselect("업체(다중 선택)", options=companies, default=cur.get("company_sel", []))
-        with c2:
-            manager_sel = st.multiselect("담당자(다중 선택)", options=managers, default=cur.get("manager_sel", []))
-            type_sel = st.multiselect("광고유형", options=type_opts, default=cur.get("type_sel", []))
+        q = st.text_input("검색(업체명/담당자/키워드)", value=f.get("q", ""), placeholder="예: HSW / 김현우 / 실리콘호스")
 
-        c3, c4, c5 = st.columns([1.2, 1, 1])
-        with c3:
-            period = st.selectbox("기간", ["오늘", "어제", "최근 7일(오늘 제외)", "최근 30일(오늘 제외)", "직접 선택"], index=["오늘","어제","최근 7일(오늘 제외)","최근 30일(오늘 제외)","직접 선택"].index(cur.get("period","어제")))
-        with c4:
-            start = cur.get("start")
-            end = cur.get("end")
-            today = date.today()
-            if period == "오늘":
-                start = today
-                end = today
-            elif period == "어제":
-                end = today - timedelta(days=1)
-                start = end
-            elif period.startswith("최근 7일"):
-                end = today - timedelta(days=1)
-                start = end - timedelta(days=6)
-            elif period.startswith("최근 30일"):
-                end = today - timedelta(days=1)
-                start = end - timedelta(days=29)
-            else:
-                start = st.date_input("시작일", value=start if isinstance(start, date) else (today - timedelta(days=7)))
-        with c5:
-            if period == "직접 선택":
-                end = st.date_input("종료일", value=end if isinstance(end, date) else (today - timedelta(days=1)))
-            else:
-                st.caption(f"선택: {start} ~ {end}")
+        managers = sorted([x for x in meta.get("manager", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x.strip()])
+        accounts = sorted([x for x in meta.get("account_name", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x.strip()])
 
-        submit = st.form_submit_button("✅ 필터 적용", use_container_width=True)
+        manager_sel = st.multiselect("담당자", options=managers, default=f.get("manager", []))
+        account_sel = st.multiselect("업체명", options=accounts, default=f.get("account", []))
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        period_mode = st.selectbox("기간(빠른 선택)", options=["어제", "최근 7일", "최근 14일", "최근 30일", "직접 선택"], index=["어제", "최근 7일", "최근 14일", "최근 30일", "직접 선택"].index(f.get("period_mode", "어제")))
 
-    if submit:
-        if period == "직접 선택" and end < start:
-            st.warning("종료일은 시작일 이후여야 합니다. (적용되지 않음)")
+        if period_mode == "직접 선택":
+            c1, c2 = st.columns(2)
+            with c1:
+                d1 = st.date_input("시작일", value=f.get("d1", date.today() - timedelta(days=7)))
+            with c2:
+                d2 = st.date_input("종료일", value=f.get("d2", date.today() - timedelta(days=1)))
         else:
-            st.session_state["filters"] = {
-                "q": q,
-                "manager_sel": manager_sel,
-                "company_sel": company_sel,
-                "period": period,
-                "start": start,
-                "end": end,
-                "type_sel": type_sel,
-            }
-            st.rerun()
+            d2 = date.today() - timedelta(days=1)
+            if period_mode == "어제":
+                d1 = d2
+            elif period_mode == "최근 7일":
+                d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 14일":
+                d1 = d2 - timedelta(days=13)
+            else:  # 최근 30일
+                d1 = d2 - timedelta(days=29)
 
-    # applied filters
-    f = st.session_state["filters"].copy()
+        # Top-N defaults based on 기간 (너무 길면 자동으로 줄여서 속도 개선)
+        days = (d2 - d1).days + 1
+        default_top_kw = 300 if days <= 14 else (200 if days <= 30 else 120)
+        default_top_ad = 300 if days <= 14 else (200 if days <= 30 else 120)
 
-    # customer_id resolution priority: company_sel > manager_sel > q > all
-    df = meta.copy()
-    if f["q"]:
-        df = df[df["account_name"].astype(str).str.contains(f["q"], case=False, na=False)]
-    if f["manager_sel"]:
-        df = df[df["manager"].isin(f["manager_sel"])]
-    if f["company_sel"]:
-        df = meta[meta["account_name"].isin(f["company_sel"])].copy()
+        types_sel = st.multiselect("캠페인 유형(키워드/소재 탭)", options=type_opts, default=f.get("types", [t for t in type_opts if t != "기타"]))
 
-    f["selected_customer_ids"] = df["customer_id"].astype(int).tolist() if not df.empty else []
+        top_n_kw = st.slider("키워드 Top N", min_value=50, max_value=1000, value=int(f.get("top_n_kw", default_top_kw)), step=10, help="기간이 길면 Top N을 낮추는 게 체감 속도에 가장 큽니다.")
+        top_n_ad = st.slider("소재 Top N", min_value=50, max_value=1000, value=int(f.get("top_n_ad", default_top_ad)), step=10)
+
+        submitted = st.form_submit_button("✅ 필터 적용")
+
+    if submitted:
+        # normalize dates
+        if d1 > d2:
+            d1, d2 = d2, d1
+
+        st.session_state["filters_applied"] = {
+            "q": q.strip(),
+            "manager": manager_sel,
+            "account": account_sel,
+            "types": types_sel,
+            "period_mode": period_mode,
+            "d1": d1,
+            "d2": d2,
+            "top_n_kw": int(top_n_kw),
+            "top_n_ad": int(top_n_ad),
+        }
+        st.rerun()
+
+    # show applied quick summary
+    f = st.session_state["filters_applied"].copy()
+    days = (f["d2"] - f["d1"]).days + 1
+    if days >= 30:
+        st.warning(f"현재 기간: {days}일 (키워드/소재 속도 저하 가능) → Top N을 낮추면 체감이 크게 좋아져요.", icon="⚠️")
+
     return f
 
 # -----------------------------
@@ -1333,23 +1409,46 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict):
     )
     render_download_compact(view_df, f"성과_소재_{f['start']}_{f['end']}", "ad", "ad")
 
-def page_settings(engine):
-    st.markdown("## 설정 / 연결")
-    try:
-        sql_read(engine, "SELECT 1 AS ok")
-        st.success("DB 연결 성공 ✅")
-    except Exception as e:
-        st.error(f"DB 연결 실패: {e}")
-        return
-    if st.button("🔁 accounts.xlsx → DB 동기화"):
-        res = seed_from_accounts_xlsx(engine)
-        st.success(f"완료: meta {res['meta']}건")
-        st.cache_data.clear()
-        st.rerun()
+def page_settings(meta: pd.DataFrame, engine) -> None:
+    st.header("설정 / 진단")
+    st.caption(BUILD_TAG)
 
-# -----------------------------
-# Main
-# -----------------------------
+    st.subheader("데이터 최신 상태")
+    render_data_freshness(engine)
+
+    st.subheader("성능 도구")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("🧹 캐시 초기화", use_container_width=True):
+            st.cache_data.clear()
+            st.success("캐시를 비웠습니다. 화면을 새로고침합니다.")
+            st.rerun()
+    with c2:
+        if st.button("🚀 인덱스 생성(추천)", use_container_width=True, help="키워드/소재/캠페인 쿼리 속도 개선. 처음 1회만 누르면 됩니다."):
+            with st.spinner("인덱스 생성 중... (DB 잠깐 느려질 수 있어요)"):
+                res = create_perf_indexes(engine)
+            if res.get("fail"):
+                st.error("일부 인덱스 생성 실패")
+                st.json(res)
+            else:
+                st.success(f"인덱스 생성 완료 ({len(res.get('ok', []))}개)")
+    with c3:
+        if st.button("📊 ANALYZE 실행", use_container_width=True, help="Postgres 통계 갱신(권한이 있으면 속도에 도움)."):
+            with st.spinner("ANALYZE 실행 중..."):
+                res = analyze_perf_tables(engine)
+            if res.get("fail"):
+                st.warning("일부 테이블 ANALYZE 실패(권한/정책일 수 있음)")
+                st.json(res)
+            else:
+                st.success(f"ANALYZE 완료 ({len(res.get('ok', []))}개)")
+
+    st.subheader("계정 메타(참고)")
+    st.dataframe(meta, use_container_width=True, hide_index=True)
+
+    st.subheader("연결 상태")
+    st.write(f"- DATABASE_URL 설정 여부: {'✅' if bool(os.getenv('DATABASE_URL')) else '❌'}")
+    st.write(f"- Streamlit: {st.__version__}")
+
 def main():
     st.title("네이버 검색광고 통합 대시보드")
     st.caption(f"빌드: {BUILD_TAG}")
@@ -1359,6 +1458,9 @@ def main():
     except Exception as e:
         st.error(str(e))
         return
+
+    # quick status (data freshness)
+    render_data_freshness(engine)
 
     # seed (best effort)
     try:
