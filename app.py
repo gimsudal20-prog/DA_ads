@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.0.3: 예산 오류(ProgrammingError) 해결 + 웹사이트 모드 UI)
+app.py - 네이버 검색광고 통합 대시보드 (v7.0.4: 예산 오류(ProgrammingError) 해결 + 웹사이트 모드 UI)
 - 예산/잔액 페이지의 최근평균소진 계산에서 발생하던 SQLAlchemy ProgrammingError 해결:
   * customer_ids를 SQL 파라미터로 넘기지 않고(ANY/IN 제거), 기간 집계만 SQL로 처리 후 pandas에서 필터링
 - "빠른 필터(대시보드)" 완전 제거
@@ -1407,6 +1407,7 @@ def page_settings(engine):
 
 def main():
     st.title("네이버 검색광고 통합 대시보드")
+    st.caption("빌드: v7.0.4 (avg_cost SQL 파라미터 제거 + 웹사이트 모드)")
     try:
         engine = get_engine()
     except Exception as e:
