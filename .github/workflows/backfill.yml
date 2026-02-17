@@ -1,4 +1,4 @@
-name: Manual Backfill (Jan-Feb)
+name: Manual Backfill (3 Days Chunk)
 
 on:
   workflow_dispatch: # 수동 실행 버튼
@@ -6,12 +6,37 @@ on:
 jobs:
   run-backfill:
     runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false # 하나가 실패해도 나머지는 계속 진행
+      matrix:
+        period:
+          # 1월
+          - {start: "2026-01-01", end: "2026-01-03"}
+          - {start: "2026-01-04", end: "2026-01-06"}
+          - {start: "2026-01-07", end: "2026-01-09"}
+          - {start: "2026-01-10", end: "2026-01-12"}
+          - {start: "2026-01-13", end: "2026-01-15"}
+          - {start: "2026-01-16", end: "2026-01-18"}
+          - {start: "2026-01-19", end: "2026-01-21"}
+          - {start: "2026-01-22", end: "2026-01-24"}
+          - {start: "2026-01-25", end: "2026-01-27"}
+          - {start: "2026-01-28", end: "2026-01-30"}
+          - {start: "2026-01-31", end: "2026-02-02"}
+          # 2월
+          - {start: "2026-02-03", end: "2026-02-05"}
+          - {start: "2026-02-06", end: "2026-02-08"}
+          - {start: "2026-02-09", end: "2026-02-11"}
+          - {start: "2026-02-12", end: "2026-02-14"}
+          - {start: "2026-02-15", end: "2026-02-17"}
+
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      CUSTOMER_ID: "1346816" # 본인 ID
+      START_DATE: ${{ matrix.period.start }}
+      END_DATE: ${{ matrix.period.end }}
 
     steps:
       - name: Checkout code
@@ -22,7 +47,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ▼▼▼ [추가된 부분] pip 캐싱 설정 ▼▼▼
       - name: Cache pip
         uses: actions/cache@v3
         with:
@@ -30,33 +54,41 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-      # ▲▲▲ [추가된 부분 끝] ▲▲▲
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 아래 줄에 pandas와 openpyxl을 추가했습니다!
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Backfill Loop (Python)
+      - name: Run Backfill Loop (Chunk)
         shell: python
         run: |
           import subprocess
           import time
-          from datetime import date, timedelta
+          import os
+          from datetime import datetime, timedelta
 
-          # 시작일과 종료일 설정 (1월 1일 ~ 2월 14일)
-          start_date = date(2026, 1, 1)
-          end_date = date(2026, 2, 14)
+          start_str = os.getenv("START_DATE")
+          end_str = os.getenv("END_DATE")
+          
+          print(f"📌 작업 구간: {start_str} ~ {end_str}")
+
+          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
 
           current = start_date
           while current <= end_date:
               d_str = current.strftime("%Y-%m-%d")
               print(f"🚀 [수집 시작] 날짜: {d_str}")
               
-              # collector.py 실행
-              subprocess.run(["python", "collector.py", "--date", d_str])
+              try:
+                  # collector.py 실행
+                  subprocess.run(["python", "collector.py", "--date", d_str], check=True)
+              except subprocess.CalledProcessError:
+                  print(f"❌ 실패: {d_str}")
+                  # 하나가 실패해도 다음 날짜 진행
               
-              # 하루 증가
               current += timedelta(days=1)
-              time.sleep(1) # 서버 보호를 위해 1초 휴식
+              time.sleep(2) # 3일치라 짧으므로 쿨타임을 2초로 조금 늘려 안정성 확보
+
+          print("✅ 해당 구간 수집 완료")
