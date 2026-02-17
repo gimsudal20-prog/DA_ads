@@ -1088,7 +1088,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict):
                     max_value=120.0,
                     format="%.1f%%",
                     help="월 사용액 / 월 예산",
-                    disabled=True,
                 ),
                 "status_icon": st.column_config.TextColumn("상태", disabled=True),
             },
