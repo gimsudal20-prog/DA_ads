@@ -10,6 +10,7 @@ app.py - 네이버 검색광고 통합 대시보드 (v7.3.2)
 - customer_id 타입 혼재(TEXT vs BIGINT) 안전:
   * 모든 fact/dim 조인/필터에서 customer_id::text 로 통일
   * IN 필터는 문자열 리터럴('420332')로 구성 (TEXT/BIGINT 모두 안전)
+
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.2 (2026-02-18)"
+BUILD_TAG = "v7.3.3 (2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -796,7 +797,140 @@ def query_campaign_topn(
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
+def query_campaign_bundle(
+    _engine,
+    d1: date,
+    d2: date,
+    cids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    topn_cost: int = 200,
+    top_k: int = 5,
+) -> pd.DataFrame:
+    """
+    ✅ 1회 쿼리로 캠페인 탭에 필요한 데이터 동시 확보
+    - 광고비 기준 TopN (topn_cost)
+    - 클릭 TopK, 전환 TopK (top_k)
+    * 비용 TopN만 뽑는 쿼리로는 클릭/전환 TopK가 누락될 수 있어서,
+      base 집계 후 (cost/clk/conv) 각각 LIMIT로 뽑아 UNION 합니다.
+    """
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame()
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT
+            customer_id::text AS customer_id,
+            campaign_id,
+            COALESCE(NULLIF(campaign_name,''),'') AS campaign_name,
+            COALESCE(NULLIF(campaign_tp,''),'')   AS campaign_tp
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.campaign_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_campaign_daily f
+          JOIN c_f c
+            ON f.customer_id::text = c.customer_id
+           AND f.campaign_id = c.campaign_id
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.campaign_id
+        ),
+        cost_top AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim_cost),
+        clk_top  AS (SELECT * FROM base ORDER BY clk  DESC NULLS LAST LIMIT :lim_k),
+        conv_top AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT :lim_k),
+        picked AS (
+          SELECT * FROM cost_top
+          UNION
+          SELECT * FROM clk_top
+          UNION
+          SELECT * FROM conv_top
+        )
+        SELECT
+          p.*,
+          c.campaign_name,
+          c.campaign_tp
+        FROM picked p
+        JOIN c_f c
+          ON p.customer_id = c.customer_id
+         AND p.campaign_id = c.campaign_id
+        ORDER BY p.cost DESC NULLS LAST
+        """
+    else:
+        sql = f"""
+        WITH base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.campaign_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_campaign_daily f
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.campaign_id
+        ),
+        cost_top AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim_cost),
+        clk_top  AS (SELECT * FROM base ORDER BY clk  DESC NULLS LAST LIMIT :lim_k),
+        conv_top AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT :lim_k),
+        picked AS (
+          SELECT * FROM cost_top
+          UNION
+          SELECT * FROM clk_top
+          UNION
+          SELECT * FROM conv_top
+        )
+        SELECT
+          p.*,
+          COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
+          COALESCE(NULLIF(c.campaign_tp,''),'')   AS campaign_tp
+        FROM picked p
+        LEFT JOIN dim_campaign c
+          ON p.customer_id = c.customer_id::text
+         AND p.campaign_id = c.campaign_id
+        ORDER BY p.cost DESC NULLS LAST
+        """
+
+    df = sql_read(
+        _engine,
+        sql,
+        {"d1": str(d1), "d2": str(d2), "lim_cost": int(topn_cost), "lim_k": int(top_k)},
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
+
 def query_ad_topn(
     _engine,
     d1: date,
@@ -940,7 +1074,169 @@ def query_ad_topn(
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
+def query_ad_bundle(
+    _engine,
+    d1: date,
+    d2: date,
+    cids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    topn_cost: int = 200,
+    top_k: int = 5,
+) -> pd.DataFrame:
+    """
+    ✅ 1회 쿼리로 소재 탭에 필요한 데이터 동시 확보
+    - 광고비 기준 TopN (topn_cost)
+    - 클릭 TopK, 전환 TopK (top_k)
+    * base 집계 후 (cost/clk/conv) 각각 LIMIT로 뽑아 UNION → 그 다음 DIM 조인
+    """
+    if not table_exists(_engine, "fact_ad_daily"):
+        return pd.DataFrame()
+    if not (table_exists(_engine, "dim_ad") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+        return pd.DataFrame()
+
+    has_sales = _fact_has_sales(_engine, "fact_ad_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    cols = get_table_columns(_engine, "dim_ad")
+    ad_text_expr = "COALESCE(NULLIF(a.creative_text,''), NULLIF(a.ad_name,''), '')" if "creative_text" in cols else "COALESCE(a.ad_name,'')"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id,
+                 COALESCE(NULLIF(campaign_name,''),'') AS campaign_name,
+                 COALESCE(NULLIF(campaign_tp,''),'')   AS campaign_tp
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        ad_scope AS (
+          SELECT
+            a.customer_id::text AS customer_id,
+            a.ad_id,
+            a.adgroup_id,
+            {ad_text_expr} AS ad_name,
+            COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
+            c.campaign_name,
+            c.campaign_tp
+          FROM dim_ad a
+          JOIN dim_adgroup g
+            ON a.customer_id::text = g.customer_id::text
+           AND a.adgroup_id = g.adgroup_id
+          JOIN c_f c
+            ON g.customer_id::text = c.customer_id
+           AND g.campaign_id = c.campaign_id
+        ),
+        base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.ad_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_ad_daily f
+          JOIN ad_scope s
+            ON f.customer_id::text = s.customer_id
+           AND f.ad_id = s.ad_id
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.ad_id
+        ),
+        cost_top AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim_cost),
+        clk_top  AS (SELECT * FROM base ORDER BY clk  DESC NULLS LAST LIMIT :lim_k),
+        conv_top AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT :lim_k),
+        picked AS (
+          SELECT * FROM cost_top
+          UNION
+          SELECT * FROM clk_top
+          UNION
+          SELECT * FROM conv_top
+        )
+        SELECT
+          p.*,
+          s.ad_name,
+          s.adgroup_name,
+          s.campaign_name,
+          s.campaign_tp
+        FROM picked p
+        JOIN ad_scope s
+          ON p.customer_id = s.customer_id
+         AND p.ad_id = s.ad_id
+        ORDER BY p.cost DESC NULLS LAST
+        """
+    else:
+        sql = f"""
+        WITH base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.ad_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_ad_daily f
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.ad_id
+        ),
+        cost_top AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim_cost),
+        clk_top  AS (SELECT * FROM base ORDER BY clk  DESC NULLS LAST LIMIT :lim_k),
+        conv_top AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT :lim_k),
+        picked AS (
+          SELECT * FROM cost_top
+          UNION
+          SELECT * FROM clk_top
+          UNION
+          SELECT * FROM conv_top
+        )
+        SELECT
+          p.*,
+          {ad_text_expr} AS ad_name,
+          COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
+          COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
+          COALESCE(NULLIF(c.campaign_tp,''),'')   AS campaign_tp
+        FROM picked p
+        LEFT JOIN dim_ad a
+          ON p.customer_id = a.customer_id::text
+         AND p.ad_id = a.ad_id
+        LEFT JOIN dim_adgroup g
+          ON a.customer_id::text = g.customer_id::text
+         AND a.adgroup_id = g.adgroup_id
+        LEFT JOIN dim_campaign c
+          ON g.customer_id::text = c.customer_id::text
+         AND g.campaign_id = c.campaign_id
+        ORDER BY p.cost DESC NULLS LAST
+        """
+
+    df = sql_read(
+        _engine,
+        sql,
+        {"d1": str(d1), "d2": str(d2), "lim_cost": int(topn_cost), "lim_k": int(top_k)},
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
+
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -1089,6 +1385,86 @@ def query_keyword_bundle(
      AND b.keyword_id  = s.keyword_id
     WHERE COALESCE(s.campaign_type_label,'기타') <> '기타'
     ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
+    """
+
+    params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
+    df = sql_read(_engine, sql, params)
+    return df if df is not None else pd.DataFrame()
+
+    fk_cols = get_table_columns(_engine, "fact_keyword_daily")
+    sales_expr = "SUM(COALESCE(fk.sales,0)) AS sales" if "sales" in fk_cols else "0::bigint AS sales"
+
+    kw_cols = get_table_columns(_engine, "dim_keyword")
+    if "keyword" in kw_cols:
+        kw_expr = "k.keyword"
+    elif "keyword_name" in kw_cols:
+        kw_expr = "k.keyword_name"
+    else:
+        kw_expr = "''::text"
+
+    in_clause = ""
+    if customer_ids:
+        in_clause = f" AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))}) "
+
+    # type filter는 alias 참조 문제 때문에 마지막에 적용
+    type_filter = ""
+    if type_sel:
+        tquoted = ",".join(["'" + str(t).replace("'", "''") + "'" for t in type_sel])
+        type_filter = f" AND campaign_type_label IN ({tquoted}) "
+
+    sql = f"""
+    WITH base AS (
+        SELECT
+            fk.customer_id::text AS customer_id,
+            fk.keyword_id::text AS keyword_id,
+            SUM(fk.imp) AS imp,
+            SUM(fk.clk) AS clk,
+            SUM(fk.cost) AS cost,
+            SUM(fk.conv) AS conv,
+            {sales_expr}
+        FROM fact_keyword_daily fk
+        WHERE fk.dt BETWEEN :d1 AND :d2
+        {in_clause}
+        GROUP BY fk.customer_id::text, fk.keyword_id::text
+    ),
+    joined AS (
+        SELECT
+            b.*,
+            COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
+            COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
+            COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+            CASE
+                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
+                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
+                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
+                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
+                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+                ELSE '기타'
+            END AS campaign_type_label
+        FROM base b
+        LEFT JOIN dim_keyword k
+            ON b.customer_id = k.customer_id::text AND b.keyword_id = k.keyword_id::text
+        LEFT JOIN dim_adgroup g
+            ON k.customer_id::text = g.customer_id::text AND k.adgroup_id::text = g.adgroup_id::text
+        LEFT JOIN dim_campaign c
+            ON g.customer_id::text = c.customer_id::text AND g.campaign_id::text = c.campaign_id::text
+        WHERE 1=1
+          AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
+    ),
+    ranked AS (
+        SELECT
+            j.*,
+            ROW_NUMBER() OVER (ORDER BY j.cost DESC NULLS LAST) AS rn_cost,
+            ROW_NUMBER() OVER (ORDER BY j.clk DESC NULLS LAST) AS rn_clk,
+            ROW_NUMBER() OVER (ORDER BY j.conv DESC NULLS LAST) AS rn_conv
+        FROM joined j
+        WHERE j.campaign_type_label <> '기타'
+        {type_filter}
+    )
+    SELECT *
+    FROM ranked
+    WHERE rn_cost <= :topn_cost OR rn_clk <= 10 OR rn_conv <= 10
+    ORDER BY rn_cost ASC
     """
 
     params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
@@ -1305,6 +1681,10 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
 
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
+    if not f.get("ready", False):
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        return
+
     st.markdown("## 🚀 성과 (캠페인)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
@@ -1312,24 +1692,63 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
-    df = query_campaign_topn(engine, f["start"], f["end"], cids, type_sel, top_n)
-    if df is None or df.empty:
+    bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
+    if bundle is None or bundle.empty:
         st.warning("데이터 없음")
         return
 
-    df = _perf_common_merge_meta(df, meta)
+    df = _perf_common_merge_meta(bundle, meta)
     df = add_rates(df)
 
-    disp = df.copy()
-    disp["광고비"] = disp["cost"].map(format_currency)
-    disp["전환매출"] = disp["sales"].map(format_currency)
-    disp["CPC"] = disp["cpc"].map(format_currency)
-    disp["CPA"] = disp["cpa"].map(format_currency)
-    disp["ROAS(%)"] = disp["roas"].map(format_roas)
-    disp["CTR(%)"] = disp["ctr"].astype(float)
-    disp = finalize_ctr_col(disp, "CTR(%)")
+    # -----------------
+    # TOP5 (비용/클릭/전환)
+    # -----------------
+    top_cost = df.sort_values("cost", ascending=False).head(5)
+    top_clk = df.sort_values("clk", ascending=False).head(5)
+    top_conv = df.sort_values("conv", ascending=False).head(5)
 
-    view_df = disp.rename(
+    def _fmt_top(dfx: pd.DataFrame, metric: str) -> pd.DataFrame:
+        if dfx is None or dfx.empty:
+            return pd.DataFrame(columns=["업체명", "광고유형", "캠페인", metric])
+        x = dfx.copy()
+        x["업체명"] = x.get("account_name", "")
+        x["광고유형"] = x.get("campaign_type", "")
+        x["캠페인"] = x.get("campaign_name", "")
+        if metric == "광고비":
+            x[metric] = x.get("cost", 0).map(format_currency)
+        elif metric == "클릭":
+            x[metric] = pd.to_numeric(x.get("clk", 0), errors="coerce").fillna(0).astype(int)
+        else:
+            x[metric] = pd.to_numeric(x.get("conv", 0), errors="coerce").fillna(0).astype(int)
+        return x[["업체명", "광고유형", "캠페인", metric]]
+
+    with st.expander("📌 성과별 TOP5 (캠페인)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("#### 💸 광고비 TOP5")
+            st.dataframe(_fmt_top(top_cost, "광고비"), use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("#### 🖱️ 클릭 TOP5")
+            st.dataframe(_fmt_top(top_clk, "클릭"), use_container_width=True, hide_index=True)
+        with c3:
+            st.markdown("#### ✅ 전환 TOP5")
+            st.dataframe(_fmt_top(top_conv, "전환"), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # -----------------
+    # Main table (비용 TOP N)
+    # -----------------
+    main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
+
+    disp = main_df.copy()
+    disp["cost"] = disp["cost"].apply(format_currency)
+    disp["sales"] = disp["sales"].apply(format_currency)
+    disp["cpc"] = disp["cpc"].apply(format_currency)
+    disp["cpa"] = disp["cpa"].apply(format_currency)
+    disp["roas_disp"] = disp["roas"].apply(format_roas)
+
+    disp = disp.rename(
         columns={
             "account_name": "업체명",
             "manager": "담당자",
@@ -1337,19 +1756,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "campaign_name": "캠페인",
             "imp": "노출",
             "clk": "클릭",
+            "cost": "광고비",
             "conv": "전환",
+            "ctr": "CTR(%)",
+            "cpc": "CPC",
+            "cpa": "CPA",
+            "sales": "전환매출",
+            "roas_disp": "ROAS(%)",
         }
-    )[
-        ["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
-    ].copy()
+    )
 
-    view_df["노출"] = pd.to_numeric(view_df["노출"], errors="coerce").fillna(0).astype(int)
-    view_df["클릭"] = pd.to_numeric(view_df["클릭"], errors="coerce").fillna(0).astype(int)
-    view_df["전환"] = pd.to_numeric(view_df["전환"], errors="coerce").fillna(0).astype(int)
+    disp["노출"] = pd.to_numeric(disp["노출"], errors="coerce").fillna(0).astype(int)
+    disp["클릭"] = pd.to_numeric(disp["클릭"], errors="coerce").fillna(0).astype(int)
+    disp["전환"] = pd.to_numeric(disp["전환"], errors="coerce").fillna(0).astype(int)
+    disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+    disp = finalize_ctr_col(disp, "CTR(%)")
+
+    cols = ["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    view_df = disp[cols].copy()
 
     st.dataframe(view_df, use_container_width=True, hide_index=True)
     render_download_compact(view_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
-
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False):
@@ -1451,6 +1878,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
+    if not f.get("ready", False):
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        return
+
     st.markdown("## 🧩 성과 (소재)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
@@ -1458,24 +1889,78 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
-    df = query_ad_topn(engine, f["start"], f["end"], cids, type_sel, top_n)
-    if df is None or df.empty:
+    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
+    if bundle is None or bundle.empty:
         st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
         return
 
-    df = _perf_common_merge_meta(df, meta)
+    df = _perf_common_merge_meta(bundle, meta)
     df = add_rates(df)
 
-    disp = df.copy()
-    disp["광고비"] = disp["cost"].map(format_currency)
-    disp["전환매출"] = disp["sales"].map(format_currency)
-    disp["CPC"] = disp["cpc"].map(format_currency)
-    disp["CPA"] = disp["cpa"].map(format_currency)
-    disp["ROAS(%)"] = disp["roas"].map(format_roas)
-    disp["CTR(%)"] = disp["ctr"].astype(float)
-    disp = finalize_ctr_col(disp, "CTR(%)")
+    # -----------------
+    # TOP5 (비용/클릭/전환)
+    # -----------------
+    top_cost = df.sort_values("cost", ascending=False).head(5)
+    top_clk = df.sort_values("clk", ascending=False).head(5)
+    top_conv = df.sort_values("conv", ascending=False).head(5)
 
-    out = disp.rename(
+    def _fmt_top(dfx: pd.DataFrame, metric: str) -> pd.DataFrame:
+        if dfx is None or dfx.empty:
+            return pd.DataFrame(columns=["업체명", "캠페인", "소재내용", metric])
+        x = dfx.copy()
+        x["업체명"] = x.get("account_name", "")
+        x["캠페인"] = x.get("campaign_name", "")
+        x["소재내용"] = x.get("ad_name", "")
+        if metric == "광고비":
+            x[metric] = x.get("cost", 0).map(format_currency)
+        elif metric == "클릭":
+            x[metric] = pd.to_numeric(x.get("clk", 0), errors="coerce").fillna(0).astype(int)
+        else:
+            x[metric] = pd.to_numeric(x.get("conv", 0), errors="coerce").fillna(0).astype(int)
+        return x[["업체명", "캠페인", "소재내용", metric]]
+
+    with st.expander("📌 성과별 TOP5 (소재)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("#### 💸 광고비 TOP5")
+            st.dataframe(
+                _fmt_top(top_cost, "광고비"),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
+            )
+        with c2:
+            st.markdown("#### 🖱️ 클릭 TOP5")
+            st.dataframe(
+                _fmt_top(top_clk, "클릭"),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
+            )
+        with c3:
+            st.markdown("#### ✅ 전환 TOP5")
+            st.dataframe(
+                _fmt_top(top_conv, "전환"),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
+            )
+
+    st.divider()
+
+    # -----------------
+    # Main table (비용 TOP N)
+    # -----------------
+    main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
+
+    disp = main_df.copy()
+    disp["cost"] = disp["cost"].apply(format_currency)
+    disp["sales"] = disp["sales"].apply(format_currency)
+    disp["cpc"] = disp["cpc"].apply(format_currency)
+    disp["cpa"] = disp["cpa"].apply(format_currency)
+    disp["roas_disp"] = disp["roas"].apply(format_roas)
+
+    disp = disp.rename(
         columns={
             "account_name": "업체명",
             "manager": "담당자",
@@ -1485,19 +1970,32 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             "ad_name": "소재내용",
             "imp": "노출",
             "clk": "클릭",
+            "cost": "광고비",
             "conv": "전환",
+            "ctr": "CTR(%)",
+            "cpc": "CPC",
+            "cpa": "CPA",
+            "sales": "전환매출",
+            "roas_disp": "ROAS(%)",
         }
-    )[
-        ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
-    ].copy()
+    )
 
-    out["노출"] = pd.to_numeric(out["노출"], errors="coerce").fillna(0).astype(int)
-    out["클릭"] = pd.to_numeric(out["클릭"], errors="coerce").fillna(0).astype(int)
-    out["전환"] = pd.to_numeric(out["전환"], errors="coerce").fillna(0).astype(int)
+    disp["노출"] = pd.to_numeric(disp["노출"], errors="coerce").fillna(0).astype(int)
+    disp["클릭"] = pd.to_numeric(disp["클릭"], errors="coerce").fillna(0).astype(int)
+    disp["전환"] = pd.to_numeric(disp["전환"], errors="coerce").fillna(0).astype(int)
+    disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+    disp = finalize_ctr_col(disp, "CTR(%)")
 
-    st.dataframe(out, use_container_width=True, hide_index=True)
-    render_download_compact(out, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
+    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    view_df = disp[cols].copy()
 
+    st.dataframe(
+        view_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
+    )
+    render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
