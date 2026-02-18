@@ -43,6 +43,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ==========================================
+# 여기에 아래 코드를 추가해 주세요!
+# ==========================================
+@st.cache_resource(show_spinner=False)
+def get_engine():
+    """데이터베이스 엔진을 생성하고 캐싱합니다."""
+    # .env 파일에 설정된 DB 접속 주소 가져오기
+    db_url = os.environ.get("DATABASE_URL")
+    
+    if not db_url:
+        st.error("DATABASE_URL 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+        st.stop()
+        
+    return create_engine(db_url)
+# ==========================================
+
+
 # Altair (charts)
 try:
     alt.data_transformers.disable_max_rows()
