@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.4.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.5.0)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -42,7 +42,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.4.1 (palette: Dashline / 2026-02-18)"
+BUILD_TAG = "v7.5.0 (Pretendard / White / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -56,52 +56,161 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 # -----------------------------
 GLOBAL_UI_CSS = """
 <style>
-  :root{
-    --c-blue-900:#0528F2;
-    --c-blue-700:#056CF2;
-    --c-blue-500:#3D9DF2;
-    --c-slate-300:#B4C4D9;
-    --c-slate-050:#EBEEF2;
-    --radius:14px;
-  }
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 
-  #MainMenu { visibility: hidden; }
-  footer { visibility: hidden; }
+:root{
+  --c-blue-900:#0528F2;
+  --c-blue-700:#056CF2;
+  --c-blue-500:#3D9DF2;
+  --c-slate-300:#B4C4D9;
+  --c-slate-050:#EBEEF2;
+  --text:#0f172a;
+  --muted:#475569;
+  --radius:18px;
+  --shadow: 0 10px 26px rgba(2,6,23,0.06);
+  --shadow-sm: 0 6px 16px rgba(2,6,23,0.04);
+}
 
-  /* 전체 톤 */
-  .block-container { padding-top: 1.25rem; }
+html, body, .stApp{
+  font-family: "Pretendard", system-ui, -apple-system, "Segoe UI", "Noto Sans KR", Arial, sans-serif;
+  color: var(--text);
+  background: #ffffff;
+}
 
-  /* 칩/배지 (기존 클래스명 유지) */
-  .badge {
-    display:inline-flex;
-    align-items:center;
-    gap:6px;
-    padding:6px 12px;
-    border-radius:999px;
-    font-size:12px;
-    font-weight:800;
-    margin-right:8px;
-    border:1px solid rgba(180,196,217,0.65);
-    background: rgba(235,238,242,0.65);
-    color:#0f172a;
-  }
-  .b-red    { background: rgba(5,40,242,0.12);  color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
-  .b-yellow { background: rgba(5,108,242,0.12); color: var(--c-blue-700); border-color: rgba(5,108,242,0.22); }
-  .b-green  { background: rgba(61,157,242,0.14); color: var(--c-blue-700); border-color: rgba(61,157,242,0.25); }
-  .b-gray   { background: rgba(180,196,217,0.22); color: #0f172a; border-color: rgba(180,196,217,0.6); }
+/* Clean UI */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
 
-  /* 카드 느낌 패널 */
-  .panel {
-    padding:14px 16px;
-    border-radius: var(--radius);
-    background: #fff;
-    border: 1px solid rgba(180,196,217,0.55);
-    box-shadow: 0 6px 16px rgba(2,6,23,0.04);
-  }
-  .panel b { font-weight: 900; }
+/* Fix top clipping + nicer width */
+.block-container {
+  padding-top: 2.6rem;
+  padding-bottom: 2.6rem;
+  max-width: 1400px;
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+h1 { font-weight: 900; }
+h2 { font-weight: 900; }
+h3 { font-weight: 800; }
+
+hr {
+  border-color: rgba(180,196,217,0.45);
+}
+
+/* Hero */
+.hero{
+  border-radius: var(--radius);
+  border: 1px solid rgba(180,196,217,0.55);
+  background:
+    radial-gradient(1200px 320px at 10% 0%, rgba(5,108,242,0.10) 0%, rgba(5,108,242,0.02) 55%, rgba(255,255,255,0) 80%),
+    linear-gradient(180deg, rgba(61,157,242,0.06), rgba(255,255,255,1));
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+}
+.kicker{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-weight: 900;
+  color: var(--c-blue-700);
+}
+.hero-title{
+  margin: 8px 0 2px 0;
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 900;
+}
+.hero-sub{
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.hero-meta{
+  margin-top: 12px;
+  display:flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Chips */
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 12px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+  border:1px solid rgba(180,196,217,0.55);
+  background: rgba(255,255,255,0.8);
+  color: var(--text);
+}
+.b-blue { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
+.b-sky  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
+.b-gray { background: rgba(180,196,217,0.18); color: var(--text); border-color: rgba(180,196,217,0.52); }
+.b-red  { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
+.b-yellow { background: rgba(5,108,242,0.10); color: var(--c-blue-700); border-color: rgba(5,108,242,0.22); }
+.b-green  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
+
+/* Panels / Cards */
+.panel{
+  padding:14px 16px;
+  border-radius: var(--radius);
+  background: #fff;
+  border: 1px solid rgba(180,196,217,0.55);
+  box-shadow: var(--shadow-sm);
+}
+.panel-title{
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* KPI cards (fallback) */
+.kpi{
+  border-radius: 18px;
+  border: 1px solid rgba(180,196,217,0.55);
+  background: #fff;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+.kpi .t{ font-size: 13px; color: var(--muted); font-weight: 800; }
+.kpi .v{ font-size: 22px; font-weight: 900; margin-top: 6px; }
+.kpi .d{ font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+/* Buttons: subtle rounding */
+.stButton > button, .stDownloadButton > button{
+  border-radius: 14px !important;
+}
 </style>
 """
+
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+
+
+def render_hero() -> None:
+    st.markdown(
+        f"""
+        <div class="hero">
+          <div class="kicker">NAVER SEARCH ADS · DASHBOARD</div>
+          <div class="hero-title">네이버 검색광고 통합 대시보드</div>
+          <div class="hero-sub">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
+          <div class="hero-meta">
+            <span class="badge b-gray">빌드: {BUILD_TAG}</span>
+            <span class="badge b-sky">Pretendard</span>
+            <span class="badge b-blue">White UI</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 
 # -----------------------------
@@ -120,13 +229,22 @@ def ui_badges_or_html(items: List[Tuple[str, str]], key: str) -> None:
 
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
+    """Pretty KPI card. Uses shadcn-ui if installed, otherwise HTML card."""
     if HAS_SHADCN_UI and ui is not None:
         try:
             ui.metric_card(title=title, content=value, description=desc, key=key)
             return
         except Exception:
             pass
-    st.metric(title, value)
+
+    st.markdown(
+        f"""<div class='kpi'>
+            <div class='t'>{title}</div>
+            <div class='v'>{value}</div>
+            <div class='d'>{desc}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 
 def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
@@ -240,7 +358,7 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
     st.markdown(
         """
         <style>
-        div[data-testid="stDownloadButton"] button {
+        .stDownloadButton button {
             padding: 0.15rem 0.55rem !important;
             font-size: 0.82rem !important;
             line-height: 1.2 !important;
@@ -2143,8 +2261,7 @@ def page_settings(engine) -> None:
 # Main
 # -----------------------------
 def main():
-    st.markdown("## 네이버 검색광고 통합 대시보드")
-    ui_badges_or_html([(f"빌드: {BUILD_TAG}", "secondary")], key="build_badge")
+    render_hero()
 
     try:
         engine = get_engine()
