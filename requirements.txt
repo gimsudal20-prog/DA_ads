@@ -4,3 +4,8 @@ openpyxl>=3.1
 python-dotenv>=1.0
 SQLAlchemy>=2.0
 psycopg2-binary>=2.9
+
+# Add these to your existing requirements.txt
+streamlit-shadcn-ui>=0.1.19
+# (권장) shadcn-ui 컴포넌트 호환성/안정성 때문에 Streamlit 버전도 아래처럼 고정 권장
+# streamlit==1.38.0
