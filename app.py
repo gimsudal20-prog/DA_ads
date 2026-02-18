@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.6.0 (Pretendard / White / Charts / 2026-02-18)"
+BUILD_TAG = "v7.7.1 (Compare DoD/WoW/MoM + Delta Bars + N/A pct / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -2001,6 +2001,208 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+
+
+# -----------------------------
+# Period comparison (DoD / WoW / MoM)
+# -----------------------------
+
+def _last_day_of_month(y: int, m: int) -> int:
+    if m == 12:
+        nxt = date(y + 1, 1, 1)
+    else:
+        nxt = date(y, m + 1, 1)
+    return (nxt - timedelta(days=1)).day
+
+
+def _shift_month(d: date, months: int) -> date:
+    """Shift month while clamping day (e.g. Mar 31 -> Feb 28/29)."""
+    base = (d.year * 12) + (d.month - 1) + int(months)
+    y = base // 12
+    m = (base % 12) + 1
+    day = min(int(d.day), _last_day_of_month(int(y), int(m)))
+    return date(int(y), int(m), int(day))
+
+
+def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
+    mode = str(mode or "").strip()
+    if mode == "전일대비":
+        return d1 - timedelta(days=1), d2 - timedelta(days=1)
+    if mode == "전주대비":
+        return d1 - timedelta(days=7), d2 - timedelta(days=7)
+    # 전월대비 (default)
+    return _shift_month(d1, -1), _shift_month(d2, -1)
+
+
+def _safe_div(a: float, b: float) -> float:
+    try:
+        if b == 0:
+            return 0.0
+        return float(a) / float(b)
+    except Exception:
+        return 0.0
+
+
+def _pct_change(curr: float, prev: float) -> Optional[float]:
+    """Percent change. If prev==0 and curr>0 -> None (N/A)."""
+    if prev == 0:
+        return 0.0 if curr == 0 else None
+    return (float(curr) - float(prev)) / float(prev) * 100.0
+
+
+def _pct_to_str(p: Optional[float]) -> str:
+    return "—" if p is None else f"{p:+.1f}%"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> Dict[str, float]:
+    entity = str(entity or "").lower().strip()
+    try:
+        if entity == "campaign":
+            ts = query_campaign_timeseries(_engine, d1, d2, cids, type_sel)
+        elif entity == "keyword":
+            ts = query_keyword_timeseries(_engine, d1, d2, cids, type_sel)
+        else:
+            ts = query_ad_timeseries(_engine, d1, d2, cids, type_sel)
+    except Exception:
+        ts = pd.DataFrame()
+
+    if ts is None or ts.empty:
+        return {"imp": 0.0, "clk": 0.0, "cost": 0.0, "conv": 0.0, "sales": 0.0, "ctr": 0.0, "cpc": 0.0, "cpa": 0.0, "roas": 0.0}
+
+    def _sum(col: str) -> float:
+        if col not in ts.columns:
+            return 0.0
+        return float(pd.to_numeric(ts[col], errors="coerce").fillna(0).sum())
+
+    imp = _sum("imp")
+    clk = _sum("clk")
+    cost = _sum("cost")
+    conv = _sum("conv")
+    sales = _sum("sales")
+    ctr = _safe_div(clk, imp) * 100.0
+    cpc = _safe_div(cost, clk)
+    cpa = _safe_div(cost, conv)
+    roas = _safe_div(sales, cost) * 100.0
+
+    return {"imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "ctr": ctr, "cpc": cpc, "cpa": cpa, "roas": roas}
+
+
+def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
+    if delta_df is None or delta_df.empty:
+        return None
+    d = delta_df.copy()
+    d["raw"] = d["change_pct"]
+    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0.0)
+    d["label"] = d["raw"].apply(lambda v: "—" if pd.isna(v) else f"{float(v):+.1f}%")
+
+    base = alt.Chart(d).encode(
+        y=alt.Y("metric:N", sort=None, title=""),
+        x=alt.X("change_pct:Q", title="증감율(%)", axis=alt.Axis(format="+.1f")),
+        tooltip=[alt.Tooltip("metric:N", title="지표"), alt.Tooltip("label:N", title="증감율")],
+    )
+
+    bars = base.mark_bar(cornerRadius=10).encode(
+        color=alt.condition(alt.datum.change_pct >= 0, alt.value("#3D9DF2"), alt.value("#B4C4D9"))
+    )
+
+    rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[6, 6]).encode(x="x:Q")
+
+    txt = base.mark_text(align="left", baseline="middle", dx=6).encode(text="label:N")
+
+    ch = (rule + bars + txt).properties(height=height).configure_axis(grid=False).configure_view(strokeWidth=0)
+    return ch
+
+
+def render_period_compare_panel(
+    engine,
+    entity: str,
+    d1: date,
+    d2: date,
+    cids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    key_prefix: str,
+    expanded: bool = False,
+) -> None:
+    """Reusable panel: DoD/WoW/MoM comparison + delta bar chart."""
+    with st.expander("🔁 전일/전주/전월 비교", expanded=expanded):
+        mode = st.radio(
+            "비교 기준",
+            ["전일대비", "전주대비", "전월대비"],
+            horizontal=True,
+            index=1,
+            key=f"{key_prefix}_cmp_mode",
+        )
+
+        b1, b2 = _period_compare_range(d1, d2, mode)
+
+        cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
+        base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
+
+        # KPI cards (current + delta)
+        c1, c2, c3, c4 = st.columns(4)
+        dc = cur["cost"] - base["cost"]
+        dclk = cur["clk"] - base["clk"]
+        dconv = cur["conv"] - base["conv"]
+        droas = cur["roas"] - base["roas"]
+
+        with c1:
+            ui_metric_or_stmetric(
+                "광고비",
+                format_currency(cur["cost"]),
+                f"{mode} {b1}~{b2} 대비 {format_currency(dc)} / {_pct_to_str(_pct_change(cur['cost'], base['cost']))}",
+                key=f"{key_prefix}_cmp_cost",
+            )
+        with c2:
+            ui_metric_or_stmetric(
+                "클릭",
+                format_number_commas(cur["clk"]),
+                f"{mode} 대비 {format_number_commas(dclk)} / {_pct_to_str(_pct_change(cur['clk'], base['clk']))}",
+                key=f"{key_prefix}_cmp_clk",
+            )
+        with c3:
+            ui_metric_or_stmetric(
+                "전환",
+                format_number_commas(cur["conv"]),
+                f"{mode} 대비 {format_number_commas(dconv)} / {_pct_to_str(_pct_change(cur['conv'], base['conv']))}",
+                key=f"{key_prefix}_cmp_conv",
+            )
+        with c4:
+            ui_metric_or_stmetric(
+                "ROAS(%)",
+                format_roas(cur["roas"]),
+                f"{mode} 대비 {droas:+.1f}p",
+                key=f"{key_prefix}_cmp_roas",
+            )
+
+        # Delta bar chart
+        delta_df = pd.DataFrame(
+            [
+                {"metric": "광고비", "change_pct": _pct_change(cur["cost"], base["cost"])},
+                {"metric": "클릭", "change_pct": _pct_change(cur["clk"], base["clk"])},
+                {"metric": "전환", "change_pct": _pct_change(cur["conv"], base["conv"])},
+                {"metric": "매출", "change_pct": _pct_change(cur["sales"], base["sales"])},
+                {"metric": "ROAS", "change_pct": _pct_change(cur["roas"], base["roas"])},
+            ]
+        )
+        st.markdown("#### 📊 증감율(%) 막대그래프")
+        ch = _chart_delta_bars(delta_df, height=260)
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+
+        # Mini table (current vs baseline)
+        mini = pd.DataFrame(
+            [
+                ["광고비", format_currency(cur["cost"]), format_currency(base["cost"]), f"{_pct_to_str(_pct_change(cur['cost'], base['cost']))}"],
+                ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_pct_to_str(_pct_change(cur['clk'], base['clk']))}"],
+                ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_pct_to_str(_pct_change(cur['conv'], base['conv']))}"],
+                ["매출", format_currency(cur["sales"]), format_currency(base["sales"]), _pct_to_str(_pct_change(cur["sales"], base["sales"]))],
+                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{(cur['roas']-base['roas']):+.1f}p"],
+            ],
+            columns=["지표", "현재", "비교기간", "증감"],
+        )
+        ui_table_or_dataframe(mini, key=f"{key_prefix}_cmp_table", height=210)
+
 # -----------------------------
 # Pages
 # -----------------------------
@@ -2238,6 +2440,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             ui_metric_or_stmetric("총 전환", format_number_commas(total_conv), "선택 기간 합계", key="kpi_camp_conv")
         with k4:
             ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
+
+
+        render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
+
+
+        render_period_compare_panel(engine, "keyword", f["start"], f["end"], cids, type_sel, key_prefix="kw", expanded=False)
+
+
+        render_period_compare_panel(engine, "ad", f["start"], f["end"], cids, type_sel, key_prefix="ad", expanded=False)
 
         metric_sel = st.radio(
             "트렌드 지표",
