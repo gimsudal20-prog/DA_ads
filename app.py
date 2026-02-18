@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.1 (Compare DoD/WoW/MoM + Delta Bars + N/A pct / 2026-02-18)"
+BUILD_TAG = "v7.7.3 (Single Compare Panel per Page + DoD/WoW/MoM bars / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -2447,12 +2447,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
 
-
-        render_period_compare_panel(engine, "keyword", f["start"], f["end"], cids, type_sel, key_prefix="kw", expanded=False)
-
-
-        render_period_compare_panel(engine, "ad", f["start"], f["end"], cids, type_sel, key_prefix="ad", expanded=False)
-
         metric_sel = st.radio(
             "트렌드 지표",
             ["광고비", "클릭", "전환", "ROAS"],
@@ -2666,6 +2660,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         with k4:
             ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_kw_roas")
 
+        render_period_compare_panel(engine, "keyword", f["start"], f["end"], cids, type_sel, key_prefix="kw", expanded=False)
+
         metric_sel = st.radio(
             "트렌드 지표",
             ["광고비", "클릭", "전환", "ROAS"],
@@ -2778,6 +2774,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ui_metric_or_stmetric("총 전환", format_number_commas(total_conv), "선택 기간 합계", key="kpi_ad_conv")
         with k4:
             ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_ad_roas")
+
+        render_period_compare_panel(engine, "ad", f["start"], f["end"], cids, type_sel, key_prefix="ad", expanded=False)
 
         metric_sel = st.radio(
             "트렌드 지표",
