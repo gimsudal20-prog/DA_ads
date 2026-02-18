@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.3.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.3.2)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -33,7 +33,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.1 (2026-02-18)"
+BUILD_TAG = "v7.3.2 (2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -492,6 +492,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
 
     if "filters_applied" not in st.session_state:
         st.session_state["filters_applied"] = defaults.copy()
+    if "filters_ready" not in st.session_state:
+        st.session_state["filters_ready"] = False
 
     with st.expander("필터", expanded=True):
         c1, c2, c3 = st.columns([2, 2, 2])
@@ -548,6 +550,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
         apply_btn = st.button("적용", use_container_width=True)
 
     if apply_btn:
+        st.session_state["filters_ready"] = True
         st.session_state["filters_applied"] = {
             "q": q,
             "manager": manager_sel,
@@ -564,6 +567,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
     f = dict(st.session_state.get("filters_applied", defaults))
     f["start"] = f.get("d1", default_start)
     f["end"] = f.get("d2", default_end)
+    f["ready"] = bool(st.session_state.get("filters_ready", False))
 
     # selected_customer_ids: 비어있으면 전체(쿼리 필터 생략)
     df = meta.copy()
@@ -1537,6 +1541,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
+    if not f.get("ready", False):
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        return
+
     st.markdown("## 🔎 성과 (키워드)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
@@ -1689,6 +1697,7 @@ def page_settings(engine) -> None:
             st.cache_data.clear()
             st.cache_resource.clear()
             st.session_state.pop("_table_cols_cache", None)
+            st.session_state.pop("_table_names_cache", None)
             st.success("캐시를 비웠습니다.")
             st.rerun()
     with c2:
@@ -1701,46 +1710,48 @@ def page_settings(engine) -> None:
         st.error(f"DB 연결 실패: {e}")
         return
 
+    st.divider()
 
-st.markdown("### 🚀 속도 튜닝 (권장 인덱스)")
-st.caption("최초 1회만 실행하면 이후 TOPN/기간 조회가 확 빨라집니다. (권한/정책에 따라 실패할 수 있음)")
+    st.markdown("### 🚀 속도 튜닝 (권장 인덱스)")
+    st.caption("최초 1회만 실행하면 이후 TOPN/기간 조회가 확 빨라집니다. (권한/정책에 따라 실패할 수 있음)")
 
-def _create_perf_indexes(_engine) -> List[str]:
-    stmts = [
-        # FACT (기간+CID+ID) — 조회/집계에 가장 영향 큼
-        "CREATE INDEX IF NOT EXISTS idx_f_campaign_dt_cid_txt_camp ON fact_campaign_daily (dt, (customer_id::text), campaign_id);",
-        "CREATE INDEX IF NOT EXISTS idx_f_keyword_dt_cid_txt_kw   ON fact_keyword_daily (dt, (customer_id::text), keyword_id);",
-        "CREATE INDEX IF NOT EXISTS idx_f_ad_dt_cid_txt_ad        ON fact_ad_daily      (dt, (customer_id::text), ad_id);",
-        "CREATE INDEX IF NOT EXISTS idx_f_biz_dt_cid_txt          ON fact_bizmoney_daily(dt, (customer_id::text));",
+    def _create_perf_indexes(_engine) -> List[str]:
+        stmts = [
+            # FACT (기간+CID+ID) — 조회/집계에 가장 영향 큼
+            "CREATE INDEX IF NOT EXISTS idx_f_campaign_dt_cid_txt_camp ON fact_campaign_daily (dt, (customer_id::text), campaign_id);",
+            "CREATE INDEX IF NOT EXISTS idx_f_keyword_dt_cid_txt_kw   ON fact_keyword_daily (dt, (customer_id::text), keyword_id);",
+            "CREATE INDEX IF NOT EXISTS idx_f_ad_dt_cid_txt_ad        ON fact_ad_daily      (dt, (customer_id::text), ad_id);",
+            "CREATE INDEX IF NOT EXISTS idx_f_biz_dt_cid_txt          ON fact_bizmoney_daily(dt, (customer_id::text));",
+            # DIM (조인 경로)
+            "CREATE INDEX IF NOT EXISTS idx_d_campaign_cid_txt_camp   ON dim_campaign ((customer_id::text), campaign_id, campaign_tp);",
+            "CREATE INDEX IF NOT EXISTS idx_d_adgroup_cid_txt_adg     ON dim_adgroup  ((customer_id::text), adgroup_id, campaign_id);",
+            "CREATE INDEX IF NOT EXISTS idx_d_keyword_cid_txt_kw      ON dim_keyword  ((customer_id::text), keyword_id, adgroup_id);",
+            "CREATE INDEX IF NOT EXISTS idx_d_ad_cid_txt_ad           ON dim_ad       ((customer_id::text), ad_id, adgroup_id);",
+        ]
+        results: List[str] = []
+        with _engine.begin() as conn:
+            for s in stmts:
+                try:
+                    conn.execute(text(s))
+                    results.append(f"✅ {s}")
+                except Exception as e:
+                    results.append(f"⚠️ {s}  -> {e}")
+        return results
 
-        # DIM (조인 경로) — 타입필터/이름 조인 가속
-        "CREATE INDEX IF NOT EXISTS idx_d_campaign_cid_txt_camp   ON dim_campaign ((customer_id::text), campaign_id, campaign_tp);",
-        "CREATE INDEX IF NOT EXISTS idx_d_adgroup_cid_txt_adg     ON dim_adgroup  ((customer_id::text), adgroup_id, campaign_id);",
-        "CREATE INDEX IF NOT EXISTS idx_d_keyword_cid_txt_kw      ON dim_keyword  ((customer_id::text), keyword_id, adgroup_id);",
-        "CREATE INDEX IF NOT EXISTS idx_d_ad_cid_txt_ad           ON dim_ad       ((customer_id::text), ad_id, adgroup_id);",
-    ]
+    if st.button("⚡ 인덱스 생성 실행", use_container_width=True):
+        try:
+            logs = _create_perf_indexes(engine)
+            for line in logs:
+                st.write(line)
+            st.success("완료! 캐시 비우고 다시 조회해보세요.")
+        except Exception as e:
+            st.error(f"실패: {e}")
 
-    results: List[str] = []
-    with _engine.begin() as conn:
-        for s in stmts:
-            try:
-                conn.execute(text(s))
-                results.append(f"✅ {s}")
-            except Exception as e:
-                results.append(f"⚠️ {s}  -> {e}")
-    return results
-
-if st.button("⚡ 인덱스 생성 실행", use_container_width=True):
-    try:
-        logs = _create_perf_indexes(engine)
-        for line in logs:
-            st.write(line)
-        st.success("완료! 캐시 비우고 다시 조회해보세요.")
-    except Exception as e:
-        st.error(f"실패: {e}")
+    st.divider()
 
     st.markdown("### accounts.xlsx → DB 동기화 (수동)")
     st.caption(f"경로: {ACCOUNTS_XLSX}")
+
     if st.button("🔁 동기화 실행", use_container_width=True):
         try:
             res = seed_from_accounts_xlsx(engine)
@@ -1775,6 +1786,9 @@ def main():
     type_opts = get_campaign_type_options(dim_campaign)
 
     f = build_filters(meta, type_opts)
+
+    if not f.get('ready', False):
+        st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
 
     page = st.selectbox("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"], index=0)
     st.divider()
