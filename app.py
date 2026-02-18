@@ -26,6 +26,11 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+# Plotly (preferred for charts)
+import plotly.express as px
+import plotly.graph_objects as go
+
+
 # Optional UI components (shadcn-ui style)
 try:
     import streamlit_shadcn_ui as ui  # pip install streamlit-shadcn-ui
@@ -74,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.7.9 (2026-02-18)'
+BUILD_TAG = 'v7.8.0 (2026-02-18)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -823,8 +828,20 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
             manager_sel = st.multiselect("담당자", manager_opts, default=st.session_state["filters_applied"].get("manager", []))
 
         with c2:
-            account_opts_all = sorted([x for x in meta.get("account_name", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()])
-            account_sel = st.multiselect("업체", account_opts_all, default=st.session_state["filters_applied"].get("account", []))
+            # 업체 옵션은 '담당자 선택'에 따라 동적으로 좁혀서 보여줍니다.
+            meta_for_opts = meta.copy()
+            if manager_sel:
+                meta_for_opts = meta_for_opts[meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])]
+            account_opts_all = sorted([x for x in meta_for_opts.get("account_name", pd.Series(dtype=str)).dropna().astype(str).map(str.strip).unique().tolist() if x])
+            # 업체명 검색(q) 반영
+            account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
+
+            # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
+            if "tmp_acc_sel" in st.session_state:
+                st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
+
+            _default_accounts = [a for a in st.session_state["filters_applied"].get("account", []) if a in account_opts]
+            account_sel = st.multiselect("업체", account_opts, default=_default_accounts, placeholder="Choose options", key="tmp_acc_sel")
 
             type_sel = tuple(
                 st.multiselect(
@@ -1476,29 +1493,31 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 # Altair Charts (rounded / smooth)
 # -----------------------------
 
-def _chart_timeseries(ts: pd.DataFrame, y_col: str, y_title: str, y_format: str = "", height: int = 260):
-    if ts is None or ts.empty:
+def _chart_timeseries(df: pd.DataFrame, x_col: str, y_col: str, y_title: str = "", height: int = 320):
+    """Curved time-series line (Plotly)."""
+    if df is None or df.empty:
         return None
 
-    d = ts[["dt", y_col]].copy()
-    d = d.dropna(subset=["dt"]).copy()
-    d["dt"] = pd.to_datetime(d["dt"])
-    d[y_col] = pd.to_numeric(d[y_col], errors="coerce").fillna(0)
+    d = df[[x_col, y_col]].copy()
+    d[x_col] = pd.to_datetime(d[x_col], errors="coerce")
+    d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
+    d = d.dropna(subset=[x_col]).sort_values(x_col)
 
-    base = alt.Chart(d).encode(
-        x=alt.X("dt:T", title="", axis=alt.Axis(labelAngle=0, labelOverlap=True)),
-        y=alt.Y(f"{y_col}:Q", title=y_title, axis=alt.Axis(format=y_format) if y_format else alt.Axis()),
-        tooltip=[
-            alt.Tooltip("dt:T", title="날짜"),
-            alt.Tooltip(f"{y_col}:Q", title=y_title, format=y_format if y_format else None),
-        ],
+    # Plotly line (spline)
+    fig = px.line(d, x=x_col, y=y_col)
+    fig.update_traces(mode="lines", line_shape="spline")
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+        xaxis_title="",
+        yaxis_title=y_title or "",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
-
-    line = base.mark_line(interpolate="monotone", strokeWidth=3, color="#0528F2")
-    pts = base.mark_circle(size=55, color="#056CF2")
-    return (line + pts).properties(height=height)
-
-
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False)
+    return fig
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
     """축 라벨 중복을 줄이기 위해 (키워드/캠페인/소재명) + (업체명/그룹/ID) 를 단계적으로 붙입니다."""
@@ -1539,37 +1558,73 @@ def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
         out = out.merge(meta[["customer_id", "account_name"]], on="customer_id", how="left")
     return out
 
-def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, value_title: str, top_n: int = 10, height: int = 320):
-    if df is None or df.empty or label_col not in df.columns or value_col not in df.columns:
+def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_title: str = "", top_n: int = 10, height: int = 420):
+    """Rounded progress-style bars (Plotly overlay). x_title is kept for backward-compatibility."""
+    if df is None or df.empty:
         return None
 
+    # unit inference
+    unit = "원" if ("원" in str(x_title)) else ("%" if ("%" in str(x_title)) else "")
+
     d = df[[label_col, value_col]].copy()
+    d[label_col] = d[label_col].astype(str).map(str.strip)
     d[value_col] = pd.to_numeric(d[value_col], errors="coerce").fillna(0)
-    d = d.sort_values(value_col, ascending=False).head(int(top_n)).copy()
-    d[label_col] = d[label_col].astype(str).str.slice(0, 34)
 
-    maxv = float(d[value_col].max()) if len(d) else 0.0
-    d["_max"] = maxv
+    # 같은 라벨이 여러 줄이면 합산(중복 제거)
+    d = d.groupby(label_col, as_index=False)[value_col].sum()
 
-    y = alt.Y(f"{label_col}:N", sort="-x", title=None, axis=alt.Axis(labelLimit=240))
-    bg = alt.Chart(d).mark_bar(cornerRadius=10, height=18, color="#EBEEF2").encode(
-        y=y,
-        x=alt.X("_max:Q", title=value_title),
+    d = d.sort_values(value_col, ascending=False).head(int(top_n))
+    d = d.sort_values(value_col, ascending=True)  # 위에서부터 큰값 보이게(가독)
+
+    labels = d[label_col].tolist()
+    vals = d[value_col].tolist()
+    max_val = max(vals) if vals else 0
+
+    def _fmt(v: float) -> str:
+        if unit == "원":
+            return f"{format_number_commas(v)}원"
+        if unit == "%":
+            return f"{v:.1f}%"
+        return f"{format_number_commas(v)}{unit}"
+
+    fig = go.Figure()
+    # background bar
+    fig.add_trace(
+        go.Bar(
+            x=[max_val] * len(labels),
+            y=labels,
+            orientation="h",
+            marker=dict(color="rgba(180,196,217,0.22)"),
+            hoverinfo="skip",
+        )
+    )
+    # actual bar
+    fig.add_trace(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker=dict(color="#3D9DF2"),
+            text=[_fmt(v) for v in vals],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}<br>%{x:,}" + (unit if unit != "원" else "원") + "<extra></extra>",
+        )
     )
 
-    fg = alt.Chart(d).mark_bar(cornerRadius=10, height=18, color="#3D9DF2").encode(
-        y=y,
-        x=alt.X(f"{value_col}:Q", title=value_title),
-        tooltip=[alt.Tooltip(f"{label_col}:N", title="항목"), alt.Tooltip(f"{value_col}:Q", title=value_title, format=",.0f")],
+    fig.update_layout(
+        barmode="overlay",
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="",
+        yaxis_title="",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=False, zeroline=False)
+    return fig
 
-    txt = alt.Chart(d).mark_text(align="left", baseline="middle", dx=8, color="#0f172a", fontSize=12).encode(
-        y=y,
-        x=alt.X(f"{value_col}:Q"),
-        text=alt.Text(f"{value_col}:Q", format=",.0f"),
-    )
-
-    return (bg + fg + txt).properties(height=height)
 
 
 def query_ad_topn(
@@ -2217,59 +2272,67 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
+    """Delta bar chart: + blue, - red (Plotly)."""
     if delta_df is None or delta_df.empty:
         return None
+
     d = delta_df.copy()
-    d["raw"] = d["change_pct"]
-    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0.0)
+    d["metric"] = d["metric"].astype(str)
+    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0)
+    d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
 
-    def _label(v):
-        if pd.isna(v):
-            return "—"
-        try:
-            return f"{float(v):+.1f}%"
-        except Exception:
-            return "—"
+    # 원하는 순서 유지
+    if "order" in d.columns:
+        d = d.sort_values("order", ascending=False)
 
-    d["label"] = d["raw"].apply(_label)
-
-    def _sign(v: float) -> str:
-        try:
-            x = float(v)
-        except Exception:
-            return "0"
-        if x > 0:
-            return "+"
-        if x < 0:
-            return "-"
-        return "0"
-
-    d["sign"] = d["change_pct"].apply(_sign)
-
-    # Color mapping (data-driven to avoid Altair condition pitfalls across versions)
-    color_scale = alt.Scale(
-        domain=["+", "0", "-"],
-        range=["#056CF2", "#B4C4D9", "#EF4444"],
+    fig = px.bar(
+        d,
+        x="change_pct",
+        y="metric",
+        orientation="h",
+        color="dir",
+        color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
+        text=d["change_pct"].map(lambda v: f"{v:+.1f}%"),
     )
 
-    base = alt.Chart(d).encode(
-        y=alt.Y("metric:N", sort=None, title=""),
-        x=alt.X("change_pct:Q", title="증감율(%)", axis=alt.Axis(format="+.1f")),
-        tooltip=[alt.Tooltip("metric:N", title="지표"), alt.Tooltip("label:N", title="증감율")],
+    # 0 기준선
+    fig.add_vline(x=0, line_width=1, line_color="rgba(180,196,217,0.8)")
+
+    # 축 범위 여유
+    mn = float(d["change_pct"].min())
+    mx = float(d["change_pct"].max())
+    pad = max(2.0, (mx - mn) * 0.12)
+    fig.update_xaxes(range=[mn - pad, mx + pad])
+
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+        xaxis_title="증감율(%)",
+        yaxis_title="",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
-
-    bars = base.mark_bar(cornerRadius=10).encode(
-        color=alt.Color("sign:N", scale=color_scale, legend=None)
-    )
-
-    rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[6, 6]).encode(x="x:Q")
-
-    txt = base.mark_text(align="left", baseline="middle", dx=6).encode(text="label:N")
-
-    ch = (rule + bars + txt).properties(height=height).configure_axis(grid=False).configure_view(strokeWidth=0)
-    return ch
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(180,196,217,0.25)", zeroline=False)
+    fig.update_yaxes(showgrid=False, zeroline=False)
+    return fig
 
 
+
+def render_chart(obj, *, height: int | None = None) -> None:
+    """Render a chart object with Streamlit. Plotly preferred."""
+    if obj is None:
+        return
+    try:
+        mod = obj.__class__.__module__
+    except Exception:
+        mod = ""
+    if mod.startswith("plotly"):
+        st.plotly_chart(obj, use_container_width=True, config={"displayModeBar": False})
+    else:
+        # fallback (Altair etc.)
+        render_chart(obj)
 
 def render_period_compare_panel(
     engine,
@@ -2354,7 +2417,7 @@ def render_period_compare_panel(
         st.markdown("#### 📊 증감율(%) 막대그래프")
         ch = _chart_delta_bars(delta_df, height=260)
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
 
         # Mini table (current vs baseline)
         mini = pd.DataFrame(
@@ -2633,7 +2696,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
 
         st.divider()
 
@@ -2676,15 +2739,22 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     
     with st.expander("📊 캠페인 광고비 TOP10 그래프", expanded=False):
-        chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
-        tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
+        tmp = bundle.copy()
         tmp = _attach_account_name(tmp, meta)
-        tmp["label"] = _disambiguate_label(tmp, "campaign_name", parts=["account_name", "campaign_type"], id_col="campaign_id", max_len=44)
-        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        tmp["campaign_name"] = tmp["campaign_name"].astype(str).map(str.strip)
+        # 같은 캠페인명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
+        g = tmp.groupby(["customer_id", "campaign_name"], as_index=False)["cost"].sum()
+        g = _attach_account_name(g, meta)
+
+        multi_acc = g["customer_id"].nunique() > 1
+        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["campaign_name"]}' if multi_acc else r["campaign_name"], axis=1)
+
+        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
         else:
             st.info("그래프 표시 불가")
+
 
     st.divider()
     # -----------------
@@ -2781,15 +2851,22 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     
     with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.sort_values("cost", ascending=False).head(10).copy()
+        tmp = bundle.copy()
         tmp = _attach_account_name(tmp, meta)
-        # 동일 키워드명이 여러 업체/그룹에 있을 수 있어 라벨을 구분해줍니다.
-        tmp["label"] = _disambiguate_label(tmp, "keyword", parts=["account_name", "campaign_name", "adgroup_name"], id_col="keyword_id", max_len=42)
-        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        tmp["keyword"] = tmp["keyword"].astype(str).map(str.strip)
+        # 같은 키워드명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
+        g = tmp.groupby(["customer_id", "keyword"], as_index=False)["cost"].sum()
+        g = _attach_account_name(g, meta)
+
+        multi_acc = g["customer_id"].nunique() > 1
+        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["keyword"]}' if multi_acc else r["keyword"], axis=1)
+
+        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
         else:
             st.info("그래프 표시 불가")
+
 
     st.divider()
     # Top N list (광고비 기준)
@@ -2851,7 +2928,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
 
         st.divider()
 
@@ -2966,7 +3043,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
 
         st.divider()
 
@@ -3007,15 +3084,22 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     
     with st.expander("📊 소재 광고비 TOP10 그래프", expanded=False):
-        chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
-        tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
+        tmp = bundle.copy()
         tmp = _attach_account_name(tmp, meta)
-        tmp["label"] = _disambiguate_label(tmp, "ad_name", parts=["account_name", "campaign_name", "adgroup_name"], id_col="ad_id", max_len=44)
-        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        tmp["ad_name"] = tmp["ad_name"].astype(str).map(str.strip)
+        # 같은 소재명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
+        g = tmp.groupby(["customer_id", "ad_name"], as_index=False)["cost"].sum()
+        g = _attach_account_name(g, meta)
+
+        multi_acc = g["customer_id"].nunique() > 1
+        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["ad_name"]}' if multi_acc else r["ad_name"], axis=1)
+
+        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
-            st.altair_chart(ch, use_container_width=True)
+            render_chart(ch)
         else:
             st.info("그래프 표시 불가")
+
 
     st.divider()
     # -----------------
