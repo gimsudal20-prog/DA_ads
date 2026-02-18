@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.7.5)
+app.py - 네이버 검색광고 통합 대시보드 (v7.7.7)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.6 (Pretendard / White / 2026-02-18)"
+BUILD_TAG = "v7.7.7 (Pretendard / White / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -172,6 +172,49 @@ hr {
   gap: 8px;
 }
 
+
+  .hero-grid{
+    display:flex; gap:18px; justify-content:space-between; align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .hero-left{flex:1 1 520px; min-width:320px;}
+  .hero-right{
+    flex:0 1 340px; min-width:280px;
+    display:flex; flex-direction:column; align-items:flex-end; gap:8px;
+    margin-top: 2px;
+  }
+  .fresh-title{
+    font-size:11px; letter-spacing:0.12em; font-weight:800;
+    color: rgba(2,8,23,0.55);
+  }
+  .fresh-wrap{
+    width:100%;
+    display:flex; flex-wrap:wrap; justify-content:flex-end;
+    gap:8px;
+  }
+  .fresh-chip{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:8px 10px;
+    border-radius:999px;
+    border:1px solid rgba(180,196,217,0.6);
+    background: rgba(255,255,255,0.92);
+    box-shadow: 0 6px 18px rgba(2,8,23,0.06);
+    font-size:12px;
+    color: rgba(2,8,23,0.78);
+    white-space:nowrap;
+  }
+  .dot{
+    width:8px; height:8px; border-radius:50%;
+    background: var(--b500);
+  }
+  .dot-camp{ background: #056CF2; box-shadow: 0 0 0 3px rgba(5,108,242,0.14); }
+  .dot-key{ background: #3D9DF2; box-shadow: 0 0 0 3px rgba(61,157,242,0.16); }
+  .dot-ad { background: #0528F2; box-shadow: 0 0 0 3px rgba(5,40,242,0.14); }
+  .dot-bm { background: #B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
+  @media (max-width: 900px){
+    .hero-right{ align-items:flex-start; }
+    .fresh-wrap{ justify-content:flex-start; }
+  }
 /* Chips */
 .badge{
   display:inline-flex;
@@ -233,38 +276,46 @@ html, body { background:#ffffff; }
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
 
-def render_hero() -> None:
+def render_hero(latest: Optional[dict] = None) -> None:
+    """Top hero header."""
+    latest = latest or {}
+    camp_dt = latest.get("campaign", "-")
+    key_dt = latest.get("keyword", "-")
+    ad_dt = latest.get("ad", "-")
+    bm_dt = latest.get("bizmoney", "-")
+
+    chips = f"""
+      <div class='fresh-wrap'>
+        <span class='fresh-chip'><span class='dot dot-camp'></span>캠페인 최신 <b>{camp_dt}</b></span>
+        <span class='fresh-chip'><span class='dot dot-key'></span>키워드 최신 <b>{key_dt}</b></span>
+        <span class='fresh-chip'><span class='dot dot-ad'></span>소재 최신 <b>{ad_dt}</b></span>
+        <span class='fresh-chip'><span class='dot dot-bm'></span>비즈머니 최신 <b>{bm_dt}</b></span>
+      </div>
+    """
+
     st.markdown(
         f"""
-        <div class="hero">
-          <div class="kicker">NAVER SEARCH ADS · DASHBOARD</div>
-          <div class="hero-title">네이버 검색광고 통합 대시보드</div>
-          <div class="hero-sub">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
-          <div class="hero-meta">
-            <span class="badge b-gray">빌드: {BUILD_TAG}</span>
-            <span class="badge b-sky">Pretendard</span>
-            <span class="badge b-blue">White UI</span>
+        <div class='hero'>
+          <div class='hero-grid'>
+            <div class='hero-left'>
+              <div class='kicker'>NAVER SEARCH ADS · DASHBOARD</div>
+              <div class='hero-title'>네이버 검색광고 통합 대시보드</div>
+              <div class='hero-sub'>예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
+              <div class='hero-meta'>
+                <span class='badge b-gray'>빌드: {BUILD_TAG}</span>
+                <span class='badge b-sky'>Pretendard</span>
+                <span class='badge b-sky'>White UI</span>
+              </div>
+            </div>
+            <div class='hero-right'>
+              <div class='fresh-title'>DATA FRESHNESS</div>
+              {chips}
+            </div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-
-
-# -----------------------------
-# UI helpers (shadcn-ui optional)
-# -----------------------------
-def ui_badges_or_html(items: List[Tuple[str, str]], key: str) -> None:
-    """items: list of (text, variant)."""
-    if HAS_SHADCN_UI and ui is not None:
-        try:
-            ui.badges(badge_list=items, class_name="flex gap-2 flex-wrap", key=key)
-            return
-        except Exception:
-            pass
-    chips = [f"<span class='badge b-gray'>{t}</span>" for t, _ in items]
-    st.markdown("".join(chips), unsafe_allow_html=True)
 
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
@@ -692,6 +743,27 @@ def query_latest_dates(_engine) -> Dict[str, str]:
     if df is not None and not df.empty:
         for _, r in df.iterrows():
             out[str(r["t"])] = str(r["mx"])[:10] if r["mx"] is not None else "-"
+    return out
+
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def get_latest_dates(_engine) -> dict:
+    """Return latest dates for key tables (as YYYY-MM-DD strings)."""
+    out = {"campaign": "-", "keyword": "-", "ad": "-", "bizmoney": "-"}
+    checks = [
+        ("campaign", "fact_campaign_daily", "dt"),
+        ("keyword", "fact_keyword_daily", "dt"),
+        ("ad", "fact_ad_daily", "dt"),
+        ("bizmoney", "fact_bizmoney_daily", "dt"),
+    ]
+    for k, table, col in checks:
+        try:
+            df = sql_read(_engine, f"SELECT MAX({col}) AS mx FROM {table}")
+            mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
+            out[k] = str(mx)[:10] if mx is not None else "-"
+        except Exception:
+            out[k] = "-"
     return out
 
 
@@ -3063,15 +3135,15 @@ def page_settings(engine) -> None:
 # Main
 # -----------------------------
 def main():
-    render_hero()
-
     try:
         engine = get_engine()
+        latest = get_latest_dates(engine)
     except Exception as e:
+        render_hero(None)
         st.error(str(e))
         return
 
-    render_data_freshness(engine)
+    render_hero(latest)
 
     meta = get_meta(engine)
     if meta is None or meta.empty:
