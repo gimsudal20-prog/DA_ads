@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.5 (Pretendard / White / 2026-02-18)"
+BUILD_TAG = "v7.7.6 (Pretendard / White / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -2140,7 +2140,35 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d = delta_df.copy()
     d["raw"] = d["change_pct"]
     d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0.0)
-    d["label"] = d["raw"].apply(lambda v: "—" if pd.isna(v) else f"{float(v):+.1f}%")
+
+    def _label(v):
+        if pd.isna(v):
+            return "—"
+        try:
+            return f"{float(v):+.1f}%"
+        except Exception:
+            return "—"
+
+    d["label"] = d["raw"].apply(_label)
+
+    def _sign(v: float) -> str:
+        try:
+            x = float(v)
+        except Exception:
+            return "0"
+        if x > 0:
+            return "+"
+        if x < 0:
+            return "-"
+        return "0"
+
+    d["sign"] = d["change_pct"].apply(_sign)
+
+    # Color mapping (data-driven to avoid Altair condition pitfalls across versions)
+    color_scale = alt.Scale(
+        domain=["+", "0", "-"],
+        range=["#056CF2", "#B4C4D9", "#EF4444"],
+    )
 
     base = alt.Chart(d).encode(
         y=alt.Y("metric:N", sort=None, title=""),
@@ -2149,15 +2177,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     )
 
     bars = base.mark_bar(cornerRadius=10).encode(
-        color=alt.condition(
-            alt.datum.change_pct > 0,
-            alt.value("#056CF2"),
-            alt.condition(
-                alt.datum.change_pct < 0,
-                alt.value("#EF4444"),
-                alt.value("#B4C4D9"),
-            ),
-        )
+        color=alt.Color("sign:N", scale=color_scale, legend=None)
     )
 
     rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[6, 6]).encode(x="x:Q")
@@ -2166,6 +2186,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
 
     ch = (rule + bars + txt).properties(height=height).configure_axis(grid=False).configure_view(strokeWidth=0)
     return ch
+
 
 
 def render_period_compare_panel(
