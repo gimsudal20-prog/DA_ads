@@ -42,7 +42,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.4.0 (2026-02-18)"
+BUILD_TAG = "v7.4.1 (palette: Dashline / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -56,13 +56,49 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 # -----------------------------
 GLOBAL_UI_CSS = """
 <style>
+  :root{
+    --c-blue-900:#0528F2;
+    --c-blue-700:#056CF2;
+    --c-blue-500:#3D9DF2;
+    --c-slate-300:#B4C4D9;
+    --c-slate-050:#EBEEF2;
+    --radius:14px;
+  }
+
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
-  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; margin-right:6px; }
-  .b-red { background: rgba(239,68,68,0.12); color: rgb(185,28,28); }
-  .b-yellow { background: rgba(234,179,8,0.16); color: rgb(161,98,7); }
-  .b-green { background: rgba(34,197,94,0.12); color: rgb(21,128,61); }
-  .b-gray { background: rgba(148,163,184,0.18); color: rgb(51,65,85); }
+
+  /* 전체 톤 */
+  .block-container { padding-top: 1.25rem; }
+
+  /* 칩/배지 (기존 클래스명 유지) */
+  .badge {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:6px 12px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:800;
+    margin-right:8px;
+    border:1px solid rgba(180,196,217,0.65);
+    background: rgba(235,238,242,0.65);
+    color:#0f172a;
+  }
+  .b-red    { background: rgba(5,40,242,0.12);  color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
+  .b-yellow { background: rgba(5,108,242,0.12); color: var(--c-blue-700); border-color: rgba(5,108,242,0.22); }
+  .b-green  { background: rgba(61,157,242,0.14); color: var(--c-blue-700); border-color: rgba(61,157,242,0.25); }
+  .b-gray   { background: rgba(180,196,217,0.22); color: #0f172a; border-color: rgba(180,196,217,0.6); }
+
+  /* 카드 느낌 패널 */
+  .panel {
+    padding:14px 16px;
+    border-radius: var(--radius);
+    background: #fff;
+    border: 1px solid rgba(180,196,217,0.55);
+    box-shadow: 0 6px 16px rgba(2,6,23,0.04);
+  }
+  .panel b { font-weight: 900; }
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
@@ -1685,7 +1721,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2:
         st.markdown(
             """
-            <div style="padding:12px 14px; border-radius:12px; background-color:rgba(2,132,199,0.06); line-height:1.85; font-size:14px;">
+            <div class="panel" style="line-height:1.85; font-size:14px; background: rgba(235,238,242,0.75);">
               <b>상태 가이드</b><br><br>
               🟢 <b>적정</b> : 집행률 <b>90% 미만</b><br>
               🟡 <b>주의</b> : 집행률 <b>90% 이상</b><br>
