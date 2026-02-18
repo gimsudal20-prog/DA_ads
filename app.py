@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.0 (2026-02-18)'
+BUILD_TAG = 'v7.8.1 (2026-02-18)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -94,6 +94,7 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/woff2/SUIT.css");
 
 :root{
   --c-blue-900:#0528F2;
@@ -104,12 +105,16 @@ GLOBAL_UI_CSS = """
   --text:#0f172a;
   --muted:#475569;
   --radius:18px;
+  --font-body: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
+  --font-display: "SUIT", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
+  --pos: #056CF2;
+  --neg: #EF4444;
   --shadow: 0 10px 26px rgba(2,6,23,0.06);
   --shadow-sm: 0 6px 16px rgba(2,6,23,0.04);
 }
 
 html, body, .stApp{
-  font-family: "Pretendard", system-ui, -apple-system, "Segoe UI", "Noto Sans KR", Arial, sans-serif;
+  font-family: var(--font-body);
   color: var(--text);
   background: #ffffff;
 }
@@ -132,6 +137,8 @@ h1, h2, h3 {
 }
 h1 { font-weight: 900; }
 h2 { font-weight: 900; }
+h1, h2, h3 { font-family: var(--font-display); }
+.kpi .v, .kpi .vv { font-family: var(--font-display); }
 h3 { font-weight: 800; }
 
 hr {
@@ -263,6 +270,15 @@ hr {
   padding: 14px 16px;
   box-shadow: var(--shadow-sm);
 }
+
+.delta-chip-row{display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 4px;}
+.delta-chip{min-width:170px; flex:1 1 170px; padding:10px 12px; border-radius:16px; border:1px solid rgba(11,31,51,.08);
+  background: rgba(235,238,242,.55); box-shadow: 0 8px 20px rgba(11,31,51,.06);}
+.delta-chip .l{font-size:12px; color: var(--muted); font-weight:800; letter-spacing:-.01em;}
+.delta-chip .v{margin-top:2px; font-size:16px; font-weight:900; letter-spacing:-.02em; font-family: var(--font-display);}
+.delta-chip.pos .v{color: var(--pos);}
+.delta-chip.neg .v{color: var(--neg);}
+.delta-chip.zero .v{color: #0B1F33;}
 .kpi .t{ font-size: 13px; color: var(--muted); font-weight: 800; }
 .kpi .v{ font-size: 22px; font-weight: 900; margin-top: 6px; }
 .kpi .d{ font-size: 12px; color: var(--muted); margin-top: 6px; }
@@ -841,7 +857,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
                 st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
 
             _default_accounts = [a for a in st.session_state["filters_applied"].get("account", []) if a in account_opts]
-            account_sel = st.multiselect("업체", account_opts, default=_default_accounts, placeholder="Choose options", key="tmp_acc_sel")
+            if "tmp_acc_sel" not in st.session_state:
+                st.session_state["tmp_acc_sel"] = _default_accounts
+            account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
 
             type_sel = tuple(
                 st.multiselect(
@@ -1493,9 +1511,19 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 # Altair Charts (rounded / smooth)
 # -----------------------------
 
-def _chart_timeseries(df: pd.DataFrame, x_col: str, y_col: str, y_title: str = "", height: int = 320):
+def _chart_timeseries(
+    df: pd.DataFrame,
+    y_col: str,
+    y_title: str = "",
+    *,
+    x_col: str = "dt",
+    y_format: str = ",.0f",
+    height: int = 320,
+):
     """Curved time-series line (Plotly)."""
     if df is None or df.empty:
+        return None
+    if x_col not in df.columns or y_col not in df.columns:
         return None
 
     d = df[[x_col, y_col]].copy()
@@ -1503,7 +1531,6 @@ def _chart_timeseries(df: pd.DataFrame, x_col: str, y_col: str, y_title: str = "
     d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
     d = d.dropna(subset=[x_col]).sort_values(x_col)
 
-    # Plotly line (spline)
     fig = px.line(d, x=x_col, y=y_col)
     fig.update_traces(mode="lines", line_shape="spline")
     fig.update_layout(
@@ -1516,8 +1543,9 @@ def _chart_timeseries(df: pd.DataFrame, x_col: str, y_col: str, y_title: str = "
         font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
     fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
     return fig
+
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
     """축 라벨 중복을 줄이기 위해 (키워드/캠페인/소재명) + (업체명/그룹/ID) 를 단계적으로 붙입니다."""
@@ -2368,41 +2396,61 @@ def render_period_compare_panel(
         cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
         base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
 
-        # KPI cards (current + delta)
-        c1, c2, c3, c4 = st.columns(4)
-        dc = cur["cost"] - base["cost"]
-        dclk = cur["clk"] - base["clk"]
-        dconv = cur["conv"] - base["conv"]
-        droas = cur["roas"] - base["roas"]
 
-        with c1:
-            ui_metric_or_stmetric(
-                "광고비",
-                format_currency(cur["cost"]),
-                f"{mode} {b1}~{b2} 대비 {format_currency(dc)} / {_pct_to_str(_pct_change(cur['cost'], base['cost']))}",
-                key=f"{key_prefix}_cmp_cost",
-            )
-        with c2:
-            ui_metric_or_stmetric(
-                "클릭",
-                format_number_commas(cur["clk"]),
-                f"{mode} 대비 {format_number_commas(dclk)} / {_pct_to_str(_pct_change(cur['clk'], base['clk']))}",
-                key=f"{key_prefix}_cmp_clk",
-            )
-        with c3:
-            ui_metric_or_stmetric(
-                "전환",
-                format_number_commas(cur["conv"]),
-                f"{mode} 대비 {format_number_commas(dconv)} / {_pct_to_str(_pct_change(cur['conv'], base['conv']))}",
-                key=f"{key_prefix}_cmp_conv",
-            )
-        with c4:
-            ui_metric_or_stmetric(
-                "ROAS(%)",
-                format_roas(cur["roas"]),
-                f"{mode} 대비 {droas:+.1f}p",
-                key=f"{key_prefix}_cmp_roas",
-            )
+        # Quick delta summary (no duplicated KPI cards)
+
+        dcost = cur["cost"] - base["cost"]
+
+        dclk = cur["clk"] - base["clk"]
+
+        dconv = cur["conv"] - base["conv"]
+
+        droas_p = (cur["roas"] - base["roas"]) * 100.0
+
+        dcost_pct = _pct_change(cur["cost"], base["cost"])
+
+        dclk_pct = _pct_change(cur["clk"], base["clk"])
+
+        dconv_pct = _pct_change(cur["conv"], base["conv"])
+
+        droas_pct = _pct_change(cur["roas"], base["roas"])
+
+
+        def _delta_chip(label: str, value: str, sign: Optional[float]) -> str:
+
+            if sign is None:
+
+                cls = "zero"
+
+            elif sign > 0:
+
+                cls = "pos"
+
+            elif sign < 0:
+
+                cls = "neg"
+
+            else:
+
+                cls = "zero"
+
+            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'>{value}</div></div>"
+
+
+        chips = [
+
+            _delta_chip("광고비", f"{format_currency(dcost)} ({_pct_to_str(dcost_pct)})", dcost_pct),
+
+            _delta_chip("클릭", f"{format_number_commas(dclk)} ({_pct_to_str(dclk_pct)})", dclk_pct),
+
+            _delta_chip("전환", f"{format_number_commas(dconv)} ({_pct_to_str(dconv_pct)})", dconv_pct),
+
+            _delta_chip("ROAS", f"{droas_p:+.1f}p ({_pct_to_str(droas_pct)})", droas_p),
+
+        ]
+
+        st.markdown("<div class='delta-chip-row'>" + "".join(chips) + "</div>", unsafe_allow_html=True)
+
 
         # Delta bar chart
         delta_df = pd.DataFrame(
