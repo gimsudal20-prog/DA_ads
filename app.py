@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.2 (2026-02-18)'
+BUILD_TAG = 'v7.8.3 (2026-02-18)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -94,7 +94,7 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/stylesheet.css");
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT@main/fonts/static/stylesheet.css");
 
 :root{
   --c-blue-900:#0528F2;
@@ -297,12 +297,15 @@ html, body { background:#ffffff; }
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
 
-def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
+def render_hero(latest: dict | None = None, build_tag: str = BUILD_TAG) -> None:
     """
     상단 히어로(타이틀 + 데이터 최신일) 영역
     - Pretendard/White UI 표시는 숨김
     - Markdown 파서 이슈로 </div> 등이 노출되는 현상을 막기 위해, 빈 줄을 제거한 HTML을 렌더링
     """
+
+    # defensive: allow latest=None when DB not ready
+    latest = latest or {}
     def _pill(label: str, dt: Optional[str], ok: bool = True) -> str:
         dt_txt = (dt or "—").strip()
         dot_cls = "on" if ok else "off"
