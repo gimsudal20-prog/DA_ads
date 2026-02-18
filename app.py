@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.1 (2026-02-18)'
+BUILD_TAG = 'v7.8.2 (2026-02-18)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -94,7 +94,7 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/woff2/SUIT.css");
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/stylesheet.css");
 
 :root{
   --c-blue-900:#0528F2;
@@ -338,61 +338,20 @@ def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     hero_html = "\n".join([ln.strip() for ln in hero_html.splitlines() if ln.strip()])
     st.markdown(hero_html, unsafe_allow_html=True)
 
-def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
-    """Pretty KPI card. Uses shadcn-ui if installed, otherwise HTML card."""
-    if HAS_SHADCN_UI and ui is not None:
-        try:
-            ui.metric_card(title=title, content=value, description=desc, key=key)
-            return
-        except Exception:
-            pass
-
+def ui_metric_or_stmetric(label: str, value: str, help: str | None = None, key: str | None = None) -> None:
+    """KPI 카드 렌더러.
+    - 폰트 요구사항(SUIT)을 확실히 적용하기 위해, shadcn 컴포넌트(iframe) 대신 **HTML 카드**를 기본 사용합니다.
+    """
+    # HTML KPI Card (SUIT 적용: .kpi .v)
+    help_html = f"<div class='s'>{help}</div>" if help else ""
     st.markdown(
         f"""<div class='kpi'>
-            <div class='t'>{title}</div>
-            <div class='v'>{value}</div>
-            <div class='d'>{desc}</div>
-        </div>""",
+  <div class='l'>{label}</div>
+  <div class='v'>{value}</div>
+  {help_html}
+</div>""",
         unsafe_allow_html=True,
     )
-
-
-def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
-    """Small tables: shadcn table if available; else st.dataframe."""
-    if df is None:
-        df = pd.DataFrame()
-    if HAS_SHADCN_UI and ui is not None:
-        try:
-            ui.table(df, maxHeight=height, key=key)
-            return
-        except Exception:
-            pass
-    st.dataframe(df, use_container_width=True, hide_index=True, height=height)
-
-# -----------------------------
-# DB helpers
-# -----------------------------
-def get_database_url() -> str:
-    db_url = os.getenv("DATABASE_URL", "").strip()
-    if not db_url:
-        try:
-            db_url = str(st.secrets.get("DATABASE_URL", "")).strip()
-        except Exception:
-            db_url = ""
-
-    if not db_url:
-        raise RuntimeError("DATABASE_URL is not set. (.env env var or Streamlit secrets)")
-
-    if "sslmode=" not in db_url:
-        joiner = "&" if "?" in db_url else "?"
-        db_url = db_url + f"{joiner}sslmode=require"
-
-    return db_url
-
-
-@st.cache_resource(show_spinner=False)
-def get_engine():
-    return create_engine(get_database_url(), pool_pre_ping=True, future=True)
 
 
 def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1544,6 +1503,8 @@ def _chart_timeseries(
     )
     fig.update_xaxes(showgrid=False, zeroline=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
+    # Font
+    fig.update_layout(font=dict(family="Pretendard"))
     return fig
 
 
