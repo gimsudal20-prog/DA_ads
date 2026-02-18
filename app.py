@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.8 (Pretendard / White / 2026-02-18)"
+BUILD_TAG = 'v7.7.9 (2026-02-18)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -276,47 +276,46 @@ html, body { background:#ffffff; }
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
 
-def render_hero(latest: Optional[dict] = None) -> None:
-    """Top hero header."""
-    latest = latest or {}
-    camp_dt = latest.get("campaign", "-")
-    key_dt = latest.get("keyword", "-")
-    ad_dt = latest.get("ad", "-")
-    bm_dt = latest.get("bizmoney", "-")
-
-    chips = f"""
-      <div class='fresh-wrap'>
-        <span class='fresh-chip'><span class='dot dot-camp'></span>캠페인 최신 <b>{camp_dt}</b></span>
-        <span class='fresh-chip'><span class='dot dot-key'></span>키워드 최신 <b>{key_dt}</b></span>
-        <span class='fresh-chip'><span class='dot dot-ad'></span>소재 최신 <b>{ad_dt}</b></span>
-        <span class='fresh-chip'><span class='dot dot-bm'></span>비즈머니 최신 <b>{bm_dt}</b></span>
-      </div>
+def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """
+    상단 히어로(타이틀 + 데이터 최신일) 영역
+    - Pretendard/White UI 표시는 숨김
+    - Markdown 파서 이슈로 </div> 등이 노출되는 현상을 막기 위해, 빈 줄을 제거한 HTML을 렌더링
+    """
+    def _pill(label: str, dt: Optional[str], ok: bool = True) -> str:
+        dt_txt = (dt or "—").strip()
+        dot_cls = "on" if ok else "off"
+        return f"<div class='pill'><span class='dot {dot_cls}'></span>{label}: {dt_txt}</div>"
 
-    st.markdown(
-        f"""
-        <div class='hero'>
-          <div class='hero-grid'>
-            <div class='hero-left'>
-              <div class='kicker'>NAVER SEARCH ADS · DASHBOARD</div>
-              <div class='hero-title'>네이버 검색광고 통합 대시보드</div>
-              <div class='hero-sub'>예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
-              <div class='hero-meta'>
-                <span class='badge b-gray'>빌드: {BUILD_TAG}</span>
-                <span class='badge b-sky'>Pretendard</span>
-                <span class='badge b-sky'>White UI</span>
-              </div>
-            </div>
-            <div class='hero-right'>
-              <div class='fresh-title'>DATA FRESHNESS</div>
-              {chips}
-            </div>
-          </div>
+    freshness_pills = "\n".join([
+        _pill("캠페인 최신", latest.get("campaign_dt")),
+        _pill("키워드 최신", latest.get("keyword_dt")),
+        _pill("소재 최신", latest.get("ad_dt")),
+        _pill("비즈머니 최신", latest.get("bizmoney_dt")),
+    ])
+
+    hero_html = f"""
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-kicker">NAVER SEARCH ADS · DASHBOARD</div>
+        <div class="hero-title">네이버 검색광고 통합 대시보드</div>
+        <div class="hero-sub">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
+        <div class="hero-badges">
+          <span class="badge">빌드: {build_tag}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+      </div>
 
+      <div class="hero-right">
+        <div class="freshness-title">DATA FRESHNESS</div>
+        <div class="freshness-pills">
+          {freshness_pills}
+        </div>
+      </div>
+    </div>
+    """
+    # ⚠️ Streamlit markdown의 HTML 블록 규칙 때문에 빈 줄이 있으면 일부 닫는 태그가 텍스트로 노출될 수 있음
+    hero_html = "\n".join([ln.strip() for ln in hero_html.splitlines() if ln.strip()])
+    st.markdown(hero_html, unsafe_allow_html=True)
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
     """Pretty KPI card. Uses shadcn-ui if installed, otherwise HTML card."""
@@ -766,6 +765,17 @@ def get_latest_dates(_engine) -> dict:
             out[k] = "-"
     return out
 
+
+
+def ui_badges_or_html(items, key_prefix: str = "") -> None:
+    """간단한 배지/칩 UI (HTML 기반). items: List[Tuple[str, Any]]"""
+    pills = []
+    for label, value in items:
+        v = str(value) if value is not None else "—"
+        pills.append(f"<div class='pill'><span class='dot on'></span>{label}: {v}</div>")
+    html = "<div class='freshness-pills'>" + "\n".join(pills) + "</div>"
+    html = "\n".join([ln.strip() for ln in html.splitlines() if ln.strip()])
+    st.markdown(html, unsafe_allow_html=True)
 
 def render_data_freshness(engine) -> None:
     latest = query_latest_dates(engine)
