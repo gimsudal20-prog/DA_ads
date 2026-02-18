@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.7 (Pretendard / White / 2026-02-18)"
+BUILD_TAG = "v7.7.8 (Pretendard / White / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
