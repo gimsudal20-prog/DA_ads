@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.3 (Single Compare Panel per Page + DoD/WoW/MoM bars / 2026-02-18)"
+BUILD_TAG = "v7.7.4 (Fix duplicated labels in Top10 charts / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -1414,6 +1414,46 @@ def _chart_timeseries(ts: pd.DataFrame, y_col: str, y_title: str, y_format: str 
     return (line + pts).properties(height=height)
 
 
+
+def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
+    """축 라벨 중복을 줄이기 위해 (키워드/캠페인/소재명) + (업체명/그룹/ID) 를 단계적으로 붙입니다."""
+    if df is None or df.empty or base_col not in df.columns:
+        return pd.Series([], dtype=str)
+
+    label = df[base_col].fillna("").astype(str)
+
+    for p in parts:
+        dup = label.duplicated(keep=False)
+        if not bool(dup.any()):
+            break
+        if p in df.columns:
+            addon = df[p].fillna("").astype(str)
+            label = label.where(~dup, (label + " · " + addon).str.strip())
+
+    # still duplicated -> append short id
+    dup2 = label.duplicated(keep=False)
+    if bool(dup2.any()):
+        if id_col and id_col in df.columns:
+            sid = df[id_col].fillna("").astype(str).str[-4:]
+            label = label + " #" + sid
+        else:
+            # fallback: append row index
+            label = label + " #" + df.reset_index().index.astype(str)
+
+    return label.astype(str).str.slice(0, int(max_len))
+
+
+def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or meta is None or meta.empty:
+        return df
+    out = df.copy()
+    if "customer_id" in out.columns:
+        out["customer_id"] = pd.to_numeric(out["customer_id"], errors="coerce").astype("Int64")
+        out = out.dropna(subset=["customer_id"]).copy()
+        out["customer_id"] = out["customer_id"].astype("int64")
+        out = out.merge(meta[["customer_id", "account_name"]], on="customer_id", how="left")
+    return out
+
 def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, value_title: str, top_n: int = 10, height: int = 320):
     if df is None or df.empty or label_col not in df.columns or value_col not in df.columns:
         return None
@@ -2515,7 +2555,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     with st.expander("📊 캠페인 광고비 TOP10 그래프", expanded=False):
         chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
         tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
-        tmp["label"] = tmp.get("campaign_name", "").astype(str)
+        tmp = _attach_account_name(tmp, meta)
+        tmp["label"] = _disambiguate_label(tmp, "campaign_name", parts=["account_name", "campaign_type"], id_col="campaign_id", max_len=44)
         ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
@@ -2618,7 +2659,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
         tmp = bundle.sort_values("cost", ascending=False).head(10).copy()
-        tmp["label"] = tmp.get("keyword", "").astype(str)
+        tmp = _attach_account_name(tmp, meta)
+        # 동일 키워드명이 여러 업체/그룹에 있을 수 있어 라벨을 구분해줍니다.
+        tmp["label"] = _disambiguate_label(tmp, "keyword", parts=["account_name", "campaign_name", "adgroup_name"], id_col="keyword_id", max_len=42)
         ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
@@ -2843,7 +2886,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     with st.expander("📊 소재 광고비 TOP10 그래프", expanded=False):
         chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
         tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
-        tmp["label"] = tmp.get("ad_name", "").astype(str)
+        tmp = _attach_account_name(tmp, meta)
+        tmp["label"] = _disambiguate_label(tmp, "ad_name", parts=["account_name", "campaign_name", "adgroup_name"], id_col="ad_id", max_len=44)
         ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
         if ch is not None:
             st.altair_chart(ch, use_container_width=True)
