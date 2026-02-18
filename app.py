@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.3.2)
+app.py - 네이버 검색광고 통합 대시보드 (v7.4.0)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
+- UI 개선(옵션2): streamlit-shadcn-ui 탭/메트릭카드/테이블 적용 (미설치 시 자동 폴백)
 - iOS Safari 프론트 오류( TypeError: ... e[s].sticky ) 회피:
   * Streamlit 내부 DOM을 건드리던 data-testid 기반 CSS 제거
   * st.data_editor 제거(프론트 grid 의존도 낮춤) → 안정적인 폼 기반 예산 업데이트로 변경
@@ -23,6 +24,14 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+
+# Optional UI components (shadcn-ui style)
+try:
+    import streamlit_shadcn_ui as ui  # pip install streamlit-shadcn-ui
+    HAS_SHADCN_UI = True
+except Exception:
+    ui = None  # type: ignore
+    HAS_SHADCN_UI = False
 from sqlalchemy import create_engine, inspect, text
 from dotenv import load_dotenv
 
@@ -33,7 +42,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.3 (2026-02-18)"
+BUILD_TAG = "v7.4.0 (2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -57,6 +66,44 @@ GLOBAL_UI_CSS = """
 </style>
 """
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+
+
+# -----------------------------
+# UI helpers (shadcn-ui optional)
+# -----------------------------
+def ui_badges_or_html(items: List[Tuple[str, str]], key: str) -> None:
+    """items: list of (text, variant)."""
+    if HAS_SHADCN_UI and ui is not None:
+        try:
+            ui.badges(badge_list=items, class_name="flex gap-2 flex-wrap", key=key)
+            return
+        except Exception:
+            pass
+    chips = [f"<span class='badge b-gray'>{t}</span>" for t, _ in items]
+    st.markdown("".join(chips), unsafe_allow_html=True)
+
+
+def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
+    if HAS_SHADCN_UI and ui is not None:
+        try:
+            ui.metric_card(title=title, content=value, description=desc, key=key)
+            return
+        except Exception:
+            pass
+    st.metric(title, value)
+
+
+def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
+    """Small tables: shadcn table if available; else st.dataframe."""
+    if df is None:
+        df = pd.DataFrame()
+    if HAS_SHADCN_UI and ui is not None:
+        try:
+            ui.table(df, maxHeight=height, key=key)
+            return
+        except Exception:
+            pass
+    st.dataframe(df, use_container_width=True, hide_index=True, height=height)
 
 # -----------------------------
 # DB helpers
@@ -465,13 +512,10 @@ def render_data_freshness(engine) -> None:
         "fact_ad_daily": "소재",
         "fact_bizmoney_daily": "비즈머니",
     }
-    chips = [f"<span class='badge b-gray'>{label_map.get(k,k)} 최신: {v}</span>" for k, v in latest.items()]
-    st.markdown("".join(chips), unsafe_allow_html=True)
+    items = [(f"{label_map.get(k,k)} 최신: {v}", "secondary") for k, v in latest.items()]
+    ui_badges_or_html(items, key="freshness_badges")
 
 
-# -----------------------------
-# Filters (main area)
-# -----------------------------
 def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
@@ -1554,9 +1598,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("### 🔍 전체 계정 요약")
     c1, c2, c3 = st.columns(3)
-    c1.metric("총 비즈머니 잔액", format_currency(total_balance))
-    c2.metric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost))
-    c3.metric("충전 필요 계정", f"{count_low_balance}건", delta_color="inverse")
+    with c1:
+        ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), '전체 계정 합산', key='m_total_balance')
+    with c2:
+        ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
+    with c3:
+        ui_metric_or_stmetric('충전 필요 계정', f"{count_low_balance}건", '임계치 미만', key='m_need_topup')
 
     st.divider()
 
@@ -1726,13 +1773,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP5")
-            st.dataframe(_fmt_top(top_cost, "광고비"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='camp_top5_cost', height=240)
         with c2:
             st.markdown("#### 🖱️ 클릭 TOP5")
-            st.dataframe(_fmt_top(top_clk, "클릭"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='camp_top5_clk', height=240)
         with c3:
             st.markdown("#### ✅ 전환 TOP5")
-            st.dataframe(_fmt_top(top_conv, "전환"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='camp_top5_conv', height=240)
 
     st.divider()
 
@@ -1820,13 +1867,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP10")
-            st.dataframe(_fmt_top(top_cost, "광고비"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='kw_top10_cost', height=240)
         with c2:
             st.markdown("#### 🖱️ 클릭 TOP10")
-            st.dataframe(_fmt_top(top_clk, "클릭"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='kw_top10_clk', height=240)
         with c3:
             st.markdown("#### ✅ 전환 TOP10")
-            st.dataframe(_fmt_top(top_conv, "전환"), use_container_width=True, hide_index=True)
+            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
 
     st.divider()
 
@@ -1923,28 +1970,13 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP5")
-            st.dataframe(
-                _fmt_top(top_cost, "광고비"),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
-            )
+            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='ad_top5_cost', height=240)
         with c2:
             st.markdown("#### 🖱️ 클릭 TOP5")
-            st.dataframe(
-                _fmt_top(top_clk, "클릭"),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
-            )
+            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='ad_top5_clk', height=240)
         with c3:
             st.markdown("#### ✅ 전환 TOP5")
-            st.dataframe(
-                _fmt_top(top_conv, "전환"),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
-            )
+            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
 
     st.divider()
 
@@ -2075,8 +2107,8 @@ def page_settings(engine) -> None:
 # Main
 # -----------------------------
 def main():
-    st.title("네이버 검색광고 통합 대시보드")
-    st.caption(f"빌드: {BUILD_TAG}")
+    st.markdown("## 네이버 검색광고 통합 대시보드")
+    ui_badges_or_html([(f"빌드: {BUILD_TAG}", "secondary")], key="build_badge")
 
     try:
         engine = get_engine()
@@ -2099,7 +2131,18 @@ def main():
     if not f.get('ready', False):
         st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
 
-    page = st.selectbox("메뉴", ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"], index=0)
+    pages = ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"]
+    default_page = st.session_state.get('nav_page', pages[0])
+    if default_page not in pages:
+        default_page = pages[0]
+    if HAS_SHADCN_UI and ui is not None:
+        try:
+            page = ui.tabs(options=pages, default_value=default_page, key='nav_tabs')
+        except Exception:
+            page = st.selectbox('메뉴', pages, index=pages.index(default_page), key='nav_select')
+    else:
+        page = st.selectbox('메뉴', pages, index=pages.index(default_page), key='nav_select')
+    st.session_state['nav_page'] = page
     st.divider()
 
     if page == "전체 예산/잔액 관리":
