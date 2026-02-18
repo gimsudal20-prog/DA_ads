@@ -24,8 +24,6 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-import altair as alt
-
 # Plotly (preferred for charts)
 import plotly.express as px
 import plotly.graph_objects as go
@@ -43,35 +41,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Altair (charts)
-try:
-    alt.data_transformers.disable_max_rows()
-except Exception:
-    pass
-
-def _altair_dashline_theme():
-    return {
-        "config": {
-            "background": "transparent",
-            "view": {"stroke": "transparent"},
-            "axis": {
-                "gridColor": "#EBEEF2",
-                "gridOpacity": 1,
-                "domain": False,
-                "labelColor": "#475569",
-                "titleColor": "#0f172a",
-                "tickColor": "#CBD5E1",
-            },
-            "legend": {"labelColor": "#475569", "titleColor": "#0f172a"},
-            "range": {"category": ["#0528F2", "#056CF2", "#3D9DF2", "#B4C4D9"]},
-        }
-    }
-
-try:
-    alt.themes.register("dashline", _altair_dashline_theme)
-    alt.themes.enable("dashline")
-except Exception:
-    pass
 
 
 # -----------------------------
@@ -293,6 +262,38 @@ hr {
 
 html, body { background:#ffffff; }
 </style>
+
+
+/* Compare cards */
+.cmp-card{
+  background: #F6F8FC;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 18px;
+  padding: 14px 14px 12px 14px;
+}
+.cmp-card .k{
+  font-size: 13px;
+  color: rgba(0,0,0,0.55);
+  line-height: 1.2;
+  margin-bottom: 8px;
+}
+.cmp-card .vv{
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 24px;
+  color: rgba(0,0,0,0.92);
+}
+.cmp-card .d{
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(0,0,0,0.55);
+}
+.cmp-card.pos .d{ color: #2563EB; font-weight: 800; }
+.cmp-card.neg .d{ color: #EF4444; font-weight: 800; }
+.cmp-card.neu .d{ color: rgba(0,0,0,0.50); font-weight: 700; }
+
+/* Status pills gap */
+.status-pills{ display:flex; gap:10px; flex-wrap:wrap; }
 """
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
@@ -811,140 +812,87 @@ def render_data_freshness(engine) -> None:
     ui_badges_or_html(items, key="freshness_badges")
 
 
-def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
-    today = date.today()
-    default_end = today - timedelta(days=1)  # 기본: 어제
-    default_start = default_end
+def build_filters(meta: pd.DataFrame) -> dict:
+    """상단 필터 UI"""
+    meta = meta.copy() if meta is not None else pd.DataFrame()
 
-    defaults = {
-        "q": "",
-        "manager": [],
-        "account": [],
-        "type_sel": tuple(),
-        "period_mode": "어제",
-        "d1": default_start,
-        "d2": default_end,
-        "top_n_keyword": 300,
-        "top_n_ad": 200,
-        "top_n_campaign": 200,
-    }
+    if "account_name" not in meta.columns:
+        meta["account_name"] = []
+    if "manager" not in meta.columns:
+        meta["manager"] = []
 
-    if "filters_applied" not in st.session_state:
-        st.session_state["filters_applied"] = defaults.copy()
-    if "filters_ready" not in st.session_state:
-        st.session_state["filters_ready"] = False
+    meta["account_name"] = meta["account_name"].astype(str).str.strip()
+    meta["manager"] = meta["manager"].astype(str).str.strip()
 
+    st.markdown("<div class='section-title'>필터</div>", unsafe_allow_html=True)
     with st.expander("필터", expanded=True):
-        c1, c2, c3 = st.columns([2, 2, 2])
+        c1, c2, c3 = st.columns([1.1, 1.2, 1.0], gap="large")
 
         with c1:
-            q = st.text_input("업체명 검색", value=st.session_state["filters_applied"].get("q", ""), placeholder="예: 실리콘플러스")
-            manager_opts = sorted([x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()])
-            manager_sel = st.multiselect("담당자", manager_opts, default=st.session_state["filters_applied"].get("manager", []))
+            kw = st.text_input("업체명 검색", value=st.session_state.get("flt_kw", ""), placeholder="예: 실리콘플러스", key="flt_kw")
+
+            mgr_opts = sorted([x for x in meta["manager"].dropna().unique().tolist() if x and x != "nan"])
+
+            def _mgr_changed():
+                st.session_state.pop("tmp_acc_sel", None)
+
+            if "tmp_mgr_sel" in st.session_state:
+                mgr_sel = st.multiselect("담당자", mgr_opts, key="tmp_mgr_sel", on_change=_mgr_changed)
+            else:
+                mgr_sel = st.multiselect("담당자", mgr_opts, default=[], key="tmp_mgr_sel", on_change=_mgr_changed)
 
         with c2:
-            # 업체 옵션은 '담당자 선택'에 따라 동적으로 좁혀서 보여줍니다.
-            meta_for_opts = meta.copy()
-            if manager_sel:
-                mgr_clean = [str(x).strip() for x in manager_sel]
-                meta_for_opts = meta_for_opts[meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).str.strip().isin(mgr_clean)]
-            account_opts_all = sorted([x for x in meta_for_opts.get("account_name", pd.Series(dtype=str)).dropna().astype(str).map(str.strip).unique().tolist() if x])
-            # 업체명 검색(q) 반영
-            account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
+            df = meta
+            if mgr_sel:
+                df = df[df["manager"].isin([m.strip() for m in mgr_sel])]
+            if kw:
+                df = df[df["account_name"].str.contains(kw.strip(), case=False, na=False)]
 
-            # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
+            acc_opts = sorted([x for x in df["account_name"].dropna().unique().tolist() if x and x != "nan"])
+            default_acc = acc_opts[:]
+
             if "tmp_acc_sel" in st.session_state:
-                st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
-
-            _default_accounts = [a for a in st.session_state["filters_applied"].get("account", []) if a in account_opts]
-            if "tmp_acc_sel" not in st.session_state:
-                st.session_state["tmp_acc_sel"] = _default_accounts
-            account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
-
-            type_sel = tuple(
-                st.multiselect(
-                    "캠페인 유형",
-                    type_opts or [],
-                    default=list(st.session_state["filters_applied"].get("type_sel", tuple())),
-                )
-            )
+                acc_sel = st.multiselect("업체", acc_opts, key="tmp_acc_sel", placeholder="Choose options")
+            else:
+                acc_sel = st.multiselect("업체", acc_opts, default=default_acc, key="tmp_acc_sel", placeholder="Choose options")
 
         with c3:
-            period_mode = st.selectbox(
-                "기간",
-                ["어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
-                index=["어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(st.session_state["filters_applied"].get("period_mode", "어제")),
-            )
+            period_opt = ["오늘", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"]
+            period = st.selectbox("기간", period_opt, index=1, key="flt_period")
 
-            if period_mode == "최근 3일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=2)
-            elif period_mode == "최근 7일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=29)
-            elif period_mode == "직접 선택":
-                d1d2 = st.date_input(
-                    "기간 선택",
-                    value=(
-                        st.session_state["filters_applied"].get("d1", default_start),
-                        st.session_state["filters_applied"].get("d2", default_end),
-                    ),
-                )
-                if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
-                    d1, d2 = d1d2[0], d1d2[1]
-                else:
-                    d1, d2 = default_start, default_end
+            today = date.today()
+            if period == "오늘":
+                start, end = today, today
+            elif period == "어제":
+                start, end = today - timedelta(days=1), today - timedelta(days=1)
+            elif period == "최근 3일":
+                start, end = today - timedelta(days=2), today
+            elif period == "최근 7일":
+                start, end = today - timedelta(days=6), today
+            elif period == "최근 30일":
+                start, end = today - timedelta(days=29), today
             else:
-                d1, d2 = default_start, default_end
+                dr = st.date_input("직접 선택", value=(today - timedelta(days=6), today), key="flt_daterange")
+                if isinstance(dr, tuple) and len(dr) == 2:
+                    start, end = dr
+                else:
+                    start, end = today - timedelta(days=6), today
 
-            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_keyword", 300)), step=50)
-            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_ad", 200)), step=50)
-            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_campaign", 200)), step=50)
+            k_top = st.slider("키워드 TOP N", 10, 500, int(st.session_state.get("k_top", 300)), step=10, key="k_top")
+            a_top = st.slider("소재 TOP N", 10, 500, int(st.session_state.get("a_top", 200)), step=10, key="a_top")
+            c_top = st.slider("캠페인 TOP N", 10, 500, int(st.session_state.get("c_top", 200)), step=10, key="c_top")
 
-        apply_btn = st.button("적용", use_container_width=True)
+    return {
+        "kw": kw.strip() if isinstance(kw, str) else "",
+        "managers": [m for m in (mgr_sel or []) if m],
+        "accounts": [a for a in (acc_sel or []) if a],
+        "start": start,
+        "end": end,
+        "k_top": k_top,
+        "a_top": a_top,
+        "c_top": c_top,
+    }
 
-    if apply_btn:
-        st.session_state["filters_ready"] = True
-        st.session_state["filters_applied"] = {
-            "q": q,
-            "manager": manager_sel,
-            "account": account_sel,
-            "type_sel": type_sel,
-            "period_mode": period_mode,
-            "d1": d1,
-            "d2": d2,
-            "top_n_keyword": top_n_keyword,
-            "top_n_ad": top_n_ad,
-            "top_n_campaign": top_n_campaign,
-        }
-
-    f = dict(st.session_state.get("filters_applied", defaults))
-    f["start"] = f.get("d1", default_start)
-    f["end"] = f.get("d2", default_end)
-    f["ready"] = bool(st.session_state.get("filters_ready", False))
-
-    # selected_customer_ids: 비어있으면 전체(쿼리 필터 생략)
-    df = meta.copy()
-    if f.get("manager"):
-        df = df[df["manager"].isin(f["manager"])]
-    if f.get("account"):
-        df = df[df["account_name"].isin(f["account"])]
-    if f.get("q"):
-        q_ = str(f["q"]).strip()
-        if q_:
-            df = df[df["account_name"].astype(str).str.contains(q_, case=False, na=False)]
-
-    f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
-    return f
-
-
-# -----------------------------
-# Budget bundle query (single round-trip)
-# -----------------------------
-@st.cache_data(ttl=180, show_spinner=False)
 def query_budget_bundle(
     _engine,
     cids: Tuple[int, ...],
@@ -1511,43 +1459,53 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 # Altair Charts (rounded / smooth)
 # -----------------------------
 
-def _chart_timeseries(
-    df: pd.DataFrame,
-    y_col: str,
-    y_title: str = "",
-    *,
-    x_col: str = "dt",
-    y_format: str = ",.0f",
-    height: int = 320,
-):
-    """Curved time-series line (Plotly)."""
+def _chart_timeseries(df: pd.DataFrame, y: str, title: str, y_format: str = ",.0f", height: int = 260):
+    """시계열 라인 차트 (Plotly, 곡선 + 끊김 최소화)."""
     if df is None or df.empty:
         return None
-    if x_col not in df.columns or y_col not in df.columns:
+
+    import plotly.graph_objects as go
+
+    d = df.copy()
+    if "dt" not in d.columns:
         return None
 
-    d = df[[x_col, y_col]].copy()
-    d[x_col] = pd.to_datetime(d[x_col], errors="coerce")
-    d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
-    d = d.dropna(subset=[x_col]).sort_values(x_col)
+    d["dt"] = pd.to_datetime(d["dt"], errors="coerce")
+    d = d.dropna(subset=["dt"]).sort_values("dt")
 
-    fig = px.line(d, x=x_col, y=y_col)
-    fig.update_traces(mode="lines", line_shape="spline")
-    fig.update_layout(
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        xaxis_title="",
-        yaxis_title=y_title or "",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    # 빈 날짜 채우기(라인 끊김 방지)
+    min_dt = d["dt"].min()
+    max_dt = d["dt"].max()
+    if pd.notna(min_dt) and pd.notna(max_dt):
+        full_idx = pd.date_range(min_dt.normalize(), max_dt.normalize(), freq="D")
+        d = d.set_index("dt").reindex(full_idx).rename_axis("dt").reset_index()
+
+    d[y] = pd.to_numeric(d.get(y), errors="coerce").fillna(0)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=d["dt"],
+            y=d[y],
+            mode="lines+markers",
+            line=dict(shape="spline", smoothing=0.8, width=3),
+            marker=dict(size=5),
+            connectgaps=True,
+            hovertemplate="%{x|%Y-%m-%d}<br>%{y:" + y_format + "}<extra></extra>",
+        )
     )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
-    # Font
-    fig.update_layout(font=dict(family="Pretendard"))
-    return fig
 
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=46, b=12),
+        title=dict(text=title, x=0, y=0.98),
+        xaxis=dict(showgrid=False, tickformat="%b %d"),
+        yaxis=dict(tickformat=y_format, gridcolor="rgba(0,0,0,0.06)", zeroline=False),
+        font=dict(family="Pretendard, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
     """축 라벨 중복을 줄이기 위해 (키워드/캠페인/소재명) + (업체명/그룹/ID) 를 단계적으로 붙입니다."""
@@ -2302,189 +2260,148 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Delta bar chart: + blue, - red (Plotly)."""
+    """증감율(%) 막대그래프: + 파랑 / - 빨강 (Plotly)."""
     if delta_df is None or delta_df.empty:
         return None
 
+    import plotly.graph_objects as go
+
     d = delta_df.copy()
     d["metric"] = d["metric"].astype(str)
-    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0)
-    d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
+    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0.0)
 
-    # 원하는 순서 유지
+    def _c(v: float) -> str:
+        if v > 0:
+            return "#2563EB"
+        if v < 0:
+            return "#EF4444"
+        return "#94A3B8"
+
+    d["color"] = d["change_pct"].apply(_c)
     if "order" in d.columns:
         d = d.sort_values("order", ascending=False)
 
-    fig = px.bar(
-        d,
-        x="change_pct",
-        y="metric",
-        orientation="h",
-        color="dir",
-        color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
-        text=d["change_pct"].map(lambda v: f"{v:+.1f}%"),
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=d["change_pct"],
+                y=d["metric"],
+                orientation="h",
+                marker=dict(color=d["color"]),
+                text=[("{:+.1f}%".format(v)) for v in d["change_pct"]],
+                textposition="outside",
+                hovertemplate="%{y}<br>%{x:+.1f}%<extra></extra>",
+            )
+        ]
     )
 
-    # 0 기준선
-    fig.add_vline(x=0, line_width=1, line_color="rgba(180,196,217,0.8)")
-
-    # 축 범위 여유
-    mn = float(d["change_pct"].min())
-    mx = float(d["change_pct"].max())
-    pad = max(2.0, (mx - mn) * 0.12)
-    fig.update_xaxes(range=[mn - pad, mx + pad])
-
-    fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(
-        template="plotly_white",
         height=height,
         margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(title=None, tickformat="+.1f", gridcolor="rgba(0,0,0,0.06)", zeroline=False),
+        yaxis=dict(title=None),
         showlegend=False,
-        xaxis_title="증감율(%)",
-        yaxis_title="",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+        font=dict(family="Pretendard, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(180,196,217,0.25)", zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
     return fig
 
-
-
-def render_chart(obj, *, height: int | None = None) -> None:
-    """Render a chart object with Streamlit. Plotly preferred."""
+def render_chart(obj, height: int | None = None, use_container_width: bool = True):
+    """Render Plotly figures safely (no Altair)."""
     if obj is None:
         return
     try:
-        mod = obj.__class__.__module__
+        st.plotly_chart(obj, use_container_width=use_container_width, height=height, config={"displayModeBar": False})
     except Exception:
-        mod = ""
-    if mod.startswith("plotly"):
-        st.plotly_chart(obj, use_container_width=True, config={"displayModeBar": False})
-    else:
-        # fallback (Altair etc.)
-        render_chart(obj)
+        st.write(obj)
 
-def render_period_compare_panel(
-    engine,
-    entity: str,
-    d1: date,
-    d2: date,
-    cids: Tuple[int, ...],
-    type_sel: Tuple[str, ...],
-    key_prefix: str,
-    expanded: bool = False,
-) -> None:
-    """Reusable panel: DoD/WoW/MoM comparison + delta bar chart."""
-    with st.expander("🔁 전일/전주/전월 비교", expanded=expanded):
-        mode = st.radio(
-            "비교 기준",
-            ["전일대비", "전주대비", "전월대비"],
-            horizontal=True,
-            index=1,
-            key=f"{key_prefix}_cmp_mode",
-        )
+def render_period_compare_panel(engine, entity: str, start: date, end: date, ids: list[str], type_sel: str, key_prefix: str = "", expanded: bool = False):
+    """전일/전주/전월 비교 패널 (기간 길이에 따라 노출 옵션 자동 제한)"""
+    with st.expander("전일/전주/전월 비교", expanded=expanded):
+        period_days = (end - start).days + 1
 
-        b1, b2 = _period_compare_range(d1, d2, mode)
+        if period_days == 1:
+            allowed = ["전일대비"]
+        elif period_days == 7:
+            allowed = ["전주대비"]
+        elif period_days in (28, 29, 30, 31):
+            allowed = ["전월대비"]
+        else:
+            allowed = ["전일대비", "전주대비", "전월대비"]
 
-        # 비교 기간 표기 (몇 일 / 어떤 기간과 비교인지)
-        try:
-            n_cur = int((d2 - d1).days) + 1
-            n_base = int((b2 - b1).days) + 1
-        except Exception:
-            n_cur, n_base = 0, 0
-        st.caption(f"현재기간: {d1} ~ {d2} ({n_cur}일) · 비교기간({mode}): {b1} ~ {b2} ({n_base}일)")
+        if len(allowed) == 1:
+            mode = allowed[0]
+            st.caption(f"비교 기준: **{mode}** (선택 기간 {period_days}일 기준 자동 적용)")
+        else:
+            mode = st.radio("비교 기준", allowed, horizontal=True, index=0, key=f"{key_prefix}_cmp_mode")
 
+        if mode == "전일대비":
+            base_start = start - timedelta(days=period_days)
+            base_end = end - timedelta(days=period_days)
+        elif mode == "전주대비":
+            base_start = start - timedelta(days=7)
+            base_end = end - timedelta(days=7)
+        else:
+            base_start = (pd.Timestamp(start) - pd.DateOffset(months=1)).date()
+            base_end = (pd.Timestamp(end) - pd.DateOffset(months=1)).date()
 
-        cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
-        base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
-
-
-        # Quick delta summary (no duplicated KPI cards)
+        cur = get_entity_totals(engine, entity, start, end, ids, type_sel=type_sel)
+        base = get_entity_totals(engine, entity, base_start, base_end, ids, type_sel=type_sel)
 
         dcost = cur["cost"] - base["cost"]
-
-        dclk = cur["clk"] - base["clk"]
-
-        dconv = cur["conv"] - base["conv"]
-
-        droas_p = (cur["roas"] - base["roas"]) * 100.0
-
         dcost_pct = _pct_change(cur["cost"], base["cost"])
 
+        dclk = cur["clk"] - base["clk"]
         dclk_pct = _pct_change(cur["clk"], base["clk"])
 
+        dconv = cur["conv"] - base["conv"]
         dconv_pct = _pct_change(cur["conv"], base["conv"])
 
+        droas_p = cur["roas"] - base["roas"]
         droas_pct = _pct_change(cur["roas"], base["roas"])
 
+        st.caption(
+            f"현재기간: **{start} ~ {end} ({period_days}일)** · 비교기간({mode}): **{base_start} ~ {base_end} ({(base_end-base_start).days+1}일)**"
+        )
 
-        def _delta_chip(label: str, value: str, sign: Optional[float]) -> str:
+        c1, c2, c3, c4 = st.columns(4, gap="large")
 
-            if sign is None:
+        def _delta_html(title: str, value: str, delta: str, cls: str):
+            return f"""<div class='cmp-card {cls}'>
+                <div class='k'>{title}</div>
+                <div class='vv'>{value}</div>
+                <div class='d'>{delta}</div>
+            </div>"""
 
-                cls = "zero"
+        def _cls(v: float):
+            if v > 0:
+                return "pos"
+            if v < 0:
+                return "neg"
+            return "neu"
 
-            elif sign > 0:
+        with c1:
+            st.markdown(_delta_html("광고비", format_won(cur["cost"]), f"Δ {format_won(dcost)} ({dcost_pct:+.1f}%)", _cls(dcost)), unsafe_allow_html=True)
+        with c2:
+            st.markdown(_delta_html("클릭", f"{cur['clk']:,.0f}", f"Δ {dclk:+,.0f} ({dclk_pct:+.1f}%)", _cls(dclk)), unsafe_allow_html=True)
+        with c3:
+            st.markdown(_delta_html("전환", f"{cur['conv']:,.0f}", f"Δ {dconv:+,.0f} ({dconv_pct:+.1f}%)", _cls(dconv)), unsafe_allow_html=True)
+        with c4:
+            st.markdown(_delta_html("ROAS(%)", f"{cur['roas']:.0f}%", f"Δ {droas_p:+.1f}p ({droas_pct:+.1f}%)", _cls(droas_p)), unsafe_allow_html=True)
 
-                cls = "pos"
-
-            elif sign < 0:
-
-                cls = "neg"
-
-            else:
-
-                cls = "zero"
-
-            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'>{value}</div></div>"
-
-
-        chips = [
-
-            _delta_chip("광고비", f"{format_currency(dcost)} ({_pct_to_str(dcost_pct)})", dcost_pct),
-
-            _delta_chip("클릭", f"{format_number_commas(dclk)} ({_pct_to_str(dclk_pct)})", dclk_pct),
-
-            _delta_chip("전환", f"{format_number_commas(dconv)} ({_pct_to_str(dconv_pct)})", dconv_pct),
-
-            _delta_chip("ROAS", f"{droas_p:+.1f}p ({_pct_to_str(droas_pct)})", droas_p),
-
-        ]
-
-        st.markdown("<div class='delta-chip-row'>" + "".join(chips) + "</div>", unsafe_allow_html=True)
-
-
-        # Delta bar chart
+        st.markdown("<div class='subsection-title'>증감율(%) 막대그래프</div>", unsafe_allow_html=True)
         delta_df = pd.DataFrame(
             [
-                {"metric": "광고비", "change_pct": _pct_change(cur["cost"], base["cost"])},
-                {"metric": "클릭", "change_pct": _pct_change(cur["clk"], base["clk"])},
-                {"metric": "전환", "change_pct": _pct_change(cur["conv"], base["conv"])},
-                {"metric": "매출", "change_pct": _pct_change(cur["sales"], base["sales"])},
-                {"metric": "ROAS", "change_pct": _pct_change(cur["roas"], base["roas"])},
+                {"metric": "ROAS", "change_pct": droas_pct, "order": 4},
+                {"metric": "전환", "change_pct": dconv_pct, "order": 3},
+                {"metric": "클릭", "change_pct": dclk_pct, "order": 2},
+                {"metric": "광고비", "change_pct": dcost_pct, "order": 1},
             ]
         )
-        st.markdown("#### 📊 증감율(%) 막대그래프")
-        ch = _chart_delta_bars(delta_df, height=260)
-        if ch is not None:
-            render_chart(ch)
+        fig = _chart_delta_bars(delta_df, height=260)
+        render_chart(fig, height=260)
 
-        # Mini table (current vs baseline)
-        mini = pd.DataFrame(
-            [
-                ["광고비", format_currency(cur["cost"]), format_currency(base["cost"]), f"{_pct_to_str(_pct_change(cur['cost'], base['cost']))}"],
-                ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_pct_to_str(_pct_change(cur['clk'], base['clk']))}"],
-                ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_pct_to_str(_pct_change(cur['conv'], base['conv']))}"],
-                ["매출", format_currency(cur["sales"]), format_currency(base["sales"]), _pct_to_str(_pct_change(cur["sales"], base["sales"]))],
-                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{(cur['roas']-base['roas']):+.1f}p"],
-            ],
-            columns=["지표", "현재", "비교기간", "증감"],
-        )
-        ui_table_or_dataframe(mini, key=f"{key_prefix}_cmp_table", height=210)
-
-# -----------------------------
-# Pages
-# -----------------------------
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 / 잔액 관리")
 
@@ -3308,7 +3225,7 @@ def main():
         default_page = pages[0]
     if HAS_SHADCN_UI and ui is not None:
         try:
-            page = ui.tabs(options=pages, default_value=default_page, key='nav_tabs')
+            page = ui.tabs(options=pages, default_value=default_page, key='nav_tabs') if HAS_SHADCN_UI else st.radio('페이지', pages, index=pages.index(default_page), horizontal=True)
         except Exception:
             page = st.selectbox('메뉴', pages, index=pages.index(default_page), key='nav_select')
     else:
