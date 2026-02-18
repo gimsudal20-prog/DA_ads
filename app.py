@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.6.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.7.1)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -115,9 +115,11 @@ footer { visibility: hidden; }
 
 /* Fix top clipping + nicer width */
 .block-container {
-  padding-top: 2.6rem;
+  /* iOS Safari safe-area + prevent top clipping */
+  padding-top: calc(env(safe-area-inset-top) + 4.2rem) !important;
   padding-bottom: 2.6rem;
   max-width: 1400px;
+  overflow: visible !important;
 }
 
 h1, h2, h3 {
@@ -133,6 +135,7 @@ hr {
 
 /* Hero */
 .hero{
+  margin-top: 0.8rem;
   border-radius: var(--radius);
   border: 1px solid rgba(180,196,217,0.55);
   background:
