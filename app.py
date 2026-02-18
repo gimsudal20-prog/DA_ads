@@ -33,7 +33,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.0 (2026-02-18)"
+BUILD_TAG = "v7.3.1 (2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -678,10 +678,119 @@ def _fact_has_sales(engine, fact_table: str) -> bool:
     return "sales" in get_table_columns(engine, fact_table)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
+@st.cache_data(ttl=600, show_spinner=False)
+def query_campaign_topn(
+    _engine,
+    d1: date,
+    d2: date,
+    cids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    top_n: int,
+) -> pd.DataFrame:
+    """
+    ✅ 속도 개선 포인트
+    - fact → (필요 시) dim_campaign 타입 필터를 먼저 적용한 뒤 집계
+    - 집계 결과에서 cost 기준 TOP N만 뽑고, 그 다음에 이름/타입 조인
+    """
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT
+            customer_id::text AS customer_id,
+            campaign_id,
+            COALESCE(NULLIF(campaign_name,''),'') AS campaign_name,
+            COALESCE(NULLIF(campaign_tp,''),'')   AS campaign_tp
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.campaign_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_campaign_daily f
+          JOIN c_f c
+            ON f.customer_id::text = c.customer_id
+           AND f.campaign_id = c.campaign_id
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.campaign_id
+        ),
+        top AS (
+          SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim
+        )
+        SELECT
+          t.*,
+          c.campaign_name,
+          c.campaign_tp
+        FROM top t
+        JOIN c_f c
+          ON t.customer_id = c.customer_id
+         AND t.campaign_id = c.campaign_id
+        ORDER BY t.cost DESC NULLS LAST
+        """
+    else:
+        sql = f"""
+        WITH base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.campaign_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_campaign_daily f
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.campaign_id
+        ),
+        top AS (
+          SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim
+        )
+        SELECT
+          t.*,
+          COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
+          COALESCE(NULLIF(c.campaign_tp,''),'')   AS campaign_tp
+        FROM top t
+        LEFT JOIN dim_campaign c
+          ON t.customer_id = c.customer_id::text
+         AND t.campaign_id = c.campaign_id
+        ORDER BY t.cost DESC NULLS LAST
+        """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim": int(top_n)})
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+
+    df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
 
     has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
     sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
@@ -732,10 +841,148 @@ def query_campaign_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], top_n: int) -> pd.DataFrame:
-    if not (table_exists(_engine, "fact_ad_daily") and table_exists(_engine, "dim_ad") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+@st.cache_data(ttl=600, show_spinner=False)
+def query_ad_topn(
+    _engine,
+    d1: date,
+    d2: date,
+    cids: Tuple[int, ...],
+    type_sel: Tuple[str, ...],
+    top_n: int,
+) -> pd.DataFrame:
+    """
+    ✅ 속도 개선 포인트
+    - fact_ad_daily를 먼저 집계 → cost TOP N만 뽑고 → 그 후 dim 조인
+    - 캠페인 유형 필터가 있을 때만 dim 경유(scope)를 만들어 fact를 좁혀서 집계
+    """
+    if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
+    if not (table_exists(_engine, "dim_ad") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+        return pd.DataFrame()
+
+    has_sales = _fact_has_sales(_engine, "fact_ad_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    cols = get_table_columns(_engine, "dim_ad")
+    ad_text_expr = "COALESCE(NULLIF(a.creative_text,''), NULLIF(a.ad_name,''), '')" if "creative_text" in cols else "COALESCE(a.ad_name,'')"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id,
+                 COALESCE(NULLIF(campaign_name,''),'') AS campaign_name,
+                 COALESCE(NULLIF(campaign_tp,''),'')   AS campaign_tp
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        ad_scope AS (
+          SELECT
+            a.customer_id::text AS customer_id,
+            a.ad_id,
+            a.adgroup_id,
+            {ad_text_expr} AS ad_name,
+            COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
+            c.campaign_name,
+            c.campaign_tp
+          FROM dim_ad a
+          JOIN dim_adgroup g
+            ON a.customer_id::text = g.customer_id::text
+           AND a.adgroup_id = g.adgroup_id
+          JOIN c_f c
+            ON g.customer_id::text = c.customer_id
+           AND g.campaign_id = c.campaign_id
+        ),
+        base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.ad_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_ad_daily f
+          JOIN ad_scope s
+            ON f.customer_id::text = s.customer_id
+           AND f.ad_id = s.ad_id
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.ad_id
+        ),
+        top AS (
+          SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim
+        )
+        SELECT
+          t.*,
+          s.ad_name,
+          s.adgroup_name,
+          s.campaign_name,
+          s.campaign_tp
+        FROM top t
+        JOIN ad_scope s
+          ON t.customer_id = s.customer_id
+         AND t.ad_id = s.ad_id
+        ORDER BY t.cost DESC NULLS LAST
+        """
+    else:
+        sql = f"""
+        WITH base AS (
+          SELECT
+            f.customer_id::text AS customer_id,
+            f.ad_id,
+            SUM(f.imp)  AS imp,
+            SUM(f.clk)  AS clk,
+            SUM(f.cost) AS cost,
+            SUM(f.conv) AS conv,
+            {sales_expr} AS sales
+          FROM fact_ad_daily f
+          WHERE f.dt BETWEEN :d1 AND :d2
+            {where_cid}
+          GROUP BY f.customer_id::text, f.ad_id
+        ),
+        top AS (
+          SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim
+        )
+        SELECT
+          t.*,
+          {ad_text_expr} AS ad_name,
+          COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
+          COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
+          COALESCE(NULLIF(c.campaign_tp,''),'')   AS campaign_tp
+        FROM top t
+        LEFT JOIN dim_ad a
+          ON t.customer_id = a.customer_id::text
+         AND t.ad_id = a.ad_id
+        LEFT JOIN dim_adgroup g
+          ON a.customer_id::text = g.customer_id::text
+         AND a.adgroup_id = g.adgroup_id
+        LEFT JOIN dim_campaign c
+          ON g.customer_id::text = c.customer_id::text
+         AND g.campaign_id = c.campaign_id
+        ORDER BY t.cost DESC NULLS LAST
+        """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim": int(top_n)})
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
 
     has_sales = _fact_has_sales(_engine, "fact_ad_daily")
     sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
@@ -798,7 +1045,7 @@ def query_ad_topn(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: 
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -808,13 +1055,150 @@ def query_keyword_bundle(
     topn_cost: int = 300,
 ) -> pd.DataFrame:
     """
-    ✅ 1쿼리:
-    - 광고비 TopN
-    - 클릭 Top10
-    - 전환 Top10
+    ✅ 속도 개선 포인트 (v7.3.1)
+    - fact_keyword_daily는 "집계(base)"만 하고,
+      cost TOP N / clk TOP10 / conv TOP10만 골라서(dim 조인 포함) 반환
+    - dim 조인은 선택된 keyword_id들에 대해서만 수행 → 대폭 가벼움
     """
-    if not (table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+    if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
+    if not (table_exists(_engine, "dim_keyword") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
+        return pd.DataFrame()
+
+    fk_cols = get_table_columns(_engine, "fact_keyword_daily")
+    sales_sum = "SUM(COALESCE(fk.sales,0))" if "sales" in fk_cols else "0::numeric"
+
+    # dim_keyword 키워드 컬럼명 호환
+    kw_cols = get_table_columns(_engine, "dim_keyword")
+    if "keyword" in kw_cols:
+        kw_expr = "k.keyword"
+    elif "keyword_name" in kw_cols:
+        kw_expr = "k.keyword_name"
+    else:
+        kw_expr = "''::text"
+
+    # cid filter (TEXT/BIGINT 모두 안전)
+    cid_clause = ""
+    if customer_ids:
+        cid_clause = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
+
+    # type filter는 campaign_tp 키로 (더 빠름)
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    type_clause = ""
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        type_clause = f"AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})"
+
+    sql = f"""
+    WITH scope AS (
+      SELECT
+        k.customer_id::text AS customer_id,
+        k.keyword_id::text  AS keyword_id,
+        COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
+        k.adgroup_id::text  AS adgroup_id,
+        COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
+        g.campaign_id::text AS campaign_id,
+        COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+        COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
+        CASE
+          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
+          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
+          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
+          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+          ELSE '기타'
+        END AS campaign_type_label
+      FROM dim_keyword k
+      LEFT JOIN dim_adgroup g
+        ON k.customer_id::text = g.customer_id::text
+       AND k.adgroup_id::text = g.adgroup_id::text
+      LEFT JOIN dim_campaign c
+        ON g.customer_id::text = c.customer_id::text
+       AND g.campaign_id::text = c.campaign_id::text
+      WHERE 1=1
+        AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
+        {type_clause}
+    ),
+    base AS (
+      SELECT
+        fk.customer_id::text AS customer_id,
+        fk.keyword_id::text  AS keyword_id,
+        SUM(fk.imp)  AS imp,
+        SUM(fk.clk)  AS clk,
+        SUM(fk.cost) AS cost,
+        SUM(fk.conv) AS conv,
+        {sales_sum}  AS sales
+      FROM fact_keyword_daily fk
+      JOIN scope s
+        ON fk.customer_id::text = s.customer_id
+       AND fk.keyword_id::text  = s.keyword_id
+      WHERE fk.dt BETWEEN :d1 AND :d2
+        {cid_clause}
+      GROUP BY fk.customer_id::text, fk.keyword_id::text
+    ),
+    top_cost0 AS (
+      SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :topn_cost
+    ),
+    top_cost AS (
+      SELECT
+        customer_id, keyword_id,
+        ROW_NUMBER() OVER (ORDER BY cost DESC NULLS LAST) AS rn_cost
+      FROM top_cost0
+    ),
+    top_clk0 AS (
+      SELECT * FROM base ORDER BY clk DESC NULLS LAST LIMIT 10
+    ),
+    top_clk AS (
+      SELECT
+        customer_id, keyword_id,
+        ROW_NUMBER() OVER (ORDER BY clk DESC NULLS LAST) AS rn_clk
+      FROM top_clk0
+    ),
+    top_conv0 AS (
+      SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT 10
+    ),
+    top_conv AS (
+      SELECT
+        customer_id, keyword_id,
+        ROW_NUMBER() OVER (ORDER BY conv DESC NULLS LAST) AS rn_conv
+      FROM top_conv0
+    ),
+    picked AS (
+      SELECT
+        customer_id,
+        keyword_id,
+        MIN(rn_cost) AS rn_cost,
+        MIN(rn_clk)  AS rn_clk,
+        MIN(rn_conv) AS rn_conv
+      FROM (
+        SELECT customer_id, keyword_id, rn_cost, NULL::int rn_clk, NULL::int rn_conv FROM top_cost
+        UNION ALL
+        SELECT customer_id, keyword_id, NULL::int rn_cost, rn_clk, NULL::int rn_conv FROM top_clk
+        UNION ALL
+        SELECT customer_id, keyword_id, NULL::int rn_cost, NULL::int rn_clk, rn_conv FROM top_conv
+      ) u
+      GROUP BY customer_id, keyword_id
+    )
+    SELECT
+      p.customer_id,
+      p.keyword_id,
+      b.imp, b.clk, b.cost, b.conv, b.sales,
+      p.rn_cost, p.rn_clk, p.rn_conv,
+      s.keyword, s.adgroup_name, s.campaign_name, s.campaign_tp, s.campaign_type_label
+    FROM picked p
+    JOIN base b
+      ON p.customer_id = b.customer_id
+     AND p.keyword_id  = b.keyword_id
+    LEFT JOIN scope s
+      ON b.customer_id = s.customer_id
+     AND b.keyword_id  = s.keyword_id
+    WHERE COALESCE(s.campaign_type_label,'기타') <> '기타'
+    ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
+    """
+
+    params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
+    df = sql_read(_engine, sql, params)
+    return df if df is not None else pd.DataFrame()
 
     fk_cols = get_table_columns(_engine, "fact_keyword_daily")
     sales_expr = "SUM(COALESCE(fk.sales,0)) AS sales" if "sales" in fk_cols else "0::bigint AS sales"
@@ -1316,6 +1700,44 @@ def page_settings(engine) -> None:
     except Exception as e:
         st.error(f"DB 연결 실패: {e}")
         return
+
+
+st.markdown("### 🚀 속도 튜닝 (권장 인덱스)")
+st.caption("최초 1회만 실행하면 이후 TOPN/기간 조회가 확 빨라집니다. (권한/정책에 따라 실패할 수 있음)")
+
+def _create_perf_indexes(_engine) -> List[str]:
+    stmts = [
+        # FACT (기간+CID+ID) — 조회/집계에 가장 영향 큼
+        "CREATE INDEX IF NOT EXISTS idx_f_campaign_dt_cid_txt_camp ON fact_campaign_daily (dt, (customer_id::text), campaign_id);",
+        "CREATE INDEX IF NOT EXISTS idx_f_keyword_dt_cid_txt_kw   ON fact_keyword_daily (dt, (customer_id::text), keyword_id);",
+        "CREATE INDEX IF NOT EXISTS idx_f_ad_dt_cid_txt_ad        ON fact_ad_daily      (dt, (customer_id::text), ad_id);",
+        "CREATE INDEX IF NOT EXISTS idx_f_biz_dt_cid_txt          ON fact_bizmoney_daily(dt, (customer_id::text));",
+
+        # DIM (조인 경로) — 타입필터/이름 조인 가속
+        "CREATE INDEX IF NOT EXISTS idx_d_campaign_cid_txt_camp   ON dim_campaign ((customer_id::text), campaign_id, campaign_tp);",
+        "CREATE INDEX IF NOT EXISTS idx_d_adgroup_cid_txt_adg     ON dim_adgroup  ((customer_id::text), adgroup_id, campaign_id);",
+        "CREATE INDEX IF NOT EXISTS idx_d_keyword_cid_txt_kw      ON dim_keyword  ((customer_id::text), keyword_id, adgroup_id);",
+        "CREATE INDEX IF NOT EXISTS idx_d_ad_cid_txt_ad           ON dim_ad       ((customer_id::text), ad_id, adgroup_id);",
+    ]
+
+    results: List[str] = []
+    with _engine.begin() as conn:
+        for s in stmts:
+            try:
+                conn.execute(text(s))
+                results.append(f"✅ {s}")
+            except Exception as e:
+                results.append(f"⚠️ {s}  -> {e}")
+    return results
+
+if st.button("⚡ 인덱스 생성 실행", use_container_width=True):
+    try:
+        logs = _create_perf_indexes(engine)
+        for line in logs:
+            st.write(line)
+        st.success("완료! 캐시 비우고 다시 조회해보세요.")
+    except Exception as e:
+        st.error(f"실패: {e}")
 
     st.markdown("### accounts.xlsx → DB 동기화 (수동)")
     st.caption(f"경로: {ACCOUNTS_XLSX}")
