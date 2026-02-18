@@ -43,23 +43,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ==========================================
-# 여기에 아래 코드를 추가해 주세요!
-# ==========================================
-@st.cache_resource(show_spinner=False)
-def get_engine():
-    """데이터베이스 엔진을 생성하고 캐싱합니다."""
-    # .env 파일에 설정된 DB 접속 주소 가져오기
-    db_url = os.environ.get("DATABASE_URL")
-    
-    if not db_url:
-        st.error("DATABASE_URL 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.")
-        st.stop()
-        
-    return create_engine(db_url)
-# ==========================================
-
-
 # Altair (charts)
 try:
     alt.data_transformers.disable_max_rows()
@@ -112,6 +95,7 @@ GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 @import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT@main/fonts/static/stylesheet.css");
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/woff2/SUIT.css");
 
 :root{
   --c-blue-900:#0528F2;
@@ -372,6 +356,42 @@ def ui_metric_or_stmetric(label: str, value: str, help: str | None = None, key: 
 </div>""",
         unsafe_allow_html=True,
     )
+
+
+
+@st.cache_resource(show_spinner=False)
+def get_engine():
+    """Create and cache SQLAlchemy engine.
+
+    Looks for DATABASE_URL (preferred) and a few common fallbacks.
+    Adds sslmode=require if missing.
+    """
+    url = None
+    for k in [
+        "DATABASE_URL",
+        "SUPABASE_DATABASE_URL",
+        "SUPABASE_DB_URL",
+        "POSTGRES_URL",
+        "POSTGRES_URL_NON_POOLING",
+        "SUPABASE_POSTGRES_URL",
+        "DB_URL",
+    ]:
+        v = os.getenv(k)
+        if v and str(v).strip():
+            url = str(v).strip()
+            break
+
+    if not url:
+        raise RuntimeError("DB 연결 문자열이 없습니다. 환경변수 DATABASE_URL(또는 SUPABASE_DATABASE_URL 등)을 설정해 주세요.")
+
+    # SQLAlchemy accepts postgresql://; normalize old postgres:// if present
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+
+    if "sslmode=" not in url and url.startswith("postgresql"):
+        url = url + ("&" if "?" in url else "?") + "sslmode=require"
+
+    return create_engine(url, pool_pre_ping=True)
 
 
 def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -826,7 +846,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
             # 업체 옵션은 '담당자 선택'에 따라 동적으로 좁혀서 보여줍니다.
             meta_for_opts = meta.copy()
             if manager_sel:
-                meta_for_opts = meta_for_opts[meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])]
+                mgr_clean = [str(x).strip() for x in manager_sel]
+                meta_for_opts = meta_for_opts[meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).str.strip().isin(mgr_clean)]
             account_opts_all = sorted([x for x in meta_for_opts.get("account_name", pd.Series(dtype=str)).dropna().astype(str).map(str.strip).unique().tolist() if x])
             # 업체명 검색(q) 반영
             account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
