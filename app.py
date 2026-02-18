@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.7.1)
+app.py - 네이버 검색광고 통합 대시보드 (v7.7.5)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -74,7 +74,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.7.4 (Fix duplicated labels in Top10 charts / 2026-02-18)"
+BUILD_TAG = "v7.7.5 (Pretendard / White / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -755,8 +755,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
         with c3:
             period_mode = st.selectbox(
                 "기간",
-                ["어제", "최근 3일", "최근 7일", "직접 선택"],
-                index=["어제", "최근 3일", "최근 7일", "직접 선택"].index(st.session_state["filters_applied"].get("period_mode", "어제")),
+                ["어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
+                index=["어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(st.session_state["filters_applied"].get("period_mode", "어제")),
             )
 
             if period_mode == "최근 3일":
@@ -765,6 +765,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
             elif period_mode == "최근 7일":
                 d2 = default_end
                 d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일":
+                d2 = default_end
+                d1 = d2 - timedelta(days=29)
             elif period_mode == "직접 선택":
                 d1d2 = st.date_input(
                     "기간 선택",
@@ -2146,7 +2149,15 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     )
 
     bars = base.mark_bar(cornerRadius=10).encode(
-        color=alt.condition(alt.datum.change_pct >= 0, alt.value("#3D9DF2"), alt.value("#B4C4D9"))
+        color=alt.condition(
+            alt.datum.change_pct > 0,
+            alt.value("#056CF2"),
+            alt.condition(
+                alt.datum.change_pct < 0,
+                alt.value("#EF4444"),
+                alt.value("#B4C4D9"),
+            ),
+        )
     )
 
     rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[6, 6]).encode(x="x:Q")
@@ -2178,6 +2189,15 @@ def render_period_compare_panel(
         )
 
         b1, b2 = _period_compare_range(d1, d2, mode)
+
+        # 비교 기간 표기 (몇 일 / 어떤 기간과 비교인지)
+        try:
+            n_cur = int((d2 - d1).days) + 1
+            n_base = int((b2 - b1).days) + 1
+        except Exception:
+            n_cur, n_base = 0, 0
+        st.caption(f"현재기간: {d1} ~ {d2} ({n_cur}일) · 비교기간({mode}): {b1} ~ {b2} ({n_base}일)")
+
 
         cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
         base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
