@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.5.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.6.0)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 # Optional UI components (shadcn-ui style)
 try:
@@ -37,12 +38,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Altair (charts)
+try:
+    alt.data_transformers.disable_max_rows()
+except Exception:
+    pass
+
+def _altair_dashline_theme():
+    return {
+        "config": {
+            "background": "transparent",
+            "view": {"stroke": "transparent"},
+            "axis": {
+                "gridColor": "#EBEEF2",
+                "gridOpacity": 1,
+                "domain": False,
+                "labelColor": "#475569",
+                "titleColor": "#0f172a",
+                "tickColor": "#CBD5E1",
+            },
+            "legend": {"labelColor": "#475569", "titleColor": "#0f172a"},
+            "range": {"category": ["#0528F2", "#056CF2", "#3D9DF2", "#B4C4D9"]},
+        }
+    }
+
+try:
+    alt.themes.register("dashline", _altair_dashline_theme)
+    alt.themes.enable("dashline")
+except Exception:
+    pass
+
+
 # -----------------------------
 # Page config
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.5.0 (Pretendard / White / 2026-02-18)"
+BUILD_TAG = "v7.6.0 (Pretendard / White / Charts / 2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -188,6 +220,10 @@ hr {
 .stButton > button, .stDownloadButton > button{
   border-radius: 14px !important;
 }
+
+.stApp{ background:#ffffff; }
+
+html, body { background:#ffffff; }
 </style>
 """
 
@@ -1129,6 +1165,285 @@ def query_campaign_bundle(
 
     return df.reset_index(drop=True)
 
+
+# -----------------------------
+# Timeseries Queries (for charts)
+# -----------------------------
+
+@st.cache_data(ttl=300, show_spinner=False)
+def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
+    """캠페인(전체) 일별 추세. (그래프용: row 수 적음)"""
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        )
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_campaign_daily f
+        JOIN c_f c
+          ON f.customer_id::text = c.customer_id
+         AND f.campaign_id = c.campaign_id
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    else:
+        sql = f"""
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_campaign_daily f
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
+    """소재(전체) 일별 추세."""
+    if not table_exists(_engine, "fact_ad_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_ad_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    if tp_keys and table_exists(_engine, "dim_campaign") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_ad"):
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id::text AS campaign_id
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        g_f AS (
+          SELECT g.customer_id::text AS customer_id, g.adgroup_id::text AS adgroup_id
+          FROM dim_adgroup g
+          JOIN c_f c ON g.customer_id::text = c.customer_id AND g.campaign_id::text = c.campaign_id
+        ),
+        a_f AS (
+          SELECT a.customer_id::text AS customer_id, a.ad_id::text AS ad_id
+          FROM dim_ad a
+          JOIN g_f g ON a.customer_id::text = g.customer_id AND a.adgroup_id::text = g.adgroup_id
+        )
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_ad_daily f
+        JOIN a_f a ON f.customer_id::text = a.customer_id AND f.ad_id::text = a.ad_id
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    else:
+        sql = f"""
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_ad_daily f
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
+    """키워드(전체) 일별 추세. type_sel 없으면 join 없이 fact만 집계."""
+    if not table_exists(_engine, "fact_keyword_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    fk_cols = get_table_columns(_engine, "fact_keyword_daily")
+    sales_expr = "SUM(COALESCE(fk.sales,0))" if "sales" in fk_cols else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    if tp_keys and table_exists(_engine, "dim_campaign") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_keyword"):
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id::text AS campaign_id
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        g_f AS (
+          SELECT g.customer_id::text AS customer_id, g.adgroup_id::text AS adgroup_id
+          FROM dim_adgroup g
+          JOIN c_f c ON g.customer_id::text = c.customer_id AND g.campaign_id::text = c.campaign_id
+        ),
+        k_f AS (
+          SELECT k.customer_id::text AS customer_id, k.keyword_id::text AS keyword_id
+          FROM dim_keyword k
+          JOIN g_f g ON k.customer_id::text = g.customer_id AND k.adgroup_id::text = g.adgroup_id
+        )
+        SELECT
+          fk.dt::date AS dt,
+          SUM(fk.imp)  AS imp,
+          SUM(fk.clk)  AS clk,
+          SUM(fk.cost) AS cost,
+          SUM(fk.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_keyword_daily fk
+        JOIN k_f k ON fk.customer_id::text = k.customer_id AND fk.keyword_id::text = k.keyword_id
+        WHERE fk.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY fk.dt::date
+        ORDER BY fk.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    else:
+        sql = f"""
+        SELECT
+          fk.dt::date AS dt,
+          SUM(fk.imp)  AS imp,
+          SUM(fk.clk)  AS clk,
+          SUM(fk.cost) AS cost,
+          SUM(fk.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_keyword_daily fk
+        WHERE fk.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY fk.dt::date
+        ORDER BY fk.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    return df
+
+
+# -----------------------------
+# Altair Charts (rounded / smooth)
+# -----------------------------
+
+def _chart_timeseries(ts: pd.DataFrame, y_col: str, y_title: str, y_format: str = "", height: int = 260):
+    if ts is None or ts.empty:
+        return None
+
+    d = ts[["dt", y_col]].copy()
+    d = d.dropna(subset=["dt"]).copy()
+    d["dt"] = pd.to_datetime(d["dt"])
+    d[y_col] = pd.to_numeric(d[y_col], errors="coerce").fillna(0)
+
+    base = alt.Chart(d).encode(
+        x=alt.X("dt:T", title="", axis=alt.Axis(labelAngle=0, labelOverlap=True)),
+        y=alt.Y(f"{y_col}:Q", title=y_title, axis=alt.Axis(format=y_format) if y_format else alt.Axis()),
+        tooltip=[
+            alt.Tooltip("dt:T", title="날짜"),
+            alt.Tooltip(f"{y_col}:Q", title=y_title, format=y_format if y_format else None),
+        ],
+    )
+
+    line = base.mark_line(interpolate="monotone", strokeWidth=3, color="#0528F2")
+    pts = base.mark_circle(size=55, color="#056CF2")
+    return (line + pts).properties(height=height)
+
+
+def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, value_title: str, top_n: int = 10, height: int = 320):
+    if df is None or df.empty or label_col not in df.columns or value_col not in df.columns:
+        return None
+
+    d = df[[label_col, value_col]].copy()
+    d[value_col] = pd.to_numeric(d[value_col], errors="coerce").fillna(0)
+    d = d.sort_values(value_col, ascending=False).head(int(top_n)).copy()
+    d[label_col] = d[label_col].astype(str).str.slice(0, 34)
+
+    maxv = float(d[value_col].max()) if len(d) else 0.0
+    d["_max"] = maxv
+
+    y = alt.Y(f"{label_col}:N", sort="-x", title=None, axis=alt.Axis(labelLimit=240))
+    bg = alt.Chart(d).mark_bar(cornerRadius=10, height=18, color="#EBEEF2").encode(
+        y=y,
+        x=alt.X("_max:Q", title=value_title),
+    )
+
+    fg = alt.Chart(d).mark_bar(cornerRadius=10, height=18, color="#3D9DF2").encode(
+        y=y,
+        x=alt.X(f"{value_col}:Q", title=value_title),
+        tooltip=[alt.Tooltip(f"{label_col}:N", title="항목"), alt.Tooltip(f"{value_col}:Q", title=value_title, format=",.0f")],
+    )
+
+    txt = alt.Chart(d).mark_text(align="left", baseline="middle", dx=8, color="#0f172a", fontSize=12).encode(
+        y=y,
+        x=alt.X(f"{value_col}:Q"),
+        text=alt.Text(f"{value_col}:Q", format=",.0f"),
+    )
+
+    return (bg + fg + txt).properties(height=height)
+
+
 def query_ad_topn(
     _engine,
     d1: date,
@@ -1898,6 +2213,59 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("데이터 없음")
         return
 
+    # -----------------------------
+    # 📈 Trend (Altair)
+    # -----------------------------
+    try:
+        ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    except Exception:
+        ts = pd.DataFrame()
+
+    if ts is not None and not ts.empty:
+        total_cost = float(ts["cost"].sum())
+        total_clk = float(ts["clk"].sum())
+        total_conv = float(ts["conv"].sum())
+        total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
+        total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
+
+        st.markdown("### 📈 기간 추세")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            ui_metric_or_stmetric("총 광고비", format_currency(total_cost), "선택 기간 합계", key="kpi_camp_cost")
+        with k2:
+            ui_metric_or_stmetric("총 클릭", format_number_commas(total_clk), "선택 기간 합계", key="kpi_camp_clk")
+        with k3:
+            ui_metric_or_stmetric("총 전환", format_number_commas(total_conv), "선택 기간 합계", key="kpi_camp_conv")
+        with k4:
+            ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
+
+        metric_sel = st.radio(
+            "트렌드 지표",
+            ["광고비", "클릭", "전환", "ROAS"],
+            horizontal=True,
+            index=0,
+            key="camp_trend_metric",
+        )
+
+        ts2 = ts.copy()
+        ts2 = add_rates(ts2)
+        if metric_sel == "광고비":
+            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+        elif metric_sel == "클릭":
+            ch = _chart_timeseries(ts2, "clk", "클릭", y_format=",.0f", height=260)
+        elif metric_sel == "전환":
+            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+        else:
+            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+
+        st.divider()
+
     df = _perf_common_merge_meta(bundle, meta)
     df = add_rates(df)
 
@@ -1935,8 +2303,18 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown("#### ✅ 전환 TOP5")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='camp_top5_conv', height=240)
 
-    st.divider()
+    
+    with st.expander("📊 캠페인 광고비 TOP10 그래프", expanded=False):
+        chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
+        tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
+        tmp["label"] = tmp.get("campaign_name", "").astype(str)
+        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("그래프 표시 불가")
 
+    st.divider()
     # -----------------
     # Main table (비용 TOP N)
     # -----------------
@@ -2029,8 +2407,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.markdown("#### ✅ 전환 TOP10")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
 
-    st.divider()
+    
+    with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
+        tmp = bundle.sort_values("cost", ascending=False).head(10).copy()
+        tmp["label"] = tmp.get("keyword", "").astype(str)
+        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("그래프 표시 불가")
 
+    st.divider()
     # Top N list (광고비 기준)
     df = bundle[bundle["rn_cost"] <= top_n].sort_values("rn_cost").copy()
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
@@ -2038,6 +2425,60 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     df["customer_id"] = df["customer_id"].astype("int64")
 
     df = add_rates(df)
+
+    # -----------------------------
+    # 📈 Trend (Altair)
+    # -----------------------------
+    try:
+        ts = query_keyword_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    except Exception:
+        ts = pd.DataFrame()
+
+    if ts is not None and not ts.empty:
+        total_cost = float(ts["cost"].sum())
+        total_clk = float(ts["clk"].sum())
+        total_conv = float(ts["conv"].sum())
+        total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
+        total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
+
+        st.markdown("### 📈 기간 추세")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            ui_metric_or_stmetric("총 광고비", format_currency(total_cost), "선택 기간 합계", key="kpi_kw_cost")
+        with k2:
+            ui_metric_or_stmetric("총 클릭", format_number_commas(total_clk), "선택 기간 합계", key="kpi_kw_clk")
+        with k3:
+            ui_metric_or_stmetric("총 전환", format_number_commas(total_conv), "선택 기간 합계", key="kpi_kw_conv")
+        with k4:
+            ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_kw_roas")
+
+        metric_sel = st.radio(
+            "트렌드 지표",
+            ["광고비", "클릭", "전환", "ROAS"],
+            horizontal=True,
+            index=0,
+            key="kw_trend_metric",
+        )
+
+        ts2 = ts.copy()
+        ts2 = add_rates(ts2)
+        if metric_sel == "광고비":
+            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+        elif metric_sel == "클릭":
+            ch = _chart_timeseries(ts2, "clk", "클릭", y_format=",.0f", height=260)
+        elif metric_sel == "전환":
+            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+        else:
+            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+
+        st.divider()
+
     df = df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
     view = df.rename(
@@ -2098,6 +2539,60 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     df = _perf_common_merge_meta(bundle, meta)
     df = add_rates(df)
 
+    # -----------------------------
+    # 📈 Trend (Altair)
+    # -----------------------------
+    try:
+        ts = query_ad_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    except Exception:
+        ts = pd.DataFrame()
+
+    if ts is not None and not ts.empty:
+        total_cost = float(ts["cost"].sum())
+        total_clk = float(ts["clk"].sum())
+        total_conv = float(ts["conv"].sum())
+        total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
+        total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
+
+        st.markdown("### 📈 기간 추세")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            ui_metric_or_stmetric("총 광고비", format_currency(total_cost), "선택 기간 합계", key="kpi_ad_cost")
+        with k2:
+            ui_metric_or_stmetric("총 클릭", format_number_commas(total_clk), "선택 기간 합계", key="kpi_ad_clk")
+        with k3:
+            ui_metric_or_stmetric("총 전환", format_number_commas(total_conv), "선택 기간 합계", key="kpi_ad_conv")
+        with k4:
+            ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_ad_roas")
+
+        metric_sel = st.radio(
+            "트렌드 지표",
+            ["광고비", "클릭", "전환", "ROAS"],
+            horizontal=True,
+            index=0,
+            key="ad_trend_metric",
+        )
+
+        ts2 = ts.copy()
+        ts2 = add_rates(ts2)
+        if metric_sel == "광고비":
+            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+        elif metric_sel == "클릭":
+            ch = _chart_timeseries(ts2, "clk", "클릭", y_format=",.0f", height=260)
+        elif metric_sel == "전환":
+            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+        else:
+            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+
+        st.divider()
+
+
     # -----------------
     # TOP5 (비용/클릭/전환)
     # -----------------
@@ -2132,8 +2627,18 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown("#### ✅ 전환 TOP5")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
 
-    st.divider()
+    
+    with st.expander("📊 소재 광고비 TOP10 그래프", expanded=False):
+        chart_df = bundle[bundle["tag"].isin(["cost", "topn"])].copy() if "tag" in bundle.columns else bundle.copy()
+        tmp = chart_df.sort_values("cost", ascending=False).head(10).copy()
+        tmp["label"] = tmp.get("ad_name", "").astype(str)
+        ch = _chart_progress_bars(tmp, "label", "cost", "광고비(원)", top_n=10, height=320)
+        if ch is not None:
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("그래프 표시 불가")
 
+    st.divider()
     # -----------------
     # Main table (비용 TOP N)
     # -----------------
