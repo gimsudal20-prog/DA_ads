@@ -2,8 +2,9 @@ name: Daily Naver Ads Collector
 
 on:
   schedule:
-    # 한국 시간 02:00 KST = UTC 17:00 (전날)
-    - cron: "0 17 * * *"
+    # UTC 기준 19시, 1시, 7시, 13시 
+    # (한국 시간 KST 기준 04:00, 10:00, 16:00, 22:00 -> 6시간 간격)
+    - cron: "0 19,1,7,13 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -14,6 +15,7 @@ jobs:
   run-collector:
     runs-on: ubuntu-latest
     env:
+      # 전체 환경을 한국 시간(KST)으로 고정
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
@@ -28,8 +30,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ▼▼▼ [추가된 부분] pip 캐싱 설정 ▼▼▼
-      # 실행 속도를 높이기 위해 패키지 설치 내역을 캐싱합니다.
       - name: Cache pip
         uses: actions/cache@v3
         with:
@@ -37,7 +37,6 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-      # ▲▲▲ [추가된 부분 끝] ▲▲▲
 
       - name: Install dependencies
         run: |
@@ -45,8 +44,22 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install requests python-dotenv sqlalchemy psycopg2-binary
 
-      - name: Run collector (yesterday, KST)
+      - name: Run collector (Smart Scheduler)
         run: |
-          YESTERDAY=$(date -d "yesterday" +%F)
-          echo "Collect date = ${YESTERDAY}"
-          python collector.py --date "${YESTERDAY}"
+          # 현재 한국 시간의 '시(Hour)' 부분만 추출 (예: 04, 10, 16, 22)
+          CURRENT_HOUR=$(date +%H)
+          echo "⏰ 현재 한국 시간: ${CURRENT_HOUR}시"
+          
+          # 1. 어제 데이터 (새벽 4시에만 1번 수집하여 최종 마감)
+          if [ "$CURRENT_HOUR" == "04" ]; then
+            YESTERDAY=$(date -d "yesterday" +%F)
+            echo "🚀 Collect date (Yesterday) = ${YESTERDAY}"
+            python collector.py --date "${YESTERDAY}"
+          else
+            echo "⏩ 어제 데이터 수집 패스 (새벽 4시에만 실행됩니다.)"
+          fi
+          
+          # 2. 오늘 데이터 (실행될 때마다 항상 수집)
+          TODAY=$(date +%F)
+          echo "🚀 Collect date (Today) = ${TODAY}"
+          python collector.py --date "${TODAY}"
