@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.8.5)
+app.py - 네이버 검색광고 통합 대시보드 (v7.9.0)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.5 (2026-02-19)'
+BUILD_TAG = "v7.9.0 (2026-02-19)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -100,6 +100,7 @@ GLOBAL_UI_CSS = """
   --c-blue-900:#0528F2;
   --c-blue-700:#056CF2;
   --c-blue-500:#3D9DF2;
+  --b500:#056CF2;
   --c-slate-300:#B4C4D9;
   --c-slate-050:#EBEEF2;
   --text:#0f172a;
@@ -166,6 +167,25 @@ hr {
   font-weight: 900;
   color: var(--c-blue-700);
 }
+
+/* Aliases for legacy class names (keeps HTML tidy) */
+.hero-kicker{ display:inline-flex; align-items:center; gap:8px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(2,8,23,0.62); }
+.hero-badges{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.pill{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid rgba(180,196,217,0.6);
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 6px 18px rgba(2,8,23,0.06);
+  font-size:12px;
+  color: rgba(2,8,23,0.78);
+  white-space:nowrap;
+}
+.freshness-title{ font-size:12px; color: rgba(2,8,23,0.62); margin-bottom:8px; }
+.freshness-pills{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.dot.on{ background:#22C55E; box-shadow: 0 0 0 3px rgba(34,197,94,0.16); }
+.dot.off{ background:#B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
 .hero-title{
   margin: 8px 0 2px 0;
   font-size: 34px;
@@ -954,6 +974,9 @@ def render_data_freshness(engine) -> None:
 
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
+    """Filters live in the sidebar to keep the main report clean.
+    '적용'을 누르기 전까지는 조회 쿼리를 거의 실행하지 않습니다.
+    """
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
     default_start = default_end
@@ -969,6 +992,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "top_n_keyword": 300,
         "top_n_ad": 200,
         "top_n_campaign": 200,
+        "prefetch_warm": True,
     }
 
     if "filters_applied" not in st.session_state:
@@ -976,92 +1000,115 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     if "filters_ready" not in st.session_state:
         st.session_state["filters_ready"] = False
 
-    with st.expander("필터", expanded=True):
-        c1, c2, c3 = st.columns([2, 2, 2])
+    fa = dict(st.session_state.get("filters_applied", defaults))
 
-        with c1:
-            q = st.text_input("업체명 검색", value=st.session_state["filters_applied"].get("q", ""), placeholder="예: 실리콘플러스")
-            manager_opts = sorted([x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()])
-            manager_sel = st.multiselect("담당자", manager_opts, default=st.session_state["filters_applied"].get("manager", []))
+    # -----------------------------
+    # Sidebar UI
+    # -----------------------------
+    with st.sidebar:
+        st.markdown("### 🔎 필터")
+        st.caption("필터 변경 후 **적용**을 눌러야 조회가 시작됩니다.")
 
-        with c2:
-            # 업체 옵션은 '담당자 선택'에 따라 동적으로 좁혀서 보여줍니다.
-            meta_for_opts = meta.copy()
-            if manager_sel:
-                meta_for_opts = meta_for_opts[meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])]
-            account_opts_all = sorted([x for x in meta_for_opts.get("account_name", pd.Series(dtype=str)).dropna().astype(str).map(str.strip).unique().tolist() if x])
-            # 업체명 검색(q) 반영
-            account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
+        q = st.text_input(
+            "업체명 검색",
+            value=fa.get("q", ""),
+            placeholder="예: 실리콘플러스",
+        )
 
-            # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
-            if "tmp_acc_sel" in st.session_state:
-                st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
+        manager_opts = sorted(
+            [x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
+        )
+        manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []))
 
-            _default_accounts = [a for a in st.session_state["filters_applied"].get("account", []) if a in account_opts]
-            if "tmp_acc_sel" not in st.session_state:
-                st.session_state["tmp_acc_sel"] = _default_accounts
-            account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
+        # 업체 옵션은 '담당자 선택'에 따라 좁혀서 보여줌
+        meta_for_opts = meta.copy()
+        if manager_sel:
+            meta_for_opts = meta_for_opts[
+                meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])
+            ]
+        account_opts_all = sorted(
+            [
+                x
+                for x in meta_for_opts.get("account_name", pd.Series(dtype=str))
+                .dropna()
+                .astype(str)
+                .map(str.strip)
+                .unique()
+                .tolist()
+                if x
+            ]
+        )
+        # 업체명 검색(q) 반영
+        account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
 
-            type_sel = tuple(
-                st.multiselect(
-                    "캠페인 유형",
-                    type_opts or [],
-                    default=list(st.session_state["filters_applied"].get("type_sel", tuple())),
-                )
+        # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
+        if "tmp_acc_sel" in st.session_state:
+            st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
+
+        _default_accounts = [a for a in fa.get("account", []) if a in account_opts]
+        if "tmp_acc_sel" not in st.session_state:
+            st.session_state["tmp_acc_sel"] = _default_accounts
+
+        account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
+
+        type_sel = tuple(
+            st.multiselect(
+                "캠페인 유형",
+                type_opts or [],
+                default=list(fa.get("type_sel", tuple())),
             )
+        )
 
-        with c3:
-            period_mode = st.selectbox(
-                "기간",
-                ["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
-                index=["오늘","최근 7일(오늘 제외)","이번 달","지난 달","어제","최근 3일","최근 7일","최근 30일","직접 선택"].index(st.session_state["filters_applied"].get("period_mode", "어제")),
+        period_mode = st.selectbox(
+            "기간",
+            ["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
+            index=["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(
+                fa.get("period_mode", "어제")
+            ),
+        )
+
+        if period_mode == "오늘":
+            d1 = today
+            d2 = today
+        elif period_mode == "최근 7일(오늘 제외)":
+            d2 = today - timedelta(days=1)
+            d1 = d2 - timedelta(days=6)
+        elif period_mode == "이번 달":
+            d1 = today.replace(day=1)
+            d2 = today
+        elif period_mode == "지난 달":
+            first_this = today.replace(day=1)
+            last_prev = first_this - timedelta(days=1)
+            d1 = last_prev.replace(day=1)
+            d2 = last_prev
+        elif period_mode == "최근 3일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=2)
+        elif period_mode == "최근 7일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=6)
+        elif period_mode == "최근 30일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=29)
+        elif period_mode == "직접 선택":
+            d1d2 = st.date_input(
+                "기간 선택",
+                value=(fa.get("d1", default_start), fa.get("d2", default_end)),
             )
-
-            if period_mode == "오늘":
-                d1 = today
-                d2 = today
-            elif period_mode == "최근 7일(오늘 제외)":
-                d2 = today - timedelta(days=1)
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "이번 달":
-                d1 = today.replace(day=1)
-                d2 = today
-            elif period_mode == "지난 달":
-                first_this = today.replace(day=1)
-                last_prev = first_this - timedelta(days=1)
-                d1 = last_prev.replace(day=1)
-                d2 = last_prev
-            elif period_mode == "최근 3일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=2)
-            elif period_mode == "최근 7일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=29)
-            elif period_mode == "직접 선택":
-                d1d2 = st.date_input(
-                    "기간 선택",
-                    value=(
-                        st.session_state["filters_applied"].get("d1", default_start),
-                        st.session_state["filters_applied"].get("d2", default_end),
-                    ),
-                )
-                if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
-                    d1, d2 = d1d2[0], d1d2[1]
-                else:
-                    d1, d2 = default_start, default_end
+            if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
+                d1, d2 = d1d2[0], d1d2[1]
             else:
                 d1, d2 = default_start, default_end
+        else:
+            d1, d2 = default_start, default_end
 
-            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_keyword", 300)), step=50)
-            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_ad", 200)), step=50)
-            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_campaign", 200)), step=50)
-
+        with st.expander("⚙️ 고급", expanded=False):
+            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50)
+            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50)
+            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50)
             prefetch_warm = st.checkbox(
                 "빠른 전환(미리 로딩)",
-                value=True,
+                value=bool(fa.get("prefetch_warm", True)),
                 help="적용을 누를 때 캠페인/키워드/소재 데이터를 미리 불러와서 탭 전환이 빠르게 됩니다.",
             )
 
@@ -1080,6 +1127,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             "top_n_keyword": top_n_keyword,
             "top_n_ad": top_n_ad,
             "top_n_campaign": top_n_campaign,
+            "prefetch_warm": prefetch_warm,
         }
 
         # ✅ 탭 전환 속도 개선: 적용 시 데이터 미리 로딩(캐시 워밍)
@@ -1132,104 +1180,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
     f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
     return f
-
-
-# -----------------------------
-# Budget bundle query (single round-trip)
-# -----------------------------
-@st.cache_data(ttl=180, show_spinner=False)
-def query_budget_bundle(
-    _engine,
-    cids: Tuple[int, ...],
-    yesterday: date,
-    avg_d1: date,
-    avg_d2: date,
-    month_d1: date,
-    month_d2: date,
-    avg_days: int,
-) -> pd.DataFrame:
-    if not (table_exists(_engine, "dim_account_meta") and table_exists(_engine, "fact_campaign_daily") and table_exists(_engine, "fact_bizmoney_daily")):
-        return pd.DataFrame()
-
-    where_cid = ""
-    if cids:
-        where_cid = f"WHERE m.customer_id::text IN ({_sql_in_str_list(list(cids))})"
-
-    sql = f"""
-    WITH meta AS (
-      SELECT customer_id::text AS customer_id, account_name, manager, COALESCE(monthly_budget,0) AS monthly_budget
-      FROM dim_account_meta m
-      {where_cid}
-    ),
-    biz AS (
-      SELECT DISTINCT ON (customer_id::text)
-        customer_id::text AS customer_id,
-        bizmoney_balance,
-        dt AS last_update
-      FROM fact_bizmoney_daily
-      WHERE customer_id::text IN (SELECT customer_id FROM meta)
-      ORDER BY customer_id::text, dt DESC
-    ),
-    camp AS (
-      SELECT
-        customer_id::text AS customer_id,
-        SUM(cost) FILTER (WHERE dt = :y) AS y_cost,
-        SUM(cost) FILTER (WHERE dt BETWEEN :a1 AND :a2) AS avg_sum_cost,
-        SUM(cost) FILTER (WHERE dt BETWEEN :m1 AND :m2) AS month_cost
-      FROM fact_campaign_daily
-      WHERE customer_id::text IN (SELECT customer_id FROM meta)
-        AND dt BETWEEN :min_dt AND :max_dt
-      GROUP BY customer_id::text
-    )
-    SELECT
-      meta.customer_id,
-      meta.account_name,
-      meta.manager,
-      meta.monthly_budget,
-      COALESCE(biz.bizmoney_balance,0) AS bizmoney_balance,
-      biz.last_update,
-      COALESCE(camp.y_cost,0) AS y_cost,
-      COALESCE(camp.avg_sum_cost,0) AS avg_sum_cost,
-      COALESCE(camp.month_cost,0) AS current_month_cost
-    FROM meta
-    LEFT JOIN biz ON meta.customer_id = biz.customer_id
-    LEFT JOIN camp ON meta.customer_id = camp.customer_id
-    ORDER BY meta.account_name
-    """
-
-    min_dt = min(yesterday, avg_d1, month_d1)
-    max_dt = max(yesterday, avg_d2, month_d2)
-
-    df = sql_read(
-        _engine,
-        sql,
-        {
-            "y": str(yesterday),
-            "a1": str(avg_d1),
-            "a2": str(avg_d2),
-            "m1": str(month_d1),
-            "m2": str(month_d2),
-            "min_dt": str(min_dt),
-            "max_dt": str(max_dt),
-        },
-    )
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    # typing
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    for c in ["monthly_budget", "bizmoney_balance", "y_cost", "avg_sum_cost", "current_month_cost"]:
-        df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0)
-
-    df["avg_cost"] = df["avg_sum_cost"].astype(float) / float(max(avg_days, 1))
-    return df
-
-
-# -----------------------------
-# Perf queries (TOP N) - single pass (no double join)
-# -----------------------------
-def _fact_has_sales(engine, fact_table: str) -> bool:
-    return "sales" in get_table_columns(engine, fact_table)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -2677,6 +2627,130 @@ def render_period_compare_panel(
 # -----------------------------
 # Pages
 # -----------------------------
+
+def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
+    """Compact one-line summary shown on the main area (keeps the UI 'report-like')."""
+    try:
+        n_total = int(meta["customer_id"].nunique()) if meta is not None and not meta.empty else 0
+    except Exception:
+        n_total = 0
+
+    sel = f.get("selected_customer_ids", []) or []
+    n_sel = len(sel) if sel else n_total
+    period = f"{f.get('start')} ~ {f.get('end')}"
+    type_sel = list(f.get("type_sel", tuple()) or [])
+    type_txt = "전체" if not type_sel else ", ".join(type_sel[:3]) + (" 외" if len(type_sel) > 3 else "")
+
+    st.markdown(
+        f"""
+        <div class="panel" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span class="badge b-blue">선택 계정 {n_sel} / {n_total}</span>
+            <span class="badge b-gray">기간 {period}</span>
+            <span class="badge b-gray">유형 {type_txt}</span>
+          </div>
+          <div style="font-size:12px; color: rgba(2,8,23,0.55);">왼쪽 사이드바에서 필터를 바꿀 수 있어요</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
+    if not f.get("ready", False):
+        st.info("왼쪽 사이드바에서 필터를 설정한 뒤 **적용**을 눌러주세요.")
+        return
+
+    st.markdown("## 👀 요약 (한눈에)")
+    st.caption(f"기간: {f['start']} ~ {f['end']}")
+
+    cids = tuple(f.get("selected_customer_ids", []) or [])
+    type_sel = tuple(f.get("type_sel", tuple()) or tuple())
+
+    # KPI (campaign aggregate)
+    cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+
+    cmp_mode = st.radio(
+        "비교 기준",
+        ["전일대비", "전주대비", "전월대비"],
+        horizontal=True,
+        index=1,
+        key="ov_cmp_mode",
+    )
+    b1, b2 = _period_compare_range(f["start"], f["end"], cmp_mode)
+    base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+
+    def _delta(val: float, base_val: float):
+        d = float(val) - float(base_val)
+        p = _pct_change(float(val), float(base_val))
+        return d, p
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    _, p_cost = _delta(cur["cost"], base["cost"])
+    _, p_sales = _delta(cur["sales"], base["sales"])
+    _, p_conv = _delta(cur["conv"], base["conv"])
+    _, p_cpa = _delta(cur["cpa"], base["cpa"])
+    _, p_roas = _delta(cur["roas"], base["roas"])
+
+    with k1:
+        ui_metric_or_stmetric("광고비", format_currency(cur["cost"]), f"{cmp_mode} {p_cost:+.1f}%", key="ov_cost")
+    with k2:
+        ui_metric_or_stmetric("전환매출", format_currency(cur["sales"]), f"{cmp_mode} {p_sales:+.1f}%", key="ov_sales")
+    with k3:
+        ui_metric_or_stmetric("전환", format_number_commas(cur["conv"]), f"{cmp_mode} {p_conv:+.1f}%", key="ov_conv")
+    with k4:
+        ui_metric_or_stmetric("CPA", format_currency(cur["cpa"]), f"{cmp_mode} {p_cpa:+.1f}%", key="ov_cpa")
+    with k5:
+        ui_metric_or_stmetric("ROAS", f"{cur['roas']:.0f}%", f"{cmp_mode} {p_roas:+.1f}%", key="ov_roas")
+
+    st.divider()
+
+    try:
+        ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    except Exception:
+        ts = pd.DataFrame()
+
+    if ts is not None and not ts.empty:
+        metric_sel = st.radio(
+            "트렌드 지표",
+            ["광고비", "전환", "전환매출", "ROAS"],
+            horizontal=True,
+            index=0,
+            key="ov_trend_metric",
+        )
+        ts2 = ts.copy()
+        ts2 = add_rates(ts2)
+        if metric_sel == "광고비":
+            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+        elif metric_sel == "전환":
+            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+        elif metric_sel == "전환매출":
+            ch = _chart_timeseries(ts2, "sales", "전환매출(원)", y_format=",.0f", height=260)
+        else:
+            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+
+        if ch is not None:
+            render_chart(ch)
+
+    render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="ov", expanded=False)
+    st.divider()
+
+    st.markdown("### ✅ 다음 액션 힌트")
+    hints = []
+    if cur["cost"] > 0 and cur["roas"] < 200:
+        hints.append("ROAS가 낮습니다 → **전환매출이 낮은 캠페인/키워드**부터 정리해보세요.")
+    if cur["conv"] > 0 and cur["cpa"] > 30000:
+        hints.append("CPA가 높은 편입니다 → **비의도 키워드/소재**를 제외키워드로 정리하면 효율이 빠르게 회복됩니다.")
+    if cur["clk"] > 0 and cur["ctr"] < 1.0:
+        hints.append("CTR이 낮습니다 → **소재 A/B**(헤드라인/설명/확장소재)를 우선 돌려보세요.")
+    if not hints:
+        hints.append("지표가 안정적입니다 → 예산을 늘릴 계정/캠페인을 찾기 위해 **ROAS 상위 캠페인**을 확인해보세요.")
+    st.write("• " + "\n• ".join(hints))
+
+
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 / 잔액 관리")
 
@@ -2767,7 +2841,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     view_cols = ["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "전일 소진액", "상태", "확인일자"]
     display_df = biz_view[view_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    ui_table_or_dataframe(display_df, key="budget_biz_table", height=520)
     render_download_compact(display_df, f"예산_잔액_{f['start']}_{f['end']}", "budget", "budget")
 
     st.divider()
@@ -2821,7 +2895,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        ui_table_or_dataframe(table_df, key="budget_month_table", height=520)
         render_download_compact(table_df, f"월예산_{f['start']}_{f['end']}", "monthly_budget", "mb")
 
     with c2:
@@ -2967,7 +3041,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             x[metric] = pd.to_numeric(x.get("conv", 0), errors="coerce").fillna(0).astype(int)
         return x[["업체명", "광고유형", "캠페인", metric]]
 
-    with st.expander("📌 성과별 TOP5 (캠페인)", expanded=True):
+    with st.expander("📌 성과별 TOP5 (캠페인)", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP5")
@@ -3090,7 +3164,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             x[metric] = pd.to_numeric(x["conv"], errors="coerce").fillna(0).astype(int).astype(str)
         return x.rename(columns={"account_name": "업체명", "keyword": "키워드"})[["업체명", "키워드", metric]]
 
-    with st.expander("📌 성과별 TOP10 키워드", expanded=True):
+    with st.expander("📌 성과별 TOP10 키워드", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP10")
@@ -3323,7 +3397,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             x[metric] = pd.to_numeric(x.get("conv", 0), errors="coerce").fillna(0).astype(int)
         return x[["업체명", "캠페인", "소재내용", metric]]
 
-    with st.expander("📌 성과별 TOP5 (소재)", expanded=True):
+    with st.expander("📌 성과별 TOP5 (소재)", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("#### 💸 광고비 TOP5")
@@ -3502,10 +3576,15 @@ def main():
 
     f = build_filters(meta, type_opts, engine)
 
+
+    # Main area: compact filter summary (keeps the report clean)
+
+    render_filter_summary_bar(f, meta)
+
     if not f.get('ready', False):
         st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
 
-    pages = ["전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"]
+    pages = ["요약(한눈에)", "전체 예산/잔액 관리", "성과(캠페인)", "성과(키워드)", "성과(소재)", "설정/연결"]
     default_page = st.session_state.get('nav_page', pages[0])
     if default_page not in pages:
         default_page = pages[0]
@@ -3519,7 +3598,9 @@ def main():
     st.session_state['nav_page'] = page
     st.divider()
 
-    if page == "전체 예산/잔액 관리":
+    if page == "요약(한눈에)":
+        page_overview(meta, engine, f)
+    elif page == "전체 예산/잔액 관리":
         page_budget(meta, engine, f)
     elif page == "성과(캠페인)":
         page_perf_campaign(meta, engine, f)
