@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import altair as alt
 
 # Plotly (preferred for charts)
