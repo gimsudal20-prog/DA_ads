@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.9.00)
+app.py - 네이버 검색광고 통합 대시보드 (v7.9.0)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -85,7 +85,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.0.0 UI Overhaul (2026-02-19)"
+BUILD_TAG = "v7.9.0 (2026-02-19)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -99,336 +99,273 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 # -----------------------------
 GLOBAL_UI_CSS = """
 <style>
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/woff2/SUIT.css");
 
-/* Design tokens (based on your reference) */
 :root{
-  --bg: #F6F8FC;
-  --card: #FFFFFF;
-  --text: #1A1C20;     /* Black */
-  --muted: rgba(26, 28, 32, 0.62);
-  --muted2: rgba(26, 28, 32, 0.46);
-  --border: rgba(26, 28, 32, 0.08);
-  --border2: rgba(26, 28, 32, 0.12);
-
-  --primary: #335CFF;  /* Blue-Violet */
-  --primary2: #5BDAFF; /* Bright Cyan */
-  --grey: #BCC3C9;
-
-  --radius: 18px;
-  --radius-sm: 14px;
-  --shadow: 0 10px 28px rgba(16,24,40,0.08);
-  --shadow-sm: 0 8px 18px rgba(16,24,40,0.06);
-
-  --font: Inter, Pretendard, system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --c-blue-900:#0528F2;
+  --c-blue-700:#056CF2;
+  --c-blue-500:#3D9DF2;
+  --b500:#056CF2;
+  --c-slate-300:#B4C4D9;
+  --c-slate-050:#EBEEF2;
+  --text:#0f172a;
+  --muted:#475569;
+  --radius:18px;
+  --font-body: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
+  --font-display: "SUIT", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
+  --pos: #056CF2;
+  --neg: #EF4444;
+  --shadow: 0 10px 26px rgba(2,6,23,0.06);
+  --shadow-sm: 0 6px 16px rgba(2,6,23,0.04);
 }
 
-/* Hide Streamlit chrome */
+html, body, .stApp{
+  font-family: var(--font-body);
+  color: var(--text);
+  background: #ffffff;
+}
+
+/* Clean UI */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-header { visibility: hidden; }
 
-/* Optional: hide Streamlit sidebar completely (we render our own) */
-section[data-testid="stSidebar"]{ display:none !important; }
-
-/* Page base */
-html, body, .stApp{
-  background: var(--bg);
-  font-family: var(--font);
-  color: var(--text);
+/* Fix top clipping + nicer width */
+.block-container {
+  /* iOS Safari safe-area + prevent top clipping */
+  padding-top: calc(env(safe-area-inset-top) + 4.2rem) !important;
+  padding-bottom: 2.6rem;
+  max-width: 1400px;
+  overflow: visible !important;
 }
 
-/* Layout offsets for fixed left nav */
-.block-container{
-  padding-top: 1.6rem !important;
-  padding-bottom: 2.2rem !important;
-  padding-left: 308px !important;   /* room for nav */
-  max-width: 1600px;
-}
-
-/* Inputs: make them feel less “Streamlit” */
-.stTextInput input,
-.stNumberInput input{
-  border-radius: 12px !important;
-}
-div[data-baseweb="select"] > div{
-  border-radius: 12px !important;
-}
-
-/* Cards / panels */
-.card{
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-}
-.card.pad{ padding: 16px 16px; }
-.card.pad-lg{ padding: 18px 18px; }
-
-.section-title{
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  margin: 2px 0 10px 0;
-}
-
-.subtle{
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* Top bar */
-.topbar{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 12px;
-  padding: 14px 16px;
-}
-.topbar .title{
-  font-size: 18px;
-  font-weight: 900;
+h1, h2, h3 {
   letter-spacing: -0.02em;
 }
-.chips{
-  display:flex;
-  align-items:center;
-  gap: 8px;
-  flex-wrap: wrap;
+h1 { font-weight: 900; }
+h2 { font-weight: 900; }
+h1, h2, h3 { font-family: var(--font-display); }
+.kpi .v, .kpi .vv { font-family: var(--font-display); }
+h3 { font-weight: 800; }
+
+hr {
+  border-color: rgba(180,196,217,0.45);
 }
-.chip{
+
+/* Hero */
+.hero{
+  margin-top: 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(180,196,217,0.55);
+  background:
+    radial-gradient(1200px 320px at 10% 0%, rgba(5,108,242,0.10) 0%, rgba(5,108,242,0.02) 55%, rgba(255,255,255,0) 80%),
+    linear-gradient(180deg, rgba(61,157,242,0.06), rgba(255,255,255,1));
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+}
+.kicker{
   display:inline-flex;
   align-items:center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(51,92,255,0.06);
-  color: rgba(26,28,32,0.85);
-  font-size: 12px;
-  font-weight: 700;
-}
-.chip .dot{
-  width: 8px; height: 8px; border-radius: 99px;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px rgba(51,92,255,0.14);
-}
-
-/* Left nav (fixed) */
-.app-nav{
-  position: fixed;
-  left: 16px;
-  top: 16px;
-  bottom: 16px;
-  width: 268px;
-  border-radius: 22px;
-  background: rgba(255,255,255,0.86);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(26,28,32,0.10);
-  box-shadow: var(--shadow);
-  padding: 14px;
-  display:flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.brand{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding: 10px 10px 6px 10px;
-}
-.brand .b1{
+  gap:8px;
+  font-size:12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
   font-weight: 900;
-  letter-spacing: -0.02em;
-}
-.brand .b2{
-  font-size: 12px;
-  color: var(--muted2);
-  font-weight: 700;
+  color: var(--c-blue-700);
 }
 
-.nav-group{ margin-top: 6px; display:flex; flex-direction:column; gap:6px; }
-.nav-item{
-  display:flex;
-  align-items:center;
-  gap: 10px;
-  padding: 10px 10px;
-  border-radius: 14px;
-  border: 1px solid transparent;
-  text-decoration:none;
-  color: rgba(26,28,32,0.86);
-  font-weight: 800;
-  font-size: 13px;
+/* Aliases for legacy class names (keeps HTML tidy) */
+.hero-kicker{ display:inline-flex; align-items:center; gap:8px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(2,8,23,0.62); }
+.hero-badges{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.pill{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid rgba(180,196,217,0.6);
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 6px 18px rgba(2,8,23,0.06);
+  font-size:12px;
+  color: rgba(2,8,23,0.78);
+  white-space:nowrap;
 }
-.nav-item:hover{
-  background: rgba(26,28,32,0.04);
+.freshness-title{ font-size:12px; color: rgba(2,8,23,0.62); margin-bottom:8px; }
+.freshness-pills{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.dot.on{ background:#22C55E; box-shadow: 0 0 0 3px rgba(34,197,94,0.16); }
+.dot.off{ background:#B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
+.hero-title{
+  margin: 8px 0 2px 0;
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 900;
 }
-.nav-item.active{
-  background: rgba(51,92,255,0.12);
-  border-color: rgba(51,92,255,0.22);
-  color: rgba(26,28,32,0.92);
-}
-.nav-ico{
-  width: 28px; height: 28px; border-radius: 12px;
-  display:flex; align-items:center; justify-content:center;
-  background: rgba(51,92,255,0.10);
-  color: var(--primary);
-  font-size: 16px;
-  flex: 0 0 auto;
-}
-.nav-item.active .nav-ico{
-  background: rgba(51,92,255,0.18);
-}
-
-/* KPI cards */
-.kpi-grid{
-  display:grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-@media (max-width: 1280px){
-  .block-container{ padding-left: 18px !important; }
-  .app-nav{ display:none; }
-  .kpi-grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-.kpi-card{
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  padding: 14px 14px 12px 14px;
-}
-.kpi-k{
-  font-size: 12px;
+.hero-sub{
+  margin-top: 8px;
   color: var(--muted);
-  font-weight: 800;
-  letter-spacing: -0.01em;
+  font-size: 14px;
 }
-.kpi-v{
-  margin-top: 6px;
-  font-size: 24px;
-  font-weight: 900;
-  letter-spacing: -0.02em;
+.hero-meta{
+  margin-top: 12px;
+  display:flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.kpi-d{
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--muted2);
-  font-weight: 700;
-}
-.delta-pos{ color: #16A34A; font-weight: 900; }
-.delta-neg{ color: #EF4444; font-weight: 900; }
-.delta-neu{ color: var(--muted); font-weight: 800; }
 
-/* Make buttons match */
+
+  .hero-grid{
+    display:flex; gap:18px; justify-content:space-between; align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .hero-left{flex:1 1 520px; min-width:320px;}
+  .hero-right{
+    flex:0 1 340px; min-width:280px;
+    display:flex; flex-direction:column; align-items:flex-end; gap:8px;
+    margin-top: 2px;
+  }
+  .fresh-title{
+    font-size:11px; letter-spacing:0.12em; font-weight:800;
+    color: rgba(2,8,23,0.55);
+  }
+  .fresh-wrap{
+    width:100%;
+    display:flex; flex-wrap:wrap; justify-content:flex-end;
+    gap:8px;
+  }
+  .fresh-chip{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:8px 10px;
+    border-radius:999px;
+    border:1px solid rgba(180,196,217,0.6);
+    background: rgba(255,255,255,0.92);
+    box-shadow: 0 6px 18px rgba(2,8,23,0.06);
+    font-size:12px;
+    color: rgba(2,8,23,0.78);
+    white-space:nowrap;
+  }
+  .dot{
+    width:8px; height:8px; border-radius:50%;
+    background: var(--b500);
+  }
+  .dot-camp{ background: #056CF2; box-shadow: 0 0 0 3px rgba(5,108,242,0.14); }
+  .dot-key{ background: #3D9DF2; box-shadow: 0 0 0 3px rgba(61,157,242,0.16); }
+  .dot-ad { background: #0528F2; box-shadow: 0 0 0 3px rgba(5,40,242,0.14); }
+  .dot-bm { background: #B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
+  @media (max-width: 900px){
+    .hero-right{ align-items:flex-start; }
+    .fresh-wrap{ justify-content:flex-start; }
+  }
+/* Chips */
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 12px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+  border:1px solid rgba(180,196,217,0.55);
+  background: rgba(255,255,255,0.8);
+  color: var(--text);
+}
+.b-blue { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
+.b-sky  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
+.b-gray { background: rgba(180,196,217,0.18); color: var(--text); border-color: rgba(180,196,217,0.52); }
+.b-red  { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
+.b-yellow { background: rgba(5,108,242,0.10); color: var(--c-blue-700); border-color: rgba(5,108,242,0.22); }
+.b-green  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
+
+/* Panels / Cards */
+.panel{
+  padding:14px 16px;
+  border-radius: var(--radius);
+  background: #fff;
+  border: 1px solid rgba(180,196,217,0.55);
+  box-shadow: var(--shadow-sm);
+}
+.panel-title{
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* KPI cards (fallback) */
+.kpi{
+  border-radius: 18px;
+  border: 1px solid rgba(180,196,217,0.55);
+  background: #fff;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.delta-chip-row{display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 4px;}
+.delta-chip{min-width:170px; flex:1 1 170px; padding:10px 12px; border-radius:16px; border:1px solid rgba(11,31,51,.08);
+  background: rgba(235,238,242,.55); box-shadow: 0 8px 20px rgba(11,31,51,.06);}
+.delta-chip .l{font-size:12px; color: var(--muted); font-weight:800; letter-spacing:-.01em;}
+.delta-chip .v{margin-top:2px; font-size:16px; font-weight:900; letter-spacing:-.02em; font-family: var(--font-display);}
+.delta-chip.pos .v{color: var(--pos);}
+.delta-chip.neg .v{color: var(--neg);}
+.delta-chip.zero .v{color: #0B1F33;}
+.kpi .t{ font-size: 13px; color: var(--muted); font-weight: 800; }
+.kpi .v{ font-size: 22px; font-weight: 900; margin-top: 6px; }
+.kpi .d{ font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+/* Buttons: subtle rounding */
 .stButton > button, .stDownloadButton > button{
   border-radius: 14px !important;
-  border: 1px solid rgba(26,28,32,0.10) !important;
-  box-shadow: 0 8px 18px rgba(16,24,40,0.06) !important;
 }
+
+.stApp{ background:#ffffff; }
+
+html, body { background:#ffffff; }
 </style>
 """
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
-# -----------------------------
-# Web-app style navigation (fixed left nav + query-param routing)
-# -----------------------------
-NAV_ITEMS = [
-    ("overview", "요약", "🏠"),
-    ("budget", "예산/잔액", "💳"),
-    ("campaign", "캠페인", "📣"),
-    ("keyword", "키워드", "🔎"),
-    ("ad", "소재", "🧩"),
-    ("settings", "설정", "⚙️"),
-]
-
-def _get_query_param(name: str, default: str) -> str:
-    """Compatible with both st.query_params and experimental query params."""
-    try:
-        qp = st.query_params  # type: ignore[attr-defined]
-        v = qp.get(name, default)
-        if isinstance(v, list):
-            v = v[0] if v else default
-        return str(v) if v else default
-    except Exception:
-        try:
-            qp = st.experimental_get_query_params()
-            v = qp.get(name, [default])
-            return str(v[0]) if v else default
-        except Exception:
-            return default
-
-def get_nav_page(default: str = "overview") -> str:
-    slug = _get_query_param("p", default).strip() or default
-    allowed = {k for k, _, _ in NAV_ITEMS}
-    return slug if slug in allowed else default
-
-def render_app_nav(active_slug: str) -> None:
-    items_html = []
-    for slug, label, ico in NAV_ITEMS:
-        active = "active" if slug == active_slug else ""
-        items_html.append(
-            f"<a class='nav-item {active}' href='?p={slug}'>"
-            f"<span class='nav-ico'>{ico}</span><span>{label}</span></a>"
-        )
-    nav_html = f"""
-    <nav class="app-nav">
-      <div class="brand">
-        <div>
-          <div class="b1">DA Ads</div>
-          <div class="b2">Naver Search Dashboard</div>
-        </div>
-        <div class="b2">{BUILD_TAG}</div>
-      </div>
-      <div class="nav-group">
-        {''.join(items_html)}
-      </div>
-      <div style="margin-top:auto; padding:10px; font-size:12px; color:rgba(26,28,32,0.50); font-weight:700;">
-        Tip: 좌측 메뉴로 이동 · 상단에서 필터 적용
-      </div>
-    </nav>
-    """
-    nav_html = "\n".join([ln.strip() for ln in nav_html.splitlines() if ln.strip()])
-    st.markdown(nav_html, unsafe_allow_html=True)
-
-
-
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
-    """Top bar (web-app style): title + data freshness chips."""
+    """
+    상단 히어로(타이틀 + 데이터 최신일) 영역
+    - Pretendard/White UI 표시는 숨김
+    - Markdown 파서 이슈로 </div> 등이 노출되는 현상을 막기 위해, 빈 줄을 제거한 HTML을 렌더링
+    """
     latest = latest or {}
 
-    def _chip(label: str, dt: Optional[str]) -> str:
+    def _pill(label: str, dt: Optional[str], ok: bool = True) -> str:
         dt_txt = (dt or "—").strip()
-        return f"<span class='chip'><span class='dot'></span>{label}: {dt_txt}</span>"
+        dot_cls = "on" if ok else "off"
+        return f"<div class='pill'><span class='dot {dot_cls}'></span>{label}: {dt_txt}</div>"
 
-    chips = "".join(
-        [
-            _chip("캠페인", latest.get("campaign_dt") or latest.get("campaign")),
-            _chip("키워드", latest.get("keyword_dt") or latest.get("keyword")),
-            _chip("소재", latest.get("ad_dt") or latest.get("ad")),
-            _chip("비즈머니", latest.get("bizmoney_dt") or latest.get("bizmoney")),
-        ]
-    )
+    # Backward-compatible: accept either '*_dt' keys or legacy keys.
+    freshness_pills = "\n".join([
+        _pill("캠페인 최신", latest.get("campaign_dt") or latest.get("campaign")),
+        _pill("키워드 최신", latest.get("keyword_dt") or latest.get("keyword")),
+        _pill("소재 최신", latest.get("ad_dt") or latest.get("ad")),
+        _pill("비즈머니 최신", latest.get("bizmoney_dt") or latest.get("bizmoney")),
+    ])
 
-    bar = f"""
-    <div class="card topbar">
-      <div>
-        <div class="title">네이버 검색광고 통합 대시보드</div>
-        <div class="subtle">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 확인합니다.</div>
+    hero_html = f"""
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-kicker">NAVER SEARCH ADS · DASHBOARD</div>
+        <div class="hero-title">네이버 검색광고 통합 대시보드</div>
+        <div class="hero-sub">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
+        <div class="hero-badges">
+          <span class="badge">빌드: {build_tag}</span>
+        </div>
       </div>
-      <div style="text-align:right;">
-        <div class="chips">{chips}</div>
-        <div class="subtle" style="margin-top:6px;">Build · {build_tag}</div>
+
+      <div class="hero-right">
+        <div class="freshness-title">DATA FRESHNESS</div>
+        <div class="freshness-pills">
+          {freshness_pills}
+        </div>
       </div>
     </div>
     """
-    bar = "\n".join([ln.strip() for ln in bar.splitlines() if ln.strip()])
-    st.markdown(bar, unsafe_allow_html=True)
-
+    # ⚠️ Streamlit markdown의 HTML 블록 규칙 때문에 빈 줄이 있으면 일부 닫는 태그가 텍스트로 노출될 수 있음
+    hero_html = "\n".join([ln.strip() for ln in hero_html.splitlines() if ln.strip()])
+    st.markdown(hero_html, unsafe_allow_html=True)
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
     """Pretty KPI card. Uses shadcn-ui if installed, otherwise HTML card."""
@@ -1142,8 +1079,8 @@ def render_data_freshness(engine) -> None:
 
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
-    """Top filter panel (web-app style).
-    - '적용'을 누르기 전까지는 조회 쿼리를 거의 실행하지 않습니다.
+    """Filters live in the sidebar to keep the main report clean.
+    '적용'을 누르기 전까지는 조회 쿼리를 거의 실행하지 않습니다.
     """
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
@@ -1171,135 +1108,116 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     fa = dict(st.session_state.get("filters_applied", defaults))
 
     # -----------------------------
-    # Top filter panel (expander + form)
+    # Sidebar UI
     # -----------------------------
-    with st.expander("🔎 필터", expanded=not bool(st.session_state.get("filters_ready", False))):
-        st.caption("필터 변경 후 **적용**을 눌러야 조회가 시작됩니다. (속도 최적화)")
+    with st.sidebar:
+        st.markdown("### 🔎 필터")
+        st.caption("필터 변경 후 **적용**을 눌러야 조회가 시작됩니다.")
 
-        with st.form("filters_form", clear_on_submit=False):
-            c1, c2, c3 = st.columns([1.2, 1.0, 1.0], gap="small")
+        q = st.text_input(
+            "업체명 검색",
+            value=fa.get("q", ""),
+            placeholder="예: 실리콘플러스",
+        )
 
-            with c1:
-                q = st.text_input(
-                    "업체명 검색",
-                    value=fa.get("q", ""),
-                    placeholder="예: 실리콘플러스",
-                    key="f_q",
-                )
+        manager_opts = sorted(
+            [x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
+        )
+        manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []))
 
-            manager_opts = sorted(
-                [x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
+        # 업체 옵션은 '담당자 선택'에 따라 좁혀서 보여줌
+        meta_for_opts = meta.copy()
+        if manager_sel:
+            meta_for_opts = meta_for_opts[
+                meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])
+            ]
+        account_opts_all = sorted(
+            [
+                x
+                for x in meta_for_opts.get("account_name", pd.Series(dtype=str))
+                .dropna()
+                .astype(str)
+                .map(str.strip)
+                .unique()
+                .tolist()
+                if x
+            ]
+        )
+        # 업체명 검색(q) 반영
+        account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
+
+        # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
+        if "tmp_acc_sel" in st.session_state:
+            st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
+
+        _default_accounts = [a for a in fa.get("account", []) if a in account_opts]
+        if "tmp_acc_sel" not in st.session_state:
+            st.session_state["tmp_acc_sel"] = _default_accounts
+
+        account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
+
+        type_sel = tuple(
+            st.multiselect(
+                "캠페인 유형",
+                type_opts or [],
+                default=list(fa.get("type_sel", tuple())),
             )
-            with c2:
-                manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []), key="f_mgr")
+        )
 
-            # 업체 옵션은 '담당자 선택'에 따라 좁혀서 보여줌
-            meta_for_opts = meta.copy()
-            if manager_sel:
-                meta_for_opts = meta_for_opts[
-                    meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])
-                ]
+        period_mode = st.selectbox(
+            "기간",
+            ["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
+            index=["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(
+                fa.get("period_mode", "어제")
+            ),
+        )
 
-            account_opts_all = sorted(
-                [
-                    x
-                    for x in meta_for_opts.get("account_name", pd.Series(dtype=str))
-                    .dropna()
-                    .astype(str)
-                    .map(str.strip)
-                    .unique()
-                    .tolist()
-                    if x
-                ]
+        if period_mode == "오늘":
+            d1 = today
+            d2 = today
+        elif period_mode == "최근 7일(오늘 제외)":
+            d2 = today - timedelta(days=1)
+            d1 = d2 - timedelta(days=6)
+        elif period_mode == "이번 달":
+            d1 = today.replace(day=1)
+            d2 = today
+        elif period_mode == "지난 달":
+            first_this = today.replace(day=1)
+            last_prev = first_this - timedelta(days=1)
+            d1 = last_prev.replace(day=1)
+            d2 = last_prev
+        elif period_mode == "최근 3일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=2)
+        elif period_mode == "최근 7일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=6)
+        elif period_mode == "최근 30일":
+            d2 = default_end
+            d1 = d2 - timedelta(days=29)
+        elif period_mode == "직접 선택":
+            d1d2 = st.date_input(
+                "기간 선택",
+                value=(fa.get("d1", default_start), fa.get("d2", default_end)),
             )
-
-            # 업체명 검색(q) 반영
-            account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
-
-            # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
-            if "tmp_acc_sel" in st.session_state:
-                st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
-
-            _default_accounts = [a for a in fa.get("account", []) if a in account_opts]
-            if "tmp_acc_sel" not in st.session_state:
-                st.session_state["tmp_acc_sel"] = _default_accounts
-
-            with c3:
-                account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
-
-            c4, c5 = st.columns([1.0, 1.0], gap="small")
-            with c4:
-                type_sel = tuple(
-                    st.multiselect(
-                        "캠페인 유형",
-                        type_opts or [],
-                        default=list(fa.get("type_sel", tuple())),
-                        key="f_type",
-                    )
-                )
-
-            with c5:
-                period_mode = st.selectbox(
-                    "기간",
-                    ["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
-                    index=["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(
-                        fa.get("period_mode", "어제")
-                    ),
-                    key="f_period_mode",
-                )
-
-            if period_mode == "오늘":
-                d1, d2 = today, today
-            elif period_mode == "최근 7일(오늘 제외)":
-                d2 = today - timedelta(days=1)
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "이번 달":
-                d1 = today.replace(day=1)
-                d2 = today
-            elif period_mode == "지난 달":
-                first_this = today.replace(day=1)
-                last_prev = first_this - timedelta(days=1)
-                d1 = last_prev.replace(day=1)
-                d2 = last_prev
-            elif period_mode == "최근 3일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=2)
-            elif period_mode == "최근 7일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일":
-                d2 = default_end
-                d1 = d2 - timedelta(days=29)
-            elif period_mode == "직접 선택":
-                d1d2 = st.date_input(
-                    "기간 선택",
-                    value=(fa.get("d1", default_start), fa.get("d2", default_end)),
-                    key="f_date_range",
-                )
-                if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
-                    d1, d2 = d1d2[0], d1d2[1]
-                else:
-                    d1, d2 = default_start, default_end
+            if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
+                d1, d2 = d1d2[0], d1d2[1]
             else:
                 d1, d2 = default_start, default_end
+        else:
+            d1, d2 = default_start, default_end
 
-            with st.expander("⚙️ 고급", expanded=False):
-                c6, c7, c8, c9 = st.columns([1, 1, 1, 1], gap="small")
-                with c6:
-                    top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50, key="f_top_kw")
-                with c7:
-                    top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50, key="f_top_ad")
-                with c8:
-                    top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50, key="f_top_cp")
-                with c9:
-                    prefetch_warm = st.checkbox(
-                        "빠른 전환(미리 로딩)",
-                        value=bool(fa.get("prefetch_warm", True)),
-                        help="적용을 누를 때 캠페인/키워드/소재 데이터를 미리 불러와서 탭 전환이 빠르게 됩니다.",
-                        key="f_prefetch",
-                    )
+        with st.expander("⚙️ 고급", expanded=False):
+            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50)
+            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50)
+            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50)
+            prefetch_warm = st.checkbox(
+                "빠른 전환(미리 로딩)",
+                value=bool(fa.get("prefetch_warm", True)),
+                help="적용을 누를 때 캠페인/키워드/소재 데이터를 미리 불러와서 탭 전환이 빠르게 됩니다.",
+            )
 
-            apply_btn = st.form_submit_button("적용", use_container_width=True)
+        apply_btn = st.button("적용", use_container_width=True)
 
     if apply_btn:
         st.session_state["filters_ready"] = True
@@ -1317,7 +1235,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             "prefetch_warm": prefetch_warm,
         }
 
-        # ✅ 탭/페이지 전환 속도 개선: 적용 시 데이터 미리 로딩(캐시 워밍)
+        # ✅ 탭 전환 속도 개선: 적용 시 데이터 미리 로딩(캐시 워밍)
         if prefetch_warm and engine is not None:
             try:
                 with st.spinner("빠른 전환을 위해 데이터를 미리 불러오는 중..."):
@@ -1367,6 +1285,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
     f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
     return f
+
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
 def query_campaign_topn(
@@ -2835,7 +2754,7 @@ def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
             <span class="badge b-gray">기간 {period}</span>
             <span class="badge b-gray">유형 {type_txt}</span>
           </div>
-          <div style="font-size:12px; color: rgba(2,8,23,0.55);">상단 필터에서 조건을 바꿀 수 있어요</div>
+          <div style="font-size:12px; color: rgba(2,8,23,0.55);">왼쪽 사이드바에서 필터를 바꿀 수 있어요</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3738,63 +3657,331 @@ def page_settings(engine) -> None:
             st.error(f"동기화 실패: {e}")
 
 
+
 # -----------------------------
-# Main
+# Webapp Shell (v8.1 UI Overhaul)
+# -----------------------------
+BRAND = {
+    "bg": "#F6F8FC",
+    "panel": "#FFFFFF",
+    "text": "#1A1C20",
+    "muted": "rgba(26,28,32,0.62)",
+    "line": "rgba(0,0,0,0.08)",
+    "primary": "#335CFF",
+    "cyan": "#5BDAFF",
+    "good": "#16A34A",
+    "bad": "#EF4444",
+}
+
+def inject_webapp_shell() -> None:
+    st.set_page_config(
+        page_title="네이버 검색광고 통합 대시보드",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    st.markdown(
+        f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+html, body, [class*="css"] {{
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", Arial, sans-serif !important;
+}}
+/* Hide Streamlit chrome */
+#MainMenu {{visibility: hidden;}}
+footer {{visibility: hidden;}}
+header {{visibility: hidden;}}
+
+/* App background */
+.stApp {{
+  background: {BRAND["bg"]};
+}}
+
+/* Layout paddings */
+.block-container {{
+  padding-top: 18px;
+  padding-bottom: 28px;
+  max-width: 1320px;
+}}
+
+/* Left nav */
+.da-nav {{
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  bottom: 16px;
+  width: 240px;
+  background: {BRAND["panel"]};
+  border: 1px solid {BRAND["line"]};
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+  padding: 14px 12px;
+  z-index: 1000;
+}}
+.da-nav .brand {{
+  display:flex; align-items:center; gap:10px;
+  padding: 10px 10px 12px 10px;
+}}
+.da-nav .logo {{
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, {BRAND["primary"]}, {BRAND["cyan"]});
+}}
+.da-nav .title {{
+  font-weight: 800; color: {BRAND["text"]}; font-size: 14px; line-height: 1.1;
+}}
+.da-nav .sub {{
+  color: {BRAND["muted"]}; font-size: 12px; margin-top: 2px;
+}}
+.da-nav a {{
+  text-decoration:none;
+}}
+.da-nav .item {{
+  display:flex; align-items:center; gap:10px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  color: {BRAND["text"]};
+  font-weight: 700;
+  font-size: 13px;
+  margin: 4px 0;
+}}
+.da-nav .item:hover {{
+  background: rgba(51,92,255,0.08);
+}}
+.da-nav .item.active {{
+  background: rgba(51,92,255,0.12);
+  border: 1px solid rgba(51,92,255,0.18);
+}}
+.da-nav .dot {{
+  width: 8px; height: 8px; border-radius: 99px;
+  background: rgba(26,28,32,0.22);
+}}
+.da-nav .item.active .dot {{
+  background: {BRAND["primary"]};
+}}
+
+.da-content {{
+  margin-left: 264px;
+}}
+
+/* Topbar */
+.da-top {{
+  background: {BRAND["panel"]};
+  border: 1px solid {BRAND["line"]};
+  border-radius: 18px;
+  padding: 14px 16px;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.05);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+}}
+.da-top .l1 {{
+  font-size: 18px;
+  font-weight: 900;
+  color: {BRAND["text"]};
+}}
+.da-top .l2 {{
+  font-size: 12px;
+  color: {BRAND["muted"]};
+  margin-top: 2px;
+}}
+.da-chips {{
+  display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end;
+}}
+.da-chip {{
+  display:inline-flex; align-items:center; gap:6px;
+  border: 1px solid {BRAND["line"]};
+  background: rgba(255,255,255,0.75);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: {BRAND["text"]};
+  font-weight: 700;
+}}
+.da-chip .pill {{
+  width: 8px; height: 8px; border-radius: 99px;
+  background: rgba(26,28,32,0.22);
+}}
+.da-chip.ok .pill {{ background: {BRAND["primary"]}; }}
+.da-chip.warn .pill {{ background: {BRAND["bad"]}; }}
+
+/* KPI Cards */
+.da-grid {{
+  display:grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 12px;
+}}
+.da-card {{
+  background: {BRAND["panel"]};
+  border: 1px solid {BRAND["line"]};
+  border-radius: 18px;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.05);
+  padding: 14px 14px 12px 14px;
+}}
+.da-kpi .k {{
+  font-size: 12px;
+  color: {BRAND["muted"]};
+  font-weight: 700;
+}}
+.da-kpi .v {{
+  margin-top: 6px;
+  font-size: 26px;
+  font-weight: 900;
+  color: {BRAND["text"]};
+  letter-spacing: -0.4px;
+}}
+.da-kpi .d {{
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}}
+.da-delta.up {{ color: {BRAND["good"]}; }}
+.da-delta.down {{ color: {BRAND["bad"]}; }}
+.da-delta.flat {{ color: {BRAND["muted"]}; }}
+
+/* Section header */
+.da-h {{
+  font-size: 14px;
+  font-weight: 900;
+  color: {BRAND["text"]};
+  margin: 10px 0 8px 0;
+}}
+.da-help {{
+  color: {BRAND["muted"]};
+  font-size: 12px;
+}}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+def _qp_get(name: str, default: str) -> str:
+    # Streamlit v1.32+ uses st.query_params
+    try:
+        val = st.query_params.get(name, default)  # type: ignore[attr-defined]
+        if isinstance(val, list):
+            return val[0] if val else default
+        return str(val)
+    except Exception:
+        qp = st.experimental_get_query_params()
+        return qp.get(name, [default])[0]
+
+def _qp_set(**kwargs) -> None:
+    try:
+        for k,v in kwargs.items():
+            st.query_params[k] = v  # type: ignore[attr-defined]
+    except Exception:
+        st.experimental_set_query_params(**kwargs)
+
+def render_left_nav(active: str) -> None:
+    items = [
+        ("overview", "요약", "📌"),
+        ("budget", "예산/잔액", "💳"),
+        ("campaign", "캠페인", "🧭"),
+        ("keyword", "키워드", "🔎"),
+        ("ad", "소재", "🧩"),
+        ("settings", "설정", "⚙️"),
+    ]
+    links = []
+    for key, label, icon in items:
+        cls = "item active" if key == active else "item"
+        links.append(f'<a href="?p={key}"><div class="{cls}"><div class="dot"></div><div>{icon} {label}</div></div></a>')
+    st.markdown(
+        f"""
+<div class="da-nav">
+  <div class="brand">
+    <div class="logo"></div>
+    <div>
+      <div class="title">네이버 검색광고<br/>통합 대시보드</div>
+      <div class="sub">보고서·예산·잔액을 한눈에</div>
+    </div>
+  </div>
+  <div style="height:8px;"></div>
+  {''.join(links)}
+  <div style="position:absolute; left:12px; right:12px; bottom:12px; color:{BRAND["muted"]}; font-size:11px;">
+    Build: v8.1 • UI Overhaul
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+def render_topbar(latest: Dict[str, Optional[str]]) -> None:
+    def chip(label: str, v: Optional[str]) -> str:
+        if not v or v == "—":
+            return f'<span class="da-chip warn"><span class="pill"></span>{label}: —</span>'
+        return f'<span class="da-chip ok"><span class="pill"></span>{label}: {v}</span>'
+    chips = [
+        chip("캠페인", latest.get("campaign")),
+        chip("키워드", latest.get("keyword")),
+        chip("소재", latest.get("ad")),
+        chip("비즈머니", latest.get("bizmoney")),
+    ]
+    st.markdown(
+        f"""
+<div class="da-top">
+  <div>
+    <div class="l1">네이버 검색광고 통합 대시보드</div>
+    <div class="l2">예산·잔액·캠페인·키워드·소재 성과를 한 화면에서 확인합니다.</div>
+  </div>
+  <div class="da-chips">
+    {''.join(chips)}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+# -----------------------------
+# Main (v8.1)
 # -----------------------------
 def main():
-    try:
-        engine = get_engine()
-        latest = get_latest_dates(engine)
-    except Exception as e:
-        render_hero(None)
-        st.error(str(e))
-        return
+    inject_webapp_shell()
 
-    render_hero(latest)
+    # Route
+    page = _qp_get("p", "overview")
+    render_left_nav(page)
 
-    meta = get_meta(engine)
-    if meta is None or meta.empty:
-        st.error("dim_account_meta가 비어있습니다. 설정/연결에서 accounts.xlsx 동기화를 먼저 해주세요.")
-        return
+    # Content wrapper (left margin)
+    st.markdown('<div class="da-content">', unsafe_allow_html=True)
 
-    dim_campaign = load_dim_campaign(engine)
-    type_opts = get_campaign_type_options(dim_campaign)
+    # DB
+    engine = get_engine()
+    latest = get_latest_dates(engine)
 
-    f = build_filters(meta, type_opts, engine)
+    # Topbar
+    render_topbar(latest)
 
+    # Filters (kept, but moved out of sidebar)
+    with st.expander("필터/기간 설정", expanded=False):
+        meta = get_meta(engine)
+        f = render_filters_inline(meta) if "render_filters_inline" in globals() else render_filters(meta)
+        st.caption("필터 변경 시 데이터가 다시 조회됩니다. 속도 개선을 위해 필요한 범위만 좁혀서 보세요.")
+    # Fallback if filter helpers didn't exist:
+    if "f" not in locals():
+        meta = get_meta(engine)
+        f = render_filters(meta)
 
-    # Main area: compact filter summary (keeps the report clean)
-
-    render_filter_summary_bar(f, meta)
-
-    if not f.get('ready', False):
-        st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
-
-    
-    page_slug = get_nav_page()
-    render_app_nav(page_slug)
-
-    # Main area: compact filter summary
-    render_filter_summary_bar(f, meta)
-
-    if not f.get("ready", False):
-        st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
-
-    st.divider()
-
-    if page_slug == "overview":
+    # Pages (only active page is executed → speed)
+    if page == "overview":
         page_overview(meta, engine, f)
-    elif page_slug == "budget":
+    elif page == "budget":
         page_budget(meta, engine, f)
-    elif page_slug == "campaign":
+    elif page == "campaign":
         page_perf_campaign(meta, engine, f)
-    elif page_slug == "keyword":
+    elif page == "keyword":
         page_perf_keyword(meta, engine, f)
-    elif page_slug == "ad":
+    elif page == "ad":
         page_perf_ad(meta, engine, f)
+    elif page == "settings":
+        page_settings(meta, engine)
     else:
-        page_settings(engine)
+        st.info("페이지를 찾을 수 없습니다.")
+        _qp_set(p="overview")
+        st.stop()
 
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
