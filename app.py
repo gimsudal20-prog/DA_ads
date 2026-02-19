@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.7.7)
+app.py - 네이버 검색광고 통합 대시보드 (v7.8.5)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.3 (2026-02-19)'
+BUILD_TAG = 'v7.8.5 (2026-02-19)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -856,19 +856,21 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
 # -----------------------------
 @st.cache_data(ttl=600, show_spinner=False)
 def query_latest_dates(_engine) -> Dict[str, str]:
+    """최근 적재일을 반환합니다.
+
+    ✅ 안정성 개선 (v7.8.5)
+    - Inspector(table_exists)는 간헐적으로 실패/지연될 수 있어서,
+      테이블 존재 체크 없이 MAX(dt) 조회를 시도하고 예외를 무시합니다.
+    """
     tables = ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]
-    parts = []
+    out: Dict[str, str] = {}
     for t in tables:
-        if table_exists(_engine, t):
-            parts.append(f"SELECT '{t}' AS t, MAX(dt) AS mx FROM {t}")
-    if not parts:
-        return {}
-    sql = " UNION ALL ".join(parts)
-    df = sql_read(_engine, sql)
-    out = {}
-    if df is not None and not df.empty:
-        for _, r in df.iterrows():
-            out[str(r["t"])] = str(r["mx"])[:10] if r["mx"] is not None else "-"
+        try:
+            df = sql_read(_engine, f"SELECT MAX(dt) AS mx FROM {t}")
+            mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
+            out[str(t)] = str(mx)[:10] if mx is not None else "-"
+        except Exception:
+            continue
     return out
 
 
@@ -914,8 +916,6 @@ def get_latest_dates(_engine) -> dict:
 
     for k, table, col in checks:
         try:
-            if not table_exists(_engine, table):
-                continue
             df = sql_read(_engine, f"SELECT MAX({col}) AS mx FROM {table}")
             mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
             v = _fmt(mx)
@@ -953,7 +953,7 @@ def render_data_freshness(engine) -> None:
     ui_badges_or_html(items, key="freshness_badges")
 
 
-def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
+def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
     default_start = default_end
@@ -1059,6 +1059,12 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
             top_n_ad = st.slider("소재 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_ad", 200)), step=50)
             top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(st.session_state["filters_applied"].get("top_n_campaign", 200)), step=50)
 
+            prefetch_warm = st.checkbox(
+                "빠른 전환(미리 로딩)",
+                value=True,
+                help="적용을 누를 때 캠페인/키워드/소재 데이터를 미리 불러와서 탭 전환이 빠르게 됩니다.",
+            )
+
         apply_btn = st.button("적용", use_container_width=True)
 
     if apply_btn:
@@ -1075,6 +1081,38 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str]) -> Dict:
             "top_n_ad": top_n_ad,
             "top_n_campaign": top_n_campaign,
         }
+
+        # ✅ 탭 전환 속도 개선: 적용 시 데이터 미리 로딩(캐시 워밍)
+        if prefetch_warm and engine is not None:
+            try:
+                with st.spinner("빠른 전환을 위해 데이터를 미리 불러오는 중..."):
+                    _df = meta.copy()
+                    if manager_sel:
+                        _df = _df[_df["manager"].isin(manager_sel)]
+                    if account_sel:
+                        _df = _df[_df["account_name"].isin(account_sel)]
+                    q_ = str(q).strip() if q is not None else ""
+                    if q_:
+                        _df = _df[_df["account_name"].astype(str).str.contains(q_, case=False, na=False)]
+                    _cids = tuple(_df["customer_id"].dropna().astype(int).tolist()) if len(_df) < len(meta) else tuple()
+
+                    _type_sel = tuple(type_sel or tuple())
+                    _d1, _d2 = d1, d2
+
+                    # 캠페인
+                    query_campaign_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_campaign), top_k=5)
+                    query_campaign_timeseries(engine, _d1, _d2, _cids, _type_sel)
+
+                    # 키워드
+                    query_keyword_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_keyword))
+                    query_keyword_timeseries(engine, _d1, _d2, _cids, _type_sel)
+
+                    # 소재
+                    query_ad_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_ad), top_k=5)
+                    query_ad_timeseries(engine, _d1, _d2, _cids, _type_sel)
+            except Exception:
+                # 워밍 실패해도 본 조회는 계속
+                pass
 
     f = dict(st.session_state.get("filters_applied", defaults))
     f["start"] = f.get("d1", default_start)
@@ -2116,6 +2154,7 @@ def query_ad_bundle(
 
     return df.reset_index(drop=True)
 
+@st.cache_data(ttl=300, show_spinner=False)
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -3461,7 +3500,7 @@ def main():
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
 
-    f = build_filters(meta, type_opts)
+    f = build_filters(meta, type_opts, engine)
 
     if not f.get('ready', False):
         st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
