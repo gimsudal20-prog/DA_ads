@@ -2,6 +2,7 @@
 """
 collect_bizmoney.py - 네이버 검색광고 비즈머니(잔액) 전용 수집기
 - 수정사항: JSON 키 값 대소문자 수정 (bizMoney -> bizmoney)
+- 수정사항: 수집 대상 계정 목록을 dim_account가 아닌 dim_account_meta에서 가져오도록 수정
 """
 
 import os
@@ -53,7 +54,6 @@ def get_bizmoney(customer_id):
         
         if r.status_code == 200:
             data = r.json()
-            # ✅ [수정] 대소문자 수정: bizMoney -> bizmoney
             balance = int(data.get("bizmoney", 0))
             return balance
         else:
@@ -83,11 +83,12 @@ def main():
             )
         """))
 
-    # 수집 대상 계정 가져오기 (dim_account 테이블 활용)
+    # 수집 대상 계정 가져오기 (dim_account_meta 테이블 활용)
     accounts = []
     try:
         with engine.connect() as conn:
-            rows = conn.execute(text("SELECT customer_id, account_name FROM dim_account")).fetchall()
+            # ✅ dim_account 대신 최신 동기화 테이블인 dim_account_meta에서 읽어오도록 수정
+            rows = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta")).fetchall()
             accounts = [{"id": str(r[0]), "name": r[1]} for r in rows]
     except Exception:
         pass
