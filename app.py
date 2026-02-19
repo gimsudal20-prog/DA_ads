@@ -79,7 +79,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = 'v7.8.2 (2026-02-19)'
+BUILD_TAG = 'v7.8.3 (2026-02-19)'
 
 # -----------------------------
 # Thresholds (Budget)
@@ -303,16 +303,19 @@ def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     - Pretendard/White UI 표시는 숨김
     - Markdown 파서 이슈로 </div> 등이 노출되는 현상을 막기 위해, 빈 줄을 제거한 HTML을 렌더링
     """
+    latest = latest or {}
+
     def _pill(label: str, dt: Optional[str], ok: bool = True) -> str:
         dt_txt = (dt or "—").strip()
         dot_cls = "on" if ok else "off"
         return f"<div class='pill'><span class='dot {dot_cls}'></span>{label}: {dt_txt}</div>"
 
+    # Backward-compatible: accept either '*_dt' keys or legacy keys.
     freshness_pills = "\n".join([
-        _pill("캠페인 최신", latest.get("campaign_dt")),
-        _pill("키워드 최신", latest.get("keyword_dt")),
-        _pill("소재 최신", latest.get("ad_dt")),
-        _pill("비즈머니 최신", latest.get("bizmoney_dt")),
+        _pill("캠페인 최신", latest.get("campaign_dt") or latest.get("campaign")),
+        _pill("키워드 최신", latest.get("keyword_dt") or latest.get("keyword")),
+        _pill("소재 최신", latest.get("ad_dt") or latest.get("ad")),
+        _pill("비즈머니 최신", latest.get("bizmoney_dt") or latest.get("bizmoney")),
     ])
 
     hero_html = f"""
@@ -872,21 +875,56 @@ def query_latest_dates(_engine) -> Dict[str, str]:
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
-    """Return latest dates for key tables (as YYYY-MM-DD strings)."""
-    out = {"campaign": "-", "keyword": "-", "ad": "-", "bizmoney": "-"}
+    """Return latest dates for key tables (as YYYY-MM-DD strings).
+
+    NOTE:
+    - render_hero() expects keys like campaign_dt/keyword_dt/ad_dt/bizmoney_dt.
+    - For backward compatibility, legacy keys (campaign/keyword/ad/bizmoney) are also returned.
+    """
+
+    def _fmt(mx) -> str:
+        if mx is None:
+            return "—"
+        s = str(mx)
+        if not s.strip():
+            return "—"
+        if s in {"NaT", "nan", "None"}:
+            return "—"
+        return s[:10] if len(s) >= 10 else s
+
+    # default
+    out = {
+        "campaign_dt": "—",
+        "keyword_dt": "—",
+        "ad_dt": "—",
+        "bizmoney_dt": "—",
+        # legacy
+        "campaign": "—",
+        "keyword": "—",
+        "ad": "—",
+        "bizmoney": "—",
+    }
+
     checks = [
         ("campaign", "fact_campaign_daily", "dt"),
         ("keyword", "fact_keyword_daily", "dt"),
         ("ad", "fact_ad_daily", "dt"),
         ("bizmoney", "fact_bizmoney_daily", "dt"),
     ]
+
     for k, table, col in checks:
         try:
+            if not table_exists(_engine, table):
+                continue
             df = sql_read(_engine, f"SELECT MAX({col}) AS mx FROM {table}")
             mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
-            out[k] = str(mx)[:10] if mx is not None else "-"
+            v = _fmt(mx)
+            out[k] = v
+            out[f"{k}_dt"] = v
         except Exception:
-            out[k] = "-"
+            # keep defaults
+            continue
+
     return out
 
 
