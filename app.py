@@ -467,6 +467,105 @@ def _sql_in_str_list(values: List[int]) -> str:
 # Download helpers (cached)
 # -----------------------------
 @st.cache_data(show_spinner=False)
+
+
+def _fact_has_sales(engine, fact_table: str) -> bool:
+    """fact 테이블에 sales 컬럼이 있는지(계정별 스키마 차이 대응)."""
+    return "sales" in get_table_columns(engine, fact_table)
+
+
+def query_budget_bundle(
+    _engine,
+    cids: Tuple[int, ...],
+    yesterday: date,
+    avg_d1: date,
+    avg_d2: date,
+    month_d1: date,
+    month_d2: date,
+    avg_days: int,
+) -> pd.DataFrame:
+    """예산/비즈머니/전일소진/최근N일평균/당월소진을 계정 단위로 한 번에 가져옵니다."""
+    if not (
+        table_exists(_engine, "dim_account_meta")
+        and table_exists(_engine, "fact_campaign_daily")
+        and table_exists(_engine, "fact_bizmoney_daily")
+    ):
+        return pd.DataFrame()
+
+    where_cid = ""
+    if cids:
+        where_cid = f"WHERE m.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    sql = f"""
+    WITH meta AS (
+      SELECT customer_id::text AS customer_id, account_name, manager, COALESCE(monthly_budget,0) AS monthly_budget
+      FROM dim_account_meta m
+      {where_cid}
+    ),
+    biz AS (
+      SELECT DISTINCT ON (customer_id::text)
+        customer_id::text AS customer_id,
+        bizmoney_balance,
+        dt AS last_update
+      FROM fact_bizmoney_daily
+      WHERE customer_id::text IN (SELECT customer_id FROM meta)
+      ORDER BY customer_id::text, dt DESC
+    ),
+    camp AS (
+      SELECT
+        customer_id::text AS customer_id,
+        SUM(cost) FILTER (WHERE dt = :y) AS y_cost,
+        SUM(cost) FILTER (WHERE dt BETWEEN :a1 AND :a2) AS avg_sum_cost,
+        SUM(cost) FILTER (WHERE dt BETWEEN :m1 AND :m2) AS month_cost
+      FROM fact_campaign_daily
+      WHERE customer_id::text IN (SELECT customer_id FROM meta)
+        AND dt BETWEEN :min_dt AND :max_dt
+      GROUP BY customer_id::text
+    )
+    SELECT
+      meta.customer_id,
+      meta.account_name,
+      meta.manager,
+      meta.monthly_budget,
+      COALESCE(biz.bizmoney_balance,0) AS bizmoney_balance,
+      biz.last_update,
+      COALESCE(camp.y_cost,0) AS y_cost,
+      COALESCE(camp.avg_sum_cost,0) AS avg_sum_cost,
+      COALESCE(camp.month_cost,0) AS current_month_cost
+    FROM meta
+    LEFT JOIN biz ON meta.customer_id = biz.customer_id
+    LEFT JOIN camp ON meta.customer_id = camp.customer_id
+    ORDER BY meta.account_name
+    """
+
+    min_dt = min(yesterday, avg_d1, month_d1)
+    max_dt = max(yesterday, avg_d2, month_d2)
+
+    df = sql_read(
+        _engine,
+        sql,
+        {
+            "y": str(yesterday),
+            "a1": str(avg_d1),
+            "a2": str(avg_d2),
+            "m1": str(month_d1),
+            "m2": str(month_d2),
+            "min_dt": str(min_dt),
+            "max_dt": str(max_dt),
+        },
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # typing
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    for c in ["monthly_budget", "bizmoney_balance", "y_cost", "avg_sum_cost", "current_month_cost"]:
+        df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0)
+
+    df["avg_cost"] = df["avg_sum_cost"].astype(float) / float(max(avg_days, 1))
+    return df
+
+
 def _df_json_to_csv_bytes(df_json: str) -> bytes:
     df = pd.read_json(io.StringIO(df_json), orient="split")
     return df.to_csv(index=False).encode("utf-8-sig")
