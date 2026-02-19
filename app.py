@@ -85,7 +85,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.2.0 UI Overhaul (2026-02-19)"
+BUILD_TAG = "v8.2.1 UI Overhaul + get_engine fix (2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -383,6 +383,47 @@ hr{ border:none; border-top: 1px solid rgba(0,0,0,.07); }
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
+
+
+
+# -----------------------------
+# DB / Engine helpers
+# -----------------------------
+def _normalize_database_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return url
+    # SQLAlchemy prefers "postgresql://"
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    # Ensure sslmode=require for Supabase / managed Postgres
+    if "sslmode=" not in url:
+        url = url + ("&" if "?" in url else "?") + "sslmode=require"
+    return url
+
+
+def get_database_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        raise RuntimeError("DATABASE_URL 환경변수가 비어있습니다. Streamlit Cloud Secrets에 DATABASE_URL을 설정해주세요.")
+    return _normalize_database_url(url)
+
+
+@st.cache_resource(show_spinner=False)
+def get_engine():
+    """Create SQLAlchemy engine with sane pooling defaults for Streamlit Cloud."""
+    url = get_database_url()
+    pool_size = int(os.getenv("DB_POOL_SIZE", "3"))
+    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+    pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "300"))
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_recycle=pool_recycle,
+    )
+    return engine
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """
