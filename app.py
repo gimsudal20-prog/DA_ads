@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.9.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.9.2)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -47,7 +47,30 @@ load_dotenv()
 # -----------------------------
 # Streamlit cache hashing (Engine)
 # -----------------------------
-_HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
+
+# Streamlit cache는 파라미터를 해시할 때, SQLAlchemy Engine 타입이 환경에 따라
+# Engine/OptionEngine 등으로 달라질 수 있어 UnhashableParamError가 날 수 있습니다.
+# 아래는 '실제 타입'을 동적으로 잡아 hash key를 안정화합니다.
+
+try:
+    _tmp = create_engine('sqlite://', future=True)
+    _ENGINE_T = type(_tmp)
+    _OPT_ENGINE_T = type(_tmp.execution_options())
+except Exception:
+    _ENGINE_T = Engine
+    _OPT_ENGINE_T = Engine
+
+def _hash_engine(e):
+    try:
+        return e.url.render_as_string(hide_password=True)
+    except Exception:
+        return 'engine'
+
+_HASH_FUNCS = {
+    Engine: _hash_engine,
+    _ENGINE_T: _hash_engine,
+    _OPT_ENGINE_T: _hash_engine,
+}
 
 # Altair (charts)
 try:
@@ -85,7 +108,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.9.0 (2026-02-19)"
+BUILD_TAG = "v7.9.2 (2026-02-19)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -419,6 +442,7 @@ def get_database_url() -> str:
     return db_url
 
 
+@st.cache_resource(show_spinner=False)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, future=True)
@@ -936,6 +960,39 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
         conn.execute(text(upsert_meta), acc.to_dict(orient="records"))
 
     return {"meta": int(len(acc))}
+
+
+def maybe_auto_sync_accounts_meta(engine) -> bool:
+    """accounts.xlsx에 있는 계정 목록을 dim_account_meta에 자동 반영(세션당 1회).
+
+    - 기본값: ON (AUTO_SYNC_ACCOUNTS_XLSX=1)
+    - 속도가 걱정되면 환경변수로 끌 수 있음
+    """
+    flag = str(os.environ.get('AUTO_SYNC_ACCOUNTS_XLSX', '1')).strip().lower()
+    if flag not in ('1', 'true', 'yes', 'y', 'on'):
+        return False
+    if not os.path.exists(ACCOUNTS_XLSX):
+        return False
+
+    try:
+        sig = f"{os.path.getmtime(ACCOUNTS_XLSX)}:{os.path.getsize(ACCOUNTS_XLSX)}"
+    except Exception:
+        sig = 'na'
+
+    if st.session_state.get('_accounts_xlsx_sig') == sig:
+        return False
+
+    try:
+        res = seed_from_accounts_xlsx(engine)
+        st.session_state['_accounts_xlsx_sig'] = sig
+        # meta 캐시만 갱신
+        try:
+            get_meta.clear()
+        except Exception:
+            pass
+        return int(res.get('meta', 0)) > 0
+    except Exception:
+        return False
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
@@ -2780,7 +2837,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         ["전일대비", "전주대비", "전월대비"],
         horizontal=True,
         index=1,
-        key="ov_cmp_mode",
+        key="ov_kpi_cmp_mode",
     )
     b1, b2 = _period_compare_range(f["start"], f["end"], cmp_mode)
     base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
@@ -3607,6 +3664,59 @@ def page_settings(engine) -> None:
 
     st.divider()
 
+    st.markdown("### 🧪 비즈머니/DB 진단")
+    try:
+        masked = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", get_database_url())
+        st.code(masked, language='text')
+    except Exception:
+        pass
+
+    if st.button("🔎 fact_bizmoney_daily 확인", use_container_width=True):
+        try:
+            if not table_exists(engine, 'fact_bizmoney_daily'):
+                st.warning('fact_bizmoney_daily 테이블이 없습니다.')
+            else:
+                info = sql_read(engine, """
+                    SELECT
+                      COUNT(*) AS rows,
+                      COUNT(DISTINCT customer_id::text) AS distinct_accounts,
+                      MAX(dt) AS max_dt
+                    FROM fact_bizmoney_daily
+                """)
+                st.write(info)
+
+                recent = sql_read(engine, """
+                    SELECT dt, customer_id::text AS customer_id, bizmoney_balance
+                    FROM fact_bizmoney_daily
+                    ORDER BY dt DESC, customer_id::text
+                    LIMIT 10
+                """)
+                st.dataframe(recent, use_container_width=True, hide_index=True)
+
+                # meta join check
+                if table_exists(engine, 'dim_account_meta'):
+                    miss = sql_read(engine, """
+                        WITH b AS (
+                          SELECT DISTINCT customer_id::text AS customer_id
+                          FROM fact_bizmoney_daily
+                        )
+                        SELECT b.customer_id
+                        FROM b
+                        LEFT JOIN dim_account_meta m ON b.customer_id = m.customer_id::text
+                        WHERE m.customer_id IS NULL
+                        ORDER BY b.customer_id
+                        LIMIT 50
+                    """)
+                    if miss is not None and not miss.empty:
+                        st.warning('비즈머니에는 있는데 meta(dim_account_meta)에 없는 customer_id가 있습니다 → accounts.xlsx 동기화를 실행하세요.')
+                        st.dataframe(miss, use_container_width=True, hide_index=True)
+                    else:
+                        st.success('비즈머니 customer_id가 meta와 매칭됩니다.')
+        except Exception as e:
+            st.error(f'진단 실패: {e}')
+
+    st.divider()
+
     st.markdown("### 🚀 속도 튜닝 (권장 인덱스)")
     st.caption("최초 1회만 실행하면 이후 TOPN/기간 조회가 확 빨라집니다. (권한/정책에 따라 실패할 수 있음)")
 
@@ -3663,6 +3773,8 @@ def page_settings(engine) -> None:
 def main():
     try:
         engine = get_engine()
+        # accounts.xlsx → dim_account_meta 자동 동기화(세션당 1회)
+        maybe_auto_sync_accounts_meta(engine)
         latest = get_latest_dates(engine)
     except Exception as e:
         render_hero(None)
