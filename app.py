@@ -89,7 +89,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.2.1 UI Overhaul + get_engine fix (2026-02-20)"
+BUILD_TAG = "v8.3.0 SaaS UI Overhaul (2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -103,19 +103,13 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 # -----------------------------
 GLOBAL_UI_CSS = """
 <style>
-/* -----------------------------
-   v8.2 · UI Overhaul (SaaS Shell)
-   Palette: #FFFFFF / #F6F8FC / #1A1C20 / #BCC3C9 / Accent #335CFF / Cyan #5BDAFF
-------------------------------*/
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
-
 :root{
   --bg:#F6F8FC;
   --panel:#FFFFFF;
   --text:#1A1C20;
   --muted:rgba(26,28,32,.62);
   --line:rgba(0,0,0,.08);
-  --line2:rgba(0,0,0,.06);
   --shadow:0 10px 30px rgba(16,24,40,.08);
   --shadow2:0 6px 18px rgba(16,24,40,.10);
   --primary:#335CFF;
@@ -125,297 +119,230 @@ GLOBAL_UI_CSS = """
   --warn:#F59E0B;
   --r:18px;
   --r2:14px;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
 }
+html, body, [class*="css"] { font-family: var(--font) !important; }
+body{ background: var(--bg); }
 
-/* Streamlit chrome off */
+/* Streamlit chrome off (keep app canvas only) */
 #MainMenu, footer {visibility:hidden;}
 header {visibility:hidden;}
 div[data-testid="stSidebar"]{display:none;}
-div[data-testid="stToolbar"]{display:none;}
 div[data-testid="stDecoration"]{display:none;}
-div[data-testid="stStatusWidget"]{visibility:hidden;}
-/* Reduce layout jitter */
-html, body, [class*="stApp"] { background: var(--bg) !important; }
-*{ font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, 'Pretendard', sans-serif; }
+/* remove top padding that Streamlit adds */
+div[data-testid="stAppViewContainer"] > .main { padding-top: 0rem; }
 
-/* Main container paddings to make room for fixed nav/topbar */
+/* App shell spacing */
 section.main > div.block-container{
-  max-width: 1460px;
-  padding-top: 92px !important;
-  padding-left: 308px !important;
+  max-width: 1400px;
+  padding-top: 86px !important;     /* topbar height */
+  padding-left: 308px !important;   /* sidenav width */
   padding-right: 28px !important;
-  padding-bottom: 56px !important;
+  padding-bottom: 42px !important;
 }
 
-/* Shell */
+/* Topbar */
 .shell-topbar{
-  position: fixed;
-  top: 14px; left: 18px; right: 18px;
-  height: 62px;
-  border-radius: 22px;
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 72px;
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 0 26px 0 26px;
   background: rgba(255,255,255,.72);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(0,0,0,.06);
-  box-shadow: var(--shadow);
-  z-index: 9998;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding: 0 18px;
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(0,0,0,.06);
+  z-index: 99999;
 }
-.shell-brand{
-  display:flex; align-items:center; gap:12px;
+.shell-brand{ display:flex; align-items:center; gap:12px; }
+.shell-mark{
+  width: 12px; height: 12px; border-radius: 999px;
+  background: linear-gradient(135deg, var(--primary), var(--cyan));
+  box-shadow: 0 0 0 5px rgba(51,92,255,.12);
 }
-.shell-dot{
-  width:12px; height:12px; border-radius:999px;
-  background: var(--primary);
-  box-shadow: 0 0 0 6px rgba(51,92,255,.12);
-}
-.shell-title{
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--text);
-  letter-spacing: -0.02em;
-}
-.shell-sub{
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  margin-top: 1px;
-}
-.shell-right{
-  display:flex; align-items:center; gap:10px;
-}
+.shell-title{ font-size: 15px; font-weight: 900; color: rgba(26,28,32,.92); line-height: 1.1; }
+.shell-sub{ font-size: 12px; font-weight: 700; color: rgba(26,28,32,.55); margin-top: 2px; }
+.shell-right{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .pill{
-  display:inline-flex;
-  align-items:center;
-  gap: 8px;
-  padding: 8px 12px;
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 8px 10px;
   border-radius: 999px;
-  background: rgba(246,248,252,.92);
+  background: rgba(246,248,252,.9);
   border: 1px solid rgba(0,0,0,.06);
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(26,28,32,.76);
+  font-size: 12px; font-weight: 800;
+  color: rgba(26,28,32,.72);
 }
-.pill .dot{
-  width: 8px; height: 8px; border-radius: 999px;
-  background: var(--good);
-  box-shadow: 0 0 0 5px rgba(22,163,74,.12);
-}
-.pill .dot.off{
-  background: var(--warn);
-  box-shadow: 0 0 0 5px rgba(245,158,11,.12);
-}
+.pill .dot{ width:8px; height:8px; border-radius:999px; background: var(--good); }
+.pill .dot.off{ background: rgba(0,0,0,.24); }
 
 /* Side nav */
 .app-nav{
-  position: fixed;
-  top: 88px;
-  left: 18px;
-  width: 268px;
-  bottom: 18px;
-  border-radius: 22px;
+  position: fixed; top: 72px; left: 0; bottom: 0;
+  width: 276px;
+  padding: 18px 16px;
   background: rgba(255,255,255,.78);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(0,0,0,.06);
-  box-shadow: var(--shadow);
-  z-index: 9997;
-  padding: 14px;
-  display:flex;
-  flex-direction:column;
-}
-.nav-section{
-  margin-top: 8px;
-  margin-bottom: 10px;
+  backdrop-filter: blur(16px);
+  border-right: 1px solid rgba(0,0,0,.06);
+  z-index: 99998;
+  display:flex; flex-direction:column; gap: 10px;
 }
 .nav-h{
-  font-size: 11px;
-  font-weight: 800;
-  color: rgba(26,28,32,.52);
-  letter-spacing: .08em;
+  font-size: 11px; font-weight: 900;
+  color: rgba(26,28,32,.42);
+  letter-spacing: .12em;
   text-transform: uppercase;
-  margin: 10px 10px 8px 10px;
+  margin: 10px 10px 6px 10px;
 }
 .nav-item{
-  display:flex;
-  align-items:center;
-  gap: 10px;
-  padding: 10px 12px;
+  display:flex; align-items:center; gap:10px;
+  padding: 12px 12px;
   border-radius: 14px;
-  color: rgba(26,28,32,.84);
-  text-decoration:none;
-  font-weight: 800;
+  color: rgba(26,28,32,.78);
+  text-decoration:none !important;
+  font-weight: 900;
   font-size: 13px;
   border: 1px solid transparent;
 }
-.nav-item:hover{
-  background: rgba(51,92,255,.06);
-  border-color: rgba(51,92,255,.12);
-}
+.nav-item:hover{ background: rgba(51,92,255,.06); border-color: rgba(51,92,255,.12); }
 .nav-item.active{
-  background: rgba(51,92,255,.10);
-  border-color: rgba(51,92,255,.22);
+  background: linear-gradient(135deg, rgba(51,92,255,.14), rgba(91,218,255,.10));
+  border-color: rgba(51,92,255,.18);
   color: rgba(26,28,32,.92);
 }
 .nav-ico{
-  width: 28px;
-  height: 28px;
-  border-radius: 12px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  background: rgba(246,248,252,.90);
+  width: 28px; height: 28px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius: 10px;
+  background: rgba(246,248,252,.9);
   border: 1px solid rgba(0,0,0,.06);
-  color: rgba(26,28,32,.74);
   font-size: 14px;
-}
-.nav-item.active .nav-ico{
-  background: rgba(51,92,255,.14);
-  border-color: rgba(51,92,255,.22);
-  color: rgba(51,92,255,.95);
 }
 .nav-foot{
   margin-top:auto;
-  padding: 10px 10px 4px 10px;
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-}
-.nav-foot .mini{
-  font-size: 11px;
-  color: rgba(26,28,32,.56);
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(246,248,252,.9);
+  border: 1px solid rgba(0,0,0,.06);
+  color: rgba(26,28,32,.62);
+  font-size: 12px;
   font-weight: 700;
 }
 
-/* Cards */
-.card{
-  background: rgba(255,255,255,.92);
-  border: 1px solid rgba(0,0,0,.06);
-  border-radius: var(--r);
-  box-shadow: 0 6px 16px rgba(16,24,40,.06);
-  padding: 14px;
+/* Page header */
+.page-head{
+  display:flex; align-items:flex-end; justify-content:space-between;
+  margin: 8px 0 14px 0;
 }
-
-/* KPI */
-.kpi{
-  background: var(--panel);
-  border: 1px solid rgba(0,0,0,.06);
-  border-radius: 18px;
-  box-shadow: 0 6px 16px rgba(16,24,40,.06);
-  padding: 14px 14px 12px 14px;
-}
-.kpi .t{
-  font-size: 12px;
-  font-weight: 800;
-  color: rgba(26,28,32,.62);
-  letter-spacing: -0.01em;
-}
-.kpi .v{
-  font-size: 26px;
-  font-weight: 900;
-  color: rgba(26,28,32,.94);
-  letter-spacing: -0.03em;
-  margin-top: 6px;
-}
-.kpi .d{
-  margin-top: 10px;
-  display:flex;
-  align-items:center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 800;
-  color: rgba(26,28,32,.60);
-}
-.kpi .delta{
-  display:inline-flex;
-  align-items:center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(0,0,0,.06);
-  background: rgba(246,248,252,.92);
-}
-.kpi .delta.pos{ color: var(--good); }
-.kpi .delta.neg{ color: var(--bad); }
-.kpi .delta.neu{ color: rgba(26,28,32,.64); }
-.kpi .delta.pos{ border-color: rgba(22,163,74,.18); background: rgba(22,163,74,.06); }
-.kpi .delta.neg{ border-color: rgba(239,68,68,.18); background: rgba(239,68,68,.06); }
-
-/* Compare cards (already used) */
-.cmp-card{ background: #FFFFFF; border: 1px solid rgba(0,0,0,0.06); border-radius: 18px; padding: 14px 14px 12px 14px; box-shadow: 0 6px 16px rgba(16,24,40,.06);}
-.cmp-card .k{ font-size: 12px; color: rgba(26,28,32,0.55); line-height: 1.2; margin-bottom: 8px; font-weight: 800;}
-.cmp-card .vv{ font-weight: 900; font-size: 24px; color: rgba(26,28,32,0.92); letter-spacing:-0.02em;}
-.cmp-card .d{ margin-top: 8px; font-size: 12px; color: rgba(26,28,32,0.58); font-weight: 800; display:flex; gap:8px; align-items:center;}
-.cmp-card .d .delta{ padding:4px 8px; border-radius:999px; border:1px solid rgba(0,0,0,.06); background: rgba(246,248,252,.92);}
-.cmp-card.pos .d .delta{ color: var(--good); border-color: rgba(22,163,74,.18); background: rgba(22,163,74,.06); }
-.cmp-card.neg .d .delta{ color: var(--bad); border-color: rgba(239,68,68,.18); background: rgba(239,68,68,.06); }
-.cmp-card.neu .d .delta{ color: rgba(26,28,32,.62); }
-
-/* Widgets */
-div[data-testid="stMetric"]{ background: var(--panel) !important; border: 1px solid rgba(0,0,0,.06); border-radius: 18px; padding: 14px; box-shadow: 0 6px 16px rgba(16,24,40,.06);}
-div[data-testid="stMetric"] label{ color: rgba(26,28,32,.62)!important; font-weight: 800!important;}
-div[data-testid="stMetricValue"]{ font-weight: 900!important; }
-div[data-testid="stMetricDelta"]{ font-weight: 800!important; }
-
-div[data-testid="stExpander"]{ border-radius: 18px; border: 1px solid rgba(0,0,0,.06); background: rgba(255,255,255,.92);}
-div[data-testid="stExpander"] details{ background: transparent; border-radius: 18px;}
-div[data-testid="stExpander"] summary{ font-weight: 900; color: rgba(26,28,32,.88); }
-div[data-testid="stExpander"] summary:hover{ background: rgba(51,92,255,.05); border-radius: 14px;}
-
-button[kind="primary"]{
-  background: var(--primary) !important;
-  border: 1px solid rgba(51,92,255,.22) !important;
-  border-radius: 14px !important;
-  font-weight: 900 !important;
-}
-button[kind="secondary"], button{
-  border-radius: 14px !important;
-  font-weight: 900 !important;
-}
-
-hr{ border:none; border-top: 1px solid rgba(0,0,0,.07); }
-
-/* Responsive */
-@media (max-width: 1280px){
-  section.main > div.block-container{ padding-left: 22px !important; padding-top: 92px !important; }
-  .app-nav{ display:none; }
-}
-
 .page-title{
-  font-size: 24px;
-  font-weight: 900;
-  letter-spacing: -0.03em;
-  color: rgba(26,28,32,.94);
-  margin: 6px 0 2px 0;
+  font-size: 22px;
+  font-weight: 1000;
+  color: rgba(26,28,32,.92);
+  letter-spacing: -0.02em;
 }
 .page-sub{
   font-size: 12px;
-  font-weight: 700;
-  color: rgba(26,28,32,.60);
-  margin: 0 0 10px 0;
+  font-weight: 800;
+  color: rgba(26,28,32,.55);
 }
-.sectionbar{
-  display:flex;
-  align-items:flex-end;
-  justify-content:space-between;
-  gap: 12px;
-  margin: 16px 0 10px 0;
-}
-.sectionbar .h{
-  font-size: 13px;
-  font-weight: 900;
-  color: rgba(26,28,32,.88);
-}
-.sectionbar .s{
+.badge{
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.9);
+  border: 1px solid rgba(0,0,0,.06);
+  box-shadow: 0 8px 24px rgba(16,24,40,.06);
   font-size: 12px;
-  font-weight: 700;
-  color: rgba(26,28,32,.52);
+  font-weight: 900;
+  color: rgba(26,28,32,.72);
 }
-.delta-chip .arr{ font-weight: 900; }
+
+/* Cards / KPI */
+.card{
+  background: var(--panel);
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+.kpi-grid{
+  display:grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin: 8px 0 14px 0;
+}
+.kpi{
+  background: var(--panel);
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 14px 14px 12px 14px;
+}
+.kpi .t{
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 10px;
+}
+.kpi .k{
+  font-size: 12px;
+  font-weight: 900;
+  color: rgba(26,28,32,.56);
+}
+.kpi .v{
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 1000;
+  color: rgba(26,28,32,.92);
+  letter-spacing: -0.02em;
+}
+.delta{
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 1000;
+  border: 1px solid rgba(0,0,0,.06);
+  background: rgba(246,248,252,.9);
+  color: rgba(26,28,32,.62);
+  white-space: nowrap;
+}
+.delta.up{ background: rgba(22,163,74,.12); border-color: rgba(22,163,74,.18); color: rgba(22,163,74,.95); }
+.delta.down{ background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.18); color: rgba(239,68,68,.95); }
+
+/* Streamlit widgets restyle */
+div[data-testid="stPopover"] > div{ border-radius: 14px !important; }
+div[data-testid="stExpander"]{ border-radius: var(--r) !important; border: 1px solid rgba(0,0,0,.06) !important; background: rgba(255,255,255,.85); }
+div[data-testid="stExpander"] summary{ font-weight: 900; }
+
+div[data-testid="stMetric"]{
+  background: var(--panel);
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+/* Dataframe wrapper */
+div[data-testid="stDataFrame"]{
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: var(--r);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+/* Version watermark (debug) */
+#build-watermark{
+  position: fixed;
+  left: 14px;
+  bottom: 12px;
+  z-index: 99999;
+  font-size: 11px;
+  font-weight: 900;
+  color: rgba(26,28,32,.55);
+  background: rgba(255,255,255,.75);
+  border: 1px solid rgba(0,0,0,.06);
+  backdrop-filter: blur(12px);
+  border-radius: 999px;
+  padding: 7px 10px;
+}
 </style>
 """
-
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
@@ -2945,100 +2872,139 @@ def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
     )
 
 
+
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
+    """v8.3 Overview: KPI-first / minimal / arrow deltas."""
     if not f.get("ready", False):
         st.info("상단 '필터'에서 필터를 설정한 뒤 **적용**을 눌러주세요.")
         return
 
-    st.markdown("<div class='page-title'>Overview</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='page-sub'>기간 <b>{f['start']}</b> ~ <b>{f['end']}</b></div>", unsafe_allow_html=True)
-    st.caption(f"기간: {f['start']} ~ {f['end']}")
+    # Header row
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown("<div class='page-title'>Overview</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='page-sub'>기간 <b>{f['start']}</b> ~ <b>{f['end']}</b></div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
-    # KPI (campaign aggregate)
-    cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+    # Compare mode
+    with right:
+        cmp_mode = st.radio(
+            "비교",
+            ["전일대비", "전주대비", "전월대비"],
+            horizontal=True,
+            index=1,
+            key="ov_cmp_mode_v83",
+            label_visibility="collapsed",
+        )
 
-    cmp_mode = st.radio(
-        "비교 기준",
-        ["전일대비", "전주대비", "전월대비"],
-        horizontal=True,
-        index=1,
-        key="ov_cmp_mode",
-    )
+    # Totals (cached)
+    cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     b1, b2 = _period_compare_range(f["start"], f["end"], cmp_mode)
     base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
 
-    def _delta(val: float, base_val: float):
-        d = float(val) - float(base_val)
-        p = _pct_change(float(val), float(base_val))
-        return d, p
+    def _pct(cur_v: float, base_v: float) -> float | None:
+        try:
+            cur_f = float(cur_v)
+            base_f = float(base_v)
+            if base_f == 0:
+                return None if cur_f == 0 else 100.0
+            return (cur_f / base_f - 1.0) * 100.0
+        except Exception:
+            return None
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    _, p_cost = _delta(cur["cost"], base["cost"])
-    _, p_sales = _delta(cur["sales"], base["sales"])
-    _, p_conv = _delta(cur["conv"], base["conv"])
-    _, p_cpa = _delta(cur["cpa"], base["cpa"])
-    _, p_roas = _delta(cur["roas"], base["roas"])
+    def _delta_chip(p: float | None) -> str:
+        if p is None:
+            return "<span class='delta'>·</span>"
+        if p > 0:
+            return f"<span class='delta up'>▲ {abs(p):.1f}%</span>"
+        if p < 0:
+            return f"<span class='delta down'>▼ {abs(p):.1f}%</span>"
+        return "<span class='delta'>· 0.0%</span>"
 
-    with k1:
-        ui_metric_or_stmetric("광고비", format_currency(cur["cost"]), f"{cmp_mode} {p_cost:+.1f}%", key="ov_cost")
-    with k2:
-        ui_metric_or_stmetric("전환매출", format_currency(cur["sales"]), f"{cmp_mode} {p_sales:+.1f}%", key="ov_sales")
-    with k3:
-        ui_metric_or_stmetric("전환", format_number_commas(cur["conv"]), f"{cmp_mode} {p_conv:+.1f}%", key="ov_conv")
-    with k4:
-        ui_metric_or_stmetric("CPA", format_currency(cur["cpa"]), f"{cmp_mode} {p_cpa:+.1f}%", key="ov_cpa")
-    with k5:
-        ui_metric_or_stmetric("ROAS", f"{cur['roas']:.0f}%", f"{cmp_mode} {p_roas:+.1f}%", key="ov_roas")
+    # KPI grid (HTML)
+    cards = [
+        ("광고비", format_currency(cur.get("cost", 0.0)), _pct(cur.get("cost", 0.0), base.get("cost", 0.0))),
+        ("클릭", format_number_commas(cur.get("clk", 0.0)), _pct(cur.get("clk", 0.0), base.get("clk", 0.0))),
+        ("전환", format_number_commas(cur.get("conv", 0.0)), _pct(cur.get("conv", 0.0), base.get("conv", 0.0))),
+        ("전환매출", format_currency(cur.get("sales", 0.0)), _pct(cur.get("sales", 0.0), base.get("sales", 0.0))),
+        ("ROAS", f"{float(cur.get('roas', 0.0)):.0f}%", _pct(cur.get("roas", 0.0), base.get("roas", 0.0))),
+    ]
 
-    st.divider()
+    kpi_html = ["<div class='kpi-grid'>"]
+    for title, val, pct in cards:
+        kpi_html.append(
+            "<div class='kpi'>"
+            f"<div class='t'><div class='k'>{title}</div>{_delta_chip(pct)}</div>"
+            f"<div class='v'>{val}</div>"
+            f"<div class='page-sub' style='margin-top:6px'>{cmp_mode} 기준</div>"
+            "</div>"
+        )
+    kpi_html.append("</div>")
+    st.markdown("".join(kpi_html), unsafe_allow_html=True)
 
-    try:
-        ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-    except Exception:
-        ts = pd.DataFrame()
+    # Main row: Trend + Top spend table (minimal)
+    c1, c2 = st.columns([3, 2], gap="large")
 
-    if ts is not None and not ts.empty:
+    with c1:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.markdown("<div class='page-title' style='font-size:16px;margin-bottom:6px;'>Trend</div>", unsafe_allow_html=True)
         metric_sel = st.radio(
             "트렌드 지표",
             ["광고비", "전환", "전환매출", "ROAS"],
             horizontal=True,
             index=0,
-            key="ov_trend_metric",
+            key="ov_trend_metric_v83",
+            label_visibility="collapsed",
         )
-        ts2 = ts.copy()
-        ts2 = add_rates(ts2)
-        if metric_sel == "광고비":
-            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
-        elif metric_sel == "전환":
-            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
-        elif metric_sel == "전환매출":
-            ch = _chart_timeseries(ts2, "sales", "전환매출(원)", y_format=",.0f", height=260)
+        try:
+            ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        except Exception:
+            ts = pd.DataFrame()
+
+        if ts is not None and not ts.empty:
+            ts2 = add_rates(ts.copy())
+            if metric_sel == "광고비":
+                ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+            elif metric_sel == "전환":
+                ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+            elif metric_sel == "전환매출":
+                ch = _chart_timeseries(ts2, "sales", "전환매출(원)", y_format=",.0f", height=260)
+            else:
+                sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
+                ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+                ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+                ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+
+            if ch is not None:
+                render_chart(ch)
         else:
-            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
-            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
-            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+            st.info("트렌드 데이터가 없습니다.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        if ch is not None:
-            render_chart(ch)
+    with c2:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.markdown("<div class='page-title' style='font-size:16px;margin-bottom:6px;'>Top Spend</div>", unsafe_allow_html=True)
+        try:
+            bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50, top_k=5)
+            top = bundle.get("top_cost") if isinstance(bundle, dict) else None
+        except Exception:
+            top = None
+        if top is not None and hasattr(top, "empty") and not top.empty:
+            view = top.copy()
+            # Keep only the columns that matter at a glance
+            keep = [c for c in ["campaign_type", "campaign_name", "cost", "clk", "conv", "sales", "roas", "cpa", "ctr"] if c in view.columns]
+            view = view[keep].head(12)
+            ui_table_or_dataframe(view, key="ov_top_spend_v83", height=320)
+        else:
+            st.info("상위 지출 캠페인이 없습니다.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="ov", expanded=False)
-    st.divider()
+    # Details (optional)
+    with st.expander("비교/세부 분석(선택)", expanded=False):
+        render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="ov_v83", expanded=False)
 
-    st.markdown("### ✅ 다음 액션 힌트")
-    hints = []
-    if cur["cost"] > 0 and cur["roas"] < 200:
-        hints.append("ROAS가 낮습니다 → **전환매출이 낮은 캠페인/키워드**부터 정리해보세요.")
-    if cur["conv"] > 0 and cur["cpa"] > 30000:
-        hints.append("CPA가 높은 편입니다 → **비의도 키워드/소재**를 제외키워드로 정리하면 효율이 빠르게 회복됩니다.")
-    if cur["clk"] > 0 and cur["ctr"] < 1.0:
-        hints.append("CTR이 낮습니다 → **소재 A/B**(헤드라인/설명/확장소재)를 우선 돌려보세요.")
-    if not hints:
-        hints.append("지표가 안정적입니다 → 예산을 늘릴 계정/캠페인을 찾기 위해 **ROAS 상위 캠페인**을 확인해보세요.")
-    st.write("• " + "\n• ".join(hints))
 
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -3872,8 +3838,11 @@ def get_active_page(default: str = "overview") -> str:
     return p if p in slugs else default
 
 
+
 def render_shell(latest: Dict[str, str], active: str) -> None:
-    """Render fixed topbar + left sidenav (reference-style)."""
+    """Render fixed topbar + left sidenav (web-app style).
+    NOTE: rendered via components.html to avoid HTML sanitization differences.
+    """
 
     def pill(label: str, value: str) -> str:
         v = str(value or "—")
@@ -3890,20 +3859,6 @@ def render_shell(latest: Dict[str, str], active: str) -> None:
         + pill("비즈머니", latest.get("bizmoney"))
     )
 
-    top = f"""
-    <div class="shell-topbar">
-      <div class="shell-brand">
-        <div class="shell-dot"></div>
-        <div>
-          <div class="shell-title">네이버 검색광고 통합 대시보드</div>
-          <div class="shell-sub">{active_label} · Build: {BUILD_TAG}</div>
-        </div>
-      </div>
-      <div class="shell-right">{right}</div>
-    </div>
-    """
-    st.markdown(top, unsafe_allow_html=True)
-
     nav_items_html = []
     for slug, label, ico in NAV_ITEMS:
         cls = "nav-item active" if slug == active else "nav-item"
@@ -3911,18 +3866,31 @@ def render_shell(latest: Dict[str, str], active: str) -> None:
             f"<a class='{cls}' href='?p={slug}'><span class='nav-ico'>{ico}</span>{label}</a>"
         )
 
-    nav = f"""
-    <div class="app-nav">
-      <div class="nav-section">
-        <div class="nav-h">Navigation</div>
-        {''.join(nav_items_html)}
+    shell_html = f"""
+    {GLOBAL_UI_CSS}
+    <div class="shell-topbar">
+      <div class="shell-brand">
+        <div class="shell-mark"></div>
+        <div>
+          <div class="shell-title">DA Ads Console</div>
+          <div class="shell-sub">{active_label} · {BUILD_TAG}</div>
+        </div>
       </div>
+      <div class="shell-right">{right}</div>
+    </div>
+
+    <div class="app-nav">
+      <div class="nav-h">Navigation</div>
+      {''.join(nav_items_html)}
       <div class="nav-foot">
-        <div class="mini">필터 적용 후 페이지 전환이 즉시 반응하도록 캐시를 미리 데웁니다.</div>
+        <div style="font-weight:900; margin-bottom:6px;">체감 속도 팁</div>
+        <div>필터 적용 후 페이지 전환 시 쿼리를 재실행하지 않도록 캐시를 사용합니다.</div>
       </div>
     </div>
+
+    <div id="build-watermark">UI · {BUILD_TAG}</div>
     """
-    st.markdown(nav, unsafe_allow_html=True)
+    components.html(shell_html, height=0, scrolling=False)
 
 
 
