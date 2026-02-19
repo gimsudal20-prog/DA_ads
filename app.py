@@ -1,6 +1,21 @@
 # -----------------------------
 # Rates
 # -----------------------------
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import os
+import re
+import io
+from datetime import date, timedelta
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+from sqlalchemy import create_engine, inspect, text
+from dotenv import load_dotenv
+
+load_dotenv()
 def add_rates(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
