@@ -14,6 +14,11 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      # 레포에 accounts.xlsx가 root에 있으면 기본값(accounts.xlsx) 그대로 사용
+      # 경로를 바꾸면 secrets/vars에 ACCOUNTS_FILE 추가해서 지정 가능
+      # ACCOUNTS_FILE: accounts/accounts.xlsx
+      # (선택) 담당자 컬럼이 있을 때만 동작
+      # MANAGER_FILTER: 승훈
 
     steps:
       - name: Checkout
@@ -35,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dotenv sqlalchemy psycopg2-binary
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run BizMoney Collector
         run: |
