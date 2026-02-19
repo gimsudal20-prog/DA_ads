@@ -157,9 +157,7 @@ hr {
   margin-top: 0.8rem;
   border-radius: var(--radius);
   border: 1px solid rgba(180,196,217,0.55);
-  background:
-    radial-gradient(1200px 320px at 10% 0%, rgba(5,108,242,0.10) 0%, rgba(5,108,242,0.02) 55%, rgba(255,255,255,0) 80%),
-    linear-gradient(180deg, rgba(61,157,242,0.06), rgba(255,255,255,1));
+  background: var(--panel);
   padding: 18px 20px;
   box-shadow: var(--shadow-sm);
 }
@@ -349,7 +347,45 @@ div[data-testid="stDecoration"]{ display:none !important; }
 footer{ visibility:hidden; }
 
 /* Sidebar truly hidden (filters moved into main) */
-section[data-testid="stSidebar"]{ display:none !important; }
+
+/* Sidebar = fixed nav (no new tab links) */
+section[data-testid="stSidebar"]{
+  display:block !important;
+  width: 276px !important;
+  background: rgba(255,255,255,0.92) !important;
+  border-right: 1px solid var(--line) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  padding-top: 72px !important; /* topbar height */
+}
+section[data-testid="stSidebar"] > div{
+  padding-top: 10px !important;
+}
+[data-testid="stSidebarNav"]{ display:none !important; }
+[data-testid="collapsedControl"]{ display:none !important; }
+
+/* Sidebar radio as nav items */
+section[data-testid="stSidebar"] div[role="radiogroup"]{
+  gap: 6px !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="radio"]{
+  border-radius: 14px !important;
+  padding: 10px 12px !important;
+  margin: 0 10px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="radio"]:hover{
+  background: rgba(51,92,255,0.08) !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="radio"][aria-checked="true"]{
+  background: rgba(51,92,255,0.12) !important;
+  border-color: rgba(51,92,255,0.18) !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="radio"] > div:first-child{
+  display:none !important; /* hide radio dot */
+}
+
 
 /* Layout paddings for fixed nav */
 .block-container{
@@ -566,6 +602,46 @@ def get_active_page_slug(default: str = "overview") -> str:
     return p if p in allowed else default
 
 
+def render_sidebar_nav(active: str) -> str:
+    """Left nav using st.sidebar widgets (avoids Streamlit link new-tab behavior)."""
+    nav_items = [
+        ("overview", "👀", "요약"),
+        ("budget", "💳", "예산/잔액"),
+        ("campaign", "📣", "캠페인"),
+        ("keyword", "🔎", "키워드"),
+        ("ad", "🧩", "소재"),
+        ("settings", "⚙️", "설정"),
+    ]
+    allowed = [s for s, _, _ in nav_items]
+    # URL param wins (shareable)
+    qp = get_active_page_slug(active or "overview")
+    if qp in allowed:
+        active = qp
+
+    icon_map = {s: ic for s, ic, _ in nav_items}
+    label_map = {s: lb for s, _, lb in nav_items}
+
+    st.sidebar.markdown(
+        '<div style="padding:0 14px 6px 14px; font-size:12px; letter-spacing:.12em; font-weight:900; color:rgba(26,28,32,0.58);">NAVIGATION</div>',
+        unsafe_allow_html=True,
+    )
+
+    idx = allowed.index(active) if active in allowed else 0
+    choice = st.sidebar.radio(
+        "nav",
+        options=allowed,
+        index=idx,
+        format_func=lambda s: f"{icon_map.get(s,'')} {label_map.get(s,s)}",
+        key="__da_nav",
+        label_visibility="collapsed",
+    )
+
+    # Keep URL in sync without opening a new tab
+    if choice and choice != _get_query_param("p", ""):
+        _set_query_param("p", choice)
+    return choice
+
+
 def render_shell(active: str, f: Dict, latest: Dict) -> None:
     """Inject fixed topbar + sidenav (pure HTML) to minimize Streamlit feel."""
     # CSS first
@@ -600,26 +676,9 @@ def render_shell(active: str, f: Dict, latest: Dict) -> None:
     """
     st.markdown(topbar, unsafe_allow_html=True)
 
-    nav_items = [
-        ("overview", "👀", "요약"),
-        ("budget", "💳", "예산/잔액"),
-        ("campaign", "📣", "캠페인"),
-        ("keyword", "🔎", "키워드"),
-        ("ad", "🧩", "소재"),
-        ("settings", "⚙️", "설정"),
-    ]
-    links = []
-    for slug, ic, label in nav_items:
-        cls = "da-navitem active" if slug == active else "da-navitem"
-        links.append(f'<a class="{cls}" href="?p={slug}"><span class="ic">{ic}</span>{label}</a>')
-    nav = f"""
-    <aside class="da-sidenav">
-      <div class="group-title">NAVIGATION</div>
-      {''.join(links)}
-    </aside>
-    <div class="da-watermark">UI · v8.4.0 · {date.today().isoformat()}</div>
-    """
-    st.markdown(nav, unsafe_allow_html=True)
+
+    # Sidebar navigation is rendered via Streamlit widgets (no new-tab links).
+    st.markdown(f'<div class="da-watermark">UI · v8.4.3 · {date.today().isoformat()}</div>', unsafe_allow_html=True)
 
 
 def render_kpi_cards(items: List[Dict], subtitle: str = "") -> None:
@@ -4012,8 +4071,8 @@ def main():
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
     active = get_active_page_slug()
-
-    # Filters live in main (expander) to remove Streamlit sidebar feel.
+    active = render_sidebar_nav(active)
+# Filters live in main (expander) to remove Streamlit sidebar feel.
     with st.expander("필터", expanded=not st.session_state.get("filters_ready", False)):
         f = build_filters(meta, type_opts, engine, container=st.container())
 
