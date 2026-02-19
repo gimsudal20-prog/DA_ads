@@ -29,6 +29,7 @@ from typing import List, Dict, Optional
 
 import requests
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
 
 # pandas는 accounts.xlsx 읽을 때만 필요 (없으면 DB fallback)
@@ -227,12 +228,52 @@ def load_accounts_from_db(engine) -> List[Dict[str, str]]:
 # -----------------------------
 # 6) 메인
 # -----------------------------
+
+# -----------------------------
+# 3) DB Upsert (retries for transient SSL drop)
+# -----------------------------
+def upsert_bizmoney_balance(engine, dt: date, cid: str, bal: int, retries: int = 4) -> None:
+    """Upsert one row with retries for transient connection drops."""
+    stmt = text(
+        """
+        INSERT INTO fact_bizmoney_daily (dt, customer_id, bizmoney_balance)
+        VALUES (:dt, :cid, :bal)
+        ON CONFLICT (dt, customer_id)
+        DO UPDATE SET bizmoney_balance = EXCLUDED.bizmoney_balance
+        """
+    )
+
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.begin() as conn:
+                conn.execute(stmt, {"dt": dt, "cid": cid, "bal": bal})
+            return
+        except OperationalError as e:
+            msg = str(e).lower()
+            transient = (
+                "ssl connection has been closed unexpectedly" in msg
+                or "server closed the connection unexpectedly" in msg
+                or "connection is closed" in msg
+                or "could not receive data from server" in msg
+                or "could not send data to server" in msg
+                or "terminating connection" in msg
+            )
+            if (not transient) or (attempt == retries):
+                raise
+            wait_s = min(2 ** attempt, 10)
+            print(f"⚠️ DB 연결 불안정 감지 → 재시도 {attempt}/{retries} (대기 {wait_s}s)")
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            time.sleep(wait_s)
+
 def main():
     if not DB_URL:
         print("❌ DATABASE_URL이 없습니다.")
         return
 
-    engine = create_engine(DB_URL)
+    engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=1800, pool_timeout=30)
 
     # 테이블 생성 (없으면)
     with engine.begin() as conn:
@@ -274,6 +315,7 @@ def main():
 
     today = date.today()
     success_count = 0
+    failed: List[Dict[str, object]] = []
 
     for acc in accounts:
         cid = acc["id"]
@@ -285,21 +327,39 @@ def main():
             print(f"❌ {name}({cid}): 수집 실패")
             continue
 
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO fact_bizmoney_daily (dt, customer_id, bizmoney_balance)
-                    VALUES (:dt, :cid, :bal)
-                    ON CONFLICT (dt, customer_id)
-                    DO UPDATE SET bizmoney_balance = EXCLUDED.bizmoney_balance
-                    """
-                ),
-                {"dt": today, "cid": cid, "bal": balance},
-            )
+        try:
+            upsert_bizmoney_balance(engine, today, cid, balance)
+        except OperationalError as e:
+            print(f"❌ {name}({cid}): DB 저장 실패 ({e.__class__.__name__})")
+            failed.append({"id": cid, "name": name, "bal": int(balance)})
+            continue
 
         print(f"✅ {name}({cid}): {balance:,}원 저장 완료")
         success_count += 1
+
+
+    if failed:
+        print(f"🔁 DB 저장 실패 {len(failed)}건 → 연결 재생성 후 재시도합니다.")
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+
+        still_failed: List[Dict[str, object]] = []
+        for item in failed:
+            cid2 = str(item["id"])
+            name2 = str(item.get("name") or "Unknown")
+            bal2 = int(item.get("bal") or 0)
+            try:
+                upsert_bizmoney_balance(engine, today, cid2, bal2, retries=6)
+                print(f"✅(재시도) {name2}({cid2}): {bal2:,}원 저장 완료")
+            except Exception as e:
+                print(f"❌(재시도) {name2}({cid2}): 저장 최종 실패 - {e.__class__.__name__}")
+                still_failed.append(item)
+
+        if still_failed:
+            print(f"❌ 최종 실패 {len(still_failed)}건이 남았습니다. 로그 확인 후 재실행하세요.")
+            sys.exit(1)
 
     print(f"🚀 전체 완료: 성공 {success_count} / 전체 {len(accounts)}")
 
