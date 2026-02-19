@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v8.6 - 업체명 표시 기능 추가)
-- 개선 1: 로그에 Customer ID와 함께 '업체명'을 표시하여 가독성 향상
-- 유지: v8.5의 초고속 수집/저장 엔진 (API 50개 조회, Bulk Upsert)
+collector.py - 네이버 검색광고 수집기 (v8.7 - 초고속 병렬 처리 & 스마트 재시도 적용)
+- 개선 1: ThreadPoolExecutor를 통한 멀티스레딩(동시 수집) 적용으로 속도 비약적 향상
+- 개선 2: 429(Too Many Requests) 에러 발생 시 2초 대기 후 재시도하는 로직 적용
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import base64
 import hashlib
 import argparse
 import sys
+import concurrent.futures  # ✅ 병렬 처리를 위해 추가
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -56,15 +57,15 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: v8.6_NAME_DISPLAY] ===")
-print("=== 업체명 표시 + 초고속 수집 엔진 ===")
+print("=== [VERSION: v8.7_FAST_PARALLEL] ===")
+print("=== 병렬 수집(다중 계정) + 스마트 재시도 엔진 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 
 # -------------------------
-# 2. 서명 및 요청
+# 2. 서명 및 요청 (스마트 재시도 적용)
 # -------------------------
 def now_millis() -> str:
     return str(int(time.time() * 1000))
@@ -87,22 +88,38 @@ def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
 
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, raise_error=True) -> Tuple[int, Any]:
     url = BASE_URL + path
-    headers = make_headers(method, path, customer_id)
-    try:
-        r = requests.request(method, url, headers=headers, params=params, timeout=TIMEOUT)
-        data = None
+    max_retries = 3  # ✅ 최대 3회 재시도
+    
+    for attempt in range(max_retries):
+        headers = make_headers(method, path, customer_id)
         try:
-            data = r.json()
-        except Exception:
-            data = r.text
-        if raise_error and r.status_code >= 400:
-            log(f"🔥 API Error {r.status_code}: {str(data)[:200]}")
-            raise requests.HTTPError(f"{r.status_code}", response=r)
-        return r.status_code, data
-    except Exception as e:
-        if raise_error:
-            raise e
-        return 0, str(e)
+            r = requests.request(method, url, headers=headers, params=params, timeout=TIMEOUT)
+            
+            # ✅ 네이버 API 차단(429)이나 서버 오류 발생 시 2초 대기 후 다시 시도
+            if r.status_code == 429 or r.status_code >= 500:
+                log(f"⚠️ API 오류 ({r.status_code}) - 계정 {customer_id}. 2초 대기 후 재시도 ({attempt+1}/{max_retries})...")
+                time.sleep(2)
+                continue
+
+            data = None
+            try:
+                data = r.json()
+            except Exception:
+                data = r.text
+                
+            if raise_error and r.status_code >= 400:
+                log(f"🔥 API Error {r.status_code}: {str(data)[:200]}")
+                raise requests.HTTPError(f"{r.status_code}", response=r)
+                
+            return r.status_code, data
+            
+        except requests.exceptions.RequestException as e:
+            log(f"⚠️ 네트워크 오류 - 계정 {customer_id}: {e}. 2초 후 재시도 ({attempt+1}/{max_retries})...")
+            time.sleep(2)
+            
+    if raise_error:
+        raise Exception(f"최대 재시도 횟수 초과: {url}")
+    return 0, "Max retries exceeded"
 
 def safe_call(method: str, path: str, customer_id: str, params: dict | None = None) -> Tuple[bool, Any]:
     try:
@@ -163,7 +180,7 @@ def ensure_tables(engine: Engine):
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
-    temp_table = f"tmp_{table}_{int(time.time())}"
+    temp_table = f"tmp_{table}_{int(time.time()*1000)}" # 병렬 처리 충돌 방지를 위해 ms 단위 적용
     
     try:
         with engine.begin() as conn:
@@ -251,10 +268,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
         if status == 200 and isinstance(data, dict) and "data" in data:
             out.extend(data["data"])
-            sys.stdout.write("■")
-        else:
-            sys.stdout.write("x")
-        sys.stdout.flush()
     return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
@@ -268,14 +281,17 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
     }
 
 # -------------------------
-# 6. 메인 로직
+# 6. 메인 처리기 (단일 계정)
 # -------------------------
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
-    # ✅ [수정] 로그에 업체명 표시
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
     camp_list = list_campaigns(customer_id)
-    log(f"   > 캠페인 {len(camp_list)}개 발견")
+    if not camp_list:
+        log(f"   > [ {account_name} ] 캠페인이 없거나 수집 실패")
+        return
+
+    log(f"   > [ {account_name} ] 캠페인 {len(camp_list)}개 구조 수집 중...")
     
     camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -319,36 +335,30 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             **fields
                         })
 
-    log("   > 구조 데이터(DIM) DB 저장 중...")
     upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
     upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-    if kw_rows:
-        log(f"     - 키워드 {len(kw_rows)}개 저장 중...")
-        upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-    if ad_rows:
-        log(f"     - 소재 {len(ad_rows)}개 저장 중...")
-        upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+    if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+    if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
-    log(f"   > 성과 데이터(FACT) 수집 시작...")
+    log(f"   > [ {account_name} ] 성과 데이터 수집 중...")
     if target_camp_ids:
-        print(f"     [캠페인 {len(target_camp_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_camp_ids, target_date)
         rows = [parse_stats(r, target_date, customer_id, "campaign_id") for r in raw]
         replace_fact_range(engine, "fact_campaign_daily", rows, customer_id, target_date)
-        print(" 완료")
     if target_kw_ids and not SKIP_KEYWORD_STATS:
-        print(f"     [키워드 {len(target_kw_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_kw_ids, target_date)
         rows = [parse_stats(r, target_date, customer_id, "keyword_id") for r in raw]
         replace_fact_range(engine, "fact_keyword_daily", rows, customer_id, target_date)
-        print(" 완료")
     if target_ad_ids and not SKIP_AD_STATS:
-        print(f"     [소재 {len(target_ad_ids)}개] ", end="")
         raw = get_stats_range(customer_id, target_ad_ids, target_date)
         rows = [parse_stats(r, target_date, customer_id, "ad_id") for r in raw]
         replace_fact_range(engine, "fact_ad_daily", rows, customer_id, target_date)
-        print(" 완료")
 
+    log(f"✅ 완료: {account_name} ({customer_id})")
+
+# -------------------------
+# 7. 메인 실행 블록
+# -------------------------
 def main():
     engine = get_engine()
     ensure_tables(engine)
@@ -365,18 +375,15 @@ def main():
         
     accounts_info = []
     if args.customer_id:
-        # 단일 타겟 실행 시, 이름은 임의로 설정 (DB조회 안함)
         accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
         try:
             with engine.connect() as conn:
-                # ✅ [수정] 업체명(account_name)도 함께 조회
                 result = conn.execute(text("SELECT customer_id, account_name FROM dim_account"))
                 accounts_info = [{"id": row[0], "name": row[1] or "Unknown"} for row in result]
         except Exception:
             pass
         
-        # DB에 계정 없으면 환경변수 사용
         if not accounts_info and CUSTOMER_ID:
             accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
@@ -386,16 +393,25 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    for acc in accounts_info:
-        try:
-            # ✅ [수정] process_account에 이름 전달
-            process_account(engine, acc["id"], acc["name"], target_date)
-        except Exception as e:
-            log(f"❌ 오류 발생 ({acc['name']} - {acc['id']}): {e}")
-            import traceback
-            traceback.print_exc()
+    # ✅ 병렬 처리 (스레드 풀) 적용
+    max_workers = 4  # 4개 업체 동시 수집 (너무 높이면 차단 확률이 올라가므로 3~5개가 적당)
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for acc in accounts_info:
+            futures.append(
+                executor.submit(process_account, engine, acc["id"], acc["name"], target_date)
+            )
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                log(f"❌ 병렬 처리 중 계정 작업 실패: {e}")
+                import traceback
+                traceback.print_exc()
 
-    log("✅ 모든 작업 완료")
+    log("🎉 모든 작업 완료")
 
 if __name__ == "__main__":
     main()
