@@ -4,6 +4,7 @@ collector.py - 네이버 검색광고 수집기 (v9.0 - 대용량 통계 보고�
 - 개선 1: /stat-reports API를 활용한 대용량 TSV 다운로드 방식 적용 (호출 횟수 극감)
 - 개선 2: ThreadPoolExecutor를 통한 멀티스레딩(동시 수집) 적용
 - 개선 3: 스마트 재시도 (429 에러 대응) 로직 포함
+- 수정사항: 수집 대상 계정 목록을 dim_account가 아닌 dim_account_meta에서 가져오도록 수정
 """
 
 from __future__ import annotations
@@ -396,7 +397,8 @@ def main():
     else:
         try:
             with engine.connect() as conn:
-                result = conn.execute(text("SELECT customer_id, account_name FROM dim_account"))
+                # ✅ dim_account 대신 최신 동기화 테이블인 dim_account_meta에서 읽어오도록 수정
+                result = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta"))
                 accounts_info = [{"id": row[0], "name": row[1] or "Unknown"} for row in result]
         except Exception:
             pass
