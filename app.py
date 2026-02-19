@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 네이버 검색광고 통합 대시보드 (v7.3.0)
+app.py - 네이버 검색광고 통합 대시보드 (v7.3.1)
 
 ✅ 이번 버전 핵심 (승훈 요청 반영)
 - 체감 속도 개선(1초 내 목표): 불필요한 자동 동기화 제거 + 쿼리 수 최소화 + 다운로드(xlsx) 생성 캐시
@@ -33,7 +33,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.3.0 (2026-02-18)"
+BUILD_TAG = "v7.3.1 (2026-02-18)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -913,6 +913,98 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+
+def build_campaign_summary_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """네이버 UI처럼 '캠페인 N개 결과' 요약행을 (광고유형별 + 전체) 생성합니다.
+    반환 DF 컬럼은 page_perf_campaign의 view_df와 동일합니다.
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame()
+
+    x = df_raw.copy()
+    if "campaign_type" not in x.columns:
+        return pd.DataFrame()
+
+    x["campaign_type"] = x["campaign_type"].fillna("").astype(str).str.strip()
+    x = x[x["campaign_type"] != ""].copy()
+    if x.empty:
+        return pd.DataFrame()
+
+    # 안전한 numeric
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c not in x.columns:
+            x[c] = 0
+        x[c] = pd.to_numeric(x[c], errors="coerce").fillna(0)
+
+    def _make_row(label_type: str, g: pd.DataFrame, is_total: bool = False) -> Dict:
+        n = int(len(g))
+        imp = float(g["imp"].sum())
+        clk = float(g["clk"].sum())
+        cost = float(g["cost"].sum())
+        conv = float(g["conv"].sum())
+        sales = float(g["sales"].sum()) if "sales" in g.columns else 0.0
+
+        ctr = (clk / imp * 100.0) if imp > 0 else 0.0
+        cpc = (cost / clk) if clk > 0 else 0.0
+        cpa = (cost / conv) if conv > 0 else 0.0
+        roas = (sales / cost * 100.0) if cost > 0 else 0.0
+
+        camp_label = f"캠페인 {n}개 결과" if is_total else f"{label_type} 캠페인 {n}개 결과"
+
+        return {
+            "업체명": "",
+            "담당자": "",
+            "광고유형": "종합" if is_total else label_type,
+            "캠페인": camp_label,
+            "노출": int(imp),
+            "클릭": int(clk),
+            "CTR(%)": float(ctr),
+            "CPC": format_currency(cpc),
+            "광고비": format_currency(cost),
+            "전환": int(conv),
+            "CPA": format_currency(cpa),
+            "전환매출": format_currency(sales),
+            "ROAS(%)": format_roas(roas),
+        }
+
+    rows: List[Dict] = []
+
+    # 전체 요약(여러 유형일 때만)
+    type_cnt = int(x["campaign_type"].nunique())
+    if type_cnt >= 2:
+        rows.append(_make_row("전체", x, is_total=True))
+
+    # 유형별 요약 (노출/클릭/광고비 합계 기반)
+    for tp, g in x.groupby("campaign_type", dropna=False):
+        rows.append(_make_row(str(tp), g, is_total=False))
+
+    out = pd.DataFrame(rows)
+    out["CTR(%)"] = pd.to_numeric(out["CTR(%)"], errors="coerce").fillna(0).astype(float)
+    out = finalize_ctr_col(out, "CTR(%)")
+
+    # 컬럼 순서 고정
+    cols = ["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
+    return out[cols].copy()
+
+
+def style_summary_rows(df_view: pd.DataFrame, summary_rows: int):
+    """상단 요약행을 다른 행과 구분되게 스타일링합니다."""
+    if df_view is None or df_view.empty or summary_rows <= 0:
+        return df_view
+
+    summary_idx = set(range(int(summary_rows)))
+
+    def _style_row(row):
+        if row.name in summary_idx:
+            return ["font-weight:700; background-color: rgba(148,163,184,0.18);"] * len(row)
+        return [""] * len(row)
+
+    try:
+        return df_view.style.apply(_style_row, axis=1)
+    except Exception:
+        # Styler가 불가한 환경이면 그냥 DF 반환
+        return df_view
+
 # -----------------------------
 # Pages
 # -----------------------------
@@ -1148,8 +1240,18 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view_df["클릭"] = pd.to_numeric(view_df["클릭"], errors="coerce").fillna(0).astype(int)
     view_df["전환"] = pd.to_numeric(view_df["전환"], errors="coerce").fillna(0).astype(int)
 
-    st.dataframe(view_df, use_container_width=True, hide_index=True)
-    render_download_compact(view_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
+    # ✅ 네이버처럼 '캠페인 N개 결과' 요약행(광고유형별/전체) 추가
+    summary_df = build_campaign_summary_rows(df)
+
+    if summary_df is not None and not summary_df.empty:
+        display_df = pd.concat([summary_df, view_df], ignore_index=True)
+        styled = style_summary_rows(display_df, len(summary_df))
+    else:
+        display_df = view_df
+        styled = display_df
+
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+    render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
