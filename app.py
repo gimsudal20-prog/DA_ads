@@ -39,9 +39,15 @@ except Exception:
     ui = None  # type: ignore
     HAS_SHADCN_UI = False
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# -----------------------------
+# Streamlit cache hashing (Engine)
+# -----------------------------
+_HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
 
 # Altair (charts)
 try:
@@ -466,7 +472,7 @@ def _sql_in_str_list(values: List[int]) -> str:
 # -----------------------------
 # Download helpers (cached)
 # -----------------------------
-@st.cache_data(show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, show_spinner=False)
 
 
 def _fact_has_sales(engine, fact_table: str) -> bool:
@@ -571,7 +577,7 @@ def _df_json_to_csv_bytes(df_json: str) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, show_spinner=False)
 def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
     df = pd.read_json(io.StringIO(df_json), orient="split")
     output = io.BytesIO()
@@ -823,7 +829,7 @@ def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
     return out
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=3600, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"):
         return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
@@ -932,7 +938,7 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
     return {"meta": int(len(acc))}
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_account_meta"):
         return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
@@ -973,7 +979,7 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
 # -----------------------------
 # Data freshness (single query)
 # -----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
 def query_latest_dates(_engine) -> Dict[str, str]:
     """최근 적재일을 반환합니다.
 
@@ -994,7 +1000,7 @@ def query_latest_dates(_engine) -> Dict[str, str]:
 
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     """Return latest dates for key tables (as YYYY-MM-DD strings).
 
@@ -1069,7 +1075,7 @@ def render_data_freshness(engine) -> None:
         "fact_bizmoney_daily": "비즈머니",
     }
     items = [(f"{label_map.get(k,k)} 최신: {v}", "secondary") for k, v in latest.items()]
-    ui_badges_or_html(items, key="freshness_badges")
+    ui_badges_or_html(items, key_prefix="freshness_badges")
 
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
@@ -1281,7 +1287,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     return f
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
 def query_campaign_topn(
     _engine,
     d1: date,
@@ -1396,7 +1402,7 @@ def query_campaign_topn(
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_campaign_bundle(
     _engine,
     d1: date,
@@ -1535,7 +1541,7 @@ def query_campaign_bundle(
 # Timeseries Queries (for charts)
 # -----------------------------
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """캠페인(전체) 일별 추세. (그래프용: row 수 적음)"""
     if not table_exists(_engine, "fact_campaign_daily"):
@@ -1601,7 +1607,7 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...]
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """소재(전체) 일별 추세."""
     if not table_exists(_engine, "fact_ad_daily"):
@@ -1675,7 +1681,7 @@ def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """키워드(전체) 일별 추세. type_sel 없으면 join 없이 fact만 집계."""
     if not table_exists(_engine, "fact_keyword_daily"):
@@ -2040,7 +2046,7 @@ def query_ad_topn(
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_ad_bundle(
     _engine,
     d1: date,
@@ -2203,7 +2209,7 @@ def query_ad_bundle(
 
     return df.reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_keyword_bundle(
     _engine,
     d1: date,
@@ -2508,7 +2514,7 @@ def _pct_to_str(p: Optional[float]) -> str:
     return "—" if p is None else f"{p:+.1f}%"
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> Dict[str, float]:
     entity = str(entity or "").lower().strip()
     try:
@@ -2622,7 +2628,7 @@ def render_period_compare_panel(
             ["전일대비", "전주대비", "전월대비"],
             horizontal=True,
             index=1,
-            key=f"{key_prefix}_cmp_mode",
+            key=f"{key_prefix}_{entity}_pcmp_mode",
         )
 
         b1, b2 = _period_compare_range(d1, d2, mode)
@@ -2721,7 +2727,7 @@ def render_period_compare_panel(
             ],
             columns=["지표", "현재", "비교기간", "증감"],
         )
-        ui_table_or_dataframe(mini, key=f"{key_prefix}_cmp_table", height=210)
+        ui_table_or_dataframe(mini, key=f"{key_prefix}_{entity}_pcmp_table", height=210)
 
 # -----------------------------
 # Pages
