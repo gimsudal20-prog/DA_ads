@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.0 - 대용량 통계 보고서 API 적용)
-- 개선 1: /stat-reports API를 활용한 대용량 TSV 다운로드 방식 적용 (호출 횟수 극감)
-- 개선 2: ThreadPoolExecutor를 통한 멀티스레딩(동시 수집) 적용
-- 개선 3: 스마트 재시도 (429 에러 대응) 로직 포함
-- 수정사항: 수집 대상 계정 목록을 dim_account가 아닌 dim_account_meta에서 가져오도록 수정
+collector.py - 네이버 검색광고 수집기 (v9.1 - 대용량 다운로드 헤더 추가 & DB 안정성 강화)
+- 수정사항 1: TSV 파일 다운로드 시 인증 헤더 추가 (400 Client Error 해결)
+- 수정사항 2: DB 동시 접근 충돌(Lock/Timeout) 방지를 위해 고유 UUID 임시 테이블 사용
+- 수정사항 3: 동시 작업 스레드 4 -> 2로 낮추어 DB 과부하 방지
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import hashlib
 import argparse
 import sys
 import io
+import uuid
 import concurrent.futures
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
@@ -52,8 +52,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: v9.0_STAT_REPORTS] ===")
-print("=== 대용량 리포트 API + 병렬 수집 엔진 ===")
+print("=== [VERSION: v9.1_STAT_REPORTS_STABLE] ===")
+print("=== 대용량 리포트 API + DB 병목 해결 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -128,7 +128,8 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
 def get_engine() -> Engine:
     if not DB_URL:
         return create_engine("sqlite:///:memory:", future=True)
-    return create_engine(DB_URL, pool_pre_ping=True, future=True)
+    # DB 연결 끊김 방지를 위해 pool 설정 강화
+    return create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300, future=True)
 
 def ensure_tables(engine: Engine):
     with engine.begin() as conn:
@@ -168,7 +169,10 @@ def ensure_tables(engine: Engine):
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
-    temp_table = f"tmp_{table}_{int(time.time()*1000)}"
+    
+    # ✅ DB 병렬 삽입 충돌 방지: 시간 대신 완전한 고유 난수(UUID) 사용
+    temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
+    
     try:
         with engine.begin() as conn:
             df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
@@ -239,7 +243,9 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
     
     # 1. 리포트 생성 요청
     status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
+    
     if status != 200 or not data or "reportJobId" not in data:
+        log(f"⚠️ [ {customer_id} ] {report_tp} 리포트 요청 거부 (상태: {status})")
         return pd.DataFrame()
         
     job_id = data["reportJobId"]
@@ -263,9 +269,18 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
         
     # 3. TSV 다운로드 및 파싱
     try:
-        r = requests.get(download_url, timeout=30)
+        # ✅ 400 Client Error 수정: 다운로드 URL 호출 시에도 네이버 인증 헤더 추가
+        dl_headers = make_headers("GET", "/report-download", customer_id)
+        
+        r = requests.get(download_url, headers=dl_headers, timeout=60)
         r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text), sep='\t')
+        
+        # 다운로드된 내용이 비어있는 경우 방지
+        content = r.text.strip()
+        if not content:
+            return pd.DataFrame()
+            
+        df = pd.read_csv(io.StringIO(content), sep='\t')
         return df
     except Exception as e:
         log(f"⚠️ [ {customer_id} ] TSV 다운로드 실패: {e}")
@@ -300,7 +315,6 @@ def process_fact_from_tsv(engine: Engine, df: pd.DataFrame, table_name: str, id_
         clk = int(row[clk_col]) if clk_col and pd.notna(row[clk_col]) else 0
         cost_raw = float(row[cost_col]) if cost_col and pd.notna(row[cost_col]) else 0.0
         
-        # VAT 제외 금액으로 변환 (기존 /stats API의 salesAmt와 기준 맞춤)
         cost_ex_vat = int(round(cost_raw / 1.1)) if cost_raw > 0 else 0
         
         conv = float(row[conv_col]) if conv_col and pd.notna(row[conv_col]) else 0.0
@@ -320,7 +334,6 @@ def process_fact_from_tsv(engine: Engine, df: pd.DataFrame, table_name: str, id_
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
-    # 1. 구조(Dimension) 데이터 수집 (여전히 캠페인 속성/이름을 위해 필요)
     camp_list = list_campaigns(customer_id)
     if not camp_list: return
     
@@ -360,7 +373,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
     if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
-    # 2. 성과(Fact) 데이터 수집 - 대용량 TSV 다운로드
     log(f"   > [ {account_name} ] 대용량 리포트(TSV) 생성 및 저장 중...")
     
     camp_df = fetch_stat_report(customer_id, "CAMPAIGN", target_date)
@@ -397,7 +409,6 @@ def main():
     else:
         try:
             with engine.connect() as conn:
-                # ✅ dim_account 대신 최신 동기화 테이블인 dim_account_meta에서 읽어오도록 수정
                 result = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta"))
                 accounts_info = [{"id": row[0], "name": row[1] or "Unknown"} for row in result]
         except Exception:
@@ -412,8 +423,8 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 병렬 처리 적용 (한 번에 4개 업체 동시 진행)
-    max_workers = 4
+    # ✅ DB 끊김 및 락(Lock) 방지를 위해 스레드를 2개로 조정 (기존 대비 속도는 떨어지지만 매우 안정적)
+    max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for acc in accounts_info:
