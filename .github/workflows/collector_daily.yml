@@ -42,24 +42,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install requests python-dotenv sqlalchemy psycopg2-binary
+          # pandas 패키지 명시적 추가 (대용량 리포트 처리용)
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
 
-      - name: Run collector (Smart Scheduler)
+      - name: Run collector (Yesterday & Today)
         run: |
-          # 현재 한국 시간의 '시(Hour)' 부분만 추출 (예: 04, 10, 16, 22)
-          CURRENT_HOUR=$(date +%H)
-          echo "⏰ 현재 한국 시간: ${CURRENT_HOUR}시"
+          echo "⏰ 현재 한국 시간: $(date +%H)시"
           
-          # 1. 어제 데이터 (새벽 4시에만 1번 수집하여 최종 마감)
-          if [ "$CURRENT_HOUR" == "04" ]; then
-            YESTERDAY=$(date -d "yesterday" +%F)
-            echo "🚀 Collect date (Yesterday) = ${YESTERDAY}"
-            python collector.py --date "${YESTERDAY}"
-          else
-            echo "⏩ 어제 데이터 수집 패스 (새벽 4시에만 실행됩니다.)"
-          fi
+          # 1. 어제 데이터 수집 (지연된 전환 및 매출 보정을 위해 매번 실행)
+          YESTERDAY=$(date -d "yesterday" +%F)
+          echo "🚀 Collect date (Yesterday) = ${YESTERDAY}"
+          python collector.py --date "${YESTERDAY}"
           
-          # 2. 오늘 데이터 (실행될 때마다 항상 수집)
+          # 2. 오늘 데이터 수집 (당일 실시간 성과 확인용)
           TODAY=$(date +%F)
           echo "🚀 Collect date (Today) = ${TODAY}"
           python collector.py --date "${TODAY}"
