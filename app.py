@@ -38,6 +38,10 @@ try:
 except Exception:
     ui = None  # type: ignore
     HAS_SHADCN_UI = False
+
+# UI preference
+USE_SHADCN_METRICS = os.getenv('USE_SHADCN_METRICS', '0').strip() == '1'  # default: HTML KPI cards
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
@@ -377,6 +381,38 @@ hr{ border:none; border-top: 1px solid rgba(0,0,0,.07); }
   section.main > div.block-container{ padding-left: 22px !important; padding-top: 92px !important; }
   .app-nav{ display:none; }
 }
+
+.page-title{
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: rgba(26,28,32,.94);
+  margin: 6px 0 2px 0;
+}
+.page-sub{
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(26,28,32,.60);
+  margin: 0 0 10px 0;
+}
+.sectionbar{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap: 12px;
+  margin: 16px 0 10px 0;
+}
+.sectionbar .h{
+  font-size: 13px;
+  font-weight: 900;
+  color: rgba(26,28,32,.88);
+}
+.sectionbar .s{
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(26,28,32,.52);
+}
+.delta-chip .arr{ font-weight: 900; }
 </style>
 """
 
@@ -489,7 +525,7 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
     label, pct = _split_desc(desc)
 
     # Shadcn UI first (delta as arrow text)
-    if HAS_SHADCN_UI and ui is not None:
+    if USE_SHADCN_METRICS and HAS_SHADCN_UI and ui is not None:
         try:
             if pct is None:
                 ui.metric_card(title=title, content=value, description=desc, key=key)
@@ -522,6 +558,37 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
         unsafe_allow_html=True,
     )
 
+
+
+def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 360, *, caption: str | None = None) -> None:
+    """Render a compact, modern table.
+    - Prefer shadcn-ui table when available
+    - Fallback to st.dataframe
+    """
+    if df is None or df.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+
+    if caption:
+        st.caption(caption)
+
+    # Try shadcn-ui first
+    if HAS_SHADCN_UI and ui is not None:
+        try:
+            if hasattr(ui, "table"):
+                ui.table(df, key=key, height=height)
+                return
+            if hasattr(ui, "data_table"):
+                ui.data_table(df, key=key, height=height)
+                return
+        except Exception:
+            pass
+
+    # Streamlit fallback
+    try:
+        st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+    except TypeError:
+        st.dataframe(df, use_container_width=True, height=height)
 
 
 def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -2754,113 +2821,97 @@ def render_period_compare_panel(
     key_prefix: str,
     expanded: bool = False,
 ) -> None:
-    """Reusable panel: DoD/WoW/MoM comparison + delta bar chart."""
-    with st.expander("🔁 전일/전주/전월 비교", expanded=expanded):
-        mode = st.radio(
-            "비교 기준",
-            ["전일대비", "전주대비", "전월대비"],
-            horizontal=True,
-            index=1,
-            key=f"{key_prefix}_{entity}_pcmp_mode",
+    """Lightweight comparison panel.
+    ✅ 성능 최우선: 기본은 OFF (토글 켰을 때만 비교기간 쿼리 실행)
+    ✅ 증감은 ▲/▼ 화살표로 직관 표시
+    """
+    toggle_key = f"{key_prefix}_{entity}_pcmp_on"
+    if toggle_key not in st.session_state:
+        st.session_state[toggle_key] = bool(expanded)
+
+    st.markdown(
+        """<div class='sectionbar'>
+              <div class='h'>Period Compare</div>
+              <div class='s'>전일/전주/전월 비교(필요할 때만)</div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
+
+    on = st.toggle("비교 보기", value=bool(st.session_state.get(toggle_key, False)), key=toggle_key)
+    if not on:
+        return
+
+    mode = st.radio(
+        "비교 기준",
+        ["전일대비", "전주대비", "전월대비"],
+        horizontal=True,
+        index=1,
+        key=f"{key_prefix}_{entity}_pcmp_mode",
+        label_visibility="collapsed",
+    )
+
+    b1, b2 = _period_compare_range(d1, d2, mode)
+    try:
+        n_cur = int((d2 - d1).days) + 1
+        n_base = int((b2 - b1).days) + 1
+    except Exception:
+        n_cur, n_base = 0, 0
+    st.caption(f"현재: {d1} ~ {d2} ({n_cur}일) · 비교({mode}): {b1} ~ {b2} ({n_base}일)")
+
+    cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
+    base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
+
+    def _arrow(v: float | None) -> str:
+        if v is None:
+            return "·"
+        if v > 0:
+            return "▲"
+        if v < 0:
+            return "▼"
+        return "·"
+
+    def _delta_chip(label: str, value: str, sign: float | None) -> str:
+        if sign is None:
+            cls = "zero"
+        elif sign > 0:
+            cls = "pos"
+        elif sign < 0:
+            cls = "neg"
+        else:
+            cls = "zero"
+        return (
+            f"<div class='delta-chip {cls}'>"
+            f"<div class='l'>{label}</div>"
+            f"<div class='v'><span class='arr'>{_arrow(sign)}</span> {value}</div>"
+            f"</div>"
         )
 
-        b1, b2 = _period_compare_range(d1, d2, mode)
+    dcost_pct = _pct_change(cur["cost"], base["cost"])
+    dclk_pct = _pct_change(cur["clk"], base["clk"])
+    dconv_pct = _pct_change(cur["conv"], base["conv"])
+    droas_p = (cur["roas"] - base["roas"]) * 100.0
+    droas_pct = _pct_change(cur["roas"], base["roas"])
 
-        # 비교 기간 표기 (몇 일 / 어떤 기간과 비교인지)
-        try:
-            n_cur = int((d2 - d1).days) + 1
-            n_base = int((b2 - b1).days) + 1
-        except Exception:
-            n_cur, n_base = 0, 0
-        st.caption(f"현재기간: {d1} ~ {d2} ({n_cur}일) · 비교기간({mode}): {b1} ~ {b2} ({n_base}일)")
+    chips = [
+        _delta_chip("광고비", f"{format_currency(cur['cost']-base['cost'])} ({_pct_to_str(dcost_pct)})", dcost_pct),
+        _delta_chip("클릭", f"{format_number_commas(cur['clk']-base['clk'])} ({_pct_to_str(dclk_pct)})", dclk_pct),
+        _delta_chip("전환", f"{format_number_commas(cur['conv']-base['conv'])} ({_pct_to_str(dconv_pct)})", dconv_pct),
+        _delta_chip("ROAS", f"{droas_p:+.1f}p ({_pct_to_str(droas_pct)})", droas_p),
+    ]
+    st.markdown("<div class='delta-chip-row'>" + "".join(chips) + "</div>", unsafe_allow_html=True)
 
-
-        cur = get_entity_totals(engine, entity, d1, d2, cids, type_sel)
-        base = get_entity_totals(engine, entity, b1, b2, cids, type_sel)
-
-
-        # Quick delta summary (no duplicated KPI cards)
-
-        dcost = cur["cost"] - base["cost"]
-
-        dclk = cur["clk"] - base["clk"]
-
-        dconv = cur["conv"] - base["conv"]
-
-        droas_p = (cur["roas"] - base["roas"]) * 100.0
-
-        dcost_pct = _pct_change(cur["cost"], base["cost"])
-
-        dclk_pct = _pct_change(cur["clk"], base["clk"])
-
-        dconv_pct = _pct_change(cur["conv"], base["conv"])
-
-        droas_pct = _pct_change(cur["roas"], base["roas"])
+    mini = pd.DataFrame(
+        [
+            ["광고비", format_currency(cur["cost"]), format_currency(base["cost"]), f"{_arrow(dcost_pct)} {_pct_to_str(dcost_pct)}"],
+            ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_arrow(dclk_pct)} {_pct_to_str(dclk_pct)}"],
+            ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_arrow(dconv_pct)} {_pct_to_str(dconv_pct)}"],
+            ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{_arrow(droas_p)} {droas_p:+.1f}p"],
+        ],
+        columns=["지표", "현재", "비교기간", "증감"],
+    )
+    ui_table_or_dataframe(mini, key=f"{key_prefix}_{entity}_pcmp_table", height=210)
 
 
-        def _delta_chip(label: str, value: str, sign: Optional[float]) -> str:
-
-            if sign is None:
-
-                cls = "zero"
-
-            elif sign > 0:
-
-                cls = "pos"
-
-            elif sign < 0:
-
-                cls = "neg"
-
-            else:
-
-                cls = "zero"
-
-            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'>{value}</div></div>"
-
-
-        chips = [
-
-            _delta_chip("광고비", f"{format_currency(dcost)} ({_pct_to_str(dcost_pct)})", dcost_pct),
-
-            _delta_chip("클릭", f"{format_number_commas(dclk)} ({_pct_to_str(dclk_pct)})", dclk_pct),
-
-            _delta_chip("전환", f"{format_number_commas(dconv)} ({_pct_to_str(dconv_pct)})", dconv_pct),
-
-            _delta_chip("ROAS", f"{droas_p:+.1f}p ({_pct_to_str(droas_pct)})", droas_p),
-
-        ]
-
-        st.markdown("<div class='delta-chip-row'>" + "".join(chips) + "</div>", unsafe_allow_html=True)
-
-
-        # Delta bar chart
-        delta_df = pd.DataFrame(
-            [
-                {"metric": "광고비", "change_pct": _pct_change(cur["cost"], base["cost"])},
-                {"metric": "클릭", "change_pct": _pct_change(cur["clk"], base["clk"])},
-                {"metric": "전환", "change_pct": _pct_change(cur["conv"], base["conv"])},
-                {"metric": "매출", "change_pct": _pct_change(cur["sales"], base["sales"])},
-                {"metric": "ROAS", "change_pct": _pct_change(cur["roas"], base["roas"])},
-            ]
-        )
-        st.markdown("#### 📊 증감율(%) 막대그래프")
-        ch = _chart_delta_bars(delta_df, height=260)
-        if ch is not None:
-            render_chart(ch)
-
-        # Mini table (current vs baseline)
-        mini = pd.DataFrame(
-            [
-                ["광고비", format_currency(cur["cost"]), format_currency(base["cost"]), f"{_pct_to_str(_pct_change(cur['cost'], base['cost']))}"],
-                ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_pct_to_str(_pct_change(cur['clk'], base['clk']))}"],
-                ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_pct_to_str(_pct_change(cur['conv'], base['conv']))}"],
-                ["매출", format_currency(cur["sales"]), format_currency(base["sales"]), _pct_to_str(_pct_change(cur["sales"], base["sales"]))],
-                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{(cur['roas']-base['roas']):+.1f}p"],
-            ],
-            columns=["지표", "현재", "비교기간", "증감"],
-        )
-        ui_table_or_dataframe(mini, key=f"{key_prefix}_{entity}_pcmp_table", height=210)
 
 # -----------------------------
 # Pages
@@ -2899,7 +2950,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("상단 '필터'에서 필터를 설정한 뒤 **적용**을 눌러주세요.")
         return
 
-    st.markdown("## 👀 요약 (한눈에)")
+    st.markdown("<div class='page-title'>Overview</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='page-sub'>기간 <b>{f['start']}</b> ~ <b>{f['end']}</b></div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     cids = tuple(f.get("selected_customer_ids", []) or [])
@@ -3186,7 +3238,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
         return
 
-    st.markdown("## 🚀 성과 (캠페인)")
+    st.markdown("<div class='page-title'>Campaign</div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     top_n = int(f.get("top_n_campaign", 200))
@@ -3369,7 +3421,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
         return
 
-    st.markdown("## 🔎 성과 (키워드)")
+    st.markdown("<div class='page-title'>Keyword</div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     cids = tuple(f.get("selected_customer_ids", []) or [])
