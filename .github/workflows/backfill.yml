@@ -89,6 +89,6 @@ jobs:
                   # 하나가 실패해도 다음 날짜 진행
               
               current += timedelta(days=1)
-              time.sleep(2) # 3일치라 짧으므로 쿨타임을 2초로 조금 늘려 안정성 확보
+              time.sleep(10) # 넉넉하게 10초 대기하여 DB 과부하 방지
 
           print("✅ 해당 구간 수집 완료")
