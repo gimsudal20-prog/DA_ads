@@ -120,7 +120,10 @@ def _normalize_col(s: str) -> str:
 
 def load_accounts_from_xlsx(filepath: str) -> List[Dict[str, str]]:
     """
-    return: [{"id": "123", "name": "업체명"}...]
+    accounts.xlsx에서 계정 목록을 읽습니다.
+
+    return 예시:
+      [{"id": "123", "name": "업체명", "manager": "담당자"}...]
     """
     if pd is None:
         raise RuntimeError("pandas가 설치되어 있지 않아 엑셀을 읽을 수 없습니다.")
@@ -131,7 +134,7 @@ def load_accounts_from_xlsx(filepath: str) -> List[Dict[str, str]]:
     df = pd.read_excel(filepath)
 
     # 컬럼 후보 자동 탐지
-    cols = { _normalize_col(c): c for c in df.columns }
+    cols = {_normalize_col(c): c for c in df.columns}
 
     id_candidates = [
         "customerid", "customid", "custid",
@@ -175,7 +178,6 @@ def load_accounts_from_xlsx(filepath: str) -> List[Dict[str, str]]:
 
     # 활성 필터(있을 때만)
     if active_col is not None:
-        # 1/0, True/False, 'Y'/'N', '사용' 등 잡아주기
         s = df[active_col].astype(str).str.strip().str.lower()
         df = df[
             s.isin(["1", "true", "t", "y", "yes", "사용", "활성", "on", "enable", "enabled"])
@@ -183,7 +185,7 @@ def load_accounts_from_xlsx(filepath: str) -> List[Dict[str, str]]:
 
     # 담당자 필터(환경변수로 지정했을 때만)
     if MANAGER_FILTER and manager_col is not None:
-        df = df[df[manager_col].astype(str).str.strip() == MANAGER_FILTER]
+        df = df[df[manager_col].astype(str).fillna("").str.strip() == MANAGER_FILTER]
 
     # customer_id 정리
     cid = (
@@ -201,13 +203,25 @@ def load_accounts_from_xlsx(filepath: str) -> List[Dict[str, str]]:
     else:
         nm = df["_cid"]
 
-    accounts = []
+    # manager
+    if manager_col is not None:
+        mg = df[manager_col].astype(str).fillna("").str.strip()
+    else:
+        mg = [""] * len(df)
+
+    accounts: List[Dict[str, str]] = []
     seen = set()
-    for _cid, _nm in zip(df["_cid"].tolist(), nm.tolist()):
+    for _cid, _nm, _mg in zip(df["_cid"].tolist(), nm.tolist(), list(mg)):
         if _cid in seen:
             continue
         seen.add(_cid)
-        accounts.append({"id": str(_cid), "name": str(_nm) if _nm else "Unknown"})
+        accounts.append(
+            {
+                "id": str(_cid),
+                "name": str(_nm) if _nm else "Unknown",
+                "manager": str(_mg) if _mg else "",
+            }
+        )
     return accounts
 
 
@@ -225,6 +239,89 @@ def load_accounts_from_db(engine) -> List[Dict[str, str]]:
     return accounts
 
 
+
+
+# -----------------------------
+# 5.5) accounts.xlsx → dim_account_meta 동기화 (대시보드 표시용)
+# -----------------------------
+def ensure_dim_account_meta(engine) -> None:
+    """
+    대시보드(app.py)가 계정 목록/담당자/월예산을 dim_account_meta에서 가져오므로,
+    accounts.xlsx를 기준으로 dim_account_meta가 비어있거나 누락된 계정이 있으면 화면에 안 뜹니다.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS dim_account_meta (
+                    customer_id TEXT PRIMARY KEY,
+                    account_name TEXT,
+                    manager TEXT,
+                    monthly_budget BIGINT DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+        )
+
+
+def upsert_dim_account_meta(engine, accounts: List[Dict[str, str]], retries: int = 4) -> None:
+    """
+    accounts.xlsx 기준으로 dim_account_meta를 안전하게 upsert합니다.
+    - monthly_budget은 기존 값을 유지(업데이트 하지 않음)
+    """
+    if not accounts:
+        return
+
+    ensure_dim_account_meta(engine)
+
+    stmt = text(
+        """
+        INSERT INTO dim_account_meta (customer_id, account_name, manager, updated_at)
+        VALUES (:cid, :name, :manager, NOW())
+        ON CONFLICT (customer_id)
+        DO UPDATE SET
+          account_name = EXCLUDED.account_name,
+          manager      = EXCLUDED.manager,
+          updated_at   = NOW()
+        """
+    )
+
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.begin() as conn:
+                for a in accounts:
+                    cid = str(a.get("id") or "").strip()
+                    if not cid:
+                        continue
+                    conn.execute(
+                        stmt,
+                        {
+                            "cid": cid,
+                            "name": (a.get("name") or "Unknown"),
+                            "manager": (a.get("manager") or ""),
+                        },
+                    )
+            return
+        except OperationalError as e:
+            msg = str(e).lower()
+            transient = (
+                "ssl connection has been closed unexpectedly" in msg
+                or "server closed the connection unexpectedly" in msg
+                or "connection is closed" in msg
+                or "could not receive data from server" in msg
+                or "could not send data to server" in msg
+                or "terminating connection" in msg
+            )
+            if (not transient) or (attempt == retries):
+                raise
+            wait_s = min(2 ** attempt, 10)
+            print(f"⚠️ dim_account_meta 동기화 중 DB 불안정 → 재시도 {attempt}/{retries} (대기 {wait_s}s)")
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            time.sleep(wait_s)
 # -----------------------------
 # 6) 메인
 # -----------------------------
@@ -297,6 +394,13 @@ def main():
         accounts = load_accounts_from_xlsx(ACCOUNTS_FILE)
         if accounts:
             print(f"📌 계정 소스: accounts.xlsx ({ACCOUNTS_FILE})")
+            # accounts.xlsx 기준으로 dim_account_meta 동기화 (대시보드에서 계정 목록/담당자 표시용)
+            try:
+                upsert_dim_account_meta(engine, accounts)
+                print(f"🧩 dim_account_meta 동기화: {len(accounts)}개")
+            except Exception as e:
+                print(f"⚠️ dim_account_meta 동기화 실패(수집은 계속): {e}")
+
     except Exception as e:
         print(f"⚠️ accounts.xlsx 로드 실패 → DB로 fallback: {e}")
 
