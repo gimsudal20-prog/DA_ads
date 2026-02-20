@@ -86,7 +86,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.6.6 (Naver-like UI, 2026-02-20)"
+BUILD_TAG = "v8.6.7 (Naver-like UI, 2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -690,6 +690,43 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checke
   text-overflow: ellipsis;
 }
 
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
 </style>
         """,
         unsafe_allow_html=True,
@@ -1225,53 +1262,91 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
     # --- 검색조건 패널 (네이버 느낌) ---
-    st.markdown('<div class="nv-panel"><div class="hd"><div class="t">검색조건</div></div><div class="bd">', unsafe_allow_html=True)
 
-    r1 = st.columns([1.1, 1.2, 1.2, 2.2], gap="small")
-    period_mode = r1[0].selectbox(
-        "기간",
-        ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
-        index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
-        key="f_period_mode",
-    )
+    with st.expander("검색조건", expanded=True):
 
-    if period_mode == "직접 선택":
-        d1 = r1[1].date_input("시작일", sv.get("d1", default_start), key="f_d1")
-        d2 = r1[2].date_input("종료일", sv.get("d2", default_end), key="f_d2")
-    else:
-        # compute dates from mode (no extra widgets)
-        if period_mode == "오늘":
-            d2 = today
-            d1 = today
-        elif period_mode == "어제":
-            d2 = today - timedelta(days=1)
-            d1 = d2
-        elif period_mode == "최근 7일":
-            d2 = today - timedelta(days=1)
-            d1 = d2 - timedelta(days=6)
-        elif period_mode == "이번 달":
-            d2 = today
-            d1 = date(today.year, today.month, 1)
-        elif period_mode == "지난 달":
-            first_this = date(today.year, today.month, 1)
-            d2 = first_this - timedelta(days=1)
-            d1 = date(d2.year, d2.month, 1)
+        r1 = st.columns([1.1, 1.2, 1.2, 2.2], gap="small")
+
+        period_mode = r1[0].selectbox(
+
+            "기간",
+
+            ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
+
+            index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
+
+            key="f_period_mode",
+
+        )
+
+
+        if period_mode == "직접 선택":
+
+            d1 = r1[1].date_input("시작일", sv.get("d1", default_start), key="f_d1")
+
+            d2 = r1[2].date_input("종료일", sv.get("d2", default_end), key="f_d2")
+
         else:
-            d2 = sv.get("d2", default_end)
-            d1 = sv.get("d1", default_start)
 
-        # show read-only dates (like admin)
-        r1[1].markdown(f"<div class='nv-field'><div class='nv-lbl'>시작일</div><div class='nv-ro'>{d1}</div></div>", unsafe_allow_html=True)
-        r1[2].markdown(f"<div class='nv-field'><div class='nv-lbl'>종료일</div><div class='nv-ro'>{d2}</div></div>", unsafe_allow_html=True)
+            # compute dates from mode (no extra widgets)
 
-    q = r1[3].text_input("검색", sv.get("q", ""), key="f_q", placeholder="계정/키워드/소재 검색")
+            if period_mode == "오늘":
 
-    r2 = st.columns([1.2, 1.6, 1.2], gap="small")
-    manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
-    account_sel = r2[1].multiselect("계정", accounts, default=sv.get("account", []), key="f_account")
-    type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+                d2 = today
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
+                d1 = today
+
+            elif period_mode == "어제":
+
+                d2 = today - timedelta(days=1)
+
+                d1 = d2
+
+            elif period_mode == "최근 7일":
+
+                d2 = today - timedelta(days=1)
+
+                d1 = d2 - timedelta(days=6)
+
+            elif period_mode == "이번 달":
+
+                d2 = today
+
+                d1 = date(today.year, today.month, 1)
+
+            elif period_mode == "지난 달":
+
+                first_this = date(today.year, today.month, 1)
+
+                d2 = first_this - timedelta(days=1)
+
+                d1 = date(d2.year, d2.month, 1)
+
+            else:
+
+                d2 = sv.get("d2", default_end)
+
+                d1 = sv.get("d1", default_start)
+
+
+            # show read-only dates (consistent height, no '튀어나옴')
+
+            r1[1].text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
+
+            r1[2].text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
+
+
+        q = r1[3].text_input("검색", sv.get("q", ""), key="f_q", placeholder="계정/키워드/소재 검색")
+
+
+        r2 = st.columns([1.2, 1.6, 1.2], gap="small")
+
+        manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
+
+        account_sel = r2[1].multiselect("계정", accounts, default=sv.get("account", []), key="f_account")
+
+        type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+
 
     # persist back
     sv.update(
