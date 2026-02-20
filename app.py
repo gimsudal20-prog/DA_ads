@@ -187,6 +187,7 @@ section[data-testid="stSidebar"] .block-container{
   font-size: 12px; color: var(--nv-muted);
 }
 
+.nv-h1{font-size:20px;font-weight:900;color:var(--nv-text);margin:4px 0 0 0;}
 /* Panels */
 .nv-panel{
   background: var(--nv-panel);
@@ -2993,7 +2994,7 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 반영됩니다.")
         return
 
     st.markdown("## 🚀 성과 (캠페인)")
@@ -3005,7 +3006,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음")
+        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
     # -----------------------------
@@ -3176,7 +3177,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 반영됩니다.")
         return
 
     st.markdown("## 🔎 성과 (키워드)")
@@ -3188,7 +3189,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음")
+        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
     # TOP10
@@ -3349,7 +3350,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 반영됩니다.")
         return
 
     st.markdown("## 🧩 성과 (소재)")
@@ -3645,9 +3646,9 @@ def main():
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.caption("• 필터 변경 즉시 반영\n• 쿼리는 캐시로 즉시 로드")
 
-    # Page title
-    st.markdown(f"<div class='nv-panel'><div class='hd'><div class='t'>{nav}</div></div></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    # Page title (clean)
+    st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
     # Filters (skip on settings)
     f = None
