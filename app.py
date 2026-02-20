@@ -45,6 +45,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # -----------------------------
+# Cache-buster (avoid global cache clear)
+# -----------------------------
+def get_cache_buster() -> int:
+    return int(st.session_state.get("__cache_buster", 0))
+
+def bump_cache_buster() -> None:
+    st.session_state["__cache_buster"] = int(st.session_state.get("__cache_buster", 0)) + 1
+
+# -----------------------------
 # Streamlit cache hashing (Engine)
 # -----------------------------
 _HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
@@ -100,221 +109,188 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/static/woff2/SUIT.css");
+/* NanumSquare (fallback if blocked) */
+@import url("https://cdn.jsdelivr.net/gh/moonspam/NanumSquare@master/nanumsquare.css");
 
 :root{
-  --c-blue-900:#0528F2;
-  --c-blue-700:#056CF2;
-  --c-blue-500:#3D9DF2;
-  --b500:#056CF2;
-  --c-slate-300:#B4C4D9;
-  --c-slate-050:#EBEEF2;
-  --text:#0f172a;
-  --muted:#475569;
-  --radius:18px;
-  --font-body: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
-  --font-display: "SUIT", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, sans-serif;
-  --pos: #056CF2;
-  --neg: #EF4444;
-  --shadow: 0 10px 26px rgba(2,6,23,0.06);
-  --shadow-sm: 0 6px 16px rgba(2,6,23,0.04);
+  --bg:#F5F6F7;
+  --panel:#FFFFFF;
+  --text:#222222;
+  --muted:#6B7280;
+  --line:#E5E7EB;
+  --primary:#03C75A;         /* NAVER green */
+  --primary-2:#00B14F;
+  --pos:#03C75A;
+  --neg:#EF4444;
+  --radius:12px;
+  --shadow:0 10px 24px rgba(0,0,0,0.06);
+  --shadow-sm:0 6px 14px rgba(0,0,0,0.05);
+
+  --font-body: "Pretendard","NanumSquare","Apple SD Gothic Neo","Malgun Gothic",system-ui,-apple-system,sans-serif;
+  --font-display: "Pretendard","NanumSquare","Apple SD Gothic Neo","Malgun Gothic",system-ui,-apple-system,sans-serif;
 }
 
 html, body, .stApp{
-  font-family: var(--font-body);
-  color: var(--text);
-  background: #ffffff;
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  font-family: var(--font-body) !important;
 }
 
-/* Clean UI */
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
+a{ color: var(--primary-2); text-decoration:none; }
+a:hover{ text-decoration:underline; }
 
-/* Fix top clipping + nicer width */
-.block-container {
-  /* iOS Safari safe-area + prevent top clipping */
-  padding-top: calc(env(safe-area-inset-top) + 4.2rem) !important;
-  padding-bottom: 2.6rem;
-  max-width: 1400px;
-  overflow: visible !important;
-}
-
-h1, h2, h3 {
-  letter-spacing: -0.02em;
-}
-h1 { font-weight: 900; }
-h2 { font-weight: 900; }
-h1, h2, h3 { font-family: var(--font-display); }
-.kpi .v, .kpi .vv { font-family: var(--font-display); }
-h3 { font-weight: 800; }
-
-hr {
-  border-color: rgba(180,196,217,0.45);
-}
-
-/* Hero */
-.hero{
-  margin-top: 0.8rem;
-  border-radius: var(--radius);
-  border: 1px solid rgba(180,196,217,0.55);
+/* Panels */
+.panel{
+  border: 1px solid var(--line);
   background: var(--panel);
-  padding: 18px 20px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
-}
-.kicker{
-  display:inline-flex;
-  align-items:center;
-  gap:8px;
-  font-size:12px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  font-weight: 900;
-  color: var(--c-blue-700);
+  padding: 14px 16px;
 }
 
-/* Aliases for legacy class names (keeps HTML tidy) */
-.hero-kicker{ display:inline-flex; align-items:center; gap:8px; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color: rgba(2,8,23,0.62); }
-.hero-badges{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-.pill{
-  display:inline-flex; align-items:center; gap:8px;
-  padding:8px 10px;
-  border-radius:999px;
-  border:1px solid rgba(180,196,217,0.6);
-  background: rgba(255,255,255,0.92);
-  box-shadow: 0 6px 18px rgba(2,8,23,0.06);
-  font-size:12px;
-  color: rgba(2,8,23,0.78);
-  white-space:nowrap;
+/* Hero (NAVER-like: clean, flat, subtle accent) */
+.hero{
+  margin-top: 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  display:flex;
+  gap:16px;
+  align-items:stretch;
 }
-.freshness-title{ font-size:12px; color: rgba(2,8,23,0.62); margin-bottom:8px; }
-.freshness-pills{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
-.dot.on{ background:#22C55E; box-shadow: 0 0 0 3px rgba(34,197,94,0.16); }
-.dot.off{ background:#B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
-.hero-title{
-  margin: 8px 0 2px 0;
-  font-size: 34px;
-  line-height: 1.15;
+.hero-left{ flex:1; min-width: 520px; }
+.hero-right{ width: 420px; display:flex; flex-direction:column; justify-content:center; }
+.hero-kicker{
+  display:inline-flex; align-items:center; gap:8px;
+  font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+  color: rgba(34,34,34,0.55);
   font-weight: 900;
+}
+.hero-kicker::before{
+  content:"";
+  width:10px; height:10px; border-radius:999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px rgba(3,199,90,0.14);
+}
+.hero-title{
+  margin: 10px 0 2px 0;
+  font-size: 30px;
+  line-height: 1.18;
+  font-weight: 900;
+  letter-spacing: -0.02em;
 }
 .hero-sub{
   margin-top: 8px;
   color: var(--muted);
   font-size: 14px;
 }
-.hero-meta{
-  margin-top: 12px;
-  display:flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-
-  .hero-grid{
-    display:flex; gap:18px; justify-content:space-between; align-items:flex-start;
-    flex-wrap:wrap;
-  }
-  .hero-left{flex:1 1 520px; min-width:320px;}
-  .hero-right{
-    flex:0 1 340px; min-width:280px;
-    display:flex; flex-direction:column; align-items:flex-end; gap:8px;
-    margin-top: 2px;
-  }
-  .fresh-title{
-    font-size:11px; letter-spacing:0.12em; font-weight:800;
-    color: rgba(2,8,23,0.55);
-  }
-  .fresh-wrap{
-    width:100%;
-    display:flex; flex-wrap:wrap; justify-content:flex-end;
-    gap:8px;
-  }
-  .fresh-chip{
-    display:inline-flex; align-items:center; gap:8px;
-    padding:8px 10px;
-    border-radius:999px;
-    border:1px solid rgba(180,196,217,0.6);
-    background: rgba(255,255,255,0.92);
-    box-shadow: 0 6px 18px rgba(2,8,23,0.06);
-    font-size:12px;
-    color: rgba(2,8,23,0.78);
-    white-space:nowrap;
-  }
-  .dot{
-    width:8px; height:8px; border-radius:50%;
-    background: var(--b500);
-  }
-  .dot-camp{ background: #056CF2; box-shadow: 0 0 0 3px rgba(5,108,242,0.14); }
-  .dot-key{ background: #3D9DF2; box-shadow: 0 0 0 3px rgba(61,157,242,0.16); }
-  .dot-ad { background: #0528F2; box-shadow: 0 0 0 3px rgba(5,40,242,0.14); }
-  .dot-bm { background: #B4C4D9; box-shadow: 0 0 0 3px rgba(180,196,217,0.22); }
-  @media (max-width: 900px){
-    .hero-right{ align-items:flex-start; }
-    .fresh-wrap{ justify-content:flex-start; }
-  }
-/* Chips */
+.hero-badges{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .badge{
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-  padding:6px 12px;
-  border-radius:999px;
-  font-size:12px;
-  font-weight:900;
-  border:1px solid rgba(180,196,217,0.55);
-  background: rgba(255,255,255,0.8);
-  color: var(--text);
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border:1px solid var(--line);
+  background: #FAFAFB;
+  font-size: 12px;
+  color: rgba(34,34,34,0.75);
 }
-.b-blue { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
-.b-sky  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
-.b-gray { background: rgba(180,196,217,0.18); color: var(--text); border-color: rgba(180,196,217,0.52); }
-.b-red  { background: rgba(5,40,242,0.10); color: var(--c-blue-900); border-color: rgba(5,40,242,0.22); }
-.b-yellow { background: rgba(5,108,242,0.10); color: var(--c-blue-700); border-color: rgba(5,108,242,0.22); }
-.b-green  { background: rgba(61,157,242,0.12); color: var(--c-blue-700); border-color: rgba(61,157,242,0.24); }
-
-/* Panels / Cards */
-.panel{
-  padding:14px 16px;
-  border-radius: var(--radius);
-  background: #fff;
-  border: 1px solid rgba(180,196,217,0.55);
-  box-shadow: var(--shadow-sm);
-}
-.panel-title{
-  font-size: 14px;
-  font-weight: 900;
-  color: var(--muted);
+.freshness-title{
+  font-size: 12px;
+  color: rgba(34,34,34,0.60);
   margin-bottom: 8px;
+  font-weight: 900;
+  letter-spacing: .08em;
 }
+.freshness-pills{
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-start;
+  gap:8px;
+}
+.pill{
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #FFFFFF;
+  font-size: 12px;
+  color: rgba(34,34,34,0.78);
+  white-space: nowrap;
+}
+.dot{
+  width:8px; height:8px; border-radius:999px;
+}
+.dot.on{ background: var(--primary); box-shadow: 0 0 0 3px rgba(3,199,90,0.14); }
+.dot.off{ background: #CBD5E1; box-shadow: 0 0 0 3px rgba(203,213,225,0.22); }
 
-/* KPI cards (fallback) */
-.kpi{
-  border-radius: 18px;
-  border: 1px solid rgba(180,196,217,0.55);
-  background: #fff;
-  padding: 14px 16px;
+/* KPI grid (flat, dense like NAVER) */
+.da-kpi-grid{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.da-kpi{
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  position: relative;
+  overflow:hidden;
+}
+.da-kpi::before{
+  content:"";
+  position:absolute;
+  left:0; top:0; bottom:0;
+  width: 4px;
+  background: rgba(3,199,90,0.55);
+}
+.da-kpi .k{ font-size: 12px; color: rgba(34,34,34,0.58); font-weight: 800; }
+.da-kpi .v{ margin-top: 6px; font-family: var(--font-display); font-weight: 900; font-size: 22px; color: rgba(34,34,34,0.92); letter-spacing:-0.01em; }
+.da-kpi .d{ margin-top: 6px; font-size: 12px; color: rgba(34,34,34,0.60); font-weight: 800; }
+.da-kpi .d.pos{ color: var(--pos); }
+.da-kpi .d.neg{ color: var(--neg); }
+.da-kpi .d.neu{ color: rgba(34,34,34,0.55); }
+
+/* Tables: cleaner grid */
+div[data-testid="stDataFrame"]{
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius) !important;
+  overflow:hidden !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+div[data-testid="stDataFrame"] *{
+  font-family: var(--font-body) !important;
 }
 
-.delta-chip-row{display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 4px;}
-.delta-chip{min-width:170px; flex:1 1 170px; padding:10px 12px; border-radius:16px; border:1px solid rgba(11,31,51,.08);
-  background: rgba(235,238,242,.55); box-shadow: 0 8px 20px rgba(11,31,51,.06);}
-.delta-chip .l{font-size:12px; color: var(--muted); font-weight:800; letter-spacing:-.01em;}
-.delta-chip .v{margin-top:2px; font-size:16px; font-weight:900; letter-spacing:-.02em; font-family: var(--font-display);}
-.delta-chip.pos .v{color: var(--pos);}
-.delta-chip.neg .v{color: var(--neg);}
-.delta-chip.zero .v{color: #0B1F33;}
-.kpi .t{ font-size: 13px; color: var(--muted); font-weight: 800; }
-.kpi .v{ font-size: 22px; font-weight: 900; margin-top: 6px; }
-.kpi .d{ font-size: 12px; color: var(--muted); margin-top: 6px; }
-
-/* Buttons: subtle rounding */
-.stButton > button, .stDownloadButton > button{
-  border-radius: 14px !important;
+/* Compact buttons (NAVER-ish) */
+.stButton>button, .stDownloadButton>button{
+  border-radius: 10px !important;
+  border: 1px solid var(--line) !important;
+  background: #FFFFFF !important;
+  color: rgba(34,34,34,0.90) !important;
+  font-weight: 800 !important;
+  padding: 0.55rem 0.85rem !important;
+}
+.stButton>button:hover, .stDownloadButton>button:hover{
+  border-color: rgba(3,199,90,0.45) !important;
+  box-shadow: 0 8px 18px rgba(3,199,90,0.10) !important;
 }
 
-.stApp{ background:#ffffff; }
-
-html, body { background:#ffffff; }
+/* Expander */
+details[data-testid="stExpander"]{
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius) !important;
+  background: var(--panel) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+details[data-testid="stExpander"] summary{
+  font-weight: 900 !important;
+  color: rgba(34,34,34,0.86) !important;
+}
 </style>
 """
 
@@ -322,22 +298,21 @@ html, body { background:#ffffff; }
 SHELL_UI_CSS = r"""
 <style>
 :root{
-  --bg:#F6F8FC;
+  --bg:#F5F6F7;
   --panel:#FFFFFF;
-  --text:#121417;
-  --muted:rgba(18,20,23,0.62);
-  --line:rgba(0,0,0,0.08);
-  --primary:#335CFF;
-  --good:#16A34A;
+  --text:#222222;
+  --muted:#6B7280;
+  --line:#E5E7EB;
+  --primary:#03C75A;
+  --primary-2:#00B14F;
+  --good:#03C75A;
   --bad:#EF4444;
-  --shadow:0 14px 34px rgba(2,6,23,0.08);
-  --shadow-sm:0 10px 24px rgba(2,6,23,0.06);
-  --radius:20px;
+  --shadow:0 10px 24px rgba(0,0,0,0.06);
+  --shadow-sm:0 6px 14px rgba(0,0,0,0.05);
+  --radius:12px;
 }
 
-html, body, .stApp{
-  background: var(--bg) !important;
-}
+html, body, .stApp{ background: var(--bg) !important; }
 
 /* Streamlit chrome off */
 header[data-testid="stHeader"]{ display:none !important; }
@@ -346,102 +321,120 @@ div[data-testid="stDecoration"]{ display:none !important; }
 #MainMenu{ visibility:hidden; }
 footer{ visibility:hidden; }
 
-/* Sidebar truly hidden (filters moved into main) */
-
-/* Sidebar = fixed nav (no new tab links) */
+/* Sidebar = NAVER-like menu */
 section[data-testid="stSidebar"]{
   display:block !important;
-  width: 276px !important;
-  background: rgba(255,255,255,0.92) !important;
+  width: 248px !important;
+  background: var(--panel) !important;
   border-right: 1px solid var(--line) !important;
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  padding-top: 72px !important; /* topbar height */
+  padding-top: 56px !important; /* topbar height */
 }
 section[data-testid="stSidebar"] > div{
-  padding-top: 10px !important;
+  padding-top: 8px !important;
 }
 [data-testid="stSidebarNav"]{ display:none !important; }
 [data-testid="collapsedControl"]{ display:none !important; }
 
-/* Sidebar radio as nav items */
+/* Sidebar radio as menu items */
 section[data-testid="stSidebar"] div[role="radiogroup"]{
-  gap: 6px !important;
+  gap: 2px !important;
 }
 section[data-testid="stSidebar"] div[data-baseweb="radio"]{
-  border-radius: 14px !important;
+  border-radius: 10px !important;
   padding: 10px 12px !important;
   margin: 0 10px !important;
   border: 1px solid transparent !important;
   background: transparent !important;
 }
 section[data-testid="stSidebar"] div[data-baseweb="radio"]:hover{
-  background: rgba(51,92,255,0.08) !important;
+  background: rgba(3,199,90,0.08) !important;
 }
 section[data-testid="stSidebar"] div[data-baseweb="radio"][aria-checked="true"]{
-  background: rgba(51,92,255,0.12) !important;
-  border-color: rgba(51,92,255,0.18) !important;
+  background: rgba(3,199,90,0.12) !important;
+  border-color: rgba(3,199,90,0.22) !important;
+  position: relative;
+}
+section[data-testid="stSidebar"] div[data-baseweb="radio"][aria-checked="true"]::before{
+  content:"";
+  position:absolute;
+  left:0; top:8px; bottom:8px;
+  width:4px;
+  border-radius: 8px;
+  background: var(--primary);
 }
 section[data-testid="stSidebar"] div[data-baseweb="radio"] > div:first-child{
   display:none !important; /* hide radio dot */
 }
-
-
-/* Layout paddings for fixed nav */
-.block-container{
-  max-width: 1440px !important;
-  padding-top: 92px !important;
-  padding-left: 308px !important;
-  padding-right: 20px !important;
+section[data-testid="stSidebar"] label{
+  font-weight: 900 !important;
+  color: rgba(34,34,34,0.86) !important;
+}
+section[data-testid="stSidebar"] small{
+  color: rgba(34,34,34,0.55) !important;
 }
 
-/* Topbar */
+/* Main padding (no extra left padding; sidebar already pushes layout) */
+.block-container{
+  max-width: 1480px !important;
+  padding-top: 72px !important; /* make room for topbar */
+  padding-left: 22px !important;
+  padding-right: 22px !important;
+}
+
+/* Topbar (NAVER-ish) */
 .da-topbar{
   position: fixed;
   top: 0; left: 0; right: 0;
-  height: 72px;
+  height: 56px;
   z-index: 9999;
-  background: rgba(246,248,252,0.78);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(255,255,255,0.96);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
 .da-topbar .inner{
-  max-width: 1440px;
+  max-width: 1480px;
   margin: 0 auto;
-  height: 72px;
+  height: 56px;
   display:flex;
   align-items:center;
-  gap:14px;
-  padding: 0 20px;
+  gap:12px;
+  padding: 0 22px;
 }
 .da-brand{
   display:flex;
-  flex-direction:column;
-  line-height:1.1;
+  align-items:center;
+  gap:10px;
+  line-height:1;
+}
+.da-brand .logo{
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--primary);
+  box-shadow: 0 0 0 4px rgba(3,199,90,0.12);
 }
 .da-brand .t{
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 16px;
+  font-weight: 950;
+  font-size: 14px;
   color: var(--text);
+  letter-spacing:-0.01em;
 }
 .da-brand .s{
   font-size: 12px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-left: 4px;
 }
 .da-pill{
   display:inline-flex;
   align-items:center;
   gap:8px;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.9);
+  background: #FFFFFF;
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-sm);
   font-size: 12px;
-  color: var(--muted);
+  color: rgba(34,34,34,0.70);
   white-space: nowrap;
 }
 .da-dot{
@@ -451,123 +444,14 @@ section[data-testid="stSidebar"] div[data-baseweb="radio"] > div:first-child{
   background: var(--primary);
 }
 
-/* Side nav */
-.da-sidenav{
-  position: fixed;
-  top: 92px;
-  left: 20px;
-  bottom: 20px;
-  width: 268px;
-  z-index: 9998;
-  background: rgba(255,255,255,0.92);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow);
-  border-radius: var(--radius);
-  padding: 14px;
-  overflow: hidden;
-}
-.da-sidenav .group-title{
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-  margin: 10px 10px 6px 10px;
-  text-transform: uppercase;
-}
-.da-navitem{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  padding: 10px 10px;
-  border-radius: 14px;
-  color: rgba(18,20,23,0.72);
-  text-decoration: none;
-  font-weight: 750;
-  font-size: 13px;
-}
-.da-navitem:hover{
-  background: rgba(51,92,255,0.08);
-  color: var(--text);
-}
-.da-navitem.active{
-  background: rgba(51,92,255,0.12);
-  color: var(--text);
-  border: 1px solid rgba(51,92,255,0.22);
-}
-.da-navitem .ic{
-  width: 28px;
-  height: 28px;
-  border-radius: 10px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  background: rgba(2,6,23,0.05);
-}
-
-/* KPI cards */
-.da-kpi-grid{
-  display:grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 10px;
-}
-.da-kpi{
-  background: rgba(255,255,255,0.95);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  padding: 14px 14px 12px 14px;
-}
-.da-kpi .k{
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 10px;
-}
-.da-kpi .v{
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 22px;
-  color: var(--text);
-  letter-spacing: -0.02em;
-}
-.da-kpi .d{
-  margin-top: 8px;
-  font-size: 12px;
-  font-weight: 800;
-}
-.da-kpi .d.pos{ color: var(--good); }
-.da-kpi .d.neg{ color: var(--bad); }
-.da-kpi .d.neu{ color: var(--muted); }
-
-/* Cards */
-.da-card{
-  background: rgba(255,255,255,0.95);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  padding: 14px;
-}
-
-/* watermark to verify build */
+/* Watermark (debug) */
 .da-watermark{
   position: fixed;
-  left: 26px;
-  bottom: 26px;
+  left: 18px;
+  bottom: 12px;
   z-index: 9999;
   font-size: 11px;
-  color: rgba(18,20,23,0.55);
-  background: rgba(255,255,255,0.85);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 6px 10px;
-}
-
-/* Responsive */
-@media (max-width: 900px){
-  .da-sidenav{ display:none !important; }
-  .block-container{ padding-left: 18px !important; }
-}
-@media (max-width: 820px){
-  .da-kpi-grid{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+  color: rgba(34,34,34,0.36);
 }
 </style>
 """
@@ -603,15 +487,43 @@ def get_active_page_slug(default: str = "overview") -> str:
 
 
 def render_sidebar_nav(active: str) -> str:
-    """Left nav using st.sidebar widgets (avoids Streamlit link new-tab behavior)."""
+    """Left nav using st.sidebar widgets (same-page, NAVER-ish)."""
     nav_items = [
-        ("overview", "👀", "요약"),
-        ("budget", "💳", "예산/잔액"),
-        ("campaign", "📣", "캠페인"),
-        ("keyword", "🔎", "키워드"),
-        ("ad", "🧩", "소재"),
-        ("settings", "⚙️", "설정"),
+        ("overview", "요약"),
+        ("budget", "예산/잔액"),
+        ("campaign", "캠페인"),
+        ("keyword", "키워드"),
+        ("ad", "소재"),
+        ("settings", "설정"),
     ]
+    allowed = [s for s, _ in nav_items]
+
+    # URL param wins (shareable)
+    qp = get_active_page_slug(active or "overview")
+    if qp in allowed:
+        active = qp
+
+    label_map = {s: lb for s, lb in nav_items}
+
+    st.sidebar.markdown(
+        '<div style="padding:0 14px 6px 14px; font-size:12px; font-weight:950; color:rgba(34,34,34,0.60); letter-spacing:.08em;">메뉴</div>',
+        unsafe_allow_html=True,
+    )
+
+    idx = allowed.index(active) if active in allowed else 0
+    choice = st.sidebar.radio(
+        "menu",
+        options=allowed,
+        index=idx,
+        format_func=lambda s: f"{label_map.get(s,s)}",
+        key="__da_nav",
+        label_visibility="collapsed",
+    )
+
+    # Keep URL in sync without opening a new tab
+    if choice and choice != _get_query_param("p", ""):
+        _set_query_param("p", choice)
+    return choice
     allowed = [s for s, _, _ in nav_items]
     # URL param wins (shareable)
     qp = get_active_page_slug(active or "overview")
@@ -662,8 +574,8 @@ def render_shell(active: str, f: Dict, latest: Dict) -> None:
     <div class="da-topbar">
       <div class="inner">
         <div class="da-brand">
-          <div class="t">DA Ads Console</div>
-          <div class="s">보고서 · 대시보드</div>
+          <div class="logo"></div><div class="t">네이버 검색광고 대시보드</div>
+          <div class="s">DA기획</div>
         </div>
         <div style="flex:1"></div>
         <div class="da-pill"><span class="da-dot"></span><b>기간</b>&nbsp;{period}</div>
@@ -1329,7 +1241,7 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
-def get_meta(_engine) -> pd.DataFrame:
+def get_meta(_engine, cache_buster: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "dim_account_meta"):
         return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
 
@@ -3394,7 +3306,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         nb = parse_currency(new_budget)
         update_monthly_budget(engine, cid, nb)
         st.success("수정 완료. (캐시 갱신)")
-        st.cache_data.clear()
+        bump_cache_buster()  # cache-bust without global clear
         st.rerun()
 
 
@@ -3406,7 +3318,7 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
         return
 
     st.markdown("## 🚀 성과 (캠페인)")
@@ -3589,7 +3501,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
         return
 
     st.markdown("## 🔎 성과 (키워드)")
@@ -3762,7 +3674,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
+        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
         return
 
     st.markdown("## 🧩 성과 (소재)")
@@ -3984,7 +3896,7 @@ def page_settings(engine) -> None:
             logs = _create_perf_indexes(engine)
             for line in logs:
                 st.write(line)
-            st.success("완료! 캐시 비우고 다시 조회해보세요.")
+            st.success("완료! 바로 반영됩니다.")
         except Exception as e:
             st.error(f"실패: {e}")
 
@@ -3997,7 +3909,7 @@ def page_settings(engine) -> None:
         try:
             res = seed_from_accounts_xlsx(engine)
             st.success(f"완료: meta {res.get('meta', 0)}건")
-            st.cache_data.clear()
+            bump_cache_buster()  # cache-bust without global clear
             st.rerun()
         except Exception as e:
             st.error(f"동기화 실패: {e}")
@@ -4017,7 +3929,7 @@ def main():
 
     render_hero(latest)
 
-    meta = get_meta(engine)
+    meta = get_meta(engine, cache_buster=get_cache_buster())
     if meta is None or meta.empty:
         st.error("dim_account_meta가 비어있습니다. 설정/연결에서 accounts.xlsx 동기화를 먼저 해주세요.")
         return
