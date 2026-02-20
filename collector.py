@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.1 - 대용량 다운로드 헤더 추가 & DB 안정성 강화)
-- 수정사항 1: TSV 파일 다운로드 시 인증 헤더 추가 (400 Client Error 해결)
-- 수정사항 2: DB 동시 접근 충돌(Lock/Timeout) 방지를 위해 고유 UUID 임시 테이블 사용
-- 수정사항 3: 동시 작업 스레드 4 -> 2로 낮추어 DB 과부하 방지
+collector.py - 네이버 검색광고 수집기 (v9.2 - DB SSL Connection Error 완벽 해결)
+- 수정사항 1: NullPool 적용 (대기 시간 중 DB 연결 끊김으로 인한 SSL closed 에러 방지)
+- 수정사항 2: DB_URL에 sslmode=require 강제 적용
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool  # ✅ DB 연결 끊김 방지용 핵심 라이브러리 추가
 
 # -------------------------
 # 1. 환경변수 및 설정
@@ -52,8 +52,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: v9.1_STAT_REPORTS_STABLE] ===")
-print("=== 대용량 리포트 API + DB 병목 해결 ===")
+print("=== [VERSION: v9.2_STAT_REPORTS_NULLPOOL] ===")
+print("=== 대용량 리포트 API + DB SSL 락다운 해결 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
@@ -128,8 +128,14 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
 def get_engine() -> Engine:
     if not DB_URL:
         return create_engine("sqlite:///:memory:", future=True)
-    # DB 연결 끊김 방지를 위해 pool 설정 강화
-    return create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300, future=True)
+    
+    db_url = DB_URL
+    if "sslmode=" not in db_url:
+        joiner = "&" if "?" in db_url else "?"
+        db_url += f"{joiner}sslmode=require"
+        
+    # ✅ NullPool 적용: 작업 대기 중 DB 연결이 강제로 끊겨서 에러가 나는 것을 완벽 방지
+    return create_engine(db_url, poolclass=NullPool, future=True)
 
 def ensure_tables(engine: Engine):
     with engine.begin() as conn:
@@ -170,7 +176,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     
-    # ✅ DB 병렬 삽입 충돌 방지: 시간 대신 완전한 고유 난수(UUID) 사용
+    # 충돌 방지용 고유 임시 테이블 이름
     temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
     
     try:
@@ -269,13 +275,11 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
         
     # 3. TSV 다운로드 및 파싱
     try:
-        # ✅ 400 Client Error 수정: 다운로드 URL 호출 시에도 네이버 인증 헤더 추가
         dl_headers = make_headers("GET", "/report-download", customer_id)
         
         r = requests.get(download_url, headers=dl_headers, timeout=60)
         r.raise_for_status()
         
-        # 다운로드된 내용이 비어있는 경우 방지
         content = r.text.strip()
         if not content:
             return pd.DataFrame()
@@ -423,7 +427,6 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # ✅ DB 끊김 및 락(Lock) 방지를 위해 스레드를 2개로 조정 (기존 대비 속도는 떨어지지만 매우 안정적)
     max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
