@@ -546,6 +546,7 @@ def _fact_has_sales(engine, fact_table: str) -> bool:
     return "sales" in get_table_columns(engine, fact_table)
 
 
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
 def query_budget_bundle(
     _engine,
     cids: Tuple[int, ...],
@@ -1106,8 +1107,8 @@ def get_meta(_engine) -> pd.DataFrame:
 
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
     df["monthly_budget"] = pd.to_numeric(df.get("monthly_budget", 0), errors="coerce").fillna(0).astype("int64")
-    df["manager"] = df.get("manager", "").fillna("").astype(str)
-    df["account_name"] = df.get("account_name", "").fillna("").astype(str)
+    df["manager"] = df.get("manager", "").fillna("").astype(str).str.strip()
+    df["account_name"] = df.get("account_name", "").fillna("").astype(str).str.strip()
     return df
 
 
@@ -1205,29 +1206,31 @@ def render_data_freshness(engine) -> None:
 
 
 def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
-    """선택된 담당자/업체 기준으로 customer_id 리스트를 반환합니다.
-    - 둘 다 비어있으면 [] (전체 계정 의미: 쿼리에서 필터 생략)
-    """
-    try:
-        if (not manager_sel) and (not account_sel):
-            return []
-        df = meta.copy()
-
-        if manager_sel and "manager" in df.columns:
-            df = df[df["manager"].astype(str).isin([str(x) for x in manager_sel])]
-
-        if account_sel and "account_name" in df.columns:
-            df = df[df["account_name"].astype(str).isin([str(x) for x in account_sel])]
-
-        if "customer_id" not in df.columns:
-            return []
-
-        s = df["customer_id"]
-        # Robust to text/int
-        s = pd.to_numeric(s, errors="coerce").dropna().astype("int64")
-        return s.drop_duplicates().tolist()
-    except Exception:
+    """필터(담당자/계정) 선택값을 customer_id 리스트로 변환"""
+    if meta is None or meta.empty:
         return []
+    if (not manager_sel) and (not account_sel):
+        return []
+
+    df = meta.copy()
+
+    if manager_sel and "manager" in df.columns:
+        sel = [str(x).strip() for x in manager_sel if str(x).strip()]
+        if sel:
+            df = df[df["manager"].astype(str).str.strip().isin(sel)]
+
+    if account_sel and "account_name" in df.columns:
+        sel = [str(x).strip() for x in account_sel if str(x).strip()]
+        if sel:
+            df = df[df["account_name"].astype(str).str.strip().isin(sel)]
+
+    if "customer_id" not in df.columns:
+        return []
+
+    s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
+    return sorted(s.drop_duplicates().tolist())
+
+
 
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
@@ -1347,6 +1350,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         if manager_sel:
             try:
                 dfm = meta.copy()
+                # normalize (공백/개행) - 담당자/업체 필터 정확도 향상
+                dfm['manager'] = dfm.get('manager','').astype(str).fillna('').str.strip()
+                dfm['account_name'] = dfm.get('account_name','').astype(str).fillna('').str.strip()
                 if "manager" in dfm.columns and "account_name" in dfm.columns:
                     dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
                     accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
