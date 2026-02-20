@@ -477,12 +477,22 @@ def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
         conn.execute(text(sql), params or {})
 
 
-def table_exists(engine, table: str, schema: str = "public") -> bool:
+def _get_table_names_cached(engine, schema: str = "public") -> set:
+    """Inspector 호출은 매우 느립니다. 세션 단위로 table list를 캐시합니다."""
+    cache = st.session_state.setdefault("_table_names_cache", {})
+    if schema in cache:
+        return cache[schema]
     try:
         insp = inspect(engine)
-        return table in set(insp.get_table_names(schema=schema))
+        names = set(insp.get_table_names(schema=schema))
     except Exception:
-        return False
+        names = set()
+    cache[schema] = names
+    return names
+
+
+def table_exists(engine, table: str, schema: str = "public") -> bool:
+    return table in _get_table_names_cached(engine, schema=schema)
 
 
 def get_table_columns(engine, table: str, schema: str = "public") -> set:
@@ -1343,7 +1353,21 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
 
-        account_sel = r2[1].multiselect("계정", accounts, default=sv.get("account", []), key="f_account")
+        # ✅ 담당자 선택 시: 해당 담당자 계정만 노출 (네이버 관리자 UX)
+        accounts_by_mgr = accounts
+        if manager_sel:
+            try:
+                dfm = meta.copy()
+                if "manager" in dfm.columns and "account_name" in dfm.columns:
+                    dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
+                    accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
+            except Exception:
+                accounts_by_mgr = accounts
+
+        # 기존 선택값 중 유효한 것만 유지
+        prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
+
+        account_sel = r2[1].multiselect("계정", accounts_by_mgr, default=prev_acc, key="f_account")
 
         type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
 
