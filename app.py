@@ -464,7 +464,7 @@ def get_database_url() -> str:
 
 @st.cache_resource(show_spinner=False)
 def get_engine():
-    return create_engine(get_database_url(), pool_pre_ping=True, future=True)
+    return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
 
 
 def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1136,57 +1136,32 @@ def query_latest_dates(_engine) -> Dict[str, str]:
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
-    """Return latest dates for key tables (as YYYY-MM-DD strings).
+    """최근 데이터 날짜를 1회 쿼리로 가져옵니다 (왕복/로딩 체감 개선)."""
+    parts = []
+    params = {}
+    def _add(label: str, table: str):
+        if table_exists(_engine, table):
+            parts.append(f"SELECT '{label}' AS k, MAX(dt) AS dt FROM {table}")
+    _add("campaign", "fact_campaign_daily")
+    _add("keyword", "fact_keyword_daily")
+    _add("ad", "fact_ad_daily")
+    _add("bizmoney", "fact_bizmoney_daily")
 
-    NOTE:
-    - render_hero() expects keys like campaign_dt/keyword_dt/ad_dt/bizmoney_dt.
-    - For backward compatibility, legacy keys (campaign/keyword/ad/bizmoney) are also returned.
-    """
+    if not parts:
+        return {"campaign": None, "keyword": None, "ad": None, "bizmoney": None}
 
-    def _fmt(mx) -> str:
-        if mx is None:
-            return "—"
-        s = str(mx)
-        if not s.strip():
-            return "—"
-        if s in {"NaT", "nan", "None"}:
-            return "—"
-        return s[:10] if len(s) >= 10 else s
-
-    # default
-    out = {
-        "campaign_dt": "—",
-        "keyword_dt": "—",
-        "ad_dt": "—",
-        "bizmoney_dt": "—",
-        # legacy
-        "campaign": "—",
-        "keyword": "—",
-        "ad": "—",
-        "bizmoney": "—",
-    }
-
-    checks = [
-        ("campaign", "fact_campaign_daily", "dt"),
-        ("keyword", "fact_keyword_daily", "dt"),
-        ("ad", "fact_ad_daily", "dt"),
-        ("bizmoney", "fact_bizmoney_daily", "dt"),
-    ]
-
-    for k, table, col in checks:
-        try:
-            df = sql_read(_engine, f"SELECT MAX({col}) AS mx FROM {table}")
-            mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
-            v = _fmt(mx)
-            out[k] = v
-            out[f"{k}_dt"] = v
-        except Exception:
-            # keep defaults
-            continue
-
+    sql = " UNION ALL ".join(parts)
+    df = sql_read(_engine, sql, params)
+    out = {"campaign": None, "keyword": None, "ad": None, "bizmoney": None}
+    if df is None or df.empty:
+        return out
+    for _, r in df.iterrows():
+        k = str(r.get("k"))
+        out[k] = r.get("dt")
     return out
-
 
 
 def ui_badges_or_html(items, key_prefix: str = "") -> None:
