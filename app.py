@@ -86,7 +86,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.6.7 (Naver-like UI, 2026-02-20)"
+BUILD_TAG = "v8.6.10 (Bootstrap Settings Fix, 2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -3781,17 +3781,16 @@ def main():
     render_hero(latest)
 
     meta = get_meta(engine)
-    if meta is None or meta.empty:
-        st.error("dim_account_meta가 비어있습니다. 설정/연결에서 accounts.xlsx 동기화를 먼저 해주세요.")
-        return
-
-    dim_campaign = load_dim_campaign(engine)
-    type_opts = get_campaign_type_options(dim_campaign)
+    meta_ready = (meta is not None) and (not meta.empty)
 
     # --- Left nav (Naver-like) ---
     with st.sidebar:
         st.markdown("### 메뉴")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        # Bootstrap: meta가 비어있으면 설정/연결만 먼저 열어 동기화할 수 있게 합니다.
+        if (not meta_ready) and ("nav_page" not in st.session_state):
+            st.session_state["nav_page"] = "설정/연결"
         nav_items = [
             "요약(한눈에)",
             "예산/잔액",
@@ -3800,6 +3799,9 @@ def main():
             "소재",
             "설정/연결",
         ]
+        if not meta_ready:
+            st.warning("처음 1회: accounts.xlsx 동기화가 필요합니다. '설정/연결'에서 동기화 후 사용 가능합니다.")
+            nav_items = ["설정/연결"]
         nav = st.radio(
             "nav",
             nav_items,
@@ -3808,7 +3810,10 @@ def main():
             label_visibility="collapsed",
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        st.caption("• 필터 변경 즉시 반영\n• 쿼리는 캐시로 즉시 로드")
+        if meta_ready:
+            st.caption("• 필터 변경 즉시 반영\\n• 쿼리는 캐시로 즉시 로드")
+        else:
+            st.caption("• 설정/연결에서 accounts.xlsx 동기화 후 사용")
 
     # Page title (clean)
     st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
@@ -3817,6 +3822,11 @@ def main():
     # Filters (skip on settings)
     f = None
     if nav != "설정/연결":
+        if not meta_ready:
+            st.error("dim_account_meta가 비어있습니다. 좌측 메뉴의 '설정/연결'에서 accounts.xlsx 동기화를 먼저 해주세요.")
+            return
+        dim_campaign = load_dim_campaign(engine)
+        type_opts = get_campaign_type_options(dim_campaign)
         f = build_filters(meta, type_opts, engine)
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
