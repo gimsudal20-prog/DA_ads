@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import io
+import math
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -205,6 +206,36 @@ section[data-testid="stSidebar"] .block-container{
   padding: 12px 14px;
 }
 
+
+/* Section title (compact, admin-like) */
+.nv-sec-title{
+  font-size: 16px;
+  font-weight: 900;
+  margin: 8px 0 8px 0;
+  letter-spacing: -0.2px;
+}
+
+/* Slightly wider like admin */
+.main .block-container{
+  max-width: 1320px;
+}
+
+/* Compact pills to align with inputs */
+.nv-pill{
+  display:inline-flex;
+  align-items:center;
+  height: 38px;
+  padding: 0 10px;
+}
+
+/* Compact select/text input heights (safe baseweb selectors) */
+div[data-baseweb="select"] > div{
+  min-height: 38px !important;
+}
+input[type="text"], textarea{
+  min-height: 38px !important;
+}
+
 /* KPI row (Naver summary style) */
 .kpi-row{
   display:grid;
@@ -303,6 +334,14 @@ def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
         """,
         unsafe_allow_html=True,
     )
+def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_prefix: str = "") -> None:
+    """Fallback timeseries renderer (keeps UI stable)."""
+    view = ts.copy()
+    cols = [c for c in ["dt", "imp", "clk", "cost", "conv", "sales"] if c in view.columns]
+    if cols:
+        view = view[cols]
+    st.dataframe(view, use_container_width=True, height=360)
+
 
 
 
@@ -2403,7 +2442,38 @@ def _pct_change(curr: float, prev: float) -> Optional[float]:
 
 
 def _pct_to_str(p: Optional[float]) -> str:
-    return "—" if p is None else f"{p:+.1f}%"
+    """Signed percent string. Robust to None/NaN."""
+    try:
+        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
+            return "—"
+        return f"{float(p):+.1f}%"
+    except Exception:
+        return "—"
+
+
+def _pct_to_arrow(p: Optional[float]) -> str:
+    """Arrow percent string (▲/▼). Robust to None/NaN."""
+    try:
+        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
+            return "—"
+        p = float(p)
+        if p > 0:
+            return f"▲ {abs(p):.1f}%"
+        if p < 0:
+            return f"▼ {abs(p):.1f}%"
+        return f"• {abs(p):.1f}%"
+    except Exception:
+        return "—"
+
+
+def _fmt_point(p: Optional[float]) -> str:
+    """Point change string like +1.2p. Robust to None/NaN."""
+    try:
+        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
+            return "—"
+        return f"{float(p):+.1f}p"
+    except Exception:
+        return "—"
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
@@ -2461,7 +2531,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
         orientation="h",
         color="dir",
         color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
-        text=d["change_pct"].map(lambda v: f"{v:+.1f}%"),
+        text=d["change_pct"].map(_pct_to_str),
     )
 
     # 0 기준선
@@ -2586,7 +2656,7 @@ def render_period_compare_panel(
 
             _delta_chip("전환", f"{format_number_commas(dconv)} ({_pct_to_str(dconv_pct)})", dconv_pct),
 
-            _delta_chip("ROAS", f"{droas_p:+.1f}p ({_pct_to_str(droas_pct)})", droas_p),
+            _delta_chip("ROAS", f"{_fmt_point(droas_p)} ({_pct_to_str(droas_pct)})", droas_p),
 
         ]
 
@@ -2615,7 +2685,7 @@ def render_period_compare_panel(
                 ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_pct_to_str(_pct_change(cur['clk'], base['clk']))}"],
                 ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_pct_to_str(_pct_change(cur['conv'], base['conv']))}"],
                 ["매출", format_currency(cur["sales"]), format_currency(base["sales"]), _pct_to_str(_pct_change(cur["sales"], base["sales"]))],
-                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{(cur['roas']-base['roas']):+.1f}p"],
+                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{_fmt_point((cur.get('roas',0.0) or 0.0) - (base.get('roas',0.0) or 0.0))}"],
             ],
             columns=["지표", "현재", "비교기간", "증감"],
         )
@@ -2654,18 +2724,16 @@ def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
 
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
-    if not f.get("ready", False):
-        st.info("왼쪽 사이드바에서 필터를 설정한 뒤 **적용**을 눌러주세요.")
+    """요약(한눈에): 네이버 리포트 느낌으로 KPI를 먼저 보여주고, 상세는 아래로."""
+    if not f:
+        st.info("검색조건을 설정하면 요약이 표시됩니다.")
         return
 
-    st.markdown("## 👀 요약 (한눈에)")
+    st.markdown("<div class='nv-sec-title'>요약</div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
-    cids = tuple(f.get("selected_customer_ids", []) or [])
+    cids = tuple(f.get("customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
-
-    # KPI (campaign aggregate)
-    cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
 
     cmp_mode = st.radio(
         "비교 기준",
@@ -2674,79 +2742,62 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         index=1,
         key="ov_cmp_mode",
     )
+
+    cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     b1, b2 = _period_compare_range(f["start"], f["end"], cmp_mode)
     base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
 
-    def _delta(val: float, base_val: float):
-        d = float(val) - float(base_val)
-        p = _pct_change(float(val), float(base_val))
-        return d, p
+    def _delta_pct(key: str) -> Optional[float]:
+        try:
+            return _pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
+        except Exception:
+            return None
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    _, p_cost = _delta(cur["cost"], base["cost"])
-    _, p_sales = _delta(cur["sales"], base["sales"])
-    _, p_conv = _delta(cur["conv"], base["conv"])
-    _, p_cpa = _delta(cur["cpa"], base["cpa"])
-    _, p_roas = _delta(cur["roas"], base["roas"])
+    def _kpi_html(label: str, value: str, delta_text: str, delta_val: Optional[float]) -> str:
+        cls = "neu"
+        try:
+            if delta_val is None or (isinstance(delta_val, float) and math.isnan(delta_val)):
+                cls = "neu"
+            elif float(delta_val) > 0:
+                cls = "pos"
+            elif float(delta_val) < 0:
+                cls = "neg"
+            else:
+                cls = "neu"
+        except Exception:
+            cls = "neu"
 
-    with k1:
-        ui_metric_or_stmetric("광고비", format_currency(cur["cost"]), f"{cmp_mode} {p_cost:+.1f}%", key="ov_cost")
-    with k2:
-        ui_metric_or_stmetric("전환매출", format_currency(cur["sales"]), f"{cmp_mode} {p_sales:+.1f}%", key="ov_sales")
-    with k3:
-        ui_metric_or_stmetric("전환", format_number_commas(cur["conv"]), f"{cmp_mode} {p_conv:+.1f}%", key="ov_conv")
-    with k4:
-        ui_metric_or_stmetric("CPA", format_currency(cur["cpa"]), f"{cmp_mode} {p_cpa:+.1f}%", key="ov_cpa")
-    with k5:
-        ui_metric_or_stmetric("ROAS", f"{cur['roas']:.0f}%", f"{cmp_mode} {p_roas:+.1f}%", key="ov_roas")
+        return f"""<div class='kpi'>
+            <div class='k'>{label}</div>
+            <div class='v'>{value}</div>
+            <div class='d {cls}'>{delta_text}</div>
+        </div>"""
+
+    items = [
+        ("광고비", format_currency(cur.get("cost", 0.0)), f"{cmp_mode} {_pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost")),
+        ("전환매출", format_currency(cur.get("sales", 0.0)), f"{cmp_mode} {_pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales")),
+        ("전환", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {_pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv")),
+        ("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{cmp_mode} {_pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas")),
+        ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {_pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
+        ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {_pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
+    ]
+
+    kpi_html = "<div class='kpi-row'>" + "".join(_kpi_html(a, b, c, d) for a, b, c, d in items) + "</div>"
+    st.markdown(kpi_html, unsafe_allow_html=True)
 
     st.divider()
 
+    # 상세(추세/Top) - 오류가 나도 KPI는 유지
     try:
         ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        if ts is None or ts.empty:
+            st.info("표시할 데이터가 없습니다.")
+            return
+
+        st.markdown("<div class='nv-sec-title'>추세</div>", unsafe_allow_html=True)
+        render_timeseries_chart(ts, entity="campaign", key_prefix="ov_ts")
     except Exception:
-        ts = pd.DataFrame()
-
-    if ts is not None and not ts.empty:
-        metric_sel = st.radio(
-            "트렌드 지표",
-            ["광고비", "전환", "전환매출", "ROAS"],
-            horizontal=True,
-            index=0,
-            key="ov_trend_metric",
-        )
-        ts2 = ts.copy()
-        ts2 = add_rates(ts2)
-        if metric_sel == "광고비":
-            ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
-        elif metric_sel == "전환":
-            ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
-        elif metric_sel == "전환매출":
-            ch = _chart_timeseries(ts2, "sales", "전환매출(원)", y_format=",.0f", height=260)
-        else:
-            sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
-            ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
-            ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
-
-        if ch is not None:
-            render_chart(ch)
-
-    render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="ov", expanded=False)
-    st.divider()
-
-    st.markdown("### ✅ 다음 액션 힌트")
-    hints = []
-    if cur["cost"] > 0 and cur["roas"] < 200:
-        hints.append("ROAS가 낮습니다 → **전환매출이 낮은 캠페인/키워드**부터 정리해보세요.")
-    if cur["conv"] > 0 and cur["cpa"] > 30000:
-        hints.append("CPA가 높은 편입니다 → **비의도 키워드/소재**를 제외키워드로 정리하면 효율이 빠르게 회복됩니다.")
-    if cur["clk"] > 0 and cur["ctr"] < 1.0:
-        hints.append("CTR이 낮습니다 → **소재 A/B**(헤드라인/설명/확장소재)를 우선 돌려보세요.")
-    if not hints:
-        hints.append("지표가 안정적입니다 → 예산을 늘릴 계정/캠페인을 찾기 위해 **ROAS 상위 캠페인**을 확인해보세요.")
-    st.write("• " + "\n• ".join(hints))
-
+        st.info("추세 데이터를 불러오는 중 오류가 발생했습니다. (KPI는 정상 표시)")
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 / 잔액 관리")
