@@ -86,7 +86,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.6.0 (Naver-like UI, 2026-02-20)"
+BUILD_TAG = "v8.6.6 (Naver-like UI, 2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -149,7 +149,7 @@ section[data-testid="stSidebar"] .block-container{
 .main .block-container{
   padding-top: 14px !important;
   padding-bottom: 40px !important;
-  max-width: 1200px;
+  max-width: 1600px;
 }
 
 /* Topbar */
@@ -162,7 +162,7 @@ section[data-testid="stSidebar"] .block-container{
   margin: -14px -1px 12px -1px;
 }
 .nv-topbar .inner{
-  max-width: 1200px; margin: 0 auto;
+  max-width: 1600px; margin: 0 auto;
   display:flex; align-items:center; justify-content:space-between;
   padding: 0 6px;
 }
@@ -295,6 +295,51 @@ div[role="radiogroup"] > label:hover{border-color: var(--nv-line2);}
 .stSelectbox, .stMultiSelect, .stTextInput, .stDateInput{
   font-size: 12px;
 }
+
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 </style>
 
 """
@@ -600,7 +645,52 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
             line-height: 1.2 !important;
             min-height: 28px !important;
         }
-        </style>
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+</style>
         """,
         unsafe_allow_html=True,
     )
@@ -1171,8 +1261,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             d1 = sv.get("d1", default_start)
 
         # show read-only dates (like admin)
-        r1[1].markdown(f"<div class='nv-pill'>시작일 · <b>{d1}</b></div>", unsafe_allow_html=True)
-        r1[2].markdown(f"<div class='nv-pill'>종료일 · <b>{d2}</b></div>", unsafe_allow_html=True)
+        r1[1].markdown(f"<div class='nv-field'><div class='nv-lbl'>시작일</div><div class='nv-ro'>{d1}</div></div>", unsafe_allow_html=True)
+        r1[2].markdown(f"<div class='nv-field'><div class='nv-lbl'>종료일</div><div class='nv-ro'>{d2}</div></div>", unsafe_allow_html=True)
 
     q = r1[3].text_input("검색", sv.get("q", ""), key="f_q", placeholder="계정/키워드/소재 검색")
 
