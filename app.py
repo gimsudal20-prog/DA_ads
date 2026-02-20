@@ -1469,8 +1469,8 @@ def render_data_freshness(engine) -> None:
 
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, container=None) -> Dict:
-    """Filters live in the sidebar to keep the main report clean.
-    '적용'을 누르기 전까지는 조회 쿼리를 거의 실행하지 않습니다.
+    """Auto-apply filters (no '적용' button).
+    The app stays fast by leaning on cached query bundles instead of blocking on a submit button.
     """
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
@@ -1487,35 +1487,31 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, contain
         "top_n_keyword": 300,
         "top_n_ad": 200,
         "top_n_campaign": 200,
-        "prefetch_warm": True,
     }
 
     if "filters_applied" not in st.session_state:
         st.session_state["filters_applied"] = defaults.copy()
-    if "filters_ready" not in st.session_state:
-        st.session_state["filters_ready"] = False
 
     fa = dict(st.session_state.get("filters_applied", defaults))
 
     # -----------------------------
-    # Sidebar UI
+    # UI (rendered into provided container; default: st.sidebar)
     # -----------------------------
-    # Sidebar UI (rendered into provided container; default: st.sidebar)
     target = container if container is not None else st.sidebar
     with target:
         st.markdown("### 🔎 필터")
-        st.caption("필터 변경 후 **적용**을 눌러야 조회가 시작됩니다.")
 
         q = st.text_input(
             "업체명 검색",
             value=fa.get("q", ""),
             placeholder="예: 실리콘플러스",
+            key="flt_q",
         )
 
         manager_opts = sorted(
             [x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
         )
-        manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []))
+        manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []), key="flt_mgr")
 
         # 업체 옵션은 '담당자 선택'에 따라 좁혀서 보여줌
         meta_for_opts = meta.copy()
@@ -1553,6 +1549,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, contain
                 "캠페인 유형",
                 type_opts or [],
                 default=list(fa.get("type_sel", tuple())),
+                key="flt_type",
             )
         )
 
@@ -1562,6 +1559,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, contain
             index=["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(
                 fa.get("period_mode", "어제")
             ),
+            key="flt_period_mode",
         )
 
         if period_mode == "오늘":
@@ -1591,6 +1589,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, contain
             d1d2 = st.date_input(
                 "기간 선택",
                 value=(fa.get("d1", default_start), fa.get("d2", default_end)),
+                key="flt_d1d2",
             )
             if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
                 d1, d2 = d1d2[0], d1d2[1]
@@ -1600,69 +1599,34 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, contain
             d1, d2 = default_start, default_end
 
         with st.expander("⚙️ 고급", expanded=False):
-            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50)
-            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50)
-            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50)
-            prefetch_warm = st.checkbox(
-                "빠른 전환(미리 로딩)",
-                value=bool(fa.get("prefetch_warm", True)),
-                help="적용을 누를 때 캠페인/키워드/소재 데이터를 미리 불러와서 탭 전환이 빠르게 됩니다.",
-            )
+            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50, key="flt_topk_kw")
+            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50, key="flt_topk_ad")
+            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50, key="flt_topk_cp")
 
-        apply_btn = st.button("적용", use_container_width=True)
+    # -----------------------------
+    # Auto-apply: store filter state (no manual submit)
+    # -----------------------------
+    new_filters = {
+        "q": q,
+        "manager": manager_sel,
+        "account": account_sel,
+        "type_sel": type_sel,
+        "period_mode": period_mode,
+        "d1": d1,
+        "d2": d2,
+        "top_n_keyword": int(top_n_keyword),
+        "top_n_ad": int(top_n_ad),
+        "top_n_campaign": int(top_n_campaign),
+    }
 
-    if apply_btn:
-        st.session_state["filters_ready"] = True
-        st.session_state["filters_applied"] = {
-            "q": q,
-            "manager": manager_sel,
-            "account": account_sel,
-            "type_sel": type_sel,
-            "period_mode": period_mode,
-            "d1": d1,
-            "d2": d2,
-            "top_n_keyword": top_n_keyword,
-            "top_n_ad": top_n_ad,
-            "top_n_campaign": top_n_campaign,
-            "prefetch_warm": prefetch_warm,
-        }
-
-        # ✅ 탭 전환 속도 개선: 적용 시 데이터 미리 로딩(캐시 워밍)
-        if prefetch_warm and engine is not None:
-            try:
-                with st.spinner("빠른 전환을 위해 데이터를 미리 불러오는 중..."):
-                    _df = meta.copy()
-                    if manager_sel:
-                        _df = _df[_df["manager"].isin(manager_sel)]
-                    if account_sel:
-                        _df = _df[_df["account_name"].isin(account_sel)]
-                    q_ = str(q).strip() if q is not None else ""
-                    if q_:
-                        _df = _df[_df["account_name"].astype(str).str.contains(q_, case=False, na=False)]
-                    _cids = tuple(_df["customer_id"].dropna().astype(int).tolist()) if len(_df) < len(meta) else tuple()
-
-                    _type_sel = tuple(type_sel or tuple())
-                    _d1, _d2 = d1, d2
-
-                    # 캠페인
-                    query_campaign_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_campaign), top_k=5)
-                    query_campaign_timeseries(engine, _d1, _d2, _cids, _type_sel)
-
-                    # 키워드
-                    query_keyword_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_keyword))
-                    query_keyword_timeseries(engine, _d1, _d2, _cids, _type_sel)
-
-                    # 소재
-                    query_ad_bundle(engine, _d1, _d2, _cids, _type_sel, topn_cost=int(top_n_ad), top_k=5)
-                    query_ad_timeseries(engine, _d1, _d2, _cids, _type_sel)
-            except Exception:
-                # 워밍 실패해도 본 조회는 계속
-                pass
+    # Only overwrite session state when changed (avoids extra work)
+    if new_filters != st.session_state.get("filters_applied", defaults):
+        st.session_state["filters_applied"] = new_filters
 
     f = dict(st.session_state.get("filters_applied", defaults))
     f["start"] = f.get("d1", default_start)
     f["end"] = f.get("d2", default_end)
-    f["ready"] = bool(st.session_state.get("filters_ready", False))
+    f["ready"] = True  # always ready (no '적용' gating)
 
     # selected_customer_ids: 비어있으면 전체(쿼리 필터 생략)
     df = meta.copy()
@@ -3978,17 +3942,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🧹 캐시 비우기", use_container_width=True):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.session_state.pop("_table_cols_cache", None)
-            st.session_state.pop("_table_names_cache", None)
-            st.success("캐시를 비웠습니다.")
-            st.rerun()
-    with c2:
-        st.caption("조회가 이상하면 캐시 비우고 다시 실행")
+    st.caption("필터/페이지 전환은 자동 적용됩니다. 데이터가 갱신되면 TTL 캐시로 자동 반영됩니다.")
 
     try:
         sql_read(engine, "SELECT 1 AS ok")
@@ -4073,17 +4027,12 @@ def main():
     active = get_active_page_slug()
     active = render_sidebar_nav(active)
 # Filters live in main (expander) to remove Streamlit sidebar feel.
-    with st.expander("필터", expanded=not st.session_state.get("filters_ready", False)):
+    with st.expander("필터", expanded=False):
         f = build_filters(meta, type_opts, engine, container=st.container())
 
-    latest = get_latest_dates(engine)
     render_shell(active, f, latest)
 
     render_filter_summary_bar(f, meta)
-
-    if active != "settings" and not f.get("ready", False):
-        st.info("필터에서 **적용**을 누르면 조회가 시작됩니다. (초기 로딩 속도 개선)")
-        return
 
     if active == "overview":
         page_overview(meta, engine, f)
