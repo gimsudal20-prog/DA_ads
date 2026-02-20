@@ -1037,6 +1037,33 @@ def render_data_freshness(engine) -> None:
 
 
 
+
+def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
+    """선택된 담당자/업체 기준으로 customer_id 리스트를 반환합니다.
+    - 둘 다 비어있으면 [] (전체 계정 의미: 쿼리에서 필터 생략)
+    """
+    try:
+        if (not manager_sel) and (not account_sel):
+            return []
+        df = meta.copy()
+
+        if manager_sel and "manager" in df.columns:
+            df = df[df["manager"].astype(str).isin([str(x) for x in manager_sel])]
+
+        if account_sel and "account_name" in df.columns:
+            df = df[df["account_name"].astype(str).isin([str(x) for x in account_sel])]
+
+        if "customer_id" not in df.columns:
+            return []
+
+        s = df["customer_id"]
+        # Robust to text/int
+        s = pd.to_numeric(s, errors="coerce").dropna().astype("int64")
+        return s.drop_duplicates().tolist()
+    except Exception:
+        return []
+
+
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     """Naver-like '검색조건' panel. No '적용' 버튼: 변경 즉시 반영되지만,
     쿼리는 cache_data로 막아서 체감 속도를 확보합니다.
