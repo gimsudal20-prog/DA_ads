@@ -45,15 +45,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # -----------------------------
-# Cache-buster (avoid global cache clear)
-# -----------------------------
-def get_cache_buster() -> int:
-    return int(st.session_state.get("__cache_buster", 0))
-
-def bump_cache_buster() -> None:
-    st.session_state["__cache_buster"] = int(st.session_state.get("__cache_buster", 0)) + 1
-
-# -----------------------------
 # Streamlit cache hashing (Engine)
 # -----------------------------
 _HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
@@ -94,7 +85,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v7.9.0 (2026-02-19)"
+BUILD_TAG = "v8.6.0 (Naver-like UI, 2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -108,584 +99,249 @@ TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 # -----------------------------
 GLOBAL_UI_CSS = """
 <style>
+/* Naver-like admin UI shell: compact, table-first, minimal cards */
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-/* NanumSquare (fallback if blocked) */
-@import url("https://cdn.jsdelivr.net/gh/moonspam/NanumSquare@master/nanumsquare.css");
 
 :root{
-  --bg:#F5F6F7;
-  --panel:#FFFFFF;
-  --text:#222222;
-  --muted:#6B7280;
-  --line:#E5E7EB;
-  --primary:#03C75A;         /* NAVER green */
-  --primary-2:#00B14F;
-  --pos:#03C75A;
-  --neg:#EF4444;
-  --radius:12px;
-  --shadow:0 10px 24px rgba(0,0,0,0.06);
-  --shadow-sm:0 6px 14px rgba(0,0,0,0.05);
-
-  --font-body: "Pretendard","NanumSquare","Apple SD Gothic Neo","Malgun Gothic",system-ui,-apple-system,sans-serif;
-  --font-display: "Pretendard","NanumSquare","Apple SD Gothic Neo","Malgun Gothic",system-ui,-apple-system,sans-serif;
+  --nv-bg:#F5F6F7;
+  --nv-panel:#FFFFFF;
+  --nv-line:rgba(0,0,0,.08);
+  --nv-line2:rgba(0,0,0,.12);
+  --nv-text:#1A1C20;
+  --nv-muted:rgba(26,28,32,.62);
+  --nv-green:#03C75A;
+  --nv-blue:#2563EB;
+  --nv-red:#EF4444;
+  --nv-shadow:0 2px 10px rgba(0,0,0,.06);
+  --nv-radius:10px;
 }
 
-html, body, .stApp{
-  background: var(--bg) !important;
-  color: var(--text) !important;
-  font-family: var(--font-body) !important;
+/* Kill Streamlit chrome */
+#MainMenu, footer {visibility:hidden;}
+header[data-testid="stHeader"]{height:0px;}
+div[data-testid="stToolbar"]{visibility:hidden;height:0;}
+
+/* Page background + base font */
+html, body, [data-testid="stAppViewContainer"]{
+  background: var(--nv-bg) !important;
+  font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+  color: var(--nv-text);
 }
 
-a{ color: var(--primary-2); text-decoration:none; }
-a:hover{ text-decoration:underline; }
+/* Sidebar as Naver left nav */
+section[data-testid="stSidebar"]{
+  background: var(--nv-panel) !important;
+  border-right: 1px solid var(--nv-line);
+}
+section[data-testid="stSidebar"] .stMarkdown, 
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] div{
+  font-size: 13px;
+}
+section[data-testid="stSidebar"] .block-container{
+  padding-top: 10px !important;
+}
+[data-testid="stSidebarCollapsedControl"]{display:none;}
+
+/* Main container spacing (compact) */
+.main .block-container{
+  padding-top: 14px !important;
+  padding-bottom: 40px !important;
+  max-width: 1200px;
+}
+
+/* Topbar */
+.nv-topbar{
+  position: sticky; top: 0; z-index: 999;
+  background: rgba(245,246,247,.86);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--nv-line);
+  padding: 10px 0 10px 0;
+  margin: -14px -1px 12px -1px;
+}
+.nv-topbar .inner{
+  max-width: 1200px; margin: 0 auto;
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 0 6px;
+}
+.nv-brand{
+  display:flex; align-items:center; gap:10px;
+  font-weight: 800; font-size: 16px;
+}
+.nv-dot{
+  width:10px;height:10px;border-radius:50%;
+  background: var(--nv-green);
+  box-shadow: 0 0 0 3px rgba(3,199,90,.14);
+}
+.nv-sub{
+  font-weight: 600; font-size: 12px; color: var(--nv-muted);
+}
+.nv-pill{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 10px; border-radius:999px;
+  background: var(--nv-panel);
+  border: 1px solid var(--nv-line);
+  box-shadow: var(--nv-shadow);
+  font-size: 12px; color: var(--nv-muted);
+}
 
 /* Panels */
-.panel{
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  padding: 14px 16px;
+.nv-panel{
+  background: var(--nv-panel);
+  border: 1px solid var(--nv-line);
+  border-radius: var(--nv-radius);
+  box-shadow: var(--nv-shadow);
 }
-
-/* Hero (NAVER-like: clean, flat, subtle accent) */
-.hero{
-  margin-top: 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--panel);
-  padding: 16px 18px;
-  box-shadow: var(--shadow-sm);
-  display:flex;
-  gap:16px;
-  align-items:stretch;
-}
-.hero-left{ flex:1; min-width: 520px; }
-.hero-right{ width: 420px; display:flex; flex-direction:column; justify-content:center; }
-.hero-kicker{
-  display:inline-flex; align-items:center; gap:8px;
-  font-size:12px; letter-spacing:.12em; text-transform:uppercase;
-  color: rgba(34,34,34,0.55);
-  font-weight: 900;
-}
-.hero-kicker::before{
-  content:"";
-  width:10px; height:10px; border-radius:999px;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px rgba(3,199,90,0.14);
-}
-.hero-title{
-  margin: 10px 0 2px 0;
-  font-size: 30px;
-  line-height: 1.18;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-}
-.hero-sub{
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 14px;
-}
-.hero-badges{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-.badge{
-  display:inline-flex; align-items:center; gap:8px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  border:1px solid var(--line);
-  background: #FAFAFB;
-  font-size: 12px;
-  color: rgba(34,34,34,0.75);
-}
-.freshness-title{
-  font-size: 12px;
-  color: rgba(34,34,34,0.60);
-  margin-bottom: 8px;
-  font-weight: 900;
-  letter-spacing: .08em;
-}
-.freshness-pills{
-  display:flex;
-  flex-wrap:wrap;
-  justify-content:flex-start;
-  gap:8px;
-}
-.pill{
-  display:inline-flex; align-items:center; gap:8px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: #FFFFFF;
-  font-size: 12px;
-  color: rgba(34,34,34,0.78);
-  white-space: nowrap;
-}
-.dot{
-  width:8px; height:8px; border-radius:999px;
-}
-.dot.on{ background: var(--primary); box-shadow: 0 0 0 3px rgba(3,199,90,0.14); }
-.dot.off{ background: #CBD5E1; box-shadow: 0 0 0 3px rgba(203,213,225,0.22); }
-
-/* KPI grid (flat, dense like NAVER) */
-.da-kpi-grid{
-  display:grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 10px;
-}
-.da-kpi{
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
+.nv-panel .hd{
   padding: 12px 14px;
-  position: relative;
-  overflow:hidden;
+  border-bottom: 1px solid var(--nv-line);
+  display:flex; align-items:center; justify-content:space-between;
 }
-.da-kpi::before{
-  content:"";
-  position:absolute;
-  left:0; top:0; bottom:0;
-  width: 4px;
-  background: rgba(3,199,90,0.55);
+.nv-panel .hd .t{
+  font-size: 14px; font-weight: 800;
 }
-.da-kpi .k{ font-size: 12px; color: rgba(34,34,34,0.58); font-weight: 800; }
-.da-kpi .v{ margin-top: 6px; font-family: var(--font-display); font-weight: 900; font-size: 22px; color: rgba(34,34,34,0.92); letter-spacing:-0.01em; }
-.da-kpi .d{ margin-top: 6px; font-size: 12px; color: rgba(34,34,34,0.60); font-weight: 800; }
-.da-kpi .d.pos{ color: var(--pos); }
-.da-kpi .d.neg{ color: var(--neg); }
-.da-kpi .d.neu{ color: rgba(34,34,34,0.55); }
-
-/* Tables: cleaner grid */
-div[data-testid="stDataFrame"]{
-  border: 1px solid var(--line) !important;
-  border-radius: var(--radius) !important;
-  overflow:hidden !important;
-  box-shadow: var(--shadow-sm) !important;
-}
-div[data-testid="stDataFrame"] *{
-  font-family: var(--font-body) !important;
+.nv-panel .bd{
+  padding: 12px 14px;
 }
 
-/* Compact buttons (NAVER-ish) */
-.stButton>button, .stDownloadButton>button{
-  border-radius: 10px !important;
-  border: 1px solid var(--line) !important;
-  background: #FFFFFF !important;
-  color: rgba(34,34,34,0.90) !important;
-  font-weight: 800 !important;
-  padding: 0.55rem 0.85rem !important;
+/* KPI row (Naver summary style) */
+.kpi-row{
+  display:grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
 }
-.stButton>button:hover, .stDownloadButton>button:hover{
-  border-color: rgba(3,199,90,0.45) !important;
-  box-shadow: 0 8px 18px rgba(3,199,90,0.10) !important;
+.kpi{
+  background: var(--nv-panel);
+  border: 1px solid var(--nv-line);
+  border-radius: 10px;
+  padding: 10px 12px;
 }
-
-/* Expander */
-details[data-testid="stExpander"]{
-  border: 1px solid var(--line) !important;
-  border-radius: var(--radius) !important;
-  background: var(--panel) !important;
-  box-shadow: var(--shadow-sm) !important;
-}
-details[data-testid="stExpander"] summary{
-  font-weight: 900 !important;
-  color: rgba(34,34,34,0.86) !important;
-}
-</style>
-"""
-
-
-SHELL_UI_CSS = r"""
-<style>
-:root{
-  --bg:#F5F6F7;
-  --panel:#FFFFFF;
-  --text:#222222;
-  --muted:#6B7280;
-  --line:#E5E7EB;
-  --primary:#03C75A;
-  --primary-2:#00B14F;
-  --good:#03C75A;
-  --bad:#EF4444;
-  --shadow:0 10px 24px rgba(0,0,0,0.06);
-  --shadow-sm:0 6px 14px rgba(0,0,0,0.05);
-  --radius:12px;
+.kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
+.kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
+.kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
+.kpi .d.pos{color:var(--nv-red);}
+.kpi .d.neg{color:var(--nv-blue);}
+.kpi .chip{
+  font-size:11px; padding:2px 6px; border-radius:999px;
+  border:1px solid var(--nv-line); color:var(--nv-muted);
 }
 
-html, body, .stApp{ background: var(--bg) !important; }
-
-/* Streamlit chrome off */
-header[data-testid="stHeader"]{ display:none !important; }
-div[data-testid="stToolbar"]{ display:none !important; }
-div[data-testid="stDecoration"]{ display:none !important; }
-#MainMenu{ visibility:hidden; }
-footer{ visibility:hidden; }
-
-/* Sidebar = NAVER-like menu */
-section[data-testid="stSidebar"]{
-  display:block !important;
-  width: 248px !important;
-  background: var(--panel) !important;
-  border-right: 1px solid var(--line) !important;
-  padding-top: 56px !important; /* topbar height */
-}
-section[data-testid="stSidebar"] > div{
-  padding-top: 8px !important;
-}
-[data-testid="stSidebarNav"]{ display:none !important; }
-[data-testid="collapsedControl"]{ display:none !important; }
-
-/* Sidebar radio as menu items */
-section[data-testid="stSidebar"] div[role="radiogroup"]{
-  gap: 2px !important;
-}
-section[data-testid="stSidebar"] div[data-baseweb="radio"]{
-  border-radius: 10px !important;
-  padding: 10px 12px !important;
-  margin: 0 10px !important;
-  border: 1px solid transparent !important;
-  background: transparent !important;
-}
-section[data-testid="stSidebar"] div[data-baseweb="radio"]:hover{
-  background: rgba(3,199,90,0.08) !important;
-}
-section[data-testid="stSidebar"] div[data-baseweb="radio"][aria-checked="true"]{
-  background: rgba(3,199,90,0.12) !important;
-  border-color: rgba(3,199,90,0.22) !important;
-  position: relative;
-}
-section[data-testid="stSidebar"] div[data-baseweb="radio"][aria-checked="true"]::before{
-  content:"";
-  position:absolute;
-  left:0; top:8px; bottom:8px;
-  width:4px;
+/* Tab strip look */
+div[role="radiogroup"] > label{
+  border: 1px solid var(--nv-line);
+  background: var(--nv-panel);
   border-radius: 8px;
-  background: var(--primary);
+  padding: 6px 10px;
+  margin-right: 6px;
 }
-section[data-testid="stSidebar"] div[data-baseweb="radio"] > div:first-child{
-  display:none !important; /* hide radio dot */
+div[role="radiogroup"] > label:hover{border-color: var(--nv-line2);}
+
+/* Dataframe table compact */
+[data-testid="stDataFrame"]{
+  border: 1px solid var(--nv-line);
+  border-radius: 10px;
+  overflow: hidden;
 }
-section[data-testid="stSidebar"] label{
-  font-weight: 900 !important;
-  color: rgba(34,34,34,0.86) !important;
-}
-section[data-testid="stSidebar"] small{
-  color: rgba(34,34,34,0.55) !important;
+[data-testid="stDataFrame"] *{
+  font-size: 12px !important;
 }
 
-/* Main padding (no extra left padding; sidebar already pushes layout) */
-.block-container{
-  max-width: 1480px !important;
-  padding-top: 72px !important; /* make room for topbar */
-  padding-left: 22px !important;
-  padding-right: 22px !important;
+/* Buttons -> compact */
+.stButton > button{
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: var(--nv-panel);
+  padding: 6px 10px;
+  font-weight: 800;
+}
+.stButton > button:hover{
+  border-color: var(--nv-line2);
 }
 
-/* Topbar (NAVER-ish) */
-.da-topbar{
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: 56px;
-  z-index: 9999;
-  background: rgba(255,255,255,0.96);
-  backdrop-filter: saturate(180%) blur(12px);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
-  border-bottom: 1px solid var(--line);
-}
-.da-topbar .inner{
-  max-width: 1480px;
-  margin: 0 auto;
-  height: 56px;
-  display:flex;
-  align-items:center;
-  gap:12px;
-  padding: 0 22px;
-}
-.da-brand{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  line-height:1;
-}
-.da-brand .logo{
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  background: var(--primary);
-  box-shadow: 0 0 0 4px rgba(3,199,90,0.12);
-}
-.da-brand .t{
-  font-weight: 950;
-  font-size: 14px;
-  color: var(--text);
-  letter-spacing:-0.01em;
-}
-.da-brand .s{
+/* Inputs compact */
+.stSelectbox, .stMultiSelect, .stTextInput, .stDateInput{
   font-size: 12px;
-  color: var(--muted);
-  margin-left: 4px;
-}
-.da-pill{
-  display:inline-flex;
-  align-items:center;
-  gap:8px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: #FFFFFF;
-  border: 1px solid var(--line);
-  font-size: 12px;
-  color: rgba(34,34,34,0.70);
-  white-space: nowrap;
-}
-.da-dot{
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--primary);
-}
-
-/* Watermark (debug) */
-.da-watermark{
-  position: fixed;
-  left: 18px;
-  bottom: 12px;
-  z-index: 9999;
-  font-size: 11px;
-  color: rgba(34,34,34,0.36);
 }
 </style>
+
 """
-
-
-def _get_query_param(name: str, default: str = "") -> str:
-    """Compatible query-param reader for multiple Streamlit versions."""
-    try:
-        qp = st.query_params  # Streamlit >= 1.30
-        val = qp.get(name, default)
-        if isinstance(val, list):
-            return val[0] if val else default
-        return str(val) if val is not None else default
-    except Exception:
-        qp = st.experimental_get_query_params()
-        val = qp.get(name, [default])
-        if isinstance(val, list):
-            return str(val[0]) if val else default
-        return str(val) if val is not None else default
-
-
-def _set_query_param(name: str, value: str) -> None:
-    try:
-        st.query_params[name] = value
-    except Exception:
-        st.experimental_set_query_params(**{name: value})
-
-
-def get_active_page_slug(default: str = "overview") -> str:
-    p = (_get_query_param("p", default) or default).strip().lower()
-    allowed = {"overview", "budget", "campaign", "keyword", "ad", "settings"}
-    return p if p in allowed else default
-
-
-def render_sidebar_nav(active: str) -> str:
-    """Left nav using st.sidebar widgets (same-page, NAVER-ish)."""
-    nav_items = [
-        ("overview", "요약"),
-        ("budget", "예산/잔액"),
-        ("campaign", "캠페인"),
-        ("keyword", "키워드"),
-        ("ad", "소재"),
-        ("settings", "설정"),
-    ]
-    allowed = [s for s, _ in nav_items]
-
-    # URL param wins (shareable)
-    qp = get_active_page_slug(active or "overview")
-    if qp in allowed:
-        active = qp
-
-    label_map = {s: lb for s, lb in nav_items}
-
-    st.sidebar.markdown(
-        '<div style="padding:0 14px 6px 14px; font-size:12px; font-weight:950; color:rgba(34,34,34,0.60); letter-spacing:.08em;">메뉴</div>',
-        unsafe_allow_html=True,
-    )
-
-    idx = allowed.index(active) if active in allowed else 0
-    choice = st.sidebar.radio(
-        "menu",
-        options=allowed,
-        index=idx,
-        format_func=lambda s: f"{label_map.get(s,s)}",
-        key="__da_nav",
-        label_visibility="collapsed",
-    )
-
-    # Keep URL in sync without opening a new tab
-    if choice and choice != _get_query_param("p", ""):
-        _set_query_param("p", choice)
-    return choice
-    allowed = [s for s, _, _ in nav_items]
-    # URL param wins (shareable)
-    qp = get_active_page_slug(active or "overview")
-    if qp in allowed:
-        active = qp
-
-    icon_map = {s: ic for s, ic, _ in nav_items}
-    label_map = {s: lb for s, _, lb in nav_items}
-
-    st.sidebar.markdown(
-        '<div style="padding:0 14px 6px 14px; font-size:12px; letter-spacing:.12em; font-weight:900; color:rgba(26,28,32,0.58);">NAVIGATION</div>',
-        unsafe_allow_html=True,
-    )
-
-    idx = allowed.index(active) if active in allowed else 0
-    choice = st.sidebar.radio(
-        "nav",
-        options=allowed,
-        index=idx,
-        format_func=lambda s: f"{icon_map.get(s,'')} {label_map.get(s,s)}",
-        key="__da_nav",
-        label_visibility="collapsed",
-    )
-
-    # Keep URL in sync without opening a new tab
-    if choice and choice != _get_query_param("p", ""):
-        _set_query_param("p", choice)
-    return choice
-
-
-def render_shell(active: str, f: Dict, latest: Dict) -> None:
-    """Inject fixed topbar + sidenav (pure HTML) to minimize Streamlit feel."""
-    # CSS first
-    st.markdown(SHELL_UI_CSS, unsafe_allow_html=True)
-
-    # Topbar pills
-    period = "-"
-    if f and f.get("start") and f.get("end"):
-        period = f"{f['start']} ~ {f['end']}"
-
-    # Latest pills (may be empty)
-    camp = (latest or {}).get("campaign", "—")
-    kw = (latest or {}).get("keyword", "—")
-    ad = (latest or {}).get("ad", "—")
-    bm = (latest or {}).get("bizmoney", "—")
-
-    topbar = f"""
-    <div class="da-topbar">
-      <div class="inner">
-        <div class="da-brand">
-          <div class="logo"></div><div class="t">네이버 검색광고 대시보드</div>
-          <div class="s">DA기획</div>
-        </div>
-        <div style="flex:1"></div>
-        <div class="da-pill"><span class="da-dot"></span><b>기간</b>&nbsp;{period}</div>
-        <div class="da-pill"><b>캠페인</b>&nbsp;{camp}</div>
-        <div class="da-pill"><b>키워드</b>&nbsp;{kw}</div>
-        <div class="da-pill"><b>소재</b>&nbsp;{ad}</div>
-        <div class="da-pill"><b>비즈머니</b>&nbsp;{bm}</div>
-      </div>
-    </div>
-    """
-    st.markdown(topbar, unsafe_allow_html=True)
-
-
-    # Sidebar navigation is rendered via Streamlit widgets (no new-tab links).
-    st.markdown(f'<div class="da-watermark">UI · v8.4.3 · {date.today().isoformat()}</div>', unsafe_allow_html=True)
-
-
-def render_kpi_cards(items: List[Dict], subtitle: str = "") -> None:
-    """items: [{title,value,delta_pct,label}]"""
-    cards = []
-    for it in items:
-        title = it.get("title", "")
-        value = it.get("value", "—")
-        dp = it.get("delta_pct", None)
-        label = it.get("label", "")
-        if dp is None or (isinstance(dp, float) and (pd.isna(dp))):
-            d_cls = "neu"
-            d_txt = f"{label} —"
-        else:
-            is_pos = float(dp) >= 0
-            arrow = "▲" if is_pos else "▼"
-            d_cls = "pos" if is_pos else "neg"
-            d_txt = f"{label} {arrow} {abs(float(dp)):.1f}%"
-        cards.append(
-            f'<div class="da-kpi"><div class="k">{title}</div><div class="v">{value}</div><div class="d {d_cls}">{d_txt}</div></div>'
-        )
-    html = f"""
-    <div class="da-kpi-grid">
-      {''.join(cards)}
-    </div>
-    """
-    if subtitle:
-        st.caption(subtitle)
-    st.markdown(html, unsafe_allow_html=True)
-
 
 st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
 
+
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
-    """
-    상단 히어로(타이틀 + 데이터 최신일) 영역
-    - Pretendard/White UI 표시는 숨김
-    - Markdown 파서 이슈로 </div> 등이 노출되는 현상을 막기 위해, 빈 줄을 제거한 HTML을 렌더링
-    """
+    """Naver-like topbar (sticky)."""
+    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     latest = latest or {}
 
-    def _pill(label: str, dt: Optional[str], ok: bool = True) -> str:
-        dt_txt = (dt or "—").strip()
-        dot_cls = "on" if ok else "off"
-        return f"<div class='pill'><span class='dot {dot_cls}'></span>{label}: {dt_txt}</div>"
+    def _dt(key_a: str, key_b: str) -> str:
+        return (latest.get(key_a) or latest.get(key_b) or "—").strip()
 
-    # Backward-compatible: accept either '*_dt' keys or legacy keys.
-    freshness_pills = "\n".join([
-        _pill("캠페인 최신", latest.get("campaign_dt") or latest.get("campaign")),
-        _pill("키워드 최신", latest.get("keyword_dt") or latest.get("keyword")),
-        _pill("소재 최신", latest.get("ad_dt") or latest.get("ad")),
-        _pill("비즈머니 최신", latest.get("bizmoney_dt") or latest.get("bizmoney")),
-    ])
+    camp = _dt("campaign_dt", "campaign")
+    kw = _dt("keyword_dt", "keyword")
+    ad = _dt("ad_dt", "ad")
+    biz = _dt("bizmoney_dt", "bizmoney")
 
-    hero_html = f"""
-    <div class="hero">
-      <div class="hero-left">
-        <div class="hero-kicker">NAVER SEARCH ADS · DASHBOARD</div>
-        <div class="hero-title">네이버 검색광고 통합 대시보드</div>
-        <div class="hero-sub">예산/잔액과 캠페인·키워드·소재 성과를 한 화면에서 빠르게 확인합니다.</div>
-        <div class="hero-badges">
-          <span class="badge">빌드: {build_tag}</span>
+    st.markdown(
+        f"""
+        <div class="nv-topbar">
+          <div class="inner">
+            <div>
+              <div class="nv-brand"><span class="nv-dot"></span>네이버 검색광고 리포트</div>
+              <div class="nv-sub">{build_tag}</div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+              <span class="nv-pill">캠페인 최신 · <b>{camp}</b></span>
+              <span class="nv-pill">키워드 최신 · <b>{kw}</b></span>
+              <span class="nv-pill">소재 최신 · <b>{ad}</b></span>
+              <span class="nv-pill">비즈머니 최신 · <b>{biz}</b></span>
+            </div>
+          </div>
         </div>
-      </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-      <div class="hero-right">
-        <div class="freshness-title">DATA FRESHNESS</div>
-        <div class="freshness-pills">
-          {freshness_pills}
-        </div>
-      </div>
-    </div>
-    """
-    # ⚠️ Streamlit markdown의 HTML 블록 규칙 때문에 빈 줄이 있으면 일부 닫는 태그가 텍스트로 노출될 수 있음
-    hero_html = "\n".join([ln.strip() for ln in hero_html.splitlines() if ln.strip()])
-    st.markdown(hero_html, unsafe_allow_html=True)
+
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
-    """Pretty KPI card. Uses shadcn-ui if installed, otherwise HTML card."""
-    if HAS_SHADCN_UI and ui is not None:
+    """Naver-like KPI card: compact, ▲/▼ delta.
+    desc examples: "전주 대비 +12.3%" / "전일 대비 -3.1%" / "선택 기간 합계"
+    """
+    # Optional escape hatch
+    use_shadcn = os.getenv("USE_SHADCN_METRICS", "0").strip() == "1"
+    if use_shadcn and HAS_SHADCN_UI and ui is not None:
         try:
             ui.metric_card(title=title, content=value, description=desc, key=key)
             return
         except Exception:
             pass
 
+    label = (desc or "").strip()
+    delta_html = f"<div class='d'><span class='chip'>{label}</span></div>" if label else "<div class='d'></div>"
+
+    m = re.search(r"([+-])\s*([0-9]+(?:\.[0-9]+)?)\s*%", label)
+    if m:
+        sign = m.group(1)
+        num = m.group(2)
+        arrow = "▲" if sign == "+" else "▼"
+        cls = "pos" if sign == "+" else "neg"
+        # remove the matched "+12.3%" part from label
+        label2 = (label.replace(m.group(0), "").replace("  ", " ").strip()) or ""
+        chip = f"<span class='chip'>{label2}</span>" if label2 else ""
+        delta_html = f"<div class='d {cls}'>{chip}{arrow} {num}%</div>"
+
     st.markdown(
-        f"""<div class='kpi'>
-            <div class='t'>{title}</div>
+        f"""<div class='kpi' id='{key}'>
+            <div class='k'>{title}</div>
             <div class='v'>{value}</div>
-            <div class='d'>{desc}</div>
+            {delta_html}
         </div>""",
         unsafe_allow_html=True,
     )
+
 
 
 def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
@@ -1241,7 +897,7 @@ def seed_from_accounts_xlsx(engine) -> Dict[str, int]:
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
-def get_meta(_engine, cache_buster: int = 0) -> pd.DataFrame:
+def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_account_meta"):
         return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
 
@@ -1380,182 +1036,123 @@ def render_data_freshness(engine) -> None:
     ui_badges_or_html(items, key_prefix="freshness_badges")
 
 
-def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None, container=None) -> Dict:
-    """Auto-apply filters (no '적용' button).
-    The app stays fast by leaning on cached query bundles instead of blocking on a submit button.
+
+def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
+    """Naver-like '검색조건' panel. No '적용' 버튼: 변경 즉시 반영되지만,
+    쿼리는 cache_data로 막아서 체감 속도를 확보합니다.
     """
     today = date.today()
     default_end = today - timedelta(days=1)  # 기본: 어제
     default_start = default_end
 
-    defaults = {
-        "q": "",
-        "manager": [],
-        "account": [],
-        "type_sel": tuple(),
-        "period_mode": "어제",
-        "d1": default_start,
-        "d2": default_end,
-        "top_n_keyword": 300,
-        "top_n_ad": 200,
-        "top_n_campaign": 200,
-    }
+    # persist defaults
+    if "filters_v8" not in st.session_state:
+        st.session_state["filters_v8"] = {
+            "q": "",
+            "manager": [],
+            "account": [],
+            "type_sel": [],
+            "period_mode": "어제",
+            "d1": default_start,
+            "d2": default_end,
+            "top_n_keyword": 300,
+            "top_n_ad": 200,
+            "top_n_campaign": 200,
+            "prefetch_warm": True,
+        }
 
-    if "filters_applied" not in st.session_state:
-        st.session_state["filters_applied"] = defaults.copy()
+    sv = st.session_state["filters_v8"]
 
-    fa = dict(st.session_state.get("filters_applied", defaults))
+    # Options from meta
+    managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
+    accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    # -----------------------------
-    # UI (rendered into provided container; default: st.sidebar)
-    # -----------------------------
-    target = container if container is not None else st.sidebar
-    with target:
-        st.markdown("### 🔎 필터")
+    # --- 검색조건 패널 (네이버 느낌) ---
+    st.markdown('<div class="nv-panel"><div class="hd"><div class="t">검색조건</div></div><div class="bd">', unsafe_allow_html=True)
 
-        q = st.text_input(
-            "업체명 검색",
-            value=fa.get("q", ""),
-            placeholder="예: 실리콘플러스",
-            key="flt_q",
-        )
+    r1 = st.columns([1.1, 1.2, 1.2, 2.2], gap="small")
+    period_mode = r1[0].selectbox(
+        "기간",
+        ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
+        index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
+        key="f_period_mode",
+    )
 
-        manager_opts = sorted(
-            [x for x in meta.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
-        )
-        manager_sel = st.multiselect("담당자", manager_opts, default=fa.get("manager", []), key="flt_mgr")
-
-        # 업체 옵션은 '담당자 선택'에 따라 좁혀서 보여줌
-        meta_for_opts = meta.copy()
-        if manager_sel:
-            meta_for_opts = meta_for_opts[
-                meta_for_opts.get("manager", pd.Series(dtype=str)).astype(str).isin([str(x) for x in manager_sel])
-            ]
-        account_opts_all = sorted(
-            [
-                x
-                for x in meta_for_opts.get("account_name", pd.Series(dtype=str))
-                .dropna()
-                .astype(str)
-                .map(str.strip)
-                .unique()
-                .tolist()
-                if x
-            ]
-        )
-        # 업체명 검색(q) 반영
-        account_opts = [a for a in account_opts_all if (not q) or (q.lower() in a.lower())]
-
-        # 선택값이 옵션에서 빠지면 에러가 날 수 있어, 현재 옵션 기준으로 정리
-        if "tmp_acc_sel" in st.session_state:
-            st.session_state["tmp_acc_sel"] = [a for a in st.session_state["tmp_acc_sel"] if a in account_opts]
-
-        _default_accounts = [a for a in fa.get("account", []) if a in account_opts]
-        if "tmp_acc_sel" not in st.session_state:
-            st.session_state["tmp_acc_sel"] = _default_accounts
-
-        account_sel = st.multiselect("업체", account_opts, placeholder="Choose options", key="tmp_acc_sel")
-
-        type_sel = tuple(
-            st.multiselect(
-                "캠페인 유형",
-                type_opts or [],
-                default=list(fa.get("type_sel", tuple())),
-                key="flt_type",
-            )
-        )
-
-        period_mode = st.selectbox(
-            "기간",
-            ["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"],
-            index=["오늘", "최근 7일(오늘 제외)", "이번 달", "지난 달", "어제", "최근 3일", "최근 7일", "최근 30일", "직접 선택"].index(
-                fa.get("period_mode", "어제")
-            ),
-            key="flt_period_mode",
-        )
-
+    if period_mode == "직접 선택":
+        d1 = r1[1].date_input("시작일", sv.get("d1", default_start), key="f_d1")
+        d2 = r1[2].date_input("종료일", sv.get("d2", default_end), key="f_d2")
+    else:
+        # compute dates from mode (no extra widgets)
         if period_mode == "오늘":
-            d1 = today
             d2 = today
-        elif period_mode == "최근 7일(오늘 제외)":
+            d1 = today
+        elif period_mode == "어제":
+            d2 = today - timedelta(days=1)
+            d1 = d2
+        elif period_mode == "최근 7일":
             d2 = today - timedelta(days=1)
             d1 = d2 - timedelta(days=6)
         elif period_mode == "이번 달":
-            d1 = today.replace(day=1)
             d2 = today
+            d1 = date(today.year, today.month, 1)
         elif period_mode == "지난 달":
-            first_this = today.replace(day=1)
-            last_prev = first_this - timedelta(days=1)
-            d1 = last_prev.replace(day=1)
-            d2 = last_prev
-        elif period_mode == "최근 3일":
-            d2 = default_end
-            d1 = d2 - timedelta(days=2)
-        elif period_mode == "최근 7일":
-            d2 = default_end
-            d1 = d2 - timedelta(days=6)
-        elif period_mode == "최근 30일":
-            d2 = default_end
-            d1 = d2 - timedelta(days=29)
-        elif period_mode == "직접 선택":
-            d1d2 = st.date_input(
-                "기간 선택",
-                value=(fa.get("d1", default_start), fa.get("d2", default_end)),
-                key="flt_d1d2",
-            )
-            if isinstance(d1d2, (list, tuple)) and len(d1d2) == 2:
-                d1, d2 = d1d2[0], d1d2[1]
-            else:
-                d1, d2 = default_start, default_end
+            first_this = date(today.year, today.month, 1)
+            d2 = first_this - timedelta(days=1)
+            d1 = date(d2.year, d2.month, 1)
         else:
-            d1, d2 = default_start, default_end
+            d2 = sv.get("d2", default_end)
+            d1 = sv.get("d1", default_start)
 
-        with st.expander("⚙️ 고급", expanded=False):
-            top_n_keyword = st.slider("키워드 TOP N", 50, 1000, int(fa.get("top_n_keyword", 300)), step=50, key="flt_topk_kw")
-            top_n_ad = st.slider("소재 TOP N", 50, 1000, int(fa.get("top_n_ad", 200)), step=50, key="flt_topk_ad")
-            top_n_campaign = st.slider("캠페인 TOP N", 50, 1000, int(fa.get("top_n_campaign", 200)), step=50, key="flt_topk_cp")
+        # show read-only dates (like admin)
+        r1[1].markdown(f"<div class='nv-pill'>시작일 · <b>{d1}</b></div>", unsafe_allow_html=True)
+        r1[2].markdown(f"<div class='nv-pill'>종료일 · <b>{d2}</b></div>", unsafe_allow_html=True)
 
-    # -----------------------------
-    # Auto-apply: store filter state (no manual submit)
-    # -----------------------------
-    new_filters = {
-        "q": q,
-        "manager": manager_sel,
-        "account": account_sel,
-        "type_sel": type_sel,
+    q = r1[3].text_input("검색", sv.get("q", ""), key="f_q", placeholder="계정/키워드/소재 검색")
+
+    r2 = st.columns([1.2, 1.6, 1.2], gap="small")
+    manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
+    account_sel = r2[1].multiselect("계정", accounts, default=sv.get("account", []), key="f_account")
+    type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # persist back
+    sv.update(
+        {
+            "q": q or "",
+            "manager": manager_sel or [],
+            "account": account_sel or [],
+            "type_sel": type_sel or [],
+            "period_mode": period_mode,
+            "d1": d1,
+            "d2": d2,
+        }
+    )
+    st.session_state["filters_v8"] = sv
+
+    # Customer ids resolve
+    cids = resolve_customer_ids(meta, manager_sel, account_sel)
+
+    # Return the same shape other pages expect
+    f = {
+        "q": sv["q"],
+        "manager": sv["manager"],
+        "account": sv["account"],
+        "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
+        "start": d1,
+        "end": d2,
         "period_mode": period_mode,
-        "d1": d1,
-        "d2": d2,
-        "top_n_keyword": int(top_n_keyword),
-        "top_n_ad": int(top_n_ad),
-        "top_n_campaign": int(top_n_campaign),
+        "customer_ids": cids,
+        "top_n_keyword": int(sv.get("top_n_keyword", 300)),
+        "top_n_ad": int(sv.get("top_n_ad", 200)),
+        "top_n_campaign": int(sv.get("top_n_campaign", 200)),
+        "prefetch_warm": bool(sv.get("prefetch_warm", True)),
+        "ready": True,
     }
-
-    # Only overwrite session state when changed (avoids extra work)
-    if new_filters != st.session_state.get("filters_applied", defaults):
-        st.session_state["filters_applied"] = new_filters
-
-    f = dict(st.session_state.get("filters_applied", defaults))
-    f["start"] = f.get("d1", default_start)
-    f["end"] = f.get("d2", default_end)
-    f["ready"] = True  # always ready (no '적용' gating)
-
-    # selected_customer_ids: 비어있으면 전체(쿼리 필터 생략)
-    df = meta.copy()
-    if f.get("manager"):
-        df = df[df["manager"].isin(f["manager"])]
-    if f.get("account"):
-        df = df[df["account_name"].isin(f["account"])]
-    if f.get("q"):
-        q_ = str(f["q"]).strip()
-        if q_:
-            df = df[df["account_name"].astype(str).str.contains(q_, case=False, na=False)]
-
-    f["selected_customer_ids"] = df["customer_id"].dropna().astype(int).tolist() if len(df) < len(meta) else []
     return f
 
 
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
+
 def query_campaign_topn(
     _engine,
     d1: date,
@@ -3031,7 +2628,7 @@ def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("상단의 **필터**에서 조건을 설정한 뒤 **적용**을 눌러주세요.")
+        st.info("왼쪽 사이드바에서 필터를 설정한 뒤 **적용**을 눌러주세요.")
         return
 
     st.markdown("## 👀 요약 (한눈에)")
@@ -3049,7 +2646,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         horizontal=True,
         index=1,
         key="ov_cmp_mode",
-        label_visibility="collapsed",
     )
     b1, b2 = _period_compare_range(f["start"], f["end"], cmp_mode)
     base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
@@ -3059,22 +2655,23 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         p = _pct_change(float(val), float(base_val))
         return d, p
 
+    k1, k2, k3, k4, k5 = st.columns(5)
     _, p_cost = _delta(cur["cost"], base["cost"])
     _, p_sales = _delta(cur["sales"], base["sales"])
     _, p_conv = _delta(cur["conv"], base["conv"])
     _, p_cpa = _delta(cur["cpa"], base["cpa"])
     _, p_roas = _delta(cur["roas"], base["roas"])
 
-    render_kpi_cards(
-        [
-            {"title": "광고비", "value": format_currency(cur["cost"]), "delta_pct": p_cost, "label": cmp_mode},
-            {"title": "전환매출", "value": format_currency(cur["sales"]), "delta_pct": p_sales, "label": cmp_mode},
-            {"title": "전환", "value": format_number_commas(cur["conv"]), "delta_pct": p_conv, "label": cmp_mode},
-            {"title": "CPA", "value": format_currency(cur["cpa"]), "delta_pct": p_cpa, "label": cmp_mode},
-            {"title": "ROAS", "value": f'{cur["roas"]:.0f}%', "delta_pct": p_roas, "label": cmp_mode},
-        ],
-        subtitle="",
-    )
+    with k1:
+        ui_metric_or_stmetric("광고비", format_currency(cur["cost"]), f"{cmp_mode} {p_cost:+.1f}%", key="ov_cost")
+    with k2:
+        ui_metric_or_stmetric("전환매출", format_currency(cur["sales"]), f"{cmp_mode} {p_sales:+.1f}%", key="ov_sales")
+    with k3:
+        ui_metric_or_stmetric("전환", format_number_commas(cur["conv"]), f"{cmp_mode} {p_conv:+.1f}%", key="ov_conv")
+    with k4:
+        ui_metric_or_stmetric("CPA", format_currency(cur["cpa"]), f"{cmp_mode} {p_cpa:+.1f}%", key="ov_cpa")
+    with k5:
+        ui_metric_or_stmetric("ROAS", f"{cur['roas']:.0f}%", f"{cmp_mode} {p_roas:+.1f}%", key="ov_roas")
 
     st.divider()
 
@@ -3306,7 +2903,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         nb = parse_currency(new_budget)
         update_monthly_budget(engine, cid, nb)
         st.success("수정 완료. (캐시 갱신)")
-        bump_cache_buster()  # cache-bust without global clear
+        st.cache_data.clear()
         st.rerun()
 
 
@@ -3318,7 +2915,7 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
         return
 
     st.markdown("## 🚀 성과 (캠페인)")
@@ -3501,7 +3098,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False):
-        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
         return
 
     st.markdown("## 🔎 성과 (키워드)")
@@ -3674,7 +3271,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
-        st.info("필터를 변경하면 즉시 자동 적용됩니다.")
+        st.info("필터에서 **적용**을 눌러 조회를 시작하세요.")
         return
 
     st.markdown("## 🧩 성과 (소재)")
@@ -3854,7 +3451,17 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
 
-    st.caption("필터/페이지 전환은 자동 적용됩니다. 데이터가 갱신되면 TTL 캐시로 자동 반영됩니다.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🧹 캐시 비우기", use_container_width=True):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.session_state.pop("_table_cols_cache", None)
+            st.session_state.pop("_table_names_cache", None)
+            st.success("캐시를 비웠습니다.")
+            st.rerun()
+    with c2:
+        st.caption("조회가 이상하면 캐시 비우고 다시 실행")
 
     try:
         sql_read(engine, "SELECT 1 AS ok")
@@ -3896,7 +3503,7 @@ def page_settings(engine) -> None:
             logs = _create_perf_indexes(engine)
             for line in logs:
                 st.write(line)
-            st.success("완료! 바로 반영됩니다.")
+            st.success("완료! 캐시 비우고 다시 조회해보세요.")
         except Exception as e:
             st.error(f"실패: {e}")
 
@@ -3909,7 +3516,7 @@ def page_settings(engine) -> None:
         try:
             res = seed_from_accounts_xlsx(engine)
             st.success(f"완료: meta {res.get('meta', 0)}건")
-            bump_cache_buster()  # cache-bust without global clear
+            st.cache_data.clear()
             st.rerun()
         except Exception as e:
             st.error(f"동기화 실패: {e}")
@@ -3918,6 +3525,7 @@ def page_settings(engine) -> None:
 # -----------------------------
 # Main
 # -----------------------------
+
 def main():
     try:
         engine = get_engine()
@@ -3929,35 +3537,60 @@ def main():
 
     render_hero(latest)
 
-    meta = get_meta(engine, cache_buster=get_cache_buster())
+    meta = get_meta(engine)
     if meta is None or meta.empty:
         st.error("dim_account_meta가 비어있습니다. 설정/연결에서 accounts.xlsx 동기화를 먼저 해주세요.")
         return
 
     dim_campaign = load_dim_campaign(engine)
     type_opts = get_campaign_type_options(dim_campaign)
-    active = get_active_page_slug()
-    active = render_sidebar_nav(active)
-# Filters live in main (expander) to remove Streamlit sidebar feel.
-    with st.expander("필터", expanded=False):
-        f = build_filters(meta, type_opts, engine, container=st.container())
 
-    render_shell(active, f, latest)
+    # --- Left nav (Naver-like) ---
+    with st.sidebar:
+        st.markdown("### 메뉴")
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        nav_items = [
+            "요약(한눈에)",
+            "예산/잔액",
+            "캠페인",
+            "키워드",
+            "소재",
+            "설정/연결",
+        ]
+        nav = st.radio(
+            "nav",
+            nav_items,
+            index=0,
+            key="nav_page",
+            label_visibility="collapsed",
+        )
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.caption("• 필터 변경 즉시 반영\n• 쿼리는 캐시로 즉시 로드")
 
-    render_filter_summary_bar(f, meta)
+    # Page title
+    st.markdown(f"<div class='nv-panel'><div class='hd'><div class='t'>{nav}</div></div></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-    if active == "overview":
+    # Filters (skip on settings)
+    f = None
+    if nav != "설정/연결":
+        f = build_filters(meta, type_opts, engine)
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    # Route
+    if nav == "요약(한눈에)":
         page_overview(meta, engine, f)
-    elif active == "budget":
+    elif nav == "예산/잔액":
         page_budget(meta, engine, f)
-    elif active == "campaign":
+    elif nav == "캠페인":
         page_perf_campaign(meta, engine, f)
-    elif active == "keyword":
+    elif nav == "키워드":
         page_perf_keyword(meta, engine, f)
-    elif active == "ad":
+    elif nav == "소재":
         page_perf_ad(meta, engine, f)
     else:
         page_settings(engine)
+
 
 
 if __name__ == "__main__":
