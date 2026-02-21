@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.5 - 변수 누락 에러 수정)
+collector.py - 네이버 검색광고 수집기 (v9.6 - DB 타임아웃 완벽 방지)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
 - 403 에러 대응: 권한 없는 계정은 스킵
 - 실시간 로그: GitHub Actions 환경에서 출력이 멈춰 보이는 버퍼링 현상 해결 (flush=True)
-- 수정사항: SKIP_KEYWORD_STATS, SKIP_AD_STATS 변수 누락 에러 수정
+- 수정사항: Statement Timeout 에러 방지를 위해 대용량 Upsert를 5,000건 단위로 분할(Chunk) 처리
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
 
-# ✅ 누락되었던 스위치 변수 추가
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
@@ -58,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.5_FIXED_VARIABLES] ===", flush=True)
-print("=== 대용량 리포트 1회 최적화 & 실시간 로그 출력 ===", flush=True)
+print("=== [VERSION: v9.6_CHUNK_UPSERT] ===", flush=True)
+print("=== DB Timeout 방지 (5000건 분할 저장) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -184,26 +183,31 @@ def ensure_tables(engine: Engine):
             )
         """))
 
+# ✅ DB Statement Timeout 방지를 위해 데이터를 5,000건 단위로 잘라서 삽입하도록 수정
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
-    temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
-    try:
-        with engine.begin() as conn:
-            df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
-            df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
-            cols = ", ".join([f'"{c}"' for c in df.columns])
-            pk_clause = ", ".join([f'"{c}"' for c in pk_cols])
-            set_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in df.columns if c not in pk_cols])
-            
-            if set_clause:
-                sql = f'INSERT INTO {table} ({cols}) SELECT * FROM {temp_table} ON CONFLICT ({pk_clause}) DO UPDATE SET {set_clause}'
-            else:
-                sql = f'INSERT INTO {table} ({cols}) SELECT * FROM {temp_table} ON CONFLICT ({pk_clause}) DO NOTHING'
-            conn.execute(text(sql))
-            conn.execute(text(f'DROP TABLE {temp_table}'))
-    except Exception as e:
-        log(f"⚠️ Upsert Error in {table}: {e}")
+    
+    CHUNK_SIZE = 5000
+    for start_idx in range(0, len(df), CHUNK_SIZE):
+        chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
+        temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
+        try:
+            with engine.begin() as conn:
+                chunk_df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
+                chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
+                cols = ", ".join([f'"{c}"' for c in chunk_df.columns])
+                pk_clause = ", ".join([f'"{c}"' for c in pk_cols])
+                set_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in chunk_df.columns if c not in pk_cols])
+                
+                if set_clause:
+                    sql = f'INSERT INTO {table} ({cols}) SELECT * FROM {temp_table} ON CONFLICT ({pk_clause}) DO UPDATE SET {set_clause}'
+                else:
+                    sql = f'INSERT INTO {table} ({cols}) SELECT * FROM {temp_table} ON CONFLICT ({pk_clause}) DO NOTHING'
+                conn.execute(text(sql))
+                conn.execute(text(f'DROP TABLE {temp_table}'))
+        except Exception as e:
+            log(f"⚠️ Upsert Error in {table} (chunk {start_idx}): {e}")
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
