@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.2 - DB SSL Connection Error 완벽 해결)
-- 수정사항 1: NullPool 적용 (대기 시간 중 DB 연결 끊김으로 인한 SSL closed 에러 방지)
-- 수정사항 2: DB_URL에 sslmode=require 강제 적용
+collector.py - 네이버 검색광고 수집기 (v9.3 - 완벽 안정화 & 스마트 분기)
+- 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
+- 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
+- 403 에러 대응: 권한 없는 계정은 빨간 에러 도배 없이 깔끔하게 스킵
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool  # ✅ DB 연결 끊김 방지용 핵심 라이브러리 추가
+from sqlalchemy.pool import NullPool
 
 # -------------------------
 # 1. 환경변수 및 설정
@@ -52,15 +53,15 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50)
-print("=== [VERSION: v9.2_STAT_REPORTS_NULLPOOL] ===")
-print("=== 대용량 리포트 API + DB SSL 락다운 해결 ===")
+print("=== [VERSION: v9.3_SMART_STABLE] ===")
+print("=== 대용량 리포트 1회 최적화 & 403/400 완벽 대처 ===")
 print("="*50)
 
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 
 # -------------------------
-# 2. 서명 및 요청 (스마트 재시도)
+# 2. 서명 및 요청 (스마트 재시도 & 403 스킵)
 # -------------------------
 def now_millis() -> str:
     return str(int(time.time() * 1000))
@@ -90,6 +91,14 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
         try:
             r = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=TIMEOUT)
             
+            # ✅ 403 권한 에러 처리 (빨간 줄 없이 조용히 스킵)
+            if r.status_code == 403:
+                if attempt == 0:
+                    log(f"🚫 [권한 없음] {customer_id} 계정 접근 불가 (스킵)")
+                if raise_error:
+                    raise requests.HTTPError(f"403 Forbidden: {customer_id}", response=r)
+                return 403, None
+                
             if r.status_code == 429 or r.status_code >= 500:
                 log(f"⚠️ API 한도/오류 ({r.status_code}) - {customer_id}. 2초 대기 후 재시도...")
                 time.sleep(2)
@@ -108,6 +117,9 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
             return r.status_code, data
             
         except requests.exceptions.RequestException as e:
+            # 403은 재시도하지 않음
+            if "403" in str(e):
+                raise e
             log(f"⚠️ 네트워크 오류 - {customer_id}: {e}. 2초 후 재시도...")
             time.sleep(2)
             
@@ -128,13 +140,10 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
 def get_engine() -> Engine:
     if not DB_URL:
         return create_engine("sqlite:///:memory:", future=True)
-    
     db_url = DB_URL
     if "sslmode=" not in db_url:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
-        
-    # ✅ NullPool 적용: 작업 대기 중 DB 연결이 강제로 끊겨서 에러가 나는 것을 완벽 방지
     return create_engine(db_url, poolclass=NullPool, future=True)
 
 def ensure_tables(engine: Engine):
@@ -175,10 +184,7 @@ def ensure_tables(engine: Engine):
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
-    
-    # 충돌 방지용 고유 임시 테이블 이름
     temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
-    
     try:
         with engine.begin() as conn:
             df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
@@ -241,23 +247,51 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     return {"ad_title": title, "ad_desc": desc, "pc_landing_url": pc_url, "mobile_landing_url": m_url, "creative_text": creative_text[:500]}
 
 # -------------------------
-# 5. 대용량 성과 리포트 조회 (Stat-Reports API)
+# 5. 성과 수집 (당일용 /stats API)
+# -------------------------
+def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
+    if not ids: return []
+    out = []
+    d_str = d1.strftime("%Y-%m-%d")
+    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"], separators=(',', ':'))
+    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
+    
+    IDS_CHUNK = 50
+    for i in range(0, len(ids), IDS_CHUNK):
+        chunk = ids[i:i+IDS_CHUNK]
+        ids_str = ",".join(chunk)
+        params = {"ids": ids_str, "fields": fields, "timeRange": time_range}
+        status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
+        if status == 200 and isinstance(data, dict) and "data" in data:
+            out.extend(data["data"])
+    return out
+
+def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
+    cost_raw = float(r.get("salesAmt", 0) or 0)
+    cost_ex_vat = int(round(cost_raw / 1.1)) if cost_raw > 0 else 0
+    sales = int(float(r.get("convAmt", 0) or 0))
+    roas = (sales / cost_ex_vat * 100) if cost_ex_vat > 0 else 0.0
+    return {
+        "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
+        "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
+        "cost": cost_ex_vat, "conv": float(r.get("ccnt", 0) or 0), "sales": sales, "roas": roas
+    }
+
+# -------------------------
+# 6. 대용량 성과 리포트 조회 (과거용 /stat-reports API)
 # -------------------------
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
     dt_str = target_date.strftime("%Y%m%d")
     payload = {"reportTp": report_tp, "statDt": dt_str}
     
-    # 1. 리포트 생성 요청
     status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
-    
     if status != 200 or not data or "reportJobId" not in data:
-        log(f"⚠️ [ {customer_id} ] {report_tp} 리포트 요청 거부 (상태: {status})")
+        log(f"⚠️ [ {customer_id} ] 리포트 생성 거부 (상태: {status})")
         return pd.DataFrame()
         
     job_id = data["reportJobId"]
     download_url = None
     
-    # 2. 리포트 생성 완료 대기 (최대 60초)
     for _ in range(30):
         time.sleep(2)
         s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
@@ -270,82 +304,103 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
                 return pd.DataFrame()
                 
     if not download_url:
-        log(f"⚠️ [ {customer_id} ] {report_tp} 리포트 생성 대기 시간 초과")
         return pd.DataFrame()
         
-    # 3. TSV 다운로드 및 파싱
     try:
         dl_headers = make_headers("GET", "/report-download", customer_id)
-        
         r = requests.get(download_url, headers=dl_headers, timeout=60)
         r.raise_for_status()
-        
         content = r.text.strip()
         if not content:
             return pd.DataFrame()
-            
         df = pd.read_csv(io.StringIO(content), sep='\t')
         return df
     except Exception as e:
         log(f"⚠️ [ {customer_id} ] TSV 다운로드 실패: {e}")
         return pd.DataFrame()
 
-def process_fact_from_tsv(engine: Engine, df: pd.DataFrame, table_name: str, id_col_name: str, customer_id: str, target_date: date):
+# ✅ AD 리포트 1개로 캠페인/키워드/소재 테이블 3개를 동시에 그룹핑(합산)하여 저장
+def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date):
     if df is None or df.empty:
         return
         
     def _find(kws):
         for c in df.columns:
-            c_clean = c.replace(" ", "").lower()
+            c_clean = str(c).replace(" ", "").lower()
             for kw in kws:
                 if kw in c_clean: return c
         return None
         
-    cid_col = _find(["캠페인아이디"]) if "campaign" in table_name else (_find(["키워드아이디"]) if "keyword" in table_name else _find(["소재아이디"]))
-    if not cid_col: return
-        
-    imp_col = _find(["노출수"])
-    clk_col = _find(["클릭수"])
-    cost_col = _find(["총비용", "비용"])
-    conv_col = _find(["총전환수", "전환수"])
-    sales_col = _find(["전환매출액", "매출액"])
+    camp_col = _find(["캠페인아이디", "campaignid", "campaign_id"])
+    kw_col   = _find(["키워드아이디", "keywordid", "keyword_id"])
+    ad_col   = _find(["소재아이디", "adid", "ad_id"])
     
-    rows = []
-    for _, row in df.iterrows():
-        target_id = str(row[cid_col])
-        if not target_id or target_id == 'nan': continue
+    imp_col  = _find(["노출수", "imp"])
+    clk_col  = _find(["클릭수", "clk"])
+    cost_col = _find(["총비용", "비용", "cost"])
+    conv_col = _find(["총전환수", "전환수", "conv"])
+    sales_col= _find(["전환매출액", "매출액", "sales"])
+    
+    for c in [imp_col, clk_col, cost_col, conv_col, sales_col]:
+        if c: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
         
-        imp = int(row[imp_col]) if imp_col and pd.notna(row[imp_col]) else 0
-        clk = int(row[clk_col]) if clk_col and pd.notna(row[clk_col]) else 0
-        cost_raw = float(row[cost_col]) if cost_col and pd.notna(row[cost_col]) else 0.0
+    if cost_col:
+        df["_cost_ex_vat"] = (df[cost_col] / 1.1).round().astype(int)
+    else:
+        df["_cost_ex_vat"] = 0
+
+    def _save_agg(group_col, table_name, id_col_name):
+        if not group_col: return
         
-        cost_ex_vat = int(round(cost_raw / 1.1)) if cost_raw > 0 else 0
+        valid_df = df[df[group_col].notna() & (df[group_col].astype(str).str.strip() != '')].copy()
+        if valid_df.empty: return
+
+        g = valid_df.groupby(group_col).agg({
+            imp_col: 'sum' if imp_col else 'max',
+            clk_col: 'sum' if clk_col else 'max',
+            "_cost_ex_vat": 'sum',
+            conv_col: 'sum' if conv_col else 'max',
+            sales_col: 'sum' if sales_col else 'max'
+        }).reset_index()
         
-        conv = float(row[conv_col]) if conv_col and pd.notna(row[conv_col]) else 0.0
-        sales = int(row[sales_col]) if sales_col and pd.notna(row[sales_col]) else 0
-        roas = (sales / cost_ex_vat * 100) if cost_ex_vat > 0 else 0.0
-        
-        rows.append({
-            "dt": target_date, "customer_id": str(customer_id), id_col_name: target_id,
-            "imp": imp, "clk": clk, "cost": cost_ex_vat, "conv": conv, "sales": sales, "roas": roas
-        })
-        
-    replace_fact_range(engine, table_name, rows, customer_id, target_date)
+        rows = []
+        for _, row in g.iterrows():
+            target_id = str(row[group_col])
+            imp = int(row[imp_col]) if imp_col else 0
+            clk = int(row[clk_col]) if clk_col else 0
+            cost = int(row["_cost_ex_vat"])
+            conv = float(row[conv_col]) if conv_col else 0.0
+            sales = int(row[sales_col]) if sales_col else 0
+            roas = (sales / cost * 100) if cost > 0 else 0.0
+            
+            rows.append({
+                "dt": target_date, "customer_id": str(customer_id), id_col_name: target_id,
+                "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas
+            })
+            
+        replace_fact_range(engine, table_name, rows, customer_id, target_date)
+
+    _save_agg(camp_col, "fact_campaign_daily", "campaign_id")
+    _save_agg(kw_col, "fact_keyword_daily", "keyword_id")
+    _save_agg(ad_col, "fact_ad_daily", "ad_id")
 
 # -------------------------
-# 6. 메인 처리기 (단일 계정)
+# 7. 메인 처리기 (단일 계정)
 # -------------------------
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
     camp_list = list_campaigns(customer_id)
+    # 403 권한 에러 등으로 목록을 못 가져오면 안전하게 스킵
     if not camp_list: return
     
     camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+    target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
 
     for c in camp_list:
         cid = c.get("nccCampaignId")
         if not cid: continue
+        target_camp_ids.append(cid)
         camp_rows.append({
             "customer_id": customer_id, "campaign_id": cid, 
             "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
@@ -363,12 +418,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 for k in kws:
                     kid = k.get("nccKeywordId")
                     if kid:
+                        target_kw_ids.append(kid)
                         kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
             if not SKIP_AD_DIM:
                 ads = list_ads(customer_id, gid)
                 for a in ads:
                     aid = a.get("nccAdId")
                     if aid:
+                        target_ad_ids.append(aid)
                         fields = extract_ad_creative_fields(a)
                         ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or fields["ad_title"], "status": a.get("status"), **fields})
 
@@ -377,21 +434,33 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
     if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
-    log(f"   > [ {account_name} ] 대용량 리포트(TSV) 생성 및 저장 중...")
-    
-    camp_df = fetch_stat_report(customer_id, "CAMPAIGN", target_date)
-    process_fact_from_tsv(engine, camp_df, "fact_campaign_daily", "campaign_id", customer_id, target_date)
-    
-    kw_df = fetch_stat_report(customer_id, "KEYWORD", target_date)
-    process_fact_from_tsv(engine, kw_df, "fact_keyword_daily", "keyword_id", customer_id, target_date)
-    
-    ad_df = fetch_stat_report(customer_id, "AD", target_date)
-    process_fact_from_tsv(engine, ad_df, "fact_ad_daily", "ad_id", customer_id, target_date)
+    # ✅ 오늘(Today)인지 과거인지에 따라 수집 방식 자동 분기
+    if target_date == date.today():
+        log(f"   > [ {account_name} ] 당일 데이터 실시간 수집 중 (/stats API) ...")
+        if target_camp_ids:
+            raw = get_stats_range(customer_id, target_camp_ids, target_date)
+            rows = [parse_stats(r, target_date, customer_id, "campaign_id") for r in raw]
+            replace_fact_range(engine, "fact_campaign_daily", rows, customer_id, target_date)
+            
+        if target_kw_ids and not SKIP_KEYWORD_STATS:
+            raw = get_stats_range(customer_id, target_kw_ids, target_date)
+            rows = [parse_stats(r, target_date, customer_id, "keyword_id") for r in raw]
+            replace_fact_range(engine, "fact_keyword_daily", rows, customer_id, target_date)
+            
+        if target_ad_ids and not SKIP_AD_STATS:
+            raw = get_stats_range(customer_id, target_ad_ids, target_date)
+            rows = [parse_stats(r, target_date, customer_id, "ad_id") for r in raw]
+            replace_fact_range(engine, "fact_ad_daily", rows, customer_id, target_date)
+    else:
+        log(f"   > [ {account_name} ] 대용량 AD 리포트 1회 통합 처리 중...")
+        ad_df = fetch_stat_report(customer_id, "AD", target_date)
+        if ad_df is not None and not ad_df.empty:
+            process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date)
 
     log(f"✅ 완료: {account_name} ({customer_id})")
 
 # -------------------------
-# 7. 메인 실행 블록
+# 8. 메인 실행 블록
 # -------------------------
 def main():
     engine = get_engine()
@@ -438,9 +507,9 @@ def main():
             try:
                 future.result()
             except Exception as e:
-                log(f"❌ 병렬 처리 중 계정 작업 실패: {e}")
-                import traceback
-                traceback.print_exc()
+                # 403 예외는 이미 내부에서 조용히 처리함. 기타 치명적 에러만 출력
+                if "403" not in str(e):
+                    log(f"❌ 병렬 처리 중 작업 실패: {e}")
 
     log("🎉 모든 작업 완료")
 
