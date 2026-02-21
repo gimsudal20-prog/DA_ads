@@ -2745,7 +2745,11 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Delta bar chart: + green, - red (Altair)."""
+    """Delta bar chart (Altair).
+    - 증가(+) = 초록, 감소(-) = 빨강
+    - 기준점(0) 쪽은 '평평', 끝쪽은 '둥글게' 보이도록 처리
+      (전체 바를 라운드로 그리고, 0 근처만 사각 오버레이로 덮어 baseline을 평평하게 만듦)
+    """
     if delta_df is None or delta_df.empty:
         return None
 
@@ -2764,7 +2768,8 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
 
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
-    # Center the zero axis by forcing a symmetric domain around 0
+
+    # 0축을 항상 중앙에 오도록 대칭 도메인
     m_abs = max(abs(mn), abs(mx))
     if not (m_abs > 0):
         m_abs = 5.0
@@ -2772,13 +2777,33 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     lim = m_abs + pad
     domain = [-lim, lim]
 
+    # baseline(0) 근처를 '평평'하게 덮을 오버레이 길이(데이터 단위, %p)
+    # - 너무 길면 정보가 깨지니 2%p 상한
+    # - 변화폭이 작을 때는 abs의 60%만 덮어서 끝(rounded)이 남도록
+    abs_pct = d["change_pct"].abs()
+    flat = (abs_pct * 0.6).clip(lower=0.0, upper=2.0)
+    d["flat_end"] = flat.where(d["change_pct"] >= 0, -flat)
+
+    d["zero"] = 0.0
+    d_main = d.copy()
+    d_main["val"] = d_main["change_pct"]
+
+    d_cap = d.copy()
+    d_cap["val"] = d_cap["flat_end"]
+
     color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#03C75A", "#EF4444", "#B4C4D9"])
 
-    base = (
-        alt.Chart(d)
+    y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
+    x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
+
+    # 1) 전체 바(양끝 둥글게)
+    bars = (
+        alt.Chart(d_main)
+        .mark_bar(cornerRadius=10)
         .encode(
-            y=alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260)),
-            x=alt.X("change_pct:Q", title="증감율(%)", scale=alt.Scale(domain=domain), axis=alt.Axis(grid=True, gridColor="#EBEEF2")),
+            y=y_enc,
+            x=alt.X("val:Q", title="증감율(%)", scale=alt.Scale(domain=domain), axis=x_axis),
+            x2=alt.X2("zero:Q"),
             color=alt.Color("dir:N", scale=color_scale, legend=None),
             tooltip=[
                 alt.Tooltip("metric:N", title="지표"),
@@ -2787,19 +2812,51 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
         )
     )
 
-    bars = base.mark_bar(cornerRadiusEnd=10)
+    # 2) 0 근처만 사각 오버레이로 덮어서 기준점 쪽을 평평하게
+    cap = (
+        alt.Chart(d_cap)
+        .mark_bar(cornerRadius=0)
+        .encode(
+            y=y_enc,
+            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
+            x2=alt.X2("zero:Q"),
+            color=alt.Color("dir:N", scale=color_scale, legend=None),
+        )
+    )
 
-    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="#CBD5E1").encode(x="x:Q")
+    # 3) 0 기준선
+    zero = (
+        alt.Chart(pd.DataFrame({"val": [0.0]}))
+        .mark_rule(color="#CBD5E1")
+        .encode(x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None))
+    )
 
-    pos_text = base.transform_filter("datum.change_pct >= 0").mark_text(align="left", dx=6).encode(text="label:N")
-    neg_text = base.transform_filter("datum.change_pct < 0").mark_text(align="right", dx=-6).encode(text="label:N")
+    # 4) 라벨
+    pos_text = (
+        alt.Chart(d_main)
+        .transform_filter("datum.val >= 0")
+        .mark_text(align="left", dx=6)
+        .encode(
+            y=y_enc,
+            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
+            text="label:N",
+            color=alt.Color("dir:N", scale=color_scale, legend=None),
+        )
+    )
+    neg_text = (
+        alt.Chart(d_main)
+        .transform_filter("datum.val < 0")
+        .mark_text(align="right", dx=-6)
+        .encode(
+            y=y_enc,
+            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
+            text="label:N",
+            color=alt.Color("dir:N", scale=color_scale, legend=None),
+        )
+    )
 
-    chart = (bars + zero + pos_text + neg_text).properties(height=int(height))
+    chart = (bars + cap + zero + pos_text + neg_text).properties(height=int(height))
     return chart
-
-
-
-
 def render_chart(obj, *, height: int | None = None) -> None:
     """Render a chart object with Streamlit (Altair-first)."""
     if obj is None:
