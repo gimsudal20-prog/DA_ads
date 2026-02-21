@@ -46,6 +46,10 @@ def st_dataframe_safe(df, **kwargs):
             kwargs.pop("column_config", None)
             return _ST_DATAFRAME(df, **kwargs)
 
+def is_fast_mode() -> bool:
+    """Fast mode: prioritize filter/switch speed by skipping heavy UI components (AgGrid/ECharts)."""
+    return bool(st.session_state.get("fast_mode", True))
+
 import altair as alt
 
 # Charts: Altair (vega-lite)
@@ -744,7 +748,7 @@ def render_pinned_summary_grid(
         # try align to detail columns
         summary_df = summary_df.reindex(columns=list(detail_df.columns))
 
-    if HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
+    if (not is_fast_mode()) and HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
         # Pinned rows
         pinned = summary_df.to_dict("records") if summary_df is not None and not summary_df.empty else []
 
@@ -809,7 +813,7 @@ function(params){
 
 def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_col: str, height: int = 260) -> None:
     """ECharts 도넛 차트(선택): streamlit-echarts 설치 시만 렌더."""
-    if not (HAS_ECHARTS and st_echarts is not None):
+    if is_fast_mode() or (not (HAS_ECHARTS and st_echarts is not None)):
         return
     if data is None or data.empty or label_col not in data.columns or value_col not in data.columns:
         return
@@ -848,10 +852,10 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
     if df is None:
         df = pd.DataFrame()
 
-    if HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
+    if (not is_fast_mode()) and HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
         q = st.text_input("검색", value="", placeholder="테이블 내 검색", key=f"{key}_q")
         gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_default_column(sortable=True, filter=True, resizable=True)
+        gb.configure_default_column(sortable=True, filter=False, resizable=True)
         gb.configure_grid_options(animateRows=False, suppressRowClickSelection=True)
         grid = gb.build()
         if q:
@@ -894,7 +898,6 @@ def get_database_url() -> str:
     return db_url
 
 
-@st.cache_resource(show_spinner=False)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
@@ -4313,11 +4316,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
-
     render_big_table(view_df, key='ad_big_table', height=620)
-
-    # 다운로드 (표 렌더 후 같은 scope에서 호출되어야 함)
-    render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
+render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
 
 
 def page_settings(engine) -> None:
@@ -4439,6 +4439,15 @@ def main():
     # --- Left nav (Naver-like) ---
     with st.sidebar:
         st.markdown("### 메뉴")
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        # Speed / UX toggle
+        st.checkbox(
+            "⚡ 빠른 모드(권장)",
+            value=st.session_state.get("fast_mode", True),
+            key="fast_mode",
+            help="ON: AgGrid/ECharts 등 무거운 컴포넌트를 생략해 필터/탭 전환 속도를 우선합니다.",
+        )
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
         # Bootstrap: meta가 비어있으면 설정/연결만 먼저 열어 동기화할 수 있게 합니다.
