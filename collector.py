@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.4 - 실시간 로그 출력 & 완벽 안정화)
+collector.py - 네이버 검색광고 수집기 (v9.5 - 변수 누락 에러 수정)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
 - 403 에러 대응: 권한 없는 계정은 스킵
 - 실시간 로그: GitHub Actions 환경에서 출력이 멈춰 보이는 버퍼링 현상 해결 (flush=True)
+- 수정사항: SKIP_KEYWORD_STATS, SKIP_AD_STATS 변수 누락 에러 수정
 """
 
 from __future__ import annotations
@@ -43,10 +44,12 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
 
+# ✅ 누락되었던 스위치 변수 추가
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
+SKIP_KEYWORD_STATS = False  
+SKIP_AD_STATS = False       
 
-# ✅ 실시간 출력을 위해 flush=True 옵션 추가
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -55,7 +58,7 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.4_SMART_REALTIME] ===", flush=True)
+print("=== [VERSION: v9.5_FIXED_VARIABLES] ===", flush=True)
 print("=== 대용량 리포트 1회 최적화 & 실시간 로그 출력 ===", flush=True)
 print("="*50, flush=True)
 
