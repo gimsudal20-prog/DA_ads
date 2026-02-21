@@ -22,6 +22,7 @@ import re
 import io
 import math
 import numpy as np
+from functools import lru_cache
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -451,6 +452,86 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 EXTRA_UI_CSS = """
 <style>
+/* compact download buttons */
+.stDownloadButton button {
+  padding: 0.15rem 0.55rem !important;
+  font-size: 0.82rem !important;
+  line-height: 1.2 !important;
+  min-height: 28px !important;
+}
+
+/* ---- Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{ background: rgba(0,0,0,.04) !important; }
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{ display:none !important; }
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Read-only date boxes (avoid overflow) ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Expander card polish ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{ border: 0 !important; }
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide circle icon */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
 </style>
 """
 
@@ -1106,102 +1187,6 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
         return
 
     df_json = df.to_json(orient="split")
-
-    st.markdown(
-        """
-        <style>
-        .stDownloadButton button {
-            padding: 0.15rem 0.55rem !important;
-            font-size: 0.82rem !important;
-            line-height: 1.2 !important;
-            min-height: 28px !important;
-        }
-        
-/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-  background: rgba(0,0,0,.04) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
-  display:none !important; /* hide radio circle */
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
-
-/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-
-/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{
-  border: 0 !important;
-}
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) look like admin fields */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide the circle icon & make it look like a nav list */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
