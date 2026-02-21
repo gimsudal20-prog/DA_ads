@@ -26,6 +26,25 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+
+# -----------------------------
+# Streamlit helpers (compat)
+# -----------------------------
+_ST_DATAFRAME = st.dataframe
+def st_dataframe_safe(df, **kwargs):
+    """st.dataframe 호환성 래퍼: Streamlit 버전 차이로 인한 TypeError를 안전하게 폴백 처리."""
+    try:
+        return _ST_DATAFRAME(df, **kwargs)
+    except TypeError:
+        # 1차 폴백: hide_index 제거
+        kwargs.pop("hide_index", None)
+        try:
+            return _ST_DATAFRAME(df, **kwargs)
+        except TypeError:
+            # 2차 폴백: column_config 제거(구버전)
+            kwargs.pop("column_config", None)
+            return _ST_DATAFRAME(df, **kwargs)
+
 import altair as alt
 
 # Charts: Altair (vega-lite)
@@ -551,7 +570,7 @@ def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_pref
     if "ROAS(%)" in view.columns:
         disp["ROAS(%)"] = view["ROAS(%)"].apply(_fmt_pct0)
 
-    st.dataframe(disp, use_container_width=True, hide_index=True, height=360)
+    st_dataframe_safe(disp, use_container_width=True, hide_index=True, height=360)
 
 
 
@@ -604,7 +623,7 @@ def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None
             return
         except Exception:
             pass
-    st.dataframe(df, use_container_width=True, hide_index=True, height=height)
+    st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
 
 
 
@@ -688,8 +707,8 @@ function(params){
     # Fallback: summary above + detail below (summary stays on top structurally)
     if summary_df is not None and not summary_df.empty:
         # keep it compact
-        st.dataframe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
-    st.dataframe(detail_df, use_container_width=True, hide_index=True, height=height)
+        st_dataframe_safe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
+    st_dataframe_safe(detail_df, use_container_width=True, hide_index=True, height=height)
 
 
 
@@ -3949,7 +3968,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     out_df["클릭"] = pd.to_numeric(out_df["클릭"], errors="coerce").fillna(0).astype(int)
     out_df["전환"] = pd.to_numeric(out_df["전환"], errors="coerce").fillna(0).astype(int)
 
-    st.dataframe(out_df, use_container_width=True, hide_index=True)
+    st_dataframe_safe(out_df, use_container_width=True, hide_index=True)
     render_download_compact(out_df, f"키워드성과_TOP{top_n}_{f['start']}_{f['end']}", "keyword", "kw")
 
 
@@ -4124,7 +4143,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
-    st.dataframe(
+    st_dataframe_safe(
         view_df,
         use_container_width=True,
         hide_index=True,
@@ -4191,7 +4210,7 @@ def page_settings(engine) -> None:
         if dfm is None or dfm.empty:
             st.warning("dim_account_meta가 비어있습니다. 위에서 accounts.xlsx 동기화를 먼저 해주세요.")
         else:
-            st.dataframe(dfm.head(50), use_container_width=True, height=360)
+            st_dataframe_safe(dfm.head(50), use_container_width=True, height=360)
     except Exception as e:
         st.error(f"meta 조회 실패: {e}")
 
