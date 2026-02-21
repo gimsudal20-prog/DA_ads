@@ -4276,10 +4276,6 @@ def main():
             label_visibility="collapsed",
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        if meta_ready:
-            st.caption("• 필터 변경 즉시 반영\\n• 쿼리는 캐시로 즉시 로드")
-        else:
-            st.caption("• 설정/연결에서 accounts.xlsx 동기화 후 사용")
 
     # Page title (clean)
     st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
