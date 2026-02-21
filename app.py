@@ -62,6 +62,11 @@ except Exception:
 # Optional grid component (AgGrid) - enables pinned top rows + stable sorting
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode  # pip install streamlit-aggrid
+    try:
+        from st_aggrid.shared import GridUpdateMode, DataReturnMode
+    except Exception:
+        GridUpdateMode = None  # type: ignore
+        DataReturnMode = None  # type: ignore
     HAS_AGGRID = True
 except Exception:
     AgGrid = None  # type: ignore
@@ -76,6 +81,19 @@ try:
 except Exception:
     st_echarts = None  # type: ignore
     HAS_ECHARTS = False
+
+
+# -----------------------------
+# AgGrid tuning: keep rich grid but avoid triggering reruns on sort/filter/scroll
+# -----------------------------
+def _aggrid_mode(name: str):
+    """Return GridUpdateMode/DataReturnMode value across versions."""
+    # st-aggrid versions differ: enums may be absent; string fallbacks are accepted.
+    if name == "no_update":
+        return GridUpdateMode.NO_UPDATE if 'GridUpdateMode' in globals() and GridUpdateMode is not None else "NO_UPDATE"
+    if name == "as_input":
+        return DataReturnMode.AS_INPUT if 'DataReturnMode' in globals() and DataReturnMode is not None else "AS_INPUT"
+    return None
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -796,6 +814,8 @@ function(params){
             fit_columns_on_grid_load=True,
             theme="alpine",
             allow_unsafe_jscode=True,
+            update_mode=_aggrid_mode("no_update"),
+            data_return_mode=_aggrid_mode("as_input"),
             key=key,
         )
         return
@@ -861,9 +881,11 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
             df,
             gridOptions=grid,
             height=height,
-            fit_columns_on_grid_load=True,
+            fit_columns_on_grid_load=False,
             theme="alpine",
             allow_unsafe_jscode=True,
+            update_mode=_aggrid_mode("no_update"),
+            data_return_mode=_aggrid_mode("as_input"),
             key=key,
         )
         return
@@ -894,7 +916,6 @@ def get_database_url() -> str:
     return db_url
 
 
-@st.cache_resource(show_spinner=False)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
