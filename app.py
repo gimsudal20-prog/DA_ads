@@ -426,12 +426,121 @@ def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
         unsafe_allow_html=True,
     )
 def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_prefix: str = "") -> None:
-    """Fallback timeseries renderer (keeps UI stable)."""
-    view = ts.copy()
-    cols = [c for c in ["dt", "imp", "clk", "cost", "conv", "sales"] if c in view.columns]
-    if cols:
-        view = view[cols]
-    st.dataframe(view, use_container_width=True, height=360)
+    """기간 '추세' 표를 한글/가독성 좋게 렌더링.
+
+    - dt/imp/clk/cost/conv/sales -> 한글 헤더
+    - 날짜는 YYYY-MM-DD
+    - 숫자는 콤마/단위(원, %, p) 적용
+    - CTR/CPC/CPA/ROAS 보조지표 추가
+
+    NOTE: 화면용(표시용) 문자열 컬럼을 만들어 보여줍니다.
+    """
+    if ts is None or ts.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+
+    df = ts.copy()
+
+    # --- normalize columns ---
+    if "dt" in df.columns:
+        dt = pd.to_datetime(df["dt"], errors="coerce")
+        df["dt"] = dt.dt.strftime("%Y-%m-%d")
+
+    # make sure numeric
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    # derived metrics
+    if "imp" in df.columns and "clk" in df.columns:
+        denom = df["imp"].replace(0, pd.NA)
+        df["ctr" ] = (df["clk"] / denom * 100).astype(float).fillna(0.0)
+    if "clk" in df.columns and "cost" in df.columns:
+        denom = df["clk"].replace(0, pd.NA)
+        df["cpc" ] = (df["cost"] / denom).astype(float).fillna(0.0)
+    if "conv" in df.columns and "cost" in df.columns:
+        denom = df["conv"].replace(0, pd.NA)
+        df["cpa" ] = (df["cost"] / denom).astype(float).fillna(0.0)
+    if "cost" in df.columns and "sales" in df.columns:
+        denom = df["cost"].replace(0, pd.NA)
+        df["roas"] = (df["sales"] / denom * 100).astype(float).fillna(0.0)
+
+    # display formatting helpers
+    def _fmt_int(x) -> str:
+        try:
+            return f"{int(round(float(x))):,}"
+        except Exception:
+            return "0"
+
+    def _fmt_won(x) -> str:
+        try:
+            return f"{int(round(float(x))):,}원"
+        except Exception:
+            return "0원"
+
+    def _fmt_pct1(x) -> str:
+        try:
+            return f"{float(x):.1f}%"
+        except Exception:
+            return "0.0%"
+
+    def _fmt_pct0(x) -> str:
+        try:
+            return f"{float(x):.0f}%"
+        except Exception:
+            return "0%"
+
+    # choose order
+    order = []
+    for c in ["dt", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]:
+        if c in df.columns:
+            order.append(c)
+
+    view = df[order].copy()
+
+    # rename to Korean
+    rename = {
+        "dt": "일자",
+        "imp": "노출",
+        "clk": "클릭",
+        "ctr": "CTR(%)",
+        "cpc": "CPC",
+        "cost": "광고비",
+        "conv": "전환",
+        "cpa": "CPA",
+        "sales": "매출",
+        "roas": "ROAS(%)",
+    }
+    view = view.rename(columns=rename)
+
+    # format for display (strings)
+    disp = pd.DataFrame()
+    if "일자" in view.columns:
+        disp["일자"] = view["일자"].astype(str)
+
+    for col in ["노출", "클릭", "전환"]:
+        if col in view.columns:
+            disp[col] = view[col].apply(_fmt_int)
+
+    if "CTR(%)" in view.columns:
+        disp["CTR(%)"] = view["CTR(%)"].apply(_fmt_pct1)
+
+    if "CPC" in view.columns:
+        disp["CPC"] = view["CPC"].apply(_fmt_won)
+
+    if "광고비" in view.columns:
+        disp["광고비"] = view["광고비"].apply(_fmt_won)
+
+    if "CPA" in view.columns:
+        disp["CPA"] = view["CPA"].apply(_fmt_won)
+
+    if "매출" in view.columns:
+        disp["매출"] = view["매출"].apply(_fmt_won)
+
+    if "ROAS(%)" in view.columns:
+        disp["ROAS(%)"] = view["ROAS(%)"].apply(_fmt_pct0)
+
+    st.dataframe(disp, use_container_width=True, hide_index=True, height=360)
 
 
 
