@@ -21,8 +21,6 @@ import time
 import re
 import io
 import math
-import copy
-from functools import lru_cache
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -64,6 +62,11 @@ except Exception:
 # Optional grid component (AgGrid) - enables pinned top rows + stable sorting
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode  # pip install streamlit-aggrid
+    try:
+        from st_aggrid.shared import GridUpdateMode, DataReturnMode
+    except Exception:
+        GridUpdateMode = None  # type: ignore
+        DataReturnMode = None  # type: ignore
     HAS_AGGRID = True
 except Exception:
     AgGrid = None  # type: ignore
@@ -78,6 +81,19 @@ try:
 except Exception:
     st_echarts = None  # type: ignore
     HAS_ECHARTS = False
+
+
+# -----------------------------
+# AgGrid tuning: keep rich grid but avoid triggering reruns on sort/filter/scroll
+# -----------------------------
+def _aggrid_mode(name: str):
+    """Return GridUpdateMode/DataReturnMode value across versions."""
+    # st-aggrid versions differ: enums may be absent; string fallbacks are accepted.
+    if name == "no_update":
+        return GridUpdateMode.NO_UPDATE if 'GridUpdateMode' in globals() and GridUpdateMode is not None else "NO_UPDATE"
+    if name == "as_input":
+        return DataReturnMode.AS_INPUT if 'DataReturnMode' in globals() and DataReturnMode is not None else "AS_INPUT"
+    return None
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -126,7 +142,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.6.11 (Bootstrap Settings+Sync+Speed Hotfix, 2026-02-20)"
+BUILD_TAG = "v8.7.1 (AgGrid/ECharts 유지 + 속도 최적화, 2026-02-21)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -432,13 +448,19 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 """
 
-st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+
+EXTRA_UI_CSS = """
+<style>
+</style>
+"""
+
+st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
 
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
-    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -726,48 +748,42 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height
 
 
 
-
-
-def _aggrid_mode(kind: str):
-    # streamlit-aggrid enum helper (version tolerant)
-    try:
-        from st_aggrid.shared import GridUpdateMode, DataReturnMode
-    except Exception:
-        from st_aggrid import GridUpdateMode, DataReturnMode
-
-    k = (kind or '').lower().strip()
-    if k in ('no_update', 'noupdate', 'no-update'):
-        return getattr(GridUpdateMode, 'NO_UPDATE', GridUpdateMode.NO_UPDATE)
-    if k in ('as_input', 'asinput', 'as-input'):
-        return getattr(DataReturnMode, 'AS_INPUT', DataReturnMode.AS_INPUT)
-
-    # fallback
-    if hasattr(GridUpdateMode, 'MODEL_CHANGED'):
-        return GridUpdateMode.MODEL_CHANGED
-    return getattr(GridUpdateMode, 'NO_UPDATE', GridUpdateMode.NO_UPDATE)
-def _aggrid_update_no_update():
-    return _aggrid_mode("no_update")
-
-def _aggrid_return_as_input():
-    return _aggrid_mode("as_input")
-
 @lru_cache(maxsize=64)
-def _aggrid_coldefs_cached(cols: tuple, right_cols: tuple, enable_filter: bool) -> tuple:
-    # Return an immutable tuple of (coldef dict) to keep cache safe.
-    defs = []
+def _aggrid_coldefs(cols: tuple, right_align: tuple = (), enable_filter: int = 0) -> list:
+    """AgGrid columnDefs cached by schema (avoid rebuilding GridOptionsBuilder on every rerun)."""
+    ra = set(right_align)
+    ef = bool(enable_filter)
+    out = []
     for c in cols:
-        cd = {"headerName": c, "field": c, "sortable": True, "resizable": True}
-        if enable_filter:
-            cd["filter"] = True
-        if c in right_cols:
+        cd = {"headerName": c, "field": c, "sortable": True, "filter": ef, "resizable": True}
+        if c in ra:
             cd["cellStyle"] = {"textAlign": "right"}
-        defs.append(cd)
-    return tuple(defs)
+        out.append(cd)
+    return out
 
-def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool) -> List[dict]:
-    base = _aggrid_coldefs_cached(tuple(cols), tuple(sorted(list(right_cols))), bool(enable_filter))
-    # deepcopy to avoid any mutation by component
-    return copy.deepcopy(list(base))
+def _aggrid_gridopts(detail_cols: list, pinned_rows: list, right_align: set, quick_filter: str = "", enable_filter: bool = False) -> dict:
+    opts = {
+        "defaultColDef": {"sortable": True, "filter": bool(enable_filter), "resizable": True},
+        "columnDefs": _aggrid_coldefs(tuple(detail_cols), tuple(sorted(right_align)), 1 if enable_filter else 0),
+        "pinnedTopRowData": pinned_rows or [],
+        "suppressRowClickSelection": True,
+        "animateRows": False,
+    }
+    if quick_filter:
+        opts["quickFilterText"] = quick_filter
+    # Style pinned rows (grey summary)
+    try:
+        opts["getRowStyle"] = JsCode("""
+function(params){
+  if(params.node.rowPinned){
+    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
+  }
+  return {};
+}
+""")
+    except Exception:
+        pass
+    return opts
 
 
 def render_pinned_summary_grid(
@@ -776,78 +792,50 @@ def render_pinned_summary_grid(
     key: str,
     height: int = 520,
 ) -> None:
-    """대용량 테이블(정렬/필터) + 요약행 상단 고정.
+    """Render a large sortable table where 'summary' rows stay pinned at the top.
 
-    ✅ 속도 최적화:
-    - GridOptionsBuilder는 rerun마다 DataFrame 스캔/옵션 재생성이 무겁습니다.
-    - columnDefs를 캐시(lru_cache)하고, pinnedTopRowData만 매번 주입합니다.
-    - update_mode=NO_UPDATE 로 그리드 내부 정렬/필터가 Streamlit rerun을 유발하지 않게 유지합니다.
+    - If streamlit-aggrid is installed: pinnedTopRowData keeps the summary fixed (even on sort/scroll).
+    - Otherwise: fallback to two tables (summary above, detail below).
     """
     if detail_df is None:
         detail_df = pd.DataFrame()
     if summary_df is None:
         summary_df = pd.DataFrame()
 
-    # Align columns
+    # Normalize columns
     if not summary_df.empty and list(summary_df.columns) != list(detail_df.columns):
+        # try align to detail columns
         summary_df = summary_df.reindex(columns=list(detail_df.columns))
 
     if HAS_AGGRID and AgGrid is not None:
-        pinned = summary_df.to_dict("records") if (summary_df is not None and not summary_df.empty) else []
+        # Pinned rows
+        pinned = summary_df.to_dict("records") if summary_df is not None and not summary_df.empty else []
 
         right_cols = {
-            "노출",
-            "클릭",
-            "CTR(%)",
-            "CPC",
-            "광고비",
-            "전환",
-            "CPA",
-            "전환매출",
-            "ROAS(%)",
-            "매출",
+            "노출","클릭","CTR(%)","CPC","광고비","전환","CPA","전환매출","ROAS(%)",
         }
-
-        grid = {
-            "defaultColDef": {"sortable": True, "resizable": True, "filter": False},
-            "columnDefs": _aggrid_coldefs(list(detail_df.columns), right_cols, enable_filter=False),
-            "pinnedTopRowData": pinned,
-            "suppressRowClickSelection": True,
-            "animateRows": False,
-        }
-
-        # Style pinned rows (grey summary)
-        try:
-            grid["getRowStyle"] = JsCode(
-                """
-function(params){
-  if(params.node.rowPinned){
-    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
-  }
-  return {};
-}
-"""
-            )
-        except Exception:
-            pass
+        grid = _aggrid_gridopts(list(detail_df.columns), pinned, right_cols, enable_filter=False)
 
         AgGrid(
             detail_df,
             gridOptions=grid,
             height=height,
-            fit_columns_on_grid_load=True,
+            fit_columns_on_grid_load=False,
             theme="alpine",
             allow_unsafe_jscode=True,
-            update_mode=_aggrid_update_no_update(),
-            data_return_mode=_aggrid_return_as_input(),
+            update_mode=_aggrid_mode("no_update"),
+            data_return_mode=_aggrid_mode("as_input"),
             key=key,
+            reload_data=False,
         )
         return
 
-    # Fallback: summary table above + detail below
+    # Fallback: summary above + detail below (summary stays on top structurally)
     if summary_df is not None and not summary_df.empty:
+        # keep it compact
         st_dataframe_safe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
     st_dataframe_safe(detail_df, use_container_width=True, hide_index=True, height=height)
+
 
 def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_col: str, height: int = 260) -> None:
     """ECharts 도넛 차트(선택): streamlit-echarts 설치 시만 렌더."""
@@ -885,39 +873,15 @@ def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_c
     st_echarts(option, height=f"{height}px")
 
 
-
 def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
-    """대용량 테이블: AgGrid(설치 시) 우선.
-
-    ✅ 속도 최적화:
-    - GridOptionsBuilder 제거 → columnDefs 캐시 재사용
-    - update_mode=NO_UPDATE 유지(정렬/필터/스크롤이 Streamlit rerun 유발 X)
-    """
+    """대용량 테이블: AgGrid(설치 시) 우선, 미설치 시 st.dataframe 폴백."""
     if df is None:
         df = pd.DataFrame()
 
     if HAS_AGGRID and AgGrid is not None:
         q = st.text_input("검색", value="", placeholder="테이블 내 검색", key=f"{key}_q")
-        right_cols = {
-            "노출",
-            "클릭",
-            "CTR(%)",
-            "CPC",
-            "광고비",
-            "전환",
-            "CPA",
-            "전환매출",
-            "ROAS(%)",
-            "매출",
-        }
-        grid = {
-            "defaultColDef": {"sortable": True, "resizable": True, "filter": True},
-            "columnDefs": _aggrid_coldefs(list(df.columns), right_cols, enable_filter=True),
-            "animateRows": False,
-            "suppressRowClickSelection": True,
-        }
-        if q:
-            grid["quickFilterText"] = q
+        right_cols = {"노출","클릭","CTR(%)","CPC","광고비","전환","CPA","전환매출","ROAS(%)","비용","매출"}
+        grid = _aggrid_gridopts(list(df.columns), pinned_rows=[], right_align=right_cols, quick_filter=q, enable_filter=True)
 
         AgGrid(
             df,
@@ -926,14 +890,20 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
             fit_columns_on_grid_load=False,
             theme="alpine",
             allow_unsafe_jscode=True,
-            update_mode=_aggrid_update_no_update(),
-            data_return_mode=_aggrid_return_as_input(),
+            update_mode=_aggrid_mode("no_update"),
+            data_return_mode=_aggrid_mode("as_input"),
             key=key,
         )
         return
 
     st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
 
+
+
+
+# -----------------------------
+# DB helpers
+# -----------------------------
 def get_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
     if not db_url:
@@ -952,7 +922,6 @@ def get_database_url() -> str:
     return db_url
 
 
-@st.cache_resource(show_spinner=False)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
@@ -3867,15 +3836,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
 
-            # (선택) ECharts: 광고유형별 광고비 비중 (도넛)
+            # (선택) ECharts: 광고유형별 광고비 비중 (도넛) — 2개 이상일 때만, 접어서 표시
             try:
                 share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
                 share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
+                if share is not None and not share.empty and int(share.shape[0]) >= 2:
+                    with st.expander("📊 광고유형별 광고비 비중", expanded=False):
+                        render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
             except Exception:
                 pass
-
-
             metric_sel = st.radio(
                 "트렌드 지표",
                 ["광고비", "클릭", "전환", "ROAS"],
@@ -3936,6 +3905,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with c3:
                 st.markdown("#### ✅ 전환 TOP5")
                 ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key="camp_top5_conv", height=240)
+
         st.divider()
     # -----------------
     # 4) Main table (fast)
@@ -4045,25 +4015,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         with c3:
             st.markdown("#### ✅ 전환 TOP10")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
-
-    
-    with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.copy()
-        tmp = _attach_account_name(tmp, meta)
-        tmp["keyword"] = tmp["keyword"].astype(str).map(str.strip)
-        # 같은 키워드명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-        g = tmp.groupby(["customer_id", "keyword"], as_index=False)["cost"].sum()
-        g = _attach_account_name(g, meta)
-
-        multi_acc = g["customer_id"].nunique() > 1
-        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["keyword"]}' if multi_acc else r["keyword"], axis=1)
-
-        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-        if ch is not None:
-            render_chart(ch)
-        else:
-            st.info("그래프 표시 불가")
-
 
     st.divider()
     # Top N list (광고비 기준)
