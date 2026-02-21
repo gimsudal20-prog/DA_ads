@@ -22,7 +22,6 @@ import re
 import io
 import math
 import numpy as np
-from functools import lru_cache
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -96,6 +95,62 @@ def _aggrid_mode(name: str):
         return DataReturnMode.AS_INPUT if 'DataReturnMode' in globals() and DataReturnMode is not None else "AS_INPUT"
     return None
 
+
+# -----------------------------
+# AgGrid fast gridOptions (cache) - keeps features but avoids rebuilding GridOptionsBuilder every rerun
+# -----------------------------
+_AGGRID_COLDEF_CACHE: dict = {}
+
+def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool) -> list:
+    key = (tuple(cols), tuple(sorted(right_cols)), int(bool(enable_filter)))
+    cache = _AGGRID_COLDEF_CACHE
+    if key in cache:
+        return cache[key]
+    out = []
+    for c in cols:
+        cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
+        if c in right_cols:
+            cd["cellStyle"] = {"textAlign": "right"}
+        out.append(cd)
+    if len(cache) > 64:
+        cache.clear()
+    cache[key] = out
+    return out
+
+def _aggrid_grid_options(
+    cols: List[str],
+    pinned_rows: Optional[list] = None,
+    right_cols: Optional[set] = None,
+    quick_filter: str = "",
+    enable_filter: bool = False,
+) -> dict:
+    right_cols = right_cols or set()
+    pinned_rows = pinned_rows or []
+    grid = {
+        "defaultColDef": {"sortable": True, "filter": bool(enable_filter), "resizable": True},
+        "columnDefs": _aggrid_coldefs(cols, right_cols, enable_filter),
+        "pinnedTopRowData": pinned_rows,
+        "suppressRowClickSelection": True,
+        "animateRows": False,
+    }
+    if quick_filter:
+        grid["quickFilterText"] = quick_filter
+
+    # pinned row styling (grey summary)
+    if JsCode is not None:
+        try:
+            grid["getRowStyle"] = JsCode("""
+function(params){
+  if(params.node.rowPinned){
+    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
+  }
+  return {};
+}
+""")
+        except Exception:
+            pass
+    return grid
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
@@ -143,7 +198,7 @@ except Exception:
 # -----------------------------
 st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
-BUILD_TAG = "v8.7.1 (AgGrid/ECharts 유지 + 속도 최적화, 2026-02-21)"
+BUILD_TAG = "v8.6.11 (Bootstrap Settings+Sync+Speed Hotfix, 2026-02-20)"
 
 # -----------------------------
 # Thresholds (Budget)
@@ -449,99 +504,13 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 """
 
-
-EXTRA_UI_CSS = """
-<style>
-/* compact download buttons */
-.stDownloadButton button {
-  padding: 0.15rem 0.55rem !important;
-  font-size: 0.82rem !important;
-  line-height: 1.2 !important;
-  min-height: 28px !important;
-}
-
-/* ---- Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{ background: rgba(0,0,0,.04) !important; }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{ display:none !important; }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
-
-/* ---- Read-only date boxes (avoid overflow) ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ---- Expander card polish ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{ border: 0 !important; }
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide circle icon */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-</style>
-"""
-
-st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
+st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
-    
+    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -828,45 +797,6 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height
 
 
 
-
-@lru_cache(maxsize=64)
-def _aggrid_coldefs(cols: tuple, right_align: tuple = (), enable_filter: int = 0) -> list:
-    """AgGrid columnDefs cached by schema (avoid rebuilding GridOptionsBuilder on every rerun)."""
-    ra = set(right_align)
-    ef = bool(enable_filter)
-    out = []
-    for c in cols:
-        cd = {"headerName": c, "field": c, "sortable": True, "filter": ef, "resizable": True}
-        if c in ra:
-            cd["cellStyle"] = {"textAlign": "right"}
-        out.append(cd)
-    return out
-
-def _aggrid_gridopts(detail_cols: list, pinned_rows: list, right_align: set, quick_filter: str = "", enable_filter: bool = False) -> dict:
-    opts = {
-        "defaultColDef": {"sortable": True, "filter": bool(enable_filter), "resizable": True},
-        "columnDefs": _aggrid_coldefs(tuple(detail_cols), tuple(sorted(right_align)), 1 if enable_filter else 0),
-        "pinnedTopRowData": pinned_rows or [],
-        "suppressRowClickSelection": True,
-        "animateRows": False,
-    }
-    if quick_filter:
-        opts["quickFilterText"] = quick_filter
-    # Style pinned rows (grey summary)
-    try:
-        opts["getRowStyle"] = JsCode("""
-function(params){
-  if(params.node.rowPinned){
-    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
-  }
-  return {};
-}
-""")
-    except Exception:
-        pass
-    return opts
-
-
 def render_pinned_summary_grid(
     detail_df: pd.DataFrame,
     summary_df: Optional[pd.DataFrame],
@@ -888,14 +818,22 @@ def render_pinned_summary_grid(
         # try align to detail columns
         summary_df = summary_df.reindex(columns=list(detail_df.columns))
 
+    
     if HAS_AGGRID and AgGrid is not None:
         # Pinned rows
         pinned = summary_df.to_dict("records") if summary_df is not None and not summary_df.empty else []
 
+        # Right-align numeric-ish columns
         right_cols = {
-            "노출","클릭","CTR(%)","CPC","광고비","전환","CPA","전환매출","ROAS(%)",
+            "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"
         }
-        grid = _aggrid_gridopts(list(detail_df.columns), pinned, right_cols, enable_filter=False)
+
+        grid = _aggrid_grid_options(
+            cols=list(detail_df.columns),
+            pinned_rows=pinned,
+            right_cols=right_cols,
+            enable_filter=False,
+        )
 
         AgGrid(
             detail_df,
@@ -907,9 +845,9 @@ def render_pinned_summary_grid(
             update_mode=_aggrid_mode("no_update"),
             data_return_mode=_aggrid_mode("as_input"),
             key=key,
-            reload_data=False,
         )
         return
+
 
     # Fallback: summary above + detail below (summary stays on top structurally)
     if summary_df is not None and not summary_df.empty:
@@ -959,10 +897,20 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
     if df is None:
         df = pd.DataFrame()
 
+    
     if HAS_AGGRID and AgGrid is not None:
         q = st.text_input("검색", value="", placeholder="테이블 내 검색", key=f"{key}_q")
-        right_cols = {"노출","클릭","CTR(%)","CPC","광고비","전환","CPA","전환매출","ROAS(%)","비용","매출"}
-        grid = _aggrid_gridopts(list(df.columns), pinned_rows=[], right_align=right_cols, quick_filter=q, enable_filter=True)
+
+        # right-align numeric-like columns if present
+        right_cols = {c for c in df.columns if any(k in c for k in ["노출", "클릭", "광고비", "전환", "매출", "CTR", "CPC", "CPA", "ROAS"])}
+
+        grid = _aggrid_grid_options(
+            cols=list(df.columns),
+            pinned_rows=[],
+            right_cols=right_cols,
+            quick_filter=q or "",
+            enable_filter=True,
+        )
 
         AgGrid(
             df,
@@ -1008,15 +956,43 @@ def get_engine():
     return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
 
 
-def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn, params=params or {})
+def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) -> pd.DataFrame:
+    """DB read with light retry for transient connection errors."""
+    last_err = None
+    for i in range(retries + 1):
+        try:
+            with engine.connect() as conn:
+                return pd.read_sql(text(sql), conn, params=params or {})
+        except Exception as e:
+            last_err = e
+            # common transient errors: OperationalError, connection reset, SSL closed, etc.
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            if i < retries:
+                time.sleep(0.25 * (2 ** i))
+                continue
+            raise last_err
 
 
-def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
-    with engine.begin() as conn:
-        conn.execute(text(sql), params or {})
-
+def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) -> None:
+    last_err = None
+    for i in range(retries + 1):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(sql), params or {})
+            return
+        except Exception as e:
+            last_err = e
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            if i < retries:
+                time.sleep(0.25 * (2 ** i))
+                continue
+            raise last_err
 
 def _get_table_names_cached(engine, schema: str = "public") -> set:
     """Inspector 호출은 매우 느립니다. 세션 단위로 table list를 캐시합니다."""
@@ -1187,6 +1163,102 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
         return
 
     df_json = df.to_json(orient="split")
+
+    st.markdown(
+        """
+        <style>
+        .stDownloadButton button {
+            padding: 0.15rem 0.55rem !important;
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            min-height: 28px !important;
+        }
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
@@ -2095,6 +2167,65 @@ def query_campaign_bundle(
     return df.reset_index(drop=True)
 
 
+
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
+    """캠페인 탭용: (일자 x 캠페인) 슬라이스를 1회 조회해 캐시합니다.
+    날짜 범위만 바뀔 때 DB를 치고, 이후 담당자/업체/유형/캠페인 선택은 pandas 필터로 처리합니다.
+    """
+    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
+        return pd.DataFrame(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    join_campaign = ""
+    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
+    group_campaign = ""
+    if table_exists(_engine, "dim_campaign"):
+        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
+        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
+        group_campaign = ", c.campaign_name, c.campaign_tp"
+
+    sql = f"""
+    SELECT
+      f.dt::date AS dt,
+      f.customer_id::text AS customer_id,
+      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
+      COALESCE(NULLIF(m.manager,''),'') AS manager,
+      f.campaign_id,
+      {select_campaign},
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    JOIN dim_account_meta m
+      ON m.customer_id = f.customer_id::text
+    {join_campaign}
+    WHERE f.dt BETWEEN :d1 AND :d2
+    GROUP BY f.dt::date, f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
+    ORDER BY f.dt::date
+    """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"])
+
+    # types
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    for c in ["imp","clk","cost","conv","sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
+    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+    return df.reset_index(drop=True)
 # -----------------------------
 # Timeseries Queries (for charts)
 # -----------------------------
@@ -3720,35 +3851,52 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     # -----------------------------
-    # 1) Base (cached) - DB hits only when date/manager/account/type/top_n changes
+    # 1) 날짜 범위만 DB 조회 (캐시). 이후 필터는 pandas에서 처리
     # -----------------------------
-    # NOTE: campaign 선택 변경은 아래 pandas 필터만 수행(= DB 재조회 없음)
-    bundle = query_campaign_bundle(
-        engine,
-        f["start"],
-        f["end"],
-        cids,
-        type_sel,
-        topn_cost=max(top_n, 200),
-        top_k=5,
-    )
-    if bundle is None or bundle.empty:
+    range_sig = (str(f["start"]), str(f["end"]))
+    try:
+        df_daily_all = query_campaign_daily_slice(engine, f["start"], f["end"])
+        st.session_state["_camp_daily_last"] = df_daily_all
+    except Exception:
+        df_daily_all = st.session_state.get("_camp_daily_last", pd.DataFrame())
+        st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
+
+    if df_daily_all is None or df_daily_all.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    df_all = _perf_common_merge_meta(bundle, meta)
-    df_all = add_rates(df_all)
+    # range 단위로 캠페인 집계(= rerun마다 groupby 재계산 방지)
+    if st.session_state.get("_camp_range_sig") != range_sig:
+        st.session_state["_camp_range_sig"] = range_sig
+        dims = ["customer_id", "campaign_id", "account_name", "manager", "campaign_name", "campaign_tp", "campaign_type"]
+        agg_all = df_daily_all.groupby(dims, as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum()
+        agg_all = add_rates(agg_all)
+        st.session_state["_camp_agg_all"] = agg_all
+        # 기본값 리셋
+        st.session_state["camp_filter_key"] = "ALL"
+
+    agg_all = st.session_state.get("_camp_agg_all", pd.DataFrame())
+    if agg_all is None or agg_all.empty:
+        st.warning("캠페인 집계 결과가 비어있습니다.")
+        return
 
     # -----------------------------
-    # 2) 캠페인 필터 (B 방식: '업체명 · 캠페인명' 표시, 내부값은 'customer_id|campaign_id')
+    # 2) 담당자/업체/유형 필터는 pandas 필터로 즉시 반영
     # -----------------------------
-    base_sig = (
-        str(f["start"]),
-        str(f["end"]),
-        tuple(int(x) for x in cids),
-        tuple(str(x) for x in type_sel),
-        int(top_n),
-    )
+    df_all = agg_all
+    if cids:
+        df_all = df_all[df_all["customer_id"].isin([int(x) for x in cids])]
+    if type_sel:
+        df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
+
+    if df_all is None or df_all.empty:
+        st.warning("선택한 필터 조건에서 캠페인이 없습니다.")
+        return
+
+    # -----------------------------
+    # 3) 캠페인 선택(B 방식)
+    # -----------------------------
+    base_sig = (range_sig, tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
     if st.session_state.get("_camp_base_sig") != base_sig:
         st.session_state["_camp_base_sig"] = base_sig
         st.session_state["camp_filter_key"] = "ALL"
@@ -3777,29 +3925,33 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         show_detail = st.toggle("상세 보기", value=False, key="camp_show_detail")
     with r0[2]:
         if sel_key != "ALL":
-            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **캐시 DF pandas 필터**로 즉시 반영)")
+            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **pandas 필터**로 즉시 반영)")
         else:
             st.caption("전체 캠페인 표시 중")
 
-    # apply fast pandas filter
     df = df_all.copy()
     if sel_key != "ALL":
         df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
         df = df[df_key == sel_key].copy()
 
     # -----------------------------
-    # 3) (Optional) Detail panels (lazy)
-    #   - default OFF for speed
-    #   - '전체'일 때만 기존 전체 추세/Top5/그래프 렌더링
+    # 4) 상세(추세/Top5/도넛) - toggle ON일 때만 계산/렌더
     # -----------------------------
-    if show_detail and sel_key == "ALL":
-        # -----------------------------
-        # 📈 Trend (Altair)
-        # -----------------------------
-        try:
-            ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-        except Exception:
-            ts = pd.DataFrame()
+    if show_detail:
+        st.markdown("### 📈 기간 추세")
+        dft = df_daily_all.copy()
+        if cids:
+            dft = dft[dft["customer_id"].isin([int(x) for x in cids])]
+        if type_sel:
+            dft = dft[dft.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
+        if sel_key != "ALL":
+            key_series = dft["customer_id"].astype(str) + "|" + dft["campaign_id"].astype(str)
+            dft = dft[key_series == sel_key].copy()
+
+        ts = pd.DataFrame()
+        if dft is not None and not dft.empty:
+            ts = dft.groupby("dt", as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum().sort_values("dt")
+            ts = add_rates(ts)
 
         if ts is not None and not ts.empty:
             total_cost = float(ts["cost"].sum())
@@ -3808,7 +3960,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
             total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
 
-            st.markdown("### 📈 기간 추세")
             k1, k2, k3, k4 = st.columns(4)
             with k1:
                 ui_metric_or_stmetric("총 광고비", format_currency(total_cost), "선택 기간 합계", key="kpi_camp_cost")
@@ -3819,17 +3970,23 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with k4:
                 ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
 
-            render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
+            # 비교 패널(필요 시) - 기존 기능 유지
+            try:
+                render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
+            except Exception:
+                pass
 
-            # (선택) ECharts: 광고유형별 광고비 비중 (도넛) — 2개 이상일 때만, 접어서 표시
+            # (선택) ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
             try:
                 share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
                 share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                if share is not None and not share.empty and int(share.shape[0]) >= 2:
+                share = share[share["광고비"] > 0]
+                if share is not None and len(share) >= 2:
                     with st.expander("📊 광고유형별 광고비 비중", expanded=False):
                         render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
             except Exception:
                 pass
+
             metric_sel = st.radio(
                 "트렌드 지표",
                 ["광고비", "클릭", "전환", "ROAS"],
@@ -3839,7 +3996,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             )
 
             ts2 = ts.copy()
-            ts2 = add_rates(ts2)
             if metric_sel == "광고비":
                 ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
             elif metric_sel == "클릭":
@@ -3857,9 +4013,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             st.divider()
 
-        # -----------------
-        # TOP5 (비용/클릭/전환)
-        # -----------------
+        # TOP5 (비용/클릭/전환) - 현재 선택(캠페인 포함) 기준
         top_cost = df.sort_values("cost", ascending=False).head(5)
         top_clk = df.sort_values("clk", ascending=False).head(5)
         top_conv = df.sort_values("conv", ascending=False).head(5)
@@ -3892,8 +4046,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key="camp_top5_conv", height=240)
 
         st.divider()
+
     # -----------------
-    # 4) Main table (fast)
+    # 5) Main table (fast) - 현재 선택 기준
     # -----------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
@@ -3928,13 +4083,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = pd.to_numeric(disp["CTR(%)"], errors="coerce").fillna(0).astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    # ✅ B 방식: 캠페인 컬럼 자체에 '업체명 · 캠페인명'을 표시 (네이버 리포트 UX)
+    # ✅ B 방식: 캠페인 컬럼 자체에 '업체명 · 캠페인명' 표시
     disp["캠페인"] = disp["업체명"].astype(str).str.strip() + " · " + disp["캠페인"].astype(str).str.strip()
 
     cols = ["담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
-    # ✅ 네이버처럼 상단 요약행(종합 + 광고유형별) 추가 (캠페인 필터가 걸린 상태에서도 동작)
     summary_df = build_campaign_summary_rows_from_numeric(main_df, campaign_type_col="campaign_type", campaign_name_col="campaign_name")
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
@@ -3943,11 +4097,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         summary_df = pd.DataFrame(columns=cols)
         display_df = view_df
 
-    # ✅ 요약행(회색)은 정렬/스크롤과 무관하게 항상 최상단 고정
-    #    - streamlit-aggrid 설치 시: pinnedTopRowData로 테이블 내부에서 고정됨
-    #    - 미설치 시: 요약표(상단) + 상세표(하단) 2단 구성으로 항상 최상단 유지
     render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
-
     render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
@@ -4000,6 +4150,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         with c3:
             st.markdown("#### ✅ 전환 TOP10")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
+
+    
+    # (중복 그래프 제거)
 
     st.divider()
     # Top N list (광고비 기준)
@@ -4400,32 +4553,37 @@ def main():
     meta_ready = (meta is not None) and (not meta.empty)
 
     # --- Left nav (Naver-like) ---
+    # Sidebar는 데스크톱 보조용(모바일에서는 기본적으로 접힘)
     with st.sidebar:
         st.markdown("### 메뉴")
+        st.caption("모바일에서는 화면 상단 메뉴를 사용하세요.")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-        # Bootstrap: meta가 비어있으면 설정/연결만 먼저 열어 동기화할 수 있게 합니다.
-        if (not meta_ready) and ("nav_page" not in st.session_state):
-            st.session_state["nav_page"] = "설정/연결"
-        nav_items = [
-            "요약(한눈에)",
-            "예산/잔액",
-            "캠페인",
-            "키워드",
-            "소재",
-            "설정/연결",
-        ]
         if not meta_ready:
-            st.warning("처음 1회: accounts.xlsx 동기화가 필요합니다. '설정/연결'에서 동기화 후 사용 가능합니다.")
-            nav_items = ["설정/연결"]
-        nav = st.radio(
-            "nav",
-            nav_items,
-            index=0,
-            key="nav_page",
-            label_visibility="collapsed",
-        )
+            st.warning("처음 1회: accounts.xlsx 동기화가 필요합니다. 상단 메뉴에서 '설정/연결' 선택 후 동기화하세요.")
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # Main top menu (mobile-friendly)
+    if (not meta_ready) and ("nav_page" not in st.session_state):
+        st.session_state["nav_page"] = "설정/연결"
+    nav_items = [
+        "요약(한눈에)",
+        "예산/잔액",
+        "캠페인",
+        "키워드",
+        "소재",
+        "설정/연결",
+    ]
+    if not meta_ready:
+        nav_items = ["설정/연결"]
+
+    nav = st.radio(
+        "menu",
+        nav_items,
+        key="nav_page",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
     # Page title (clean)
     st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
