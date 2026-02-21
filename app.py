@@ -153,6 +153,7 @@ function(params){
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -953,25 +954,76 @@ def get_database_url() -> str:
 
 @st.cache_resource(show_spinner=False)
 def get_engine():
-    return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
+    # Supabase/PGBouncer 환경에서 SSL 연결이 중간에 끊기는 케이스를 줄이기 위한 설정
+    # - pool_pre_ping: checkout 시 SELECT 1로 연결 상태 확인
+    # - pool_recycle: 오래된 커넥션 재사용 방지(서버/풀러 idle timeout 회피)
+    # - pool_use_lifo: 최근 사용 커넥션 우선(죽은 커넥션 확률 감소)
+    url = get_database_url()
+    connect_args = {
+        "sslmode": "require",
+        "connect_timeout": 10,
+        # TCP keepalive (psycopg2)
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    }
 
+    # 안정성이 더 중요하면 NullPool로 전환 가능 (각 쿼리마다 새 연결)
+    use_nullpool = False
+
+    if use_nullpool:
+        return create_engine(url, connect_args=connect_args, poolclass=NullPool, future=True)
+
+    return create_engine(
+        url,
+        connect_args=connect_args,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=2,
+        pool_timeout=30,
+        pool_recycle=300,
+        pool_use_lifo=True,
+        future=True,
+    )
+
+
+
+
+def _reset_engine_cache() -> None:
+    """DB 연결이 끊긴 경우(get_engine 캐시 포함) 재생성을 유도."""
+    try:
+        get_engine.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) -> pd.DataFrame:
-    """DB read with light retry for transient connection errors."""
-    last_err = None
+    """DB read with retry for transient connection errors (SSL closed, idle timeout, etc.)."""
+    last_err: Exception | None = None
+    _engine = engine
+
     for i in range(retries + 1):
         try:
-            with engine.connect() as conn:
+            with _engine.connect() as conn:
                 return pd.read_sql(text(sql), conn, params=params or {})
         except Exception as e:
             last_err = e
-            # common transient errors: OperationalError, connection reset, SSL closed, etc.
+            # 1) 풀 내부 죽은 커넥션 제거
             try:
-                engine.dispose()
+                _engine.dispose()
             except Exception:
                 pass
+
+            # 2) 캐시된 엔진 자체가 꼬였으면 재생성
+            if i == 0:
+                _reset_engine_cache()
+                try:
+                    _engine = get_engine()
+                except Exception:
+                    _engine = engine
+
             if i < retries:
-                time.sleep(0.25 * (2 ** i))
+                time.sleep(0.35 * (2 ** i))
                 continue
             raise last_err
 
@@ -993,6 +1045,33 @@ def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) 
                 time.sleep(0.25 * (2 ** i))
                 continue
             raise last_err
+
+def db_ping(engine, retries: int = 2) -> None:
+    """가벼운 DB 헬스체크. pandas를 거치지 않고 SELECT 1만 실행."""
+    last_err: Exception | None = None
+    _engine = engine
+    for i in range(retries + 1):
+        try:
+            with _engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return
+        except Exception as e:
+            last_err = e
+            try:
+                _engine.dispose()
+            except Exception:
+                pass
+            if i == 0:
+                _reset_engine_cache()
+                try:
+                    _engine = get_engine()
+                except Exception:
+                    _engine = engine
+            if i < retries:
+                time.sleep(0.35 * (2 ** i))
+                continue
+            raise last_err
+
 
 def _get_table_names_cached(engine, schema: str = "public") -> set:
     """Inspector 호출은 매우 느립니다. 세션 단위로 table list를 캐시합니다."""
@@ -4441,7 +4520,7 @@ def page_settings(engine) -> None:
 
     # --- DB Ping ---
     try:
-        sql_read(engine, "SELECT 1 AS ok")
+        db_ping(engine)
         st.success("DB 연결 성공 ✅")
     except Exception as e:
         st.error(f"DB 연결 실패: {e}")
