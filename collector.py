@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.6 - DB 타임아웃 완벽 방지)
+collector.py - 네이버 검색광고 수집기 (v9.8 - 초고속 & 타임아웃 방지 하이브리드)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
 - 403 에러 대응: 권한 없는 계정은 스킵
-- 실시간 로그: GitHub Actions 환경에서 출력이 멈춰 보이는 버퍼링 현상 해결 (flush=True)
-- 수정사항: Statement Timeout 에러 방지를 위해 대용량 Upsert를 5,000건 단위로 분할(Chunk) 처리
+- 실시간 로그: 버퍼링 해결 (flush=True)
+- 수정사항: 깃허브 6시간 제한을 피하기 위해 max_workers=4 로 속도 롤백 + Chunking 유지
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.6_CHUNK_UPSERT] ===", flush=True)
-print("=== DB Timeout 방지 (5000건 분할 저장) ===", flush=True)
+print("=== [VERSION: v9.8_FAST_CHUNK] ===", flush=True)
+print("=== 6시간 제한 돌파 (4배속 + 초소형 Chunk) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -183,19 +183,19 @@ def ensure_tables(engine: Engine):
             )
         """))
 
-# ✅ DB Statement Timeout 방지를 위해 데이터를 5,000건 단위로 잘라서 삽입하도록 수정
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     
-    CHUNK_SIZE = 5000
+    CHUNK_SIZE = 1000
     for start_idx in range(0, len(df), CHUNK_SIZE):
         chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
         temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
         try:
             with engine.begin() as conn:
                 chunk_df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
-                chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
+                # 100개씩 아주 잘게 다져서 DB가 체하지 않도록 함 (4개 동시 작업해도 안전)
+                chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=100)
                 cols = ", ".join([f'"{c}"' for c in chunk_df.columns])
                 pk_clause = ", ".join([f'"{c}"' for c in pk_cols])
                 set_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in chunk_df.columns if c not in pk_cols])
@@ -213,10 +213,14 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     if not rows: return
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last')
+    
+    CHUNK_SIZE = 1000
     try:
         with engine.begin() as conn:
             conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
-            df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=1000)
+            for start_idx in range(0, len(df), CHUNK_SIZE):
+                chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
+                chunk_df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=100)
     except Exception as e:
         log(f"⚠️ Fact Insert Error in {table}: {e}")
 
@@ -500,7 +504,8 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    max_workers = 2
+    # ✅ 속도 4배속 롤백! (4개씩 동시에 달립니다)
+    max_workers = 4
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for acc in accounts_info:
