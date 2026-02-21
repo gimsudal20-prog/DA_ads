@@ -4582,6 +4582,7 @@ def _inject_mobile_sidebar_drawer(is_open: bool) -> None:
     background: rgba(0,0,0,0.22);
     z-index: 1001;
     display: {overlay_display};
+    pointer-events: none;
   }}
 }}
 </style>
@@ -4589,6 +4590,17 @@ def _inject_mobile_sidebar_drawer(is_open: bool) -> None:
 """,
         unsafe_allow_html=True,
     )
+
+
+def _on_nav_change():
+    """Ensure navigation updates immediately across Streamlit versions/embedders."""
+    # In some environments a sidebar radio click can feel "stuck".
+    # Bump a session key and request a rerun after state commit.
+    st.session_state["_nav_bump"] = time.time()
+    try:
+        st.rerun()
+    except Exception:
+        pass
 
 
 
@@ -4651,6 +4663,7 @@ def main():
             "menu",
             nav_items,
             key="nav_page",
+            on_change=_on_nav_change,
             label_visibility="collapsed",
         )
 
