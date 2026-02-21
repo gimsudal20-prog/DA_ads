@@ -1265,6 +1265,15 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
 
 
 
+
+def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
+    """Streamlit multiselect with Korean placeholder (compatible across Streamlit versions)."""
+    try:
+        return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
+    except TypeError:
+        # Older Streamlit without placeholder=
+        return col.multiselect(label, options, default=default, key=key)
+
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     """Naver-like '검색조건' panel. No '적용' 버튼: 변경 즉시 반영되지만,
     쿼리는 cache_data로 막아서 체감 속도를 확보합니다.
@@ -1375,7 +1384,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         r2 = st.columns([1.2, 1.6, 1.2], gap="small")
 
-        manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
+        manager_sel = ui_multiselect(r2[0], "담당자", managers, default=sv.get("manager", []), key="f_manager")
 
         # ✅ 담당자 선택 시: 해당 담당자 계정만 노출 (네이버 관리자 UX)
         accounts_by_mgr = accounts
@@ -1394,9 +1403,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         # 기존 선택값 중 유효한 것만 유지
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
 
-        account_sel = r2[1].multiselect("계정", accounts_by_mgr, default=prev_acc, key="f_account")
+        account_sel = ui_multiselect(r2[1], "계정", accounts_by_mgr, default=prev_acc, key="f_account")
 
-        type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+        type_sel = ui_multiselect(r2[2], "캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
 
 
     # persist back
@@ -1917,7 +1926,7 @@ def _chart_timeseries(
     y_format: str = ",.0f",
     height: int = 320,
 ):
-    """Time-series line (Altair)."""
+    """Time-series line (Altair). Korean date labels + better readability."""
     if df is None or df.empty:
         return None
     if x_col not in df.columns or y_col not in df.columns:
@@ -1926,26 +1935,48 @@ def _chart_timeseries(
     d = df[[x_col, y_col]].copy()
     d[x_col] = pd.to_datetime(d[x_col], errors="coerce")
     d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
-    d = d.dropna(subset=[x_col]).sort_values(x_col)
+    d = d.dropna(subset=[x_col]).sort_values(x_col).reset_index(drop=True)
+
+    # --- Korean date labels (no English month/weekday) ---
+    wk = ["월", "화", "수", "목", "금", "토", "일"]  # pandas weekday: Mon=0
+    d["_wk"] = d[x_col].dt.weekday.map(lambda i: wk[int(i)] if pd.notna(i) else "")
+    d["_x_label"] = d[x_col].dt.strftime("%m/%d") + "(" + d["_wk"] + ")"
+    d["_dt_str"] = d[x_col].dt.strftime("%Y-%m-%d") + " (" + d["_wk"] + ")"
 
     title = (y_title or "").strip()
     y_axis = alt.Axis(title=title if title else None, format=y_format, grid=True, gridColor="#EBEEF2")
-    x_axis = alt.Axis(title=None, grid=False, labelAngle=0)
+    x_axis = alt.Axis(title=None, grid=False, labelAngle=0, labelOverlap="greedy")
 
     base = (
         alt.Chart(d)
         .encode(
-            x=alt.X(f"{x_col}:T", axis=x_axis),
+            x=alt.X("_x_label:N", sort=alt.SortField(x_col, order="ascending"), axis=x_axis),
             y=alt.Y(f"{y_col}:Q", axis=y_axis),
             tooltip=[
-                alt.Tooltip(f"{x_col}:T", title="날짜"),
+                alt.Tooltip("_dt_str:N", title="날짜"),
                 alt.Tooltip(f"{y_col}:Q", title=title or y_col, format=y_format),
             ],
         )
     )
 
-    line = base.mark_line(interpolate="monotone", strokeWidth=2)
-    return line.properties(height=int(height))
+    # Layered chart: subtle area + thicker line + points + last-value label
+    area = base.mark_area(interpolate="monotone", opacity=0.08)
+    line = base.mark_line(interpolate="monotone", strokeWidth=3)
+    pts = base.mark_point(size=40, filled=True)
+
+    last = d.tail(1)
+    last_label = (
+        alt.Chart(last)
+        .mark_text(align="left", dx=8, dy=-8)
+        .encode(
+            x=alt.X("_x_label:N", sort=alt.SortField(x_col, order="ascending")),
+            y=alt.Y(f"{y_col}:Q"),
+            text=alt.Text(f"{y_col}:Q", format=y_format),
+        )
+    )
+
+    return (area + line + pts + last_label).properties(height=int(height))
+
 
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
