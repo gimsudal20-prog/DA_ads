@@ -4540,69 +4540,9 @@ def page_settings(engine) -> None:
 
 
 
-def _inject_mobile_sidebar_drawer(is_open: bool) -> None:
-    """Force a left drawer-style sidebar on mobile, while keeping native sidebar on desktop."""
-    # NOTE: Streamlit DOM can change; we target stable data-testid attributes.
-    transform = "translateX(0)" if is_open else "translateX(-105%)"
-    overlay_display = "block" if is_open else "none"
-    st.markdown(
-        f"""
-<style>
-/* Mobile-only sidebar drawer */
-@media (max-width: 768px) {{
-  section[data-testid="stSidebar"] {{
-    position: fixed !important;
-    top: 0 !important;
-    left: 0 !important;
-    height: 100vh !important;
-    width: min(86vw, 360px) !important;
-    z-index: 1002 !important;
-    transform: {transform} !important;
-    transition: transform 160ms ease !important;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.22) !important;
-    border-right: 1px solid rgba(0,0,0,0.08) !important;
-    background: #ffffff !important;
-  }}
-
-  /* Sidebar internal padding */
-  section[data-testid="stSidebar"] > div {{
-    padding-top: 12px !important;
-  }}
-
-  /* Main should use full width behind drawer */
-  div[data-testid="stAppViewContainer"] .main {{
-    margin-left: 0 !important;
-    width: 100% !important;
-  }}
-
-  /* Overlay (visual only; we provide a close button in the sidebar) */
-  .nv-mobile-overlay {{
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.22);
-    z-index: 1001;
-    display: {overlay_display};
-    pointer-events: none;
-  }}
-}}
-</style>
-<div class="nv-mobile-overlay"></div>
-""",
-        unsafe_allow_html=True,
-    )
-
-
-def _on_nav_change():
-    """Ensure navigation updates immediately across Streamlit versions/embedders."""
-    # In some environments a sidebar radio click can feel "stuck".
-    # Bump a session key and request a rerun after state commit.
-    st.session_state["_nav_bump"] = time.time()
-    try:
-        st.rerun()
-    except Exception:
-        pass
-
-
+# -----------------------------
+# Main
+# -----------------------------
 
 def main():
     try:
@@ -4618,26 +4558,8 @@ def main():
     meta = get_meta(engine)
     meta_ready = (meta is not None) and (not meta.empty)
 
-    # --- Mobile drawer state (keeps left sidebar navigation) ---
-    if "mobile_sidebar_open" not in st.session_state:
-        # Default open so 모바일에서도 '왼쪽 메뉴'가 바로 보이게.
-        st.session_state["mobile_sidebar_open"] = True
-
-    # Small menu toggle button (safe on desktop too)
-    c1, c2 = st.columns([0.16, 0.84])
-    with c1:
-        if st.button("☰ 메뉴", key="btn_mobile_menu"):
-            st.session_state["mobile_sidebar_open"] = not st.session_state["mobile_sidebar_open"]
-
-    _inject_mobile_sidebar_drawer(bool(st.session_state.get("mobile_sidebar_open", False)))
-
-    # --- Sidebar: navigation (restore) ---
+    # --- Sidebar: navigation (desktop-first, always visible on PC) ---
     with st.sidebar:
-        # Close button for mobile drawer
-        if st.button("✕ 닫기", key="btn_sidebar_close", use_container_width=True):
-            st.session_state["mobile_sidebar_open"] = False
-            st.rerun()
-
         st.markdown("### 메뉴")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
@@ -4656,14 +4578,13 @@ def main():
             nav_items = ["설정/연결"]
 
         # keep selection stable
-        if (not meta_ready) and ("nav_page" not in st.session_state):
+        if not meta_ready:
             st.session_state["nav_page"] = "설정/연결"
 
         nav = st.radio(
             "menu",
             nav_items,
             key="nav_page",
-            on_change=_on_nav_change,
             label_visibility="collapsed",
         )
 
