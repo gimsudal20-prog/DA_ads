@@ -404,6 +404,19 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checke
   text-overflow: ellipsis;
 }
 
+
+/* ---- Progress bar cell (월 예산 집행률) ---- */
+.nv-pbar{display:flex; align-items:center; gap:10px; min-width:160px;}
+.nv-pbar-bg{position:relative; flex:1; height:10px; border-radius:999px; background: rgba(0,0,0,.08); overflow:hidden;}
+.nv-pbar-fill{position:absolute; left:0; top:0; bottom:0; border-radius:999px;}
+.nv-pbar-txt{min-width:56px; text-align:right; font-weight:800; color: var(--nv-text); font-size:12px;}
+.nv-table-wrap{border:1px solid var(--nv-line); border-radius: 12px; overflow:auto; background: var(--nv-panel);}
+table.nv-table{width:100%; border-collapse:collapse; font-size:13px;}
+table.nv-table th{position:sticky; top:0; background: rgba(245,246,247,.98); z-index:2; text-align:left; padding:10px 12px; border-bottom:1px solid var(--nv-line2); font-weight:900;}
+table.nv-table td{padding:10px 12px; border-bottom:1px solid var(--nv-line); vertical-align:middle;}
+table.nv-table tr:hover td{background: rgba(0,0,0,.02);}
+table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
+
 </style>
 
 """
@@ -624,6 +637,76 @@ def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None
         except Exception:
             pass
     st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
+
+
+def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height: int = 520) -> None:
+    """
+    월 예산 관리 표: '집행률(%)'을 숫자+막대바로 표시.
+    - Streamlit 버전/컴포넌트 의존성을 피하기 위해 HTML 테이블로 렌더링(항상 동작).
+    - 다운로드용 DF는 원본을 사용하고, 화면 표시만 bar 컬럼을 만든다.
+    """
+    if table_df is None or table_df.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+
+    df = table_df.copy()
+
+    # numeric columns right align
+    for c in df.columns:
+        if c in ("월 예산(원)", f"{datetime.now().month}월 사용액", "집행률(%)"):
+            pass
+
+    # Build bar html
+    def _bar(pct, status) -> str:
+        try:
+            pv = float(pct)
+        except Exception:
+            pv = 0.0
+        pv = 0.0 if math.isnan(pv) else pv
+        width = max(0.0, min(pv, 120.0))  # allow slight overrun visibility
+        stt = str(status or "")
+        if stt.startswith("🔴"):
+            fill = "var(--nv-red)"
+        elif stt.startswith("🟡"):
+            fill = "#F59E0B"
+        elif stt.startswith("🟢"):
+            fill = "var(--nv-green)"
+        else:
+            fill = "rgba(0,0,0,.25)"
+        return (
+            f"<div class='nv-pbar'>"
+            f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
+            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
+            f"</div>"
+        )
+
+    if "집행률(%)" in df.columns:
+        df["집행률"] = [
+            _bar(p, s) for p, s in zip(df["집행률(%)"].tolist(), df.get("상태", "").tolist())
+        ]
+        df = df.drop(columns=["집행률(%)"])
+        # place '집행률' where the old column was
+        cols = list(df.columns)
+        # try to move right before '상태'
+        if "상태" in cols and "집행률" in cols:
+            cols.remove("집행률")
+            idx = cols.index("상태")
+            cols.insert(idx, "집행률")
+            df = df[cols]
+
+    # Convert numeric-looking money strings to right aligned using CSS class via HTML (add <td class="num">)
+    # Pandas to_html doesn't let per-cell classes easily; small post-process for known columns.
+    html = df.to_html(index=False, escape=False, classes="nv-table")
+    # Add num alignment for known columns by injecting class into <td> for those columns.
+    # We'll do a light regex pass on the generated table.
+    num_cols = ["월 예산(원)", "2월 사용액", "3월 사용액", "4월 사용액", "5월 사용액", "6월 사용액", "7월 사용액", "8월 사용액", "9월 사용액", "10월 사용액", "11월 사용액", "12월 사용액", "집행률"]
+    # But our '집행률' is html; skip.
+    # We'll right-align any cell that endswith '원' or is purely digits/commas.
+    html = re.sub(r"<td>([\d,]+원)</td>", r"<td class='num'>\1</td>", html)
+    html = re.sub(r"<td>([\d,]+)</td>", r"<td class='num'>\1</td>", html)
+
+    st.markdown(f"<div class='nv-table-wrap' style='max-height:{height}px'>{html}</div>", unsafe_allow_html=True)
+
 
 
 
@@ -3486,7 +3569,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        ui_table_or_dataframe(table_df, key="budget_month_table", height=520)
+        render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
         render_download_compact(table_df, f"월예산_{f['start']}_{f['end']}", "monthly_budget", "mb")
 
     with c2:
