@@ -1392,6 +1392,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "end": d2,
         "period_mode": period_mode,
         "customer_ids": cids,
+        "selected_customer_ids": cids,  # alias for older pages (campaign/budget)
         "top_n_keyword": int(sv.get("top_n_keyword", 300)),
         "top_n_ad": int(sv.get("top_n_ad", 200)),
         "top_n_campaign": int(sv.get("top_n_campaign", 200)),
