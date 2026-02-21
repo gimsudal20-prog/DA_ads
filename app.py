@@ -110,6 +110,7 @@ GLOBAL_UI_CSS = """
   --nv-text:#1A1C20;
   --nv-muted:rgba(26,28,32,.62);
   --nv-green:#03C75A;
+  --nv-up:#2563EB; /* up(증가) */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
   --nv-shadow:0 2px 10px rgba(0,0,0,.06);
@@ -171,8 +172,8 @@ section[data-testid="stSidebar"] .block-container{
 }
 .nv-dot{
   width:10px;height:10px;border-radius:50%;
-  background: var(--nv-green);
-  box-shadow: 0 0 0 3px rgba(3,199,90,.14);
+  background: var(--nv-up);
+  box-shadow: 0 0 0 3px rgba(37,99,235,.14);
 }
 .nv-sub{
   font-weight: 600; font-size: 12px; color: var(--nv-muted);
@@ -251,7 +252,7 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-green);} /* 증가(▲) = 초록 */
+.kpi .d.pos{color:var(--nv-up);} /* 증가(▲) = 파랑 */
 .kpi .d.neg{color:var(--nv-red);}   /* 감소(▼) = 빨강 */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
@@ -285,7 +286,7 @@ input[type="text"], textarea{
 }
 .delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
 .delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-green);} /* 증가 = 초록 */
+.delta-chip.pos .v{color: var(--nv-up);} /* 증가 = 파랑 */
 .delta-chip.neg .v{color: var(--nv-red);}   /* 감소 = 빨강 */
 .delta-chip.zero .v{color: rgba(26,28,32,.72);} 
 @media (max-width: 1200px){
@@ -2746,7 +2747,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     """Delta bar chart (Altair).
-    - 증가(+) = 초록, 감소(-) = 빨강
+    - 증가(+) = 파랑, 감소(-) = 빨강
     - 기준점(0) 쪽은 '평평', 끝쪽은 '둥글게' 보이도록 처리
       (전체 바를 라운드로 그리고, 0 근처만 사각 오버레이로 덮어 baseline을 평평하게 만듦)
     """
@@ -2791,7 +2792,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d_cap = d.copy()
     d_cap["val"] = d_cap["flat_end"]
 
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#03C75A", "#EF4444", "#B4C4D9"])
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#2563EB", "#EF4444", "#B4C4D9"])
 
     y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
     x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
