@@ -3350,17 +3350,30 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             # 같은 캠페인명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
             g = tmp.groupby(["customer_id", "campaign_name"], as_index=False)["cost"].sum()
             g = _attach_account_name(g, meta)
-
             g["label"] = g["account_name"].astype(str).str.strip() + " · " + g["campaign_name"].astype(str).str.strip()
 
-            ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-            if ch is not None:
-                render_chart(ch)
+            g = g.sort_values("cost", ascending=False).reset_index(drop=True)
+
+            # ✅ 항목이 1개(또는 광고비 합계 0)이면 TOP10 그래프는 의미가 거의 없어서 자동 생략
+            total_cost = float(g["cost"].sum()) if "cost" in g.columns else 0.0
+            if len(g) < 2 or total_cost <= 0:
+                st.info("캠페인이 1개(또는 광고비가 0원)라 TOP10 그래프는 생략했습니다.")
+                fallback = g.head(10).copy()
+                fallback["광고비"] = fallback["cost"].apply(format_currency)
+                if total_cost > 0:
+                    fallback["비중"] = (fallback["cost"] / total_cost * 100).round(1).astype(str) + "%"
+                else:
+                    fallback["비중"] = "—"
+                fallback = fallback.rename(columns={"label": "캠페인"})[["캠페인", "광고비", "비중"]]
+                ui_table_or_dataframe(fallback, key="camp_top10_fallback", height=min(420, 80 + 34 * len(fallback)))
             else:
-                st.info("그래프 표시 불가")
+                ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
+                if ch is not None:
+                    render_chart(ch)
+                else:
+                    st.info("그래프 표시 불가")
 
         st.divider()
-
     # -----------------
     # 4) Main table (fast)
     # -----------------
