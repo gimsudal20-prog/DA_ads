@@ -726,6 +726,25 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height
 
 
 
+
+
+def _aggrid_mode(kind: str):
+    # streamlit-aggrid enum helper (version tolerant)
+    try:
+        from st_aggrid.shared import GridUpdateMode, DataReturnMode
+    except Exception:
+        from st_aggrid import GridUpdateMode, DataReturnMode
+
+    k = (kind or '').lower().strip()
+    if k in ('no_update', 'noupdate', 'no-update'):
+        return getattr(GridUpdateMode, 'NO_UPDATE', GridUpdateMode.NO_UPDATE)
+    if k in ('as_input', 'asinput', 'as-input'):
+        return getattr(DataReturnMode, 'AS_INPUT', DataReturnMode.AS_INPUT)
+
+    # fallback
+    if hasattr(GridUpdateMode, 'MODEL_CHANGED'):
+        return GridUpdateMode.MODEL_CHANGED
+    return getattr(GridUpdateMode, 'NO_UPDATE', GridUpdateMode.NO_UPDATE)
 def _aggrid_update_no_update():
     return _aggrid_mode("no_update")
 
