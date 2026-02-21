@@ -21,6 +21,7 @@ import time
 import re
 import io
 import math
+import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -35,12 +36,12 @@ def st_dataframe_safe(df, **kwargs):
     """st.dataframe 호환성 래퍼: Streamlit 버전 차이로 인한 TypeError를 안전하게 폴백 처리."""
     try:
         return _ST_DATAFRAME(df, **kwargs)
-    except TypeError:
+    except Exception:
         # 1차 폴백: hide_index 제거
         kwargs.pop("hide_index", None)
         try:
             return _ST_DATAFRAME(df, **kwargs)
-        except TypeError:
+        except Exception:
             # 2차 폴백: column_config 제거(구버전)
             kwargs.pop("column_config", None)
             return _ST_DATAFRAME(df, **kwargs)
@@ -67,6 +68,14 @@ except Exception:
     GridOptionsBuilder = None  # type: ignore
     JsCode = None  # type: ignore
     HAS_AGGRID = False
+
+# Optional charts component (ECharts)
+try:
+    from streamlit_echarts import st_echarts  # pip install streamlit-echarts
+    HAS_ECHARTS = True
+except Exception:
+    st_echarts = None  # type: ignore
+    HAS_ECHARTS = False
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -496,17 +505,21 @@ def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_pref
 
     # derived metrics
     if "imp" in df.columns and "clk" in df.columns:
-        denom = df["imp"].replace(0, pd.NA)
-        df["ctr" ] = (df["clk"] / denom * 100).astype(float).fillna(0.0)
+        denom = df["imp"].replace(0, np.nan)
+        df["ctr"] = (df["clk"] / denom * 100.0)
+        df["ctr"] = pd.to_numeric(df["ctr"], errors="coerce").fillna(0.0)
     if "clk" in df.columns and "cost" in df.columns:
-        denom = df["clk"].replace(0, pd.NA)
-        df["cpc" ] = (df["cost"] / denom).astype(float).fillna(0.0)
+        denom = df["clk"].replace(0, np.nan)
+        df["cpc"] = (df["cost"] / denom)
+        df["cpc"] = pd.to_numeric(df["cpc"], errors="coerce").fillna(0.0)
     if "conv" in df.columns and "cost" in df.columns:
-        denom = df["conv"].replace(0, pd.NA)
-        df["cpa" ] = (df["cost"] / denom).astype(float).fillna(0.0)
+        denom = df["conv"].replace(0, np.nan)
+        df["cpa"] = (df["cost"] / denom)
+        df["cpa"] = pd.to_numeric(df["cpa"], errors="coerce").fillna(0.0)
     if "cost" in df.columns and "sales" in df.columns:
-        denom = df["cost"].replace(0, pd.NA)
-        df["roas"] = (df["sales"] / denom * 100).astype(float).fillna(0.0)
+        denom = df["cost"].replace(0, np.nan)
+        df["roas"] = (df["sales"] / denom * 100.0)
+        df["roas"] = pd.to_numeric(df["roas"], errors="coerce").fillna(0.0)
 
     # display formatting helpers
     def _fmt_int(x) -> str:
@@ -792,6 +805,71 @@ function(params){
         # keep it compact
         st_dataframe_safe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
     st_dataframe_safe(detail_df, use_container_width=True, hide_index=True, height=height)
+
+
+def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_col: str, height: int = 260) -> None:
+    """ECharts 도넛 차트(선택): streamlit-echarts 설치 시만 렌더."""
+    if not (HAS_ECHARTS and st_echarts is not None):
+        return
+    if data is None or data.empty or label_col not in data.columns or value_col not in data.columns:
+        return
+
+    d = data.copy()
+    d[label_col] = d[label_col].astype(str)
+    d[value_col] = pd.to_numeric(d[value_col], errors="coerce").fillna(0.0)
+
+    items = [{"name": n, "value": float(v)} for n, v in zip(d[label_col].tolist(), d[value_col].tolist()) if float(v) > 0]
+    if not items:
+        return
+
+    option = {
+        "title": {"text": title, "left": "center", "top": 6, "textStyle": {"fontSize": 13}},
+        "tooltip": {"trigger": "item", "formatter": "{b}<br/>{c:,} ({d}%)"},
+        "legend": {"type": "scroll", "bottom": 0},
+        "series": [
+            {
+                "name": title,
+                "type": "pie",
+                "radius": ["55%", "78%"],
+                "avoidLabelOverlap": True,
+                "itemStyle": {"borderRadius": 10, "borderColor": "#fff", "borderWidth": 2},
+                "label": {"show": False},
+                "emphasis": {"label": {"show": True, "fontSize": 13, "fontWeight": "bold"}},
+                "labelLine": {"show": False},
+                "data": items,
+            }
+        ],
+    }
+    st_echarts(option, height=f"{height}px")
+
+
+def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
+    """대용량 테이블: AgGrid(설치 시) 우선, 미설치 시 st.dataframe 폴백."""
+    if df is None:
+        df = pd.DataFrame()
+
+    if HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
+        q = st.text_input("검색", value="", placeholder="테이블 내 검색", key=f"{key}_q")
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_default_column(sortable=True, filter=True, resizable=True)
+        gb.configure_grid_options(animateRows=False, suppressRowClickSelection=True)
+        grid = gb.build()
+        if q:
+            grid["quickFilterText"] = q
+
+        AgGrid(
+            df,
+            gridOptions=grid,
+            height=height,
+            fit_columns_on_grid_load=True,
+            theme="alpine",
+            allow_unsafe_jscode=True,
+            key=key,
+        )
+        return
+
+    st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
+
 
 
 
@@ -1580,7 +1658,7 @@ def ui_multiselect(col, label: str, options, default=None, *, key: str, placehol
     """Streamlit multiselect with Korean placeholder (compatible across Streamlit versions)."""
     try:
         return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
-    except TypeError:
+    except Exception:
         # Older Streamlit without placeholder=
         return col.multiselect(label, options, default=default, key=key)
 
@@ -2928,10 +3006,10 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
 
-    out["ctr"] = (out["clk"] / out["imp"].replace({0: pd.NA})) * 100
-    out["cpc"] = out["cost"] / out["clk"].replace({0: pd.NA})
-    out["cpa"] = out["cost"] / out["conv"].replace({0: pd.NA})
-    out["roas"] = (out["sales"] / out["cost"].replace({0: pd.NA})) * 100
+    out["ctr"] = (out["clk"] / out["imp"].replace(0, np.nan)) * 100
+    out["cpc"] = out["cost"] / out["clk"].replace(0, np.nan)
+    out["cpa"] = out["cost"] / out["conv"].replace(0, np.nan)
+    out["roas"] = (out["sales"] / out["cost"].replace(0, np.nan)) * 100
 
     return out
 
@@ -3056,7 +3134,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     """Delta bar chart (Altair).
-    - 증가(+) = 파랑, 감소(-) = 빨강
+    - 증가(+) = 빨강, 감소(-) = 파랑
     - 기준점(0) 쪽은 '평평', 끝쪽은 '둥글게' 보이도록 처리
       (전체 바를 라운드로 그리고, 0 근처만 사각 오버레이로 덮어 baseline을 평평하게 만듦)
     """
@@ -3358,7 +3436,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>요약</div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
-    cids = tuple(f.get("customer_ids", []) or [])
+    cids = tuple((f.get("selected_customer_ids") or f.get("customer_ids") or []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     cmp_mode = st.radio(
@@ -3731,6 +3809,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
 
+            # (선택) ECharts: 광고유형별 광고비 비중 (도넛)
+            try:
+                share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
+                share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
+                render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
+            except Exception:
+                pass
+
+
             metric_sel = st.radio(
                 "트렌드 지표",
                 ["광고비", "클릭", "전환", "ROAS"],
@@ -3749,7 +3836,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
             else:
                 sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
-                ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+                ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
                 ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
                 ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4006,7 +4093,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
         else:
             sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
             ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4051,7 +4138,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     out_df["클릭"] = pd.to_numeric(out_df["클릭"], errors="coerce").fillna(0).astype(int)
     out_df["전환"] = pd.to_numeric(out_df["전환"], errors="coerce").fillna(0).astype(int)
 
-    st_dataframe_safe(out_df, use_container_width=True, hide_index=True)
+    render_big_table(out_df, key='kw_big_table', height=620)
     render_download_compact(out_df, f"키워드성과_TOP{top_n}_{f['start']}_{f['end']}", "keyword", "kw")
 
 
@@ -4121,7 +4208,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
         else:
             sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
+            ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
             ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4226,13 +4313,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
-    st_dataframe_safe(
-        view_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
-    )
-    render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
+    render_big_table(view_df, key='ad_big_table', height=620)
+render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
 
 
 def page_settings(engine) -> None:
