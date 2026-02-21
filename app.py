@@ -3831,10 +3831,18 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
 
             # (선택) ECharts: 광고유형별 광고비 비중 (도넛)
+            # - 1개 유형(100%)이면 정보량이 거의 없어 UX만 해치므로 숨김
+            # - 화면 중간에 '뜬금없이' 보이지 않도록 expander 안에 넣음
             try:
-                share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
-                share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
+                share = (
+                    df_all.groupby("campaign_type", as_index=False)["cost"].sum()
+                    .rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
+                    .sort_values("광고비", ascending=False)
+                )
+                share = share[pd.to_numeric(share["광고비"], errors="coerce").fillna(0) > 0].copy()
+                if share is not None and len(share) >= 2:
+                    with st.expander("📊 광고유형별 광고비 비중", expanded=False):
+                        render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=260)
             except Exception:
                 pass
 
@@ -4039,25 +4047,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         with c3:
             st.markdown("#### ✅ 전환 TOP10")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
-
-    
-    with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.copy()
-        tmp = _attach_account_name(tmp, meta)
-        tmp["keyword"] = tmp["keyword"].astype(str).map(str.strip)
-        # 같은 키워드명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-        g = tmp.groupby(["customer_id", "keyword"], as_index=False)["cost"].sum()
-        g = _attach_account_name(g, meta)
-
-        multi_acc = g["customer_id"].nunique() > 1
-        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["keyword"]}' if multi_acc else r["keyword"], axis=1)
-
-        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-        if ch is not None:
-            render_chart(ch)
-        else:
-            st.info("그래프 표시 불가")
-
 
     st.divider()
     # Top N list (광고비 기준)
