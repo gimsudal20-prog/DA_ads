@@ -28,9 +28,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-# Plotly (preferred for charts)
-import plotly.express as px
-import plotly.graph_objects as go
+# Charts: Altair (vega-lite)
 
 
 # Optional UI components (shadcn-ui style)
@@ -253,8 +251,8 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-red);}
-.kpi .d.neg{color:var(--nv-blue);}
+.kpi .d.pos{color:var(--nv-green);} /* 증가(▲) = 초록 */
+.kpi .d.neg{color:var(--nv-red);}   /* 감소(▼) = 빨강 */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
@@ -1884,7 +1882,7 @@ def _chart_timeseries(
     y_format: str = ",.0f",
     height: int = 320,
 ):
-    """Curved time-series line (Plotly)."""
+    """Time-series line (Altair)."""
     if df is None or df.empty:
         return None
     if x_col not in df.columns or y_col not in df.columns:
@@ -1895,20 +1893,24 @@ def _chart_timeseries(
     d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
     d = d.dropna(subset=[x_col]).sort_values(x_col)
 
-    fig = px.line(d, x=x_col, y=y_col)
-    fig.update_traces(mode="lines", line_shape="spline")
-    fig.update_layout(
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        xaxis_title="",
-        yaxis_title=y_title or "",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    title = (y_title or "").strip()
+    y_axis = alt.Axis(title=title if title else None, format=y_format, grid=True, gridColor="#EBEEF2")
+    x_axis = alt.Axis(title=None, grid=False, labelAngle=0)
+
+    base = (
+        alt.Chart(d)
+        .encode(
+            x=alt.X(f"{x_col}:T", axis=x_axis),
+            y=alt.Y(f"{y_col}:Q", axis=y_axis),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:T", title="날짜"),
+                alt.Tooltip(f"{y_col}:Q", title=title or y_col, format=y_format),
+            ],
+        )
     )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
-    return fig
+
+    line = base.mark_line(interpolate="monotone", strokeWidth=2)
+    return line.properties(height=int(height))
 
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
@@ -1951,7 +1953,7 @@ def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_title: str = "", top_n: int = 10, height: int = 420):
-    """Rounded progress-style bars (Plotly overlay). x_title is kept for backward-compatibility."""
+    """Rounded progress-style bars (Altair layered bars). x_title kept for backward-compatibility."""
     if df is None or df.empty:
         return None
 
@@ -1968,9 +1970,9 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
     d = d.sort_values(value_col, ascending=False).head(int(top_n))
     d = d.sort_values(value_col, ascending=True)  # 위에서부터 큰값 보이게(가독)
 
-    labels = d[label_col].tolist()
     vals = d[value_col].tolist()
-    max_val = max(vals) if vals else 0
+    max_val = float(max(vals)) if vals else 0.0
+    d["__max"] = max_val
 
     def _fmt(v: float) -> str:
         if unit == "원":
@@ -1979,43 +1981,24 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
             return f"{v:.1f}%"
         return f"{format_number_commas(v)}{unit}"
 
-    fig = go.Figure()
-    # background bar
-    fig.add_trace(
-        go.Bar(
-            x=[max_val] * len(labels),
-            y=labels,
-            orientation="h",
-            marker=dict(color="rgba(180,196,217,0.22)"),
-            hoverinfo="skip",
-        )
-    )
-    # actual bar
-    fig.add_trace(
-        go.Bar(
-            x=vals,
-            y=labels,
-            orientation="h",
-            marker=dict(color="#3D9DF2"),
-            text=[_fmt(v) for v in vals],
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate="%{y}<br>%{x:,}" + (unit if unit != "원" else "원") + "<extra></extra>",
-        )
+    d["__label"] = d[value_col].map(lambda v: _fmt(float(v)))
+
+    y = alt.Y(f"{label_col}:N", sort=None, title=None, axis=alt.Axis(labelLimit=260, ticks=False))
+    x_bg = alt.X("__max:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False))
+    x_fg = alt.X(f"{value_col}:Q", title=None, axis=alt.Axis(grid=False))
+
+    base = alt.Chart(d).encode(y=y)
+
+    bg = base.mark_bar(cornerRadiusEnd=10, opacity=0.25, color="#B4C4D9").encode(x=x_bg)
+    fg = base.mark_bar(cornerRadiusEnd=10, color="#3D9DF2").encode(x=x_fg)
+
+    txt_layer = base.mark_text(align="left", dx=6, dy=0).encode(
+        x=alt.X(f"{value_col}:Q"),
+        text="__label:N",
     )
 
-    fig.update_layout(
-        barmode="overlay",
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="",
-        yaxis_title="",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
-    )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
-    return fig
+    chart = (bg + fg + txt_layer).properties(height=int(height))
+    return chart
 
 
 
@@ -2696,7 +2679,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Delta bar chart: + blue, - red (Plotly)."""
+    """Delta bar chart: + green, - red (Altair)."""
     if delta_df is None or delta_df.empty:
         return None
 
@@ -2704,59 +2687,67 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d["metric"] = d["metric"].astype(str)
     d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0)
     d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
+    d["label"] = d["change_pct"].map(_pct_to_str)
 
     # 원하는 순서 유지
     if "order" in d.columns:
         d = d.sort_values("order", ascending=False)
+        y_sort = alt.SortField(field="order", order="descending")
+    else:
+        y_sort = None
 
-    fig = px.bar(
-        d,
-        x="change_pct",
-        y="metric",
-        orientation="h",
-        color="dir",
-        color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
-        text=d["change_pct"].map(_pct_to_str),
-    )
-
-    # 0 기준선
-    fig.add_vline(x=0, line_width=1, line_color="rgba(180,196,217,0.8)")
-
-    # 축 범위 여유
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
-    pad = max(2.0, (mx - mn) * 0.12)
-    fig.update_xaxes(range=[mn - pad, mx + pad])
+    pad = max(2.0, (mx - mn) * 0.12) if (mx - mn) != 0 else 2.0
+    domain = [mn - pad, mx + pad]
 
-    fig.update_traces(textposition="outside", cliponaxis=False)
-    fig.update_layout(
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        xaxis_title="증감율(%)",
-        yaxis_title="",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#03C75A", "#EF4444", "#B4C4D9"])
+
+    base = (
+        alt.Chart(d)
+        .encode(
+            y=alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260)),
+            x=alt.X("change_pct:Q", title="증감율(%)", scale=alt.Scale(domain=domain), axis=alt.Axis(grid=True, gridColor="#EBEEF2")),
+            color=alt.Color("dir:N", scale=color_scale, legend=None),
+            tooltip=[
+                alt.Tooltip("metric:N", title="지표"),
+                alt.Tooltip("change_pct:Q", title="증감율", format="+.1f"),
+            ],
+        )
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(180,196,217,0.25)", zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
-    return fig
+
+    bars = base.mark_bar(cornerRadiusEnd=10)
+
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="#CBD5E1").encode(x="x:Q")
+
+    pos_text = base.transform_filter("datum.change_pct >= 0").mark_text(align="left", dx=6).encode(text="label:N")
+    neg_text = base.transform_filter("datum.change_pct < 0").mark_text(align="right", dx=-6).encode(text="label:N")
+
+    chart = (bars + zero + pos_text + neg_text).properties(height=int(height))
+    return chart
+
 
 
 
 def render_chart(obj, *, height: int | None = None) -> None:
-    """Render a chart object with Streamlit. Plotly preferred."""
+    """Render a chart object with Streamlit (Altair-first)."""
     if obj is None:
         return
     try:
         mod = obj.__class__.__module__
     except Exception:
         mod = ""
-    if mod.startswith("plotly"):
-        st.plotly_chart(obj, use_container_width=True, config={"displayModeBar": False})
-    else:
-        # fallback (Altair etc.)
-        render_chart(obj)
+
+    if mod.startswith("altair"):
+        st.altair_chart(obj, use_container_width=True)
+        return
+
+    # Fallback
+    try:
+        st.write(obj)
+    except Exception:
+        pass
+
 
 def render_period_compare_panel(
     engine,
