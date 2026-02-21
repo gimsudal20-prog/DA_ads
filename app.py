@@ -38,6 +38,17 @@ try:
 except Exception:
     ui = None  # type: ignore
     HAS_SHADCN_UI = False
+
+# Optional grid component (AgGrid) - enables pinned top rows + stable sorting
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode  # pip install streamlit-aggrid
+    HAS_AGGRID = True
+except Exception:
+    AgGrid = None  # type: ignore
+    GridOptionsBuilder = None  # type: ignore
+    JsCode = None  # type: ignore
+    HAS_AGGRID = False
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from dotenv import load_dotenv
@@ -594,6 +605,93 @@ def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None
         except Exception:
             pass
     st.dataframe(df, use_container_width=True, hide_index=True, height=height)
+
+
+
+def render_pinned_summary_grid(
+    detail_df: pd.DataFrame,
+    summary_df: Optional[pd.DataFrame],
+    key: str,
+    height: int = 520,
+) -> None:
+    """Render a large sortable table where 'summary' rows stay pinned at the top.
+
+    - If streamlit-aggrid is installed: pinnedTopRowData keeps the summary fixed (even on sort/scroll).
+    - Otherwise: fallback to two tables (summary above, detail below).
+    """
+    if detail_df is None:
+        detail_df = pd.DataFrame()
+    if summary_df is None:
+        summary_df = pd.DataFrame()
+
+    # Normalize columns
+    if not summary_df.empty and list(summary_df.columns) != list(detail_df.columns):
+        # try align to detail columns
+        summary_df = summary_df.reindex(columns=list(detail_df.columns))
+
+    if HAS_AGGRID and AgGrid is not None and GridOptionsBuilder is not None:
+        # Pinned rows
+        pinned = summary_df.to_dict("records") if summary_df is not None and not summary_df.empty else []
+
+        gb = GridOptionsBuilder.from_dataframe(detail_df)
+        gb.configure_default_column(sortable=True, filter=False, resizable=True)
+        gb.configure_grid_options(
+            pinnedTopRowData=pinned,
+            suppressRowClickSelection=True,
+            animateRows=False,
+        )
+
+        # Right-align numeric-ish columns
+        right_cols = {
+            "노출",
+            "클릭",
+            "CTR(%)",
+            "CPC",
+            "광고비",
+            "전환",
+            "CPA",
+            "전환매출",
+            "ROAS(%)",
+        }
+        for c in detail_df.columns:
+            if c in right_cols:
+                gb.configure_column(c, cellStyle={"textAlign": "right"})
+
+        grid = gb.build()
+
+        # Style pinned top rows like the grey summary block
+        try:
+            grid["getRowStyle"] = JsCode(
+                """
+function(params){
+  if(params.node.rowPinned){
+    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
+  }
+  return {};
+}
+"""
+            )
+        except Exception:
+            pass
+
+        AgGrid(
+            detail_df,
+            gridOptions=grid,
+            height=height,
+            fit_columns_on_grid_load=True,
+            theme="alpine",
+            allow_unsafe_jscode=True,
+            key=key,
+        )
+        return
+
+    # Fallback: summary above + detail below (summary stays on top structurally)
+    if summary_df is not None and not summary_df.empty:
+        # keep it compact
+        st.dataframe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
+    st.dataframe(detail_df, use_container_width=True, hide_index=True, height=height)
+
+
 
 # -----------------------------
 # DB helpers
@@ -3670,12 +3768,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
         display_df = pd.concat([summary_df, view_df], ignore_index=True)
-        styled_df = style_summary_rows(display_df, len(summary_df))
     else:
+        summary_df = pd.DataFrame(columns=cols)
         display_df = view_df
-        styled_df = display_df
 
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    # ✅ 요약행(회색)은 정렬/스크롤과 무관하게 항상 최상단 고정
+    #    - streamlit-aggrid 설치 시: pinnedTopRowData로 테이블 내부에서 고정됨
+    #    - 미설치 시: 요약표(상단) + 상세표(하단) 2단 구성으로 항상 최상단 유지
+    render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
+
     render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
