@@ -4313,8 +4313,11 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
+
     render_big_table(view_df, key='ad_big_table', height=620)
-render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
+
+    # 다운로드 (표 렌더 후 같은 scope에서 호출되어야 함)
+    render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
 
 
 def page_settings(engine) -> None:
