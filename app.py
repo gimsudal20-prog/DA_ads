@@ -197,7 +197,7 @@ except Exception:
 # -----------------------------
 # Page config
 # -----------------------------
-st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
+st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 BUILD_TAG = "v8.6.11 (Bootstrap Settings+Sync+Speed Hotfix, 2026-02-20)"
 
@@ -257,7 +257,29 @@ section[data-testid="stSidebar"] div{
 section[data-testid="stSidebar"] .block-container{
   padding-top: 10px !important;
 }
-[data-testid="stSidebarCollapsedControl"]{display:none;}
+/* Sidebar collapse control (keep visible) */
+[data-testid="stSidebarCollapsedControl"]{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px; height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--nv-line);
+  background: rgba(255,255,255,.86);
+  box-shadow: var(--nv-shadow);
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 10001;
+}
+
+/* Force sidebar visible on desktop even if Streamlit remembers a collapsed state */
+@media (min-width: 900px){
+  section[data-testid="stSidebar"]{
+    transform: translateX(0) !important;
+    margin-left: 0 !important;
+  }
+}
 
 /* Main container spacing (compact) */
 .main .block-container{
