@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.3 - 완벽 안정화 & 스마트 분기)
+collector.py - 네이버 검색광고 수집기 (v9.4 - 실시간 로그 출력 & 완벽 안정화)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
-- 403 에러 대응: 권한 없는 계정은 빨간 에러 도배 없이 깔끔하게 스킵
+- 403 에러 대응: 권한 없는 계정은 스킵
+- 실시간 로그: GitHub Actions 환경에서 출력이 멈춰 보이는 버퍼링 현상 해결 (flush=True)
 """
 
 from __future__ import annotations
@@ -45,17 +46,18 @@ TIMEOUT = 60
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 
+# ✅ 실시간 출력을 위해 flush=True 옵션 추가
 def log(msg: str):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
-print("="*50)
-print("=== [VERSION: v9.3_SMART_STABLE] ===")
-print("=== 대용량 리포트 1회 최적화 & 403/400 완벽 대처 ===")
-print("="*50)
+print("="*50, flush=True)
+print("=== [VERSION: v9.4_SMART_REALTIME] ===", flush=True)
+print("=== 대용량 리포트 1회 최적화 & 실시간 로그 출력 ===", flush=True)
+print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
@@ -91,7 +93,6 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
         try:
             r = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=TIMEOUT)
             
-            # ✅ 403 권한 에러 처리 (빨간 줄 없이 조용히 스킵)
             if r.status_code == 403:
                 if attempt == 0:
                     log(f"🚫 [권한 없음] {customer_id} 계정 접근 불가 (스킵)")
@@ -117,7 +118,6 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
             return r.status_code, data
             
         except requests.exceptions.RequestException as e:
-            # 403은 재시도하지 않음
             if "403" in str(e):
                 raise e
             log(f"⚠️ 네트워크 오류 - {customer_id}: {e}. 2초 후 재시도...")
@@ -319,7 +319,6 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
         log(f"⚠️ [ {customer_id} ] TSV 다운로드 실패: {e}")
         return pd.DataFrame()
 
-# ✅ AD 리포트 1개로 캠페인/키워드/소재 테이블 3개를 동시에 그룹핑(합산)하여 저장
 def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date):
     if df is None or df.empty:
         return
@@ -391,7 +390,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
     camp_list = list_campaigns(customer_id)
-    # 403 권한 에러 등으로 목록을 못 가져오면 안전하게 스킵
     if not camp_list: return
     
     camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
@@ -434,7 +432,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
     if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
-    # ✅ 오늘(Today)인지 과거인지에 따라 수집 방식 자동 분기
     if target_date == date.today():
         log(f"   > [ {account_name} ] 당일 데이터 실시간 수집 중 (/stats API) ...")
         if target_camp_ids:
@@ -507,7 +504,6 @@ def main():
             try:
                 future.result()
             except Exception as e:
-                # 403 예외는 이미 내부에서 조용히 처리함. 기타 치명적 에러만 출력
                 if "403" not in str(e):
                     log(f"❌ 병렬 처리 중 작업 실패: {e}")
 
