@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.8 - 초고속 & 타임아웃 방지 하이브리드)
+collector.py - 네이버 검색광고 수집기 (v9.9 - 황금 밸런스 & DB 과부하 완벽 차단)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 자동 분할 집계
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats)로 자동 분기
 - 403 에러 대응: 권한 없는 계정은 스킵
 - 실시간 로그: 버퍼링 해결 (flush=True)
-- 수정사항: 깃허브 6시간 제한을 피하기 위해 max_workers=4 로 속도 롤백 + Chunking 유지
+- 수정사항: Supabase DB 과부하 및 타임아웃 방지를 위한 스마트 풀링(pre_ping) 및 max_workers=2 조율
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
 
 # -------------------------
 # 1. 환경변수 및 설정
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.8_FAST_CHUNK] ===", flush=True)
-print("=== 6시간 제한 돌파 (4배속 + 초소형 Chunk) ===", flush=True)
+print("=== [VERSION: v9.9_PERFECT_BALANCE] ===", flush=True)
+print("=== DB 안정성(스마트 풀링) + 속도(2배속) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -146,7 +145,17 @@ def get_engine() -> Engine:
     if "sslmode=" not in db_url:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
-    return create_engine(db_url, poolclass=NullPool, future=True)
+        
+    # ✅ DB가 터지지 않도록 스마트 풀링(pool_pre_ping) 적용 + 쿼리 대기 시간 60초로 넉넉하게 연장
+    return create_engine(
+        db_url, 
+        pool_size=5, 
+        max_overflow=10, 
+        pool_pre_ping=True, 
+        pool_recycle=300, 
+        connect_args={"options": "-c statement_timeout=60000"},
+        future=True
+    )
 
 def ensure_tables(engine: Engine):
     with engine.begin() as conn:
@@ -187,15 +196,15 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     
-    CHUNK_SIZE = 1000
+    CHUNK_SIZE = 5000
     for start_idx in range(0, len(df), CHUNK_SIZE):
         chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
         temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
         try:
             with engine.begin() as conn:
                 chunk_df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
-                # 100개씩 아주 잘게 다져서 DB가 체하지 않도록 함 (4개 동시 작업해도 안전)
-                chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=100)
+                # 한 번에 500개씩만 가볍게 넣음 (DB 부하 완화)
+                chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=500)
                 cols = ", ".join([f'"{c}"' for c in chunk_df.columns])
                 pk_clause = ", ".join([f'"{c}"' for c in pk_cols])
                 set_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in chunk_df.columns if c not in pk_cols])
@@ -214,13 +223,13 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last')
     
-    CHUNK_SIZE = 1000
+    CHUNK_SIZE = 5000
     try:
         with engine.begin() as conn:
             conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             for start_idx in range(0, len(df), CHUNK_SIZE):
                 chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
-                chunk_df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=100)
+                chunk_df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=500)
     except Exception as e:
         log(f"⚠️ Fact Insert Error in {table}: {e}")
 
@@ -504,8 +513,8 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # ✅ 속도 4배속 롤백! (4개씩 동시에 달립니다)
-    max_workers = 4
+    # ✅ 속도와 DB 안정성의 황금 밸런스: 작업자 2명
+    max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for acc in accounts_info:
