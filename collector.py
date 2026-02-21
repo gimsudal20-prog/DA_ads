@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.10 - 오뚝이 자동 복구 시스템 탑재)
+collector.py - 네이버 검색광고 수집기 (v9.11 - DB 접속 거절 해결 및 전구간 오뚝이 적용)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 분할
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats) 분기
 - 403 에러 대응: 권한 없는 계정은 스킵
 - 실시간 로그: 버퍼링 해결 (flush=True)
-- 수정사항: Supabase의 갑작스러운 연결 끊김(Connection Closed)에 대응하는 3회 자동 재시도(Retry) 로직 추가
+- 수정사항: Supabase 접속 풀러가 거절하는 statement_timeout 접속 옵션 제거, 초기화(ensure_tables)에도 재시도 로직 추가
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.10_ULTIMATE_RETRY] ===", flush=True)
-print("=== DB 강제 끊김 방어 (오뚝이 자동 복구) ===", flush=True)
+print("=== [VERSION: v9.11_SAFE_START] ===", flush=True)
+print("=== DB 접속 거절 방어 & 전구간 오뚝이 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -147,48 +147,53 @@ def get_engine() -> Engine:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
         
-    # NullPool로 대기 시간 중 끊김을 방지하고 DB Timeout 한도를 120초로 늘립니다.
-    return create_engine(
-        db_url, 
-        poolclass=NullPool, 
-        connect_args={"options": "-c statement_timeout=120000"},
-        future=True
-    )
+    # ✅ 에러의 원인이었던 특수 접속 옵션을 제거하고 아주 평범하고 안전하게 NullPool만 유지합니다.
+    return create_engine(db_url, poolclass=NullPool, future=True)
 
 def ensure_tables(engine: Engine):
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
-        conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
-        conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
-        conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS dim_ad (
-                customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT,
-                ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT,
-                PRIMARY KEY(customer_id, ad_id)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fact_campaign_daily (
-                dt DATE, customer_id TEXT, campaign_id TEXT,
-                imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
-                PRIMARY KEY(dt, customer_id, campaign_id)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fact_keyword_daily (
-                dt DATE, customer_id TEXT, keyword_id TEXT,
-                imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
-                PRIMARY KEY(dt, customer_id, keyword_id)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fact_ad_daily (
-                dt DATE, customer_id TEXT, ad_id TEXT,
-                imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
-                PRIMARY KEY(dt, customer_id, ad_id)
-            )
-        """))
+    # 맨 처음 테이블을 만들 때도 튕길 수 있으므로 오뚝이 기능 적용
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS dim_ad (
+                        customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT,
+                        ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT,
+                        PRIMARY KEY(customer_id, ad_id)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS fact_campaign_daily (
+                        dt DATE, customer_id TEXT, campaign_id TEXT,
+                        imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
+                        PRIMARY KEY(dt, customer_id, campaign_id)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS fact_keyword_daily (
+                        dt DATE, customer_id TEXT, keyword_id TEXT,
+                        imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
+                        PRIMARY KEY(dt, customer_id, keyword_id)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS fact_ad_daily (
+                        dt DATE, customer_id TEXT, ad_id TEXT,
+                        imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0,
+                        PRIMARY KEY(dt, customer_id, ad_id)
+                    )
+                """))
+            break # 성공하면 반복 탈출
+        except Exception as e:
+            err_msg = str(e).lower()
+            log(f"⚠️ DB 초기화 중 튕김 감지 - 재시도 {attempt+1}/3... 3초 대기")
+            time.sleep(3)
+            if attempt == 2: # 3번 다 실패하면 에러 뿜기
+                raise e
 
 # ✅ 오뚝이 자동 복구 시스템 탑재: 실패하면 3초 대기 후 최대 3번까지 재시도
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
@@ -199,7 +204,6 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     for start_idx in range(0, len(df), CHUNK_SIZE):
         chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
         
-        # 재시도 로직 (Retry)
         for attempt in range(3):
             temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
             try:
@@ -539,7 +543,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 속도는 2배속(max_workers=2)으로 타협하여 DB가 놀라지 않게 조율
+    # 속도는 2배속 유지
     max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
