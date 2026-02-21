@@ -258,6 +258,40 @@ input[type="text"], textarea{
   border:1px solid var(--nv-line); color:var(--nv-muted);
 }
 
+/* Delta chips (period compare) */
+.delta-chip-row{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 14px 0;
+}
+.delta-chip{
+  background: var(--nv-panel);
+  border: 1px solid var(--nv-line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.04);
+}
+.delta-chip .l{
+  font-size: 12px;
+  color: var(--nv-muted);
+  font-weight: 800;
+}
+.delta-chip .v{
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: -0.15px;
+}
+.delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
+.delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
+.delta-chip.pos .v{color: var(--nv-green);} /* 증가 = 초록 */
+.delta-chip.neg .v{color: var(--nv-red);}   /* 감소 = 빨강 */
+.delta-chip.zero .v{color: rgba(26,28,32,.72);} 
+@media (max-width: 1200px){
+  .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
+}
+
 /* Tab strip look */
 div[role="radiogroup"] > label{
   border: 1px solid var(--nv-line);
@@ -2699,8 +2733,13 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
 
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
-    pad = max(2.0, (mx - mn) * 0.12) if (mx - mn) != 0 else 2.0
-    domain = [mn - pad, mx + pad]
+    # Center the zero axis by forcing a symmetric domain around 0
+    m_abs = max(abs(mn), abs(mx))
+    if not (m_abs > 0):
+        m_abs = 5.0
+    pad = max(2.0, m_abs * 0.12)
+    lim = m_abs + pad
+    domain = [-lim, lim]
 
     color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#03C75A", "#EF4444", "#B4C4D9"])
 
@@ -2822,7 +2861,19 @@ def render_period_compare_panel(
 
                 cls = "zero"
 
-            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'>{value}</div></div>"
+            arrow = "•"
+            if sign is not None:
+                try:
+                    if float(sign) > 0:
+                        arrow = "▲"
+                    elif float(sign) < 0:
+                        arrow = "▼"
+                except Exception:
+                    pass
+
+            # emphasize the percent part
+            vhtml = re.sub(r"\(([^)]*)\)", r"<span class='p'>(\1)</span>", str(value))
+            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'><span class='arr'>{arrow}</span>{vhtml}</div></div>"
 
 
         chips = [
