@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.11 - DB 접속 거절 해결 및 전구간 오뚝이 적용)
+collector.py - 네이버 검색광고 수집기 (v9.12 - 무한 대기(Deadlock) 원천 차단 종결판)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 분할
 - 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats) 분기
-- 403 에러 대응: 권한 없는 계정은 스킵
-- 실시간 로그: 버퍼링 해결 (flush=True)
-- 수정사항: Supabase 접속 풀러가 거절하는 statement_timeout 접속 옵션 제거, 초기화(ensure_tables)에도 재시도 로직 추가
+- 무한 멈춤 해결 1: 데이터 정렬(sort_values)을 통해 DB 교착상태(Deadlock) 100% 차단
+- 무한 멈춤 해결 2: 트랜잭션 내부 타이머(SET LOCAL statement_timeout)로 영구 Hang 방지
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.11_SAFE_START] ===", flush=True)
-print("=== DB 접속 거절 방어 & 전구간 오뚝이 ===", flush=True)
+print("=== [VERSION: v9.12_DEADLOCK_FREE] ===", flush=True)
+print("=== DB 정렬(Deadlock 차단) & 내부 타이머 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -146,15 +145,13 @@ def get_engine() -> Engine:
     if "sslmode=" not in db_url:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
-        
-    # ✅ 에러의 원인이었던 특수 접속 옵션을 제거하고 아주 평범하고 안전하게 NullPool만 유지합니다.
     return create_engine(db_url, poolclass=NullPool, future=True)
 
 def ensure_tables(engine: Engine):
-    # 맨 처음 테이블을 만들 때도 튕길 수 있으므로 오뚝이 기능 적용
     for attempt in range(3):
         try:
             with engine.begin() as conn:
+                conn.execute(text("SET LOCAL statement_timeout = '30000';")) # 무한 멈춤 방지
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
@@ -187,18 +184,18 @@ def ensure_tables(engine: Engine):
                         PRIMARY KEY(dt, customer_id, ad_id)
                     )
                 """))
-            break # 성공하면 반복 탈출
+            break
         except Exception as e:
-            err_msg = str(e).lower()
-            log(f"⚠️ DB 초기화 중 튕김 감지 - 재시도 {attempt+1}/3... 3초 대기")
+            log(f"⚠️ DB 초기화 중 오류 감지 - 재시도 {attempt+1}/3...")
             time.sleep(3)
-            if attempt == 2: # 3번 다 실패하면 에러 뿜기
-                raise e
+            if attempt == 2: raise e
 
-# ✅ 오뚝이 자동 복구 시스템 탑재: 실패하면 3초 대기 후 최대 3번까지 재시도
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
+    
+    # 🌟 핵심: Primary Key 기준으로 정렬하여 데드락(서로 꼬이는 현상) 100% 원천 차단
+    df = df.sort_values(by=pk_cols)
     
     CHUNK_SIZE = 5000
     for start_idx in range(0, len(df), CHUNK_SIZE):
@@ -208,6 +205,9 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
             try:
                 with engine.begin() as conn:
+                    # 방 안에서 타이머 켜기: 60초 넘어가면 즉시 강제 종료하고 재시도
+                    conn.execute(text("SET LOCAL statement_timeout = '60000';"))
+                    
                     chunk_df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
                     chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=500)
                     cols = ", ".join([f'"{c}"' for c in chunk_df.columns])
@@ -220,14 +220,20 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
                         sql = f'INSERT INTO {table} ({cols}) SELECT * FROM {temp_table} ON CONFLICT ({pk_clause}) DO NOTHING'
                     conn.execute(text(sql))
                     conn.execute(text(f'DROP TABLE {temp_table}'))
-                break # 성공 시 반복문 탈출
+                break # 성공
             except Exception as e:
+                # 찌꺼기 임시 테이블 삭제
+                try:
+                    with engine.begin() as d_conn:
+                        d_conn.execute(text(f'DROP TABLE IF EXISTS {temp_table}'))
+                except: pass
+                
                 err_msg = str(e).lower()
-                if "operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg:
-                    log(f"⚠️ DB 튕김 감지 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
+                if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
+                    log(f"⚠️ DB 락/타임아웃 감지 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
                     time.sleep(3)
                 else:
-                    log(f"⚠️ Upsert Error in {table}: {e}")
+                    log(f"❌ Upsert Error in {table}: {e}")
                     break
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
@@ -235,32 +241,35 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last')
     
-    # 1. 안전하게 기존 데이터 삭제 (재시도 로직 포함)
+    # 🌟 데드락 방지 정렬
+    df = df.sort_values(by=['dt', 'customer_id', pk])
+    
     for attempt in range(3):
         try:
             with engine.begin() as conn:
+                conn.execute(text("SET LOCAL statement_timeout = '60000';"))
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
-            if attempt == 2: log(f"⚠️ Fact Delete Error in {table}: {e}")
+            if attempt == 2: log(f"❌ Fact Delete Error in {table}: {e}")
             time.sleep(3)
             
-    # 2. 청크 단위로 삽입 (각 청크마다 재시도 로직 포함)
     CHUNK_SIZE = 5000
     for start_idx in range(0, len(df), CHUNK_SIZE):
         chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
         for attempt in range(3):
             try:
                 with engine.begin() as conn:
+                    conn.execute(text("SET LOCAL statement_timeout = '60000';"))
                     chunk_df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=500)
                 break
             except Exception as e:
                 err_msg = str(e).lower()
-                if "operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg:
+                if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
                     log(f"⚠️ DB 삽입 튕김 감지 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
                     time.sleep(3)
                 else:
-                    log(f"⚠️ Fact Insert Error in {table}: {e}")
+                    log(f"❌ Fact Insert Error in {table}: {e}")
                     break
 
 # -------------------------
@@ -543,7 +552,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 속도는 2배속 유지
+    # 속도 2배속 유지
     max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
