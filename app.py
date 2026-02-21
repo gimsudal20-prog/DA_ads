@@ -121,7 +121,7 @@ GLOBAL_UI_CSS = """
   --nv-text:#1A1C20;
   --nv-muted:rgba(26,28,32,.62);
   --nv-green:#03C75A;
-  --nv-up:#2563EB; /* up(증가) */
+  --nv-up:#EF4444; /* up(증가)=빨강(국내표준) */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
   --nv-shadow:0 2px 10px rgba(0,0,0,.06);
@@ -183,8 +183,8 @@ section[data-testid="stSidebar"] .block-container{
 }
 .nv-dot{
   width:10px;height:10px;border-radius:50%;
-  background: var(--nv-up);
-  box-shadow: 0 0 0 3px rgba(37,99,235,.14);
+  background: var(--nv-green);
+  box-shadow: 0 0 0 3px rgba(3,199,90,.14);
 }
 .nv-sub{
   font-weight: 600; font-size: 12px; color: var(--nv-muted);
@@ -263,8 +263,8 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-up);} /* 증가(▲) = 파랑 */
-.kpi .d.neg{color:var(--nv-red);}   /* 감소(▼) = 빨강 */
+.kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
+.kpi .d.neg{color:var(--nv-blue);}   /* 감소(▼) = 파랑(국내표준) */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
@@ -297,8 +297,8 @@ input[type="text"], textarea{
 }
 .delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
 .delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-up);} /* 증가 = 파랑 */
-.delta-chip.neg .v{color: var(--nv-red);}   /* 감소 = 빨강 */
+.delta-chip.pos .v{color: var(--nv-red);} /* 증가 = 빨강(국내표준) */
+.delta-chip.neg .v{color: var(--nv-blue);}   /* 감소 = 파랑(국내표준) */
 .delta-chip.zero .v{color: rgba(26,28,32,.72);} 
 @media (max-width: 1200px){
   .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -2999,7 +2999,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d_cap = d.copy()
     d_cap["val"] = d_cap["flat_end"]
 
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#2563EB", "#EF4444", "#B4C4D9"])
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#2563EB", "#B4C4D9"])
 
     y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
     x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
