@@ -20,36 +20,17 @@ import os
 import time
 import re
 import io
-import hashlib
 import math
-import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-
-# -----------------------------
-# Streamlit helpers (compat)
-# -----------------------------
-_ST_DATAFRAME = st.dataframe
-def st_dataframe_safe(df, **kwargs):
-    """st.dataframe 호환성 래퍼: Streamlit 버전 차이로 인한 TypeError를 안전하게 폴백 처리."""
-    try:
-        return _ST_DATAFRAME(df, **kwargs)
-    except Exception:
-        # 1차 폴백: hide_index 제거
-        kwargs.pop("hide_index", None)
-        try:
-            return _ST_DATAFRAME(df, **kwargs)
-        except Exception:
-            # 2차 폴백: column_config 제거(구버전)
-            kwargs.pop("column_config", None)
-            return _ST_DATAFRAME(df, **kwargs)
-
 import altair as alt
 
-# Charts: Altair (vega-lite)
+# Plotly (preferred for charts)
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 # Optional UI components (shadcn-ui style)
@@ -59,102 +40,8 @@ try:
 except Exception:
     ui = None  # type: ignore
     HAS_SHADCN_UI = False
-
-# Optional grid component (AgGrid) - enables pinned top rows + stable sorting
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode  # pip install streamlit-aggrid
-    try:
-        from st_aggrid.shared import GridUpdateMode, DataReturnMode
-    except Exception:
-        GridUpdateMode = None  # type: ignore
-        DataReturnMode = None  # type: ignore
-    HAS_AGGRID = True
-except Exception:
-    AgGrid = None  # type: ignore
-    GridOptionsBuilder = None  # type: ignore
-    JsCode = None  # type: ignore
-    HAS_AGGRID = False
-
-# Optional charts component (ECharts)
-try:
-    from streamlit_echarts import st_echarts  # pip install streamlit-echarts
-    HAS_ECHARTS = True
-except Exception:
-    st_echarts = None  # type: ignore
-    HAS_ECHARTS = False
-
-
-# -----------------------------
-# AgGrid tuning: keep rich grid but avoid triggering reruns on sort/filter/scroll
-# -----------------------------
-def _aggrid_mode(name: str):
-    """Return GridUpdateMode/DataReturnMode value across versions."""
-    # st-aggrid versions differ: enums may be absent; string fallbacks are accepted.
-    if name == "no_update":
-        return GridUpdateMode.NO_UPDATE if 'GridUpdateMode' in globals() and GridUpdateMode is not None else "NO_UPDATE"
-    if name == "as_input":
-        return DataReturnMode.AS_INPUT if 'DataReturnMode' in globals() and DataReturnMode is not None else "AS_INPUT"
-    return None
-
-
-# -----------------------------
-# AgGrid fast gridOptions (cache) - keeps features but avoids rebuilding GridOptionsBuilder every rerun
-# -----------------------------
-_AGGRID_COLDEF_CACHE: dict = {}
-
-def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool) -> list:
-    key = (tuple(cols), tuple(sorted(right_cols)), int(bool(enable_filter)))
-    cache = _AGGRID_COLDEF_CACHE
-    if key in cache:
-        return cache[key]
-    out = []
-    for c in cols:
-        cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
-        if c in right_cols:
-            cd["cellStyle"] = {"textAlign": "right"}
-        out.append(cd)
-    if len(cache) > 64:
-        cache.clear()
-    cache[key] = out
-    return out
-
-def _aggrid_grid_options(
-    cols: List[str],
-    pinned_rows: Optional[list] = None,
-    right_cols: Optional[set] = None,
-    quick_filter: str = "",
-    enable_filter: bool = False,
-) -> dict:
-    right_cols = right_cols or set()
-    pinned_rows = pinned_rows or []
-    grid = {
-        "defaultColDef": {"sortable": True, "filter": bool(enable_filter), "resizable": True},
-        "columnDefs": _aggrid_coldefs(cols, right_cols, enable_filter),
-        "pinnedTopRowData": pinned_rows,
-        "suppressRowClickSelection": True,
-        "animateRows": False,
-    }
-    if quick_filter:
-        grid["quickFilterText"] = quick_filter
-
-    # pinned row styling (grey summary)
-    if JsCode is not None:
-        try:
-            grid["getRowStyle"] = JsCode("""
-function(params){
-  if(params.node.rowPinned){
-    return {backgroundColor:'rgba(148,163,184,0.18)', fontWeight:'700'};
-  }
-  return {};
-}
-""")
-        except Exception:
-            pass
-    return grid
-
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -198,7 +85,7 @@ except Exception:
 # -----------------------------
 # Page config
 # -----------------------------
-st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="네이버 검색광고 통합 대시보드", page_icon="📊", layout="wide")
 
 BUILD_TAG = "v8.6.11 (Bootstrap Settings+Sync+Speed Hotfix, 2026-02-20)"
 
@@ -225,7 +112,6 @@ GLOBAL_UI_CSS = """
   --nv-text:#1A1C20;
   --nv-muted:rgba(26,28,32,.62);
   --nv-green:#03C75A;
-  --nv-up:#EF4444; /* up(증가)=빨강(국내표준) */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
   --nv-shadow:0 2px 10px rgba(0,0,0,.06);
@@ -258,40 +144,8 @@ section[data-testid="stSidebar"] div{
 section[data-testid="stSidebar"] .block-container{
   padding-top: 10px !important;
 }
-/* Sidebar collapse control (keep visible) */
-[data-testid="stSidebarCollapsedControl"]{
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px; height: 38px;
-  border-radius: 10px;
-  border: 1px solid var(--nv-line);
-  background: rgba(255,255,255,.86);
-  box-shadow: var(--nv-shadow);
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  z-index: 10001;
-}
+[data-testid="stSidebarCollapsedControl"]{display:none;}
 
-/* Force sidebar visible + sane width on desktop (avoid squished menu when Streamlit remembers collapsed) */
-@media (min-width: 900px){
-  section[data-testid="stSidebar"]{
-    transform: translateX(0) !important;
-    margin-left: 0 !important;
-    min-width: 260px !important;
-    width: 260px !important;
-  }
-  /* Some Streamlit versions keep aria-expanded="false" even when we force translateX(0) */
-  section[data-testid="stSidebar"][aria-expanded="false"]{
-    transform: translateX(0) !important;
-    min-width: 260px !important;
-    width: 260px !important;
-  }
-  section[data-testid="stSidebar"] > div:first-child{
-    width: 260px !important;
-  }
-}
 /* Main container spacing (compact) */
 .main .block-container{
   padding-top: 14px !important;
@@ -399,45 +253,11 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
-.kpi .d.neg{color:var(--nv-blue);}   /* 감소(▼) = 파랑(국내표준) */
+.kpi .d.pos{color:var(--nv-red);}
+.kpi .d.neg{color:var(--nv-blue);}
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
-}
-
-/* Delta chips (period compare) */
-.delta-chip-row{
-  display:grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 10px 0 14px 0;
-}
-.delta-chip{
-  background: var(--nv-panel);
-  border: 1px solid var(--nv-line);
-  border-radius: 12px;
-  padding: 10px 12px;
-  box-shadow: 0 1px 6px rgba(0,0,0,.04);
-}
-.delta-chip .l{
-  font-size: 12px;
-  color: var(--nv-muted);
-  font-weight: 800;
-}
-.delta-chip .v{
-  margin-top: 6px;
-  font-size: 14px;
-  font-weight: 900;
-  letter-spacing: -0.15px;
-}
-.delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
-.delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-red);} /* 증가 = 빨강(국내표준) */
-.delta-chip.neg .v{color: var(--nv-blue);}   /* 감소 = 파랑(국내표준) */
-.delta-chip.zero .v{color: rgba(26,28,32,.72);} 
-@media (max-width: 1200px){
-  .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
 }
 
 /* Tab strip look */
@@ -521,120 +341,17 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checke
   text-overflow: ellipsis;
 }
 
-
-/* ---- Progress bar cell (월 예산 집행률) ---- */
-.nv-pbar{display:flex; align-items:center; gap:10px; min-width:160px;}
-.nv-pbar-bg{position:relative; flex:1; height:10px; border-radius:999px; background: rgba(0,0,0,.08); overflow:hidden;}
-.nv-pbar-fill{position:absolute; left:0; top:0; bottom:0; border-radius:999px;}
-.nv-pbar-txt{min-width:56px; text-align:right; font-weight:800; color: var(--nv-text); font-size:12px;}
-.nv-table-wrap{border:1px solid var(--nv-line); border-radius: 12px; overflow:auto; background: var(--nv-panel);}
-table.nv-table{width:100%; border-collapse:collapse; font-size:13px;}
-table.nv-table th{position:sticky; top:0; background: rgba(245,246,247,.98); z-index:2; text-align:left; padding:10px 12px; border-bottom:1px solid var(--nv-line2); font-weight:900;}
-table.nv-table td{padding:10px 12px; border-bottom:1px solid var(--nv-line); vertical-align:middle;}
-table.nv-table tr:hover td{background: rgba(0,0,0,.02);}
-table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
-
 </style>
 
 """
 
-# Extra CSS (moved from render_download_compact) — inject once to avoid repeated rerender cost
-EXTRA_UI_CSS = r"""<style>
-        .stDownloadButton button {
-            padding: 0.15rem 0.55rem !important;
-            font-size: 0.82rem !important;
-            line-height: 1.2 !important;
-            min-height: 28px !important;
-        }
-        
-/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-  background: rgba(0,0,0,.04) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
-  display:none !important; /* hide radio circle */
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
+st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
-/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-
-/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{
-  border: 0 !important;
-}
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) look like admin fields */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide the circle icon & make it look like a nav list */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-
-</style>"""
-
-st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
+    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -676,125 +393,12 @@ def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
         unsafe_allow_html=True,
     )
 def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_prefix: str = "") -> None:
-    """기간 '추세' 표를 한글/가독성 좋게 렌더링.
-
-    - dt/imp/clk/cost/conv/sales -> 한글 헤더
-    - 날짜는 YYYY-MM-DD
-    - 숫자는 콤마/단위(원, %, p) 적용
-    - CTR/CPC/CPA/ROAS 보조지표 추가
-
-    NOTE: 화면용(표시용) 문자열 컬럼을 만들어 보여줍니다.
-    """
-    if ts is None or ts.empty:
-        st.info("표시할 데이터가 없습니다.")
-        return
-
-    df = ts.copy()
-
-    # --- normalize columns ---
-    if "dt" in df.columns:
-        dt = pd.to_datetime(df["dt"], errors="coerce")
-        df["dt"] = dt.dt.strftime("%Y-%m-%d")
-
-    # make sure numeric
-    for c in ["imp", "clk", "cost", "conv", "sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    # derived metrics
-    if "imp" in df.columns and "clk" in df.columns:
-        denom = df["imp"].replace(0, np.nan)
-        df["ctr"] = (df["clk"] / denom * 100.0)
-        df["ctr"] = pd.to_numeric(df["ctr"], errors="coerce").fillna(0.0)
-    if "clk" in df.columns and "cost" in df.columns:
-        denom = df["clk"].replace(0, np.nan)
-        df["cpc"] = (df["cost"] / denom)
-        df["cpc"] = pd.to_numeric(df["cpc"], errors="coerce").fillna(0.0)
-    if "conv" in df.columns and "cost" in df.columns:
-        denom = df["conv"].replace(0, np.nan)
-        df["cpa"] = (df["cost"] / denom)
-        df["cpa"] = pd.to_numeric(df["cpa"], errors="coerce").fillna(0.0)
-    if "cost" in df.columns and "sales" in df.columns:
-        denom = df["cost"].replace(0, np.nan)
-        df["roas"] = (df["sales"] / denom * 100.0)
-        df["roas"] = pd.to_numeric(df["roas"], errors="coerce").fillna(0.0)
-
-    # display formatting helpers
-    def _fmt_int(x) -> str:
-        try:
-            return f"{int(round(float(x))):,}"
-        except Exception:
-            return "0"
-
-    def _fmt_won(x) -> str:
-        try:
-            return f"{int(round(float(x))):,}원"
-        except Exception:
-            return "0원"
-
-    def _fmt_pct1(x) -> str:
-        try:
-            return f"{float(x):.1f}%"
-        except Exception:
-            return "0.0%"
-
-    def _fmt_pct0(x) -> str:
-        try:
-            return f"{float(x):.0f}%"
-        except Exception:
-            return "0%"
-
-    # choose order
-    order = []
-    for c in ["dt", "imp", "clk", "ctr", "cpc", "cost", "conv", "cpa", "sales", "roas"]:
-        if c in df.columns:
-            order.append(c)
-
-    view = df[order].copy()
-
-    # rename to Korean
-    rename = {
-        "dt": "일자",
-        "imp": "노출",
-        "clk": "클릭",
-        "ctr": "CTR(%)",
-        "cpc": "CPC",
-        "cost": "광고비",
-        "conv": "전환",
-        "cpa": "CPA",
-        "sales": "매출",
-        "roas": "ROAS(%)",
-    }
-    view = view.rename(columns=rename)
-
-    # format for display (strings)
-    disp = pd.DataFrame()
-    if "일자" in view.columns:
-        disp["일자"] = view["일자"].astype(str)
-
-    for col in ["노출", "클릭", "전환"]:
-        if col in view.columns:
-            disp[col] = view[col].apply(_fmt_int)
-
-    if "CTR(%)" in view.columns:
-        disp["CTR(%)"] = view["CTR(%)"].apply(_fmt_pct1)
-
-    if "CPC" in view.columns:
-        disp["CPC"] = view["CPC"].apply(_fmt_won)
-
-    if "광고비" in view.columns:
-        disp["광고비"] = view["광고비"].apply(_fmt_won)
-
-    if "CPA" in view.columns:
-        disp["CPA"] = view["CPA"].apply(_fmt_won)
-
-    if "매출" in view.columns:
-        disp["매출"] = view["매출"].apply(_fmt_won)
-
-    if "ROAS(%)" in view.columns:
-        disp["ROAS(%)"] = view["ROAS(%)"].apply(_fmt_pct0)
-
-    st_dataframe_safe(disp, use_container_width=True, hide_index=True, height=360)
+    """Fallback timeseries renderer (keeps UI stable)."""
+    view = ts.copy()
+    cols = [c for c in ["dt", "imp", "clk", "cost", "conv", "sales"] if c in view.columns]
+    if cols:
+        view = view[cols]
+    st.dataframe(view, use_container_width=True, height=360)
 
 
 
@@ -847,212 +451,7 @@ def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None
             return
         except Exception:
             pass
-    st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
-
-
-def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height: int = 520) -> None:
-    """
-    월 예산 관리 표: '집행률(%)'을 숫자+막대바로 표시.
-    - Streamlit 버전/컴포넌트 의존성을 피하기 위해 HTML 테이블로 렌더링(항상 동작).
-    - 다운로드용 DF는 원본을 사용하고, 화면 표시만 bar 컬럼을 만든다.
-    """
-    if table_df is None or table_df.empty:
-        st.info("표시할 데이터가 없습니다.")
-        return
-
-    df = table_df.copy()
-
-    # numeric columns right align
-    for c in df.columns:
-        if c in ("월 예산(원)", f"{datetime.now().month}월 사용액", "집행률(%)"):
-            pass
-
-    # Build bar html
-    def _bar(pct, status) -> str:
-        try:
-            pv = float(pct)
-        except Exception:
-            pv = 0.0
-        pv = 0.0 if math.isnan(pv) else pv
-        width = max(0.0, min(pv, 120.0))  # allow slight overrun visibility
-        stt = str(status or "")
-        if stt.startswith("🔴"):
-            fill = "var(--nv-red)"
-        elif stt.startswith("🟡"):
-            fill = "#F59E0B"
-        elif stt.startswith("🟢"):
-            fill = "var(--nv-green)"
-        else:
-            fill = "rgba(0,0,0,.25)"
-        return (
-            f"<div class='nv-pbar'>"
-            f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
-            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
-            f"</div>"
-        )
-
-    if "집행률(%)" in df.columns:
-        df["집행률"] = [
-            _bar(p, s) for p, s in zip(df["집행률(%)"].tolist(), df.get("상태", "").tolist())
-        ]
-        df = df.drop(columns=["집행률(%)"])
-        # place '집행률' where the old column was
-        cols = list(df.columns)
-        # try to move right before '상태'
-        if "상태" in cols and "집행률" in cols:
-            cols.remove("집행률")
-            idx = cols.index("상태")
-            cols.insert(idx, "집행률")
-            df = df[cols]
-
-    # Convert numeric-looking money strings to right aligned using CSS class via HTML (add <td class="num">)
-    # Pandas to_html doesn't let per-cell classes easily; small post-process for known columns.
-    html = df.to_html(index=False, escape=False, classes="nv-table")
-    # Add num alignment for known columns by injecting class into <td> for those columns.
-    # We'll do a light regex pass on the generated table.
-    num_cols = ["월 예산(원)", "2월 사용액", "3월 사용액", "4월 사용액", "5월 사용액", "6월 사용액", "7월 사용액", "8월 사용액", "9월 사용액", "10월 사용액", "11월 사용액", "12월 사용액", "집행률"]
-    # But our '집행률' is html; skip.
-    # We'll right-align any cell that endswith '원' or is purely digits/commas.
-    html = re.sub(r"<td>([\d,]+원)</td>", r"<td class='num'>\1</td>", html)
-    html = re.sub(r"<td>([\d,]+)</td>", r"<td class='num'>\1</td>", html)
-
-    st.markdown(f"<div class='nv-table-wrap' style='max-height:{height}px'>{html}</div>", unsafe_allow_html=True)
-
-
-
-
-def render_pinned_summary_grid(
-    detail_df: pd.DataFrame,
-    summary_df: Optional[pd.DataFrame],
-    key: str,
-    height: int = 520,
-) -> None:
-    """Render a large sortable table where 'summary' rows stay pinned at the top.
-
-    - If streamlit-aggrid is installed: pinnedTopRowData keeps the summary fixed (even on sort/scroll).
-    - Otherwise: fallback to two tables (summary above, detail below).
-    """
-    if detail_df is None:
-        detail_df = pd.DataFrame()
-    if summary_df is None:
-        summary_df = pd.DataFrame()
-
-    # Normalize columns
-    if not summary_df.empty and list(summary_df.columns) != list(detail_df.columns):
-        # try align to detail columns
-        summary_df = summary_df.reindex(columns=list(detail_df.columns))
-
-    
-    if HAS_AGGRID and AgGrid is not None:
-        # Pinned rows
-        pinned = summary_df.to_dict("records") if summary_df is not None and not summary_df.empty else []
-
-        # Right-align numeric-ish columns
-        right_cols = {
-            "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"
-        }
-
-        grid = _aggrid_grid_options(
-            cols=list(detail_df.columns),
-            pinned_rows=pinned,
-            right_cols=right_cols,
-            enable_filter=False,
-        )
-
-        AgGrid(
-            detail_df,
-            gridOptions=grid,
-            height=height,
-            fit_columns_on_grid_load=False,
-            theme="alpine",
-            allow_unsafe_jscode=True,
-            update_mode=_aggrid_mode("no_update"),
-            data_return_mode=_aggrid_mode("as_input"),
-            key=key,
-        )
-        return
-
-
-    # Fallback: summary above + detail below (summary stays on top structurally)
-    if summary_df is not None and not summary_df.empty:
-        # keep it compact
-        st_dataframe_safe(style_summary_rows(summary_df, len(summary_df)), use_container_width=True, hide_index=True, height=min(220, 60 + 35 * len(summary_df)))
-    st_dataframe_safe(detail_df, use_container_width=True, hide_index=True, height=height)
-
-
-def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_col: str, height: int = 260) -> None:
-    """ECharts 도넛 차트(선택): streamlit-echarts 설치 시만 렌더."""
-    if not (HAS_ECHARTS and st_echarts is not None):
-        return
-    if data is None or data.empty or label_col not in data.columns or value_col not in data.columns:
-        return
-
-    d = data.copy()
-    d[label_col] = d[label_col].astype(str)
-    d[value_col] = pd.to_numeric(d[value_col], errors="coerce").fillna(0.0)
-
-    items = [{"name": n, "value": float(v)} for n, v in zip(d[label_col].tolist(), d[value_col].tolist()) if float(v) > 0]
-    if not items:
-        return
-
-    option = {
-        "title": {"text": title, "left": "center", "top": 6, "textStyle": {"fontSize": 13}},
-        "tooltip": {"trigger": "item", "formatter": "{b}<br/>{c:,} ({d}%)"},
-        "legend": {"type": "scroll", "bottom": 0},
-        "series": [
-            {
-                "name": title,
-                "type": "pie",
-                "radius": ["55%", "78%"],
-                "avoidLabelOverlap": True,
-                "itemStyle": {"borderRadius": 10, "borderColor": "#fff", "borderWidth": 2},
-                "label": {"show": False},
-                "emphasis": {"label": {"show": True, "fontSize": 13, "fontWeight": "bold"}},
-                "labelLine": {"show": False},
-                "data": items,
-            }
-        ],
-    }
-    st_echarts(option, height=f"{height}px")
-
-
-def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
-    """대용량 테이블: AgGrid(설치 시) 우선, 미설치 시 st.dataframe 폴백."""
-    if df is None:
-        df = pd.DataFrame()
-
-    
-    if HAS_AGGRID and AgGrid is not None:
-        q = st.text_input("검색", value="", placeholder="테이블 내 검색", key=f"{key}_q")
-
-        # right-align numeric-like columns if present
-        right_cols = {c for c in df.columns if any(k in c for k in ["노출", "클릭", "광고비", "전환", "매출", "CTR", "CPC", "CPA", "ROAS"])}
-
-        grid = _aggrid_grid_options(
-            cols=list(df.columns),
-            pinned_rows=[],
-            right_cols=right_cols,
-            quick_filter=q or "",
-            enable_filter=True,
-        )
-
-        AgGrid(
-            df,
-            gridOptions=grid,
-            height=height,
-            fit_columns_on_grid_load=False,
-            theme="alpine",
-            allow_unsafe_jscode=True,
-            update_mode=_aggrid_mode("no_update"),
-            data_return_mode=_aggrid_mode("as_input"),
-            key=key,
-        )
-        return
-
-    st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
-
-
-
+    st.dataframe(df, use_container_width=True, hide_index=True, height=height)
 
 # -----------------------------
 # DB helpers
@@ -1076,124 +475,19 @@ def get_database_url() -> str:
 
 
 @st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def get_engine():
-    # Supabase/PGBouncer 환경에서 SSL 연결이 중간에 끊기는 케이스를 줄이기 위한 설정
-    # - pool_pre_ping: checkout 시 SELECT 1로 연결 상태 확인
-    # - pool_recycle: 오래된 커넥션 재사용 방지(서버/풀러 idle timeout 회피)
-    # - pool_use_lifo: 최근 사용 커넥션 우선(죽은 커넥션 확률 감소)
-    url = get_database_url()
-    connect_args = {
-        "sslmode": "require",
-        "connect_timeout": 10,
-        # TCP keepalive (psycopg2)
-        "keepalives": 1,
-        "keepalives_idle": 30,
-        "keepalives_interval": 10,
-        "keepalives_count": 5,
-    }
-
-    # 안정성이 더 중요하면 NullPool로 전환 가능 (각 쿼리마다 새 연결)
-    use_nullpool = False
-
-    if use_nullpool:
-        return create_engine(url, connect_args=connect_args, poolclass=NullPool, future=True)
-
-    return create_engine(
-        url,
-        connect_args=connect_args,
-        pool_pre_ping=True,
-        pool_size=2,
-        max_overflow=2,
-        pool_timeout=30,
-        pool_recycle=300,
-        pool_use_lifo=True,
-        future=True,
-    )
+    return create_engine(get_database_url(), pool_pre_ping=True, pool_size=5, max_overflow=10, pool_recycle=1800, future=True)
 
 
+def sql_read(engine, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    with engine.connect() as conn:
+        return pd.read_sql(text(sql), conn, params=params or {})
 
 
-def _reset_engine_cache() -> None:
-    """DB 연결이 끊긴 경우(get_engine 캐시 포함) 재생성을 유도."""
-    try:
-        get_engine.clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
-
-def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) -> pd.DataFrame:
-    """DB read with retry for transient connection errors (SSL closed, idle timeout, etc.)."""
-    last_err: Exception | None = None
-    _engine = engine
-
-    for i in range(retries + 1):
-        try:
-            with _engine.connect() as conn:
-                return pd.read_sql(text(sql), conn, params=params or {})
-        except Exception as e:
-            last_err = e
-            # 1) 풀 내부 죽은 커넥션 제거
-            try:
-                _engine.dispose()
-            except Exception:
-                pass
-
-            # 2) 캐시된 엔진 자체가 꼬였으면 재생성
-            if i == 0:
-                _reset_engine_cache()
-                try:
-                    _engine = get_engine()
-                except Exception:
-                    _engine = engine
-
-            if i < retries:
-                time.sleep(0.35 * (2 ** i))
-                continue
-            raise last_err
-
-
-def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) -> None:
-    last_err = None
-    for i in range(retries + 1):
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(sql), params or {})
-            return
-        except Exception as e:
-            last_err = e
-            try:
-                engine.dispose()
-            except Exception:
-                pass
-            if i < retries:
-                time.sleep(0.25 * (2 ** i))
-                continue
-            raise last_err
-
-def db_ping(engine, retries: int = 2) -> None:
-    """가벼운 DB 헬스체크. pandas를 거치지 않고 SELECT 1만 실행."""
-    last_err: Exception | None = None
-    _engine = engine
-    for i in range(retries + 1):
-        try:
-            with _engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            return
-        except Exception as e:
-            last_err = e
-            try:
-                _engine.dispose()
-            except Exception:
-                pass
-            if i == 0:
-                _reset_engine_cache()
-                try:
-                    _engine = get_engine()
-                except Exception:
-                    _engine = engine
-            if i < retries:
-                time.sleep(0.35 * (2 ** i))
-                continue
-            raise last_err
+def sql_exec(engine, sql: str, params: Optional[dict] = None) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(sql), params or {})
 
 
 def _get_table_names_cached(engine, schema: str = "public") -> set:
@@ -1359,79 +653,114 @@ def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
     return output.getvalue()
 
 
-# -----------------------------
-# Download bytes memo (session-local)
-# - Avoid df.to_json / read_json overhead
-# - Avoid repeated CSS injection inside download renderer
-# -----------------------------
-def _df_signature_light(df: pd.DataFrame) -> str:
-    """Fast-ish signature for download caching (session-local).
-
-    We intentionally hash only a small sample of rows to keep this cheap.
-    Collisions are extremely unlikely for our use-case (top tables, filtered views).
-    """
-    try:
-        from pandas.util import hash_pandas_object as _hpo
-        sample = df
-        if len(df) > 20:
-            sample = pd.concat([df.head(10), df.tail(10)], axis=0)
-        h = hashlib.blake2b(digest_size=16)
-        h.update(str(df.shape).encode("utf-8"))
-        h.update(("|".join(map(str, df.columns))).encode("utf-8"))
-        try:
-            h.update(_hpo(sample, index=True).values.tobytes())
-        except Exception:
-            # Fallback: partial CSV (bounded)
-            h.update(sample.to_csv(index=False).encode("utf-8")[:4096])
-        return h.hexdigest()
-    except Exception:
-        return f"{df.shape[0]}x{df.shape[1]}_{abs(hash(tuple(df.columns)))}"
-
-
-def _dl_cache() -> dict:
-    # { (sig, sheet_name): (csv_bytes, xlsx_bytes) }
-    return st.session_state.setdefault("_dl_bytes_cache", {})
-
-
-def _get_download_bytes(df: pd.DataFrame, sheet_name: str) -> Tuple[bytes, bytes]:
-    sig = _df_signature_light(df)
-    cache = _dl_cache()
-    key = (sig, str(sheet_name))
-    if key in cache:
-        return cache[key]
-
-    # keep cache bounded (avoid unbounded memory growth)
-    if len(cache) > 24:
-        cache.clear()
-
-    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31])
-    xlsx_bytes = output.getvalue()
-
-    cache[key] = (csv_bytes, xlsx_bytes)
-    return csv_bytes, xlsx_bytes
-
-
 def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str, key_prefix: str) -> None:
-    """Compact CSV/XLSX download renderer (fast).
-
-    - No per-call CSS injection
-    - No df.to_json roundtrip
-    - Session-local memo for bytes to avoid repeated XLSX builds
-    """
+    """렌더링 속도를 위해 CSV는 기본 제공, XLSX는 캐시된 bytes 사용."""
     if df is None or df.empty:
         return
 
-    csv_bytes, xlsx_bytes = _get_download_bytes(df, sheet_name)
+    df_json = df.to_json(orient="split")
+
+    st.markdown(
+        """
+        <style>
+        .stDownloadButton button {
+            padding: 0.15rem 0.55rem !important;
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            min-height: 28px !important;
+        }
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
         st.download_button(
             "CSV",
-            data=csv_bytes,
+            data=_df_json_to_csv_bytes(df_json),
             file_name=f"{filename_base}.csv",
             mime="text/csv",
             key=f"{key_prefix}_csv",
@@ -1440,7 +769,7 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
     with c2:
         st.download_button(
             "XLSX",
-            data=xlsx_bytes,
+            data=_df_json_to_xlsx_bytes(df_json, sheet_name),
             file_name=f"{filename_base}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
@@ -1821,6 +1150,8 @@ def query_latest_dates(_engine) -> Dict[str, str]:
 
 
 
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
+
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     """최근 데이터 날짜를 1회 쿼리로 가져옵니다 (왕복/로딩 체감 개선)."""
@@ -1901,15 +1232,6 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
 
 
 
-
-
-def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
-    """Streamlit multiselect with Korean placeholder (compatible across Streamlit versions)."""
-    try:
-        return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
-    except Exception:
-        # Older Streamlit without placeholder=
-        return col.multiselect(label, options, default=default, key=key)
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     """Naver-like '검색조건' panel. No '적용' 버튼: 변경 즉시 반영되지만,
@@ -2021,7 +1343,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         r2 = st.columns([1.2, 1.6, 1.2], gap="small")
 
-        manager_sel = ui_multiselect(r2[0], "담당자", managers, default=sv.get("manager", []), key="f_manager")
+        manager_sel = r2[0].multiselect("담당자", managers, default=sv.get("manager", []), key="f_manager")
 
         # ✅ 담당자 선택 시: 해당 담당자 계정만 노출 (네이버 관리자 UX)
         accounts_by_mgr = accounts
@@ -2040,9 +1362,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         # 기존 선택값 중 유효한 것만 유지
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
 
-        account_sel = ui_multiselect(r2[1], "계정", accounts_by_mgr, default=prev_acc, key="f_account")
+        account_sel = r2[1].multiselect("계정", accounts_by_mgr, default=prev_acc, key="f_account")
 
-        type_sel = ui_multiselect(r2[2], "캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+        type_sel = r2[2].multiselect("캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
 
 
     # persist back
@@ -2072,7 +1394,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "end": d2,
         "period_mode": period_mode,
         "customer_ids": cids,
-        "selected_customer_ids": cids,  # alias for older pages (campaign/budget)
         "top_n_keyword": int(sv.get("top_n_keyword", 300)),
         "top_n_ad": int(sv.get("top_n_ad", 200)),
         "top_n_campaign": int(sv.get("top_n_campaign", 200)),
@@ -2332,173 +1653,6 @@ def query_campaign_bundle(
     return df.reset_index(drop=True)
 
 
-
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_agg_slice(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
-    """캠페인 탭(메인 표/드롭다운)용: 기간 범위에서 캠페인 단위로 **집계된** 데이터만 조회합니다.
-
-    - (dt x 캠페인)처럼 큰 슬라이스를 가져오지 않고, 바로 캠페인 단위로 SUM 집계 → 초기 로딩/필터 전환 체감 개선
-    - 담당자/업체 필터는 cids로 DB에서 1차 축소(가능한 경우)
-    - campaign_tp → campaign_type(라벨)로 매핑
-    """
-    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
-        return pd.DataFrame(columns=[
-            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
-            "imp","clk","cost","conv","sales"
-        ])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    where_cid = ""
-    if cids:
-        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
-
-    join_campaign = ""
-    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
-    group_campaign = ""
-    if table_exists(_engine, "dim_campaign"):
-        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
-        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
-        group_campaign = ", c.campaign_name, c.campaign_tp"
-
-    sql = f"""
-    SELECT
-      f.customer_id::text AS customer_id,
-      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
-      COALESCE(NULLIF(m.manager,''),'') AS manager,
-      f.campaign_id,
-      {select_campaign},
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    JOIN dim_account_meta m
-      ON m.customer_id = f.customer_id::text
-    {join_campaign}
-    WHERE f.dt BETWEEN :d1 AND :d2
-      {where_cid}
-    GROUP BY f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=[
-            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
-            "imp","clk","cost","conv","sales"
-        ])
-
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    for c in ["imp","clk","cost","conv","sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
-    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
-    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
-
-    return df.reset_index(drop=True)
-
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_timeseries_one(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
-    """특정 캠페인 1개에 대한 일별 추세(상세 보기용)."""
-    if not table_exists(_engine, "fact_campaign_daily"):
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    sql = f"""
-    SELECT
-      f.dt::date AS dt,
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    WHERE f.dt BETWEEN :d1 AND :d2
-      AND f.customer_id::text = :cid
-      AND f.campaign_id = :camp
-    GROUP BY f.dt::date
-    ORDER BY f.dt::date
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": int(campaign_id)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    for c in ["imp","clk","cost","conv","sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    return df.reset_index(drop=True)
-
-
-
-def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
-    """캠페인 탭용: (일자 x 캠페인) 슬라이스를 1회 조회해 캐시합니다.
-    날짜 범위만 바뀔 때 DB를 치고, 이후 담당자/업체/유형/캠페인 선택은 pandas 필터로 처리합니다.
-    """
-    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
-        return pd.DataFrame(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    join_campaign = ""
-    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
-    group_campaign = ""
-    if table_exists(_engine, "dim_campaign"):
-        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
-        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
-        group_campaign = ", c.campaign_name, c.campaign_tp"
-
-    sql = f"""
-    SELECT
-      f.dt::date AS dt,
-      f.customer_id::text AS customer_id,
-      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
-      COALESCE(NULLIF(m.manager,''),'') AS manager,
-      f.campaign_id,
-      {select_campaign},
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    JOIN dim_account_meta m
-      ON m.customer_id = f.customer_id::text
-    {join_campaign}
-    WHERE f.dt BETWEEN :d1 AND :d2
-    GROUP BY f.dt::date, f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
-    ORDER BY f.dt::date
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"])
-
-    # types
-    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    for c in ["imp","clk","cost","conv","sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
-    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
-    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
-    return df.reset_index(drop=True)
 # -----------------------------
 # Timeseries Queries (for charts)
 # -----------------------------
@@ -2734,7 +1888,7 @@ def _chart_timeseries(
     y_format: str = ",.0f",
     height: int = 320,
 ):
-    """Time-series line (Altair). Korean date labels + better readability."""
+    """Curved time-series line (Plotly)."""
     if df is None or df.empty:
         return None
     if x_col not in df.columns or y_col not in df.columns:
@@ -2743,48 +1897,22 @@ def _chart_timeseries(
     d = df[[x_col, y_col]].copy()
     d[x_col] = pd.to_datetime(d[x_col], errors="coerce")
     d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
-    d = d.dropna(subset=[x_col]).sort_values(x_col).reset_index(drop=True)
+    d = d.dropna(subset=[x_col]).sort_values(x_col)
 
-    # --- Korean date labels (no English month/weekday) ---
-    wk = ["월", "화", "수", "목", "금", "토", "일"]  # pandas weekday: Mon=0
-    d["_wk"] = d[x_col].dt.weekday.map(lambda i: wk[int(i)] if pd.notna(i) else "")
-    d["_x_label"] = d[x_col].dt.strftime("%m/%d") + "(" + d["_wk"] + ")"
-    d["_dt_str"] = d[x_col].dt.strftime("%Y-%m-%d") + " (" + d["_wk"] + ")"
-
-    title = (y_title or "").strip()
-    y_axis = alt.Axis(title=title if title else None, format=y_format, grid=True, gridColor="#EBEEF2")
-    x_axis = alt.Axis(title=None, grid=False, labelAngle=0, labelOverlap="greedy")
-
-    base = (
-        alt.Chart(d)
-        .encode(
-            x=alt.X("_x_label:N", sort=alt.SortField(x_col, order="ascending"), axis=x_axis),
-            y=alt.Y(f"{y_col}:Q", axis=y_axis),
-            tooltip=[
-                alt.Tooltip("_dt_str:N", title="날짜"),
-                alt.Tooltip(f"{y_col}:Q", title=title or y_col, format=y_format),
-            ],
-        )
+    fig = px.line(d, x=x_col, y=y_col)
+    fig.update_traces(mode="lines", line_shape="spline")
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+        xaxis_title="",
+        yaxis_title=y_title or "",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
-
-    # Layered chart: subtle area + thicker line + points + last-value label
-    area = base.mark_area(interpolate="monotone", opacity=0.08)
-    line = base.mark_line(interpolate="monotone", strokeWidth=3)
-    pts = base.mark_point(size=40, filled=True)
-
-    last = d.tail(1)
-    last_label = (
-        alt.Chart(last)
-        .mark_text(align="left", dx=8, dy=-8)
-        .encode(
-            x=alt.X("_x_label:N", sort=alt.SortField(x_col, order="ascending")),
-            y=alt.Y(f"{y_col}:Q"),
-            text=alt.Text(f"{y_col}:Q", format=y_format),
-        )
-    )
-
-    return (area + line + pts + last_label).properties(height=int(height))
-
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
+    return fig
 
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
@@ -2827,7 +1955,7 @@ def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_title: str = "", top_n: int = 10, height: int = 420):
-    """Rounded progress-style bars (Altair layered bars). x_title kept for backward-compatibility."""
+    """Rounded progress-style bars (Plotly overlay). x_title is kept for backward-compatibility."""
     if df is None or df.empty:
         return None
 
@@ -2844,9 +1972,9 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
     d = d.sort_values(value_col, ascending=False).head(int(top_n))
     d = d.sort_values(value_col, ascending=True)  # 위에서부터 큰값 보이게(가독)
 
+    labels = d[label_col].tolist()
     vals = d[value_col].tolist()
-    max_val = float(max(vals)) if vals else 0.0
-    d["__max"] = max_val
+    max_val = max(vals) if vals else 0
 
     def _fmt(v: float) -> str:
         if unit == "원":
@@ -2855,24 +1983,43 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
             return f"{v:.1f}%"
         return f"{format_number_commas(v)}{unit}"
 
-    d["__label"] = d[value_col].map(lambda v: _fmt(float(v)))
-
-    y = alt.Y(f"{label_col}:N", sort=None, title=None, axis=alt.Axis(labelLimit=260, ticks=False))
-    x_bg = alt.X("__max:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False))
-    x_fg = alt.X(f"{value_col}:Q", title=None, axis=alt.Axis(grid=False))
-
-    base = alt.Chart(d).encode(y=y)
-
-    bg = base.mark_bar(cornerRadiusEnd=10, opacity=0.25, color="#B4C4D9").encode(x=x_bg)
-    fg = base.mark_bar(cornerRadiusEnd=10, color="#3D9DF2").encode(x=x_fg)
-
-    txt_layer = base.mark_text(align="left", dx=6, dy=0).encode(
-        x=alt.X(f"{value_col}:Q"),
-        text="__label:N",
+    fig = go.Figure()
+    # background bar
+    fig.add_trace(
+        go.Bar(
+            x=[max_val] * len(labels),
+            y=labels,
+            orientation="h",
+            marker=dict(color="rgba(180,196,217,0.22)"),
+            hoverinfo="skip",
+        )
+    )
+    # actual bar
+    fig.add_trace(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker=dict(color="#3D9DF2"),
+            text=[_fmt(v) for v in vals],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}<br>%{x:,}" + (unit if unit != "원" else "원") + "<extra></extra>",
+        )
     )
 
-    chart = (bg + fg + txt_layer).properties(height=int(height))
-    return chart
+    fig.update_layout(
+        barmode="overlay",
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="",
+        yaxis_title="",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    )
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=False, zeroline=False)
+    return fig
 
 
 
@@ -3447,10 +2594,10 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
 
-    out["ctr"] = (out["clk"] / out["imp"].replace(0, np.nan)) * 100
-    out["cpc"] = out["cost"] / out["clk"].replace(0, np.nan)
-    out["cpa"] = out["cost"] / out["conv"].replace(0, np.nan)
-    out["roas"] = (out["sales"] / out["cost"].replace(0, np.nan)) * 100
+    out["ctr"] = (out["clk"] / out["imp"].replace({0: pd.NA})) * 100
+    out["cpc"] = out["cost"] / out["clk"].replace({0: pd.NA})
+    out["cpa"] = out["cost"] / out["conv"].replace({0: pd.NA})
+    out["roas"] = (out["sales"] / out["cost"].replace({0: pd.NA})) * 100
 
     return out
 
@@ -3574,11 +2721,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Delta bar chart (Altair).
-    - 증가(+) = 빨강, 감소(-) = 파랑
-    - 기준점(0) 쪽은 '평평', 끝쪽은 '둥글게' 보이도록 처리
-      (전체 바를 라운드로 그리고, 0 근처만 사각 오버레이로 덮어 baseline을 평평하게 만듦)
-    """
+    """Delta bar chart: + blue, - red (Plotly)."""
     if delta_df is None or delta_df.empty:
         return None
 
@@ -3586,125 +2729,59 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d["metric"] = d["metric"].astype(str)
     d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0)
     d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
-    d["label"] = d["change_pct"].map(_pct_to_str)
 
     # 원하는 순서 유지
     if "order" in d.columns:
         d = d.sort_values("order", ascending=False)
-        y_sort = alt.SortField(field="order", order="descending")
-    else:
-        y_sort = None
 
+    fig = px.bar(
+        d,
+        x="change_pct",
+        y="metric",
+        orientation="h",
+        color="dir",
+        color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
+        text=d["change_pct"].map(_pct_to_str),
+    )
+
+    # 0 기준선
+    fig.add_vline(x=0, line_width=1, line_color="rgba(180,196,217,0.8)")
+
+    # 축 범위 여유
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
+    pad = max(2.0, (mx - mn) * 0.12)
+    fig.update_xaxes(range=[mn - pad, mx + pad])
 
-    # 0축을 항상 중앙에 오도록 대칭 도메인
-    m_abs = max(abs(mn), abs(mx))
-    if not (m_abs > 0):
-        m_abs = 5.0
-    pad = max(2.0, m_abs * 0.12)
-    lim = m_abs + pad
-    domain = [-lim, lim]
-
-    # baseline(0) 근처를 '평평'하게 덮을 오버레이 길이(데이터 단위, %p)
-    # - 너무 길면 정보가 깨지니 2%p 상한
-    # - 변화폭이 작을 때는 abs의 60%만 덮어서 끝(rounded)이 남도록
-    abs_pct = d["change_pct"].abs()
-    flat = (abs_pct * 0.6).clip(lower=0.0, upper=2.0)
-    d["flat_end"] = flat.where(d["change_pct"] >= 0, -flat)
-
-    d["zero"] = 0.0
-    d_main = d.copy()
-    d_main["val"] = d_main["change_pct"]
-
-    d_cap = d.copy()
-    d_cap["val"] = d_cap["flat_end"]
-
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#2563EB", "#B4C4D9"])
-
-    y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
-    x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
-
-    # 1) 전체 바(양끝 둥글게)
-    bars = (
-        alt.Chart(d_main)
-        .mark_bar(cornerRadius=10)
-        .encode(
-            y=y_enc,
-            x=alt.X("val:Q", title="증감율(%)", scale=alt.Scale(domain=domain), axis=x_axis),
-            x2=alt.X2("zero:Q"),
-            color=alt.Color("dir:N", scale=color_scale, legend=None),
-            tooltip=[
-                alt.Tooltip("metric:N", title="지표"),
-                alt.Tooltip("change_pct:Q", title="증감율", format="+.1f"),
-            ],
-        )
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+        xaxis_title="증감율(%)",
+        yaxis_title="",
+        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
     )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(180,196,217,0.25)", zeroline=False)
+    fig.update_yaxes(showgrid=False, zeroline=False)
+    return fig
 
-    # 2) 0 근처만 사각 오버레이로 덮어서 기준점 쪽을 평평하게
-    cap = (
-        alt.Chart(d_cap)
-        .mark_bar(cornerRadius=0)
-        .encode(
-            y=y_enc,
-            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
-            x2=alt.X2("zero:Q"),
-            color=alt.Color("dir:N", scale=color_scale, legend=None),
-        )
-    )
 
-    # 3) 0 기준선
-    zero = (
-        alt.Chart(pd.DataFrame({"val": [0.0]}))
-        .mark_rule(color="#CBD5E1")
-        .encode(x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None))
-    )
 
-    # 4) 라벨
-    pos_text = (
-        alt.Chart(d_main)
-        .transform_filter("datum.val >= 0")
-        .mark_text(align="left", dx=6)
-        .encode(
-            y=y_enc,
-            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
-            text="label:N",
-            color=alt.Color("dir:N", scale=color_scale, legend=None),
-        )
-    )
-    neg_text = (
-        alt.Chart(d_main)
-        .transform_filter("datum.val < 0")
-        .mark_text(align="right", dx=-6)
-        .encode(
-            y=y_enc,
-            x=alt.X("val:Q", scale=alt.Scale(domain=domain), axis=None),
-            text="label:N",
-            color=alt.Color("dir:N", scale=color_scale, legend=None),
-        )
-    )
-
-    chart = (bars + cap + zero + pos_text + neg_text).properties(height=int(height))
-    return chart
 def render_chart(obj, *, height: int | None = None) -> None:
-    """Render a chart object with Streamlit (Altair-first)."""
+    """Render a chart object with Streamlit. Plotly preferred."""
     if obj is None:
         return
     try:
         mod = obj.__class__.__module__
     except Exception:
         mod = ""
-
-    if mod.startswith("altair"):
-        st.altair_chart(obj, use_container_width=True)
-        return
-
-    # Fallback
-    try:
-        st.write(obj)
-    except Exception:
-        pass
-
+    if mod.startswith("plotly"):
+        st.plotly_chart(obj, use_container_width=True, config={"displayModeBar": False})
+    else:
+        # fallback (Altair etc.)
+        render_chart(obj)
 
 def render_period_compare_panel(
     engine,
@@ -3778,19 +2855,7 @@ def render_period_compare_panel(
 
                 cls = "zero"
 
-            arrow = "•"
-            if sign is not None:
-                try:
-                    if float(sign) > 0:
-                        arrow = "▲"
-                    elif float(sign) < 0:
-                        arrow = "▼"
-                except Exception:
-                    pass
-
-            # emphasize the percent part
-            vhtml = re.sub(r"\(([^)]*)\)", r"<span class='p'>(\1)</span>", str(value))
-            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'><span class='arr'>{arrow}</span>{vhtml}</div></div>"
+            return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'>{value}</div></div>"
 
 
         chips = [
@@ -3877,7 +2942,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>요약</div>", unsafe_allow_html=True)
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
-    cids = tuple((f.get("selected_customer_ids") or f.get("customer_ids") or []) or [])
+    cids = tuple(f.get("customer_ids", []) or [])
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     cmp_mode = st.radio(
@@ -3931,10 +2996,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(kpi_html, unsafe_allow_html=True)
 
     st.divider()
-
-    show_trend = st.toggle('추세 보기', value=False, key='ov_show_trend')
-    if not show_trend:
-        return
 
     # 상세(추세/Top) - 오류가 나도 KPI는 유지
     try:
@@ -4092,7 +3153,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
+        ui_table_or_dataframe(table_df, key="budget_month_table", height=520)
         render_download_compact(table_df, f"월예산_{f['start']}_{f['end']}", "monthly_budget", "mb")
 
     with c2:
@@ -4140,7 +3201,6 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     return df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
 
-
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         st.info("필터를 변경하면 즉시 반영됩니다.")
@@ -4150,37 +3210,43 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     top_n = int(f.get("top_n_campaign", 200))
-    cids = tuple(sorted(tuple(f.get("selected_customer_ids", []) or [])))
-    type_sel = tuple(sorted(tuple(f.get("type_sel", tuple()) or tuple())))
+    cids = tuple(f.get("selected_customer_ids", []) or [])
+    type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     # -----------------------------
-    # 1) 메인용: 캠페인 단위 집계(작은 결과)만 조회 (캐시)
+    # 1) Base (cached) - DB hits only when date/manager/account/type/top_n changes
     # -----------------------------
-    try:
-        df_all = query_campaign_agg_slice(engine, f["start"], f["end"], cids)
-        st.session_state["_camp_agg_last"] = df_all
-    except Exception:
-        df_all = st.session_state.get("_camp_agg_last", pd.DataFrame())
-        st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
-
-    if df_all is None or df_all.empty:
+    # NOTE: campaign 선택 변경은 아래 pandas 필터만 수행(= DB 재조회 없음)
+    bundle = query_campaign_bundle(
+        engine,
+        f["start"],
+        f["end"],
+        cids,
+        type_sel,
+        topn_cost=max(top_n, 200),
+        top_k=5,
+    )
+    if bundle is None or bundle.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    # 파생지표(CTR/CPC/CPA/ROAS) 계산
+    df_all = _perf_common_merge_meta(bundle, meta)
     df_all = add_rates(df_all)
 
-    # 캠페인 유형 필터 (pandas)
-    if type_sel:
-        df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
-
-    if df_all is None or df_all.empty:
-        st.warning("선택한 필터 조건에서 캠페인이 없습니다.")
-        return
-
     # -----------------------------
-    # 2) 캠페인 선택(B 방식)
+    # 2) 캠페인 필터 (B 방식: '업체명 · 캠페인명' 표시, 내부값은 'customer_id|campaign_id')
     # -----------------------------
+    base_sig = (
+        str(f["start"]),
+        str(f["end"]),
+        tuple(int(x) for x in cids),
+        tuple(str(x) for x in type_sel),
+        int(top_n),
+    )
+    if st.session_state.get("_camp_base_sig") != base_sig:
+        st.session_state["_camp_base_sig"] = base_sig
+        st.session_state["camp_filter_key"] = "ALL"
+
     opt = df_all[["customer_id", "campaign_id", "account_name", "campaign_name", "campaign_type", "cost"]].copy()
     opt["account_name"] = opt.get("account_name", "").astype(str).fillna("").str.strip()
     opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip()
@@ -4205,41 +3271,38 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         show_detail = st.toggle("상세 보기", value=False, key="camp_show_detail")
     with r0[2]:
         if sel_key != "ALL":
-            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **pandas 필터**로 즉시 반영)")
+            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **캐시 DF pandas 필터**로 즉시 반영)")
         else:
             st.caption("전체 캠페인 표시 중")
 
+    # apply fast pandas filter
     df = df_all.copy()
     if sel_key != "ALL":
         df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
         df = df[df_key == sel_key].copy()
 
     # -----------------------------
-    # 3) 상세(추세/Top5/도넛) - toggle ON일 때만 DB/차트 작업 수행
+    # 3) (Optional) Detail panels (lazy)
+    #   - default OFF for speed
+    #   - '전체'일 때만 기존 전체 추세/Top5/그래프 렌더링
     # -----------------------------
-    if show_detail:
-        st.markdown("### 📈 기간 추세")
-
-        ts = pd.DataFrame()
+    if show_detail and sel_key == "ALL":
+        # -----------------------------
+        # 📈 Trend (Altair)
+        # -----------------------------
         try:
-            if sel_key == "ALL":
-                # 전체(선택 필터 반영) - row 수가 적어서 DB 1회로 충분
-                ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-            else:
-                cid_s, camp_s = sel_key.split("|", 1)
-                ts = query_campaign_timeseries_one(engine, f["start"], f["end"], int(cid_s), int(camp_s))
+            ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         except Exception:
             ts = pd.DataFrame()
 
         if ts is not None and not ts.empty:
-            ts = add_rates(ts)
-
             total_cost = float(ts["cost"].sum())
             total_clk = float(ts["clk"].sum())
             total_conv = float(ts["conv"].sum())
             total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
             total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
 
+            st.markdown("### 📈 기간 추세")
             k1, k2, k3, k4 = st.columns(4)
             with k1:
                 ui_metric_or_stmetric("총 광고비", format_currency(total_cost), "선택 기간 합계", key="kpi_camp_cost")
@@ -4250,22 +3313,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with k4:
                 ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
 
-            # 비교 패널(기능 유지)
-            try:
-                render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
-            except Exception:
-                pass
-
-            # (선택) ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
-            try:
-                share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
-                share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                share = share[share["광고비"] > 0]
-                if share is not None and len(share) >= 2:
-                    with st.expander("📊 광고유형별 광고비 비중", expanded=False):
-                        render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
-            except Exception:
-                pass
+            render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
 
             metric_sel = st.radio(
                 "트렌드 지표",
@@ -4276,6 +3324,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             )
 
             ts2 = ts.copy()
+            ts2 = add_rates(ts2)
             if metric_sel == "광고비":
                 ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
             elif metric_sel == "클릭":
@@ -4284,7 +3333,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
             else:
                 sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
-                ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
+                ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
                 ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
                 ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4292,10 +3341,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 render_chart(ch)
 
             st.divider()
-        else:
-            st.info("추세 데이터가 없습니다.")
 
-        # TOP5 (비용/클릭/전환) - 현재 선택 기준
+        # -----------------
+        # TOP5 (비용/클릭/전환)
+        # -----------------
         top_cost = df.sort_values("cost", ascending=False).head(5)
         top_clk = df.sort_values("clk", ascending=False).head(5)
         top_conv = df.sort_values("conv", ascending=False).head(5)
@@ -4327,10 +3376,26 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.markdown("#### ✅ 전환 TOP5")
                 ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key="camp_top5_conv", height=240)
 
+        with st.expander("📊 캠페인 광고비 TOP10 그래프", expanded=False):
+            tmp = bundle.copy()
+            tmp = _attach_account_name(tmp, meta)
+            tmp["campaign_name"] = tmp["campaign_name"].astype(str).map(str.strip)
+            # 같은 캠페인명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
+            g = tmp.groupby(["customer_id", "campaign_name"], as_index=False)["cost"].sum()
+            g = _attach_account_name(g, meta)
+
+            g["label"] = g["account_name"].astype(str).str.strip() + " · " + g["campaign_name"].astype(str).str.strip()
+
+            ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
+            if ch is not None:
+                render_chart(ch)
+            else:
+                st.info("그래프 표시 불가")
+
         st.divider()
 
     # -----------------
-    # 4) Main table - 현재 선택 기준
+    # 4) Main table (fast)
     # -----------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
@@ -4365,21 +3430,24 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     disp["CTR(%)"] = pd.to_numeric(disp["CTR(%)"], errors="coerce").fillna(0).astype(float)
     disp = finalize_ctr_col(disp, "CTR(%)")
 
-    # ✅ B 방식: 캠페인 컬럼 자체에 '업체명 · 캠페인명' 표시
+    # ✅ B 방식: 캠페인 컬럼 자체에 '업체명 · 캠페인명'을 표시 (네이버 리포트 UX)
     disp["캠페인"] = disp["업체명"].astype(str).str.strip() + " · " + disp["캠페인"].astype(str).str.strip()
 
     cols = ["담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
+    # ✅ 네이버처럼 상단 요약행(종합 + 광고유형별) 추가 (캠페인 필터가 걸린 상태에서도 동작)
     summary_df = build_campaign_summary_rows_from_numeric(main_df, campaign_type_col="campaign_type", campaign_name_col="campaign_name")
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
+        display_df = pd.concat([summary_df, view_df], ignore_index=True)
+        styled_df = style_summary_rows(display_df, len(summary_df))
     else:
-        summary_df = pd.DataFrame(columns=cols)
+        display_df = view_df
+        styled_df = display_df
 
-    render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
-    render_download_compact(view_df if summary_df.empty else pd.concat([summary_df, view_df], ignore_index=True),
-                            f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
@@ -4433,7 +3501,23 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
 
     
-    # (중복 그래프 제거)
+    with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
+        tmp = bundle.copy()
+        tmp = _attach_account_name(tmp, meta)
+        tmp["keyword"] = tmp["keyword"].astype(str).map(str.strip)
+        # 같은 키워드명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
+        g = tmp.groupby(["customer_id", "keyword"], as_index=False)["cost"].sum()
+        g = _attach_account_name(g, meta)
+
+        multi_acc = g["customer_id"].nunique() > 1
+        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["keyword"]}' if multi_acc else r["keyword"], axis=1)
+
+        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
+        if ch is not None:
+            render_chart(ch)
+        else:
+            st.info("그래프 표시 불가")
+
 
     st.divider()
     # Top N list (광고비 기준)
@@ -4490,7 +3574,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
         else:
             sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
             ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4535,7 +3619,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     out_df["클릭"] = pd.to_numeric(out_df["클릭"], errors="coerce").fillna(0).astype(int)
     out_df["전환"] = pd.to_numeric(out_df["전환"], errors="coerce").fillna(0).astype(int)
 
-    render_big_table(out_df, key='kw_big_table', height=620)
+    st.dataframe(out_df, use_container_width=True, hide_index=True)
     render_download_compact(out_df, f"키워드성과_TOP{top_n}_{f['start']}_{f['end']}", "keyword", "kw")
 
 
@@ -4605,7 +3689,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
         else:
             sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0]*len(ts2))
-            ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
+            ts2["roas"] = (sales_s / ts2["cost"].replace({0: pd.NA})) * 100
             ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
             ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
@@ -4710,10 +3794,12 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재ID", "소재내용", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
     view_df = disp[cols].copy()
 
-
-    render_big_table(view_df, key='ad_big_table', height=620)
-
-    # 다운로드 (표 렌더 후 같은 scope에서 호출되어야 함)
+    st.dataframe(
+        view_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"소재내용": st.column_config.TextColumn("소재내용", width="large")},
+    )
     render_download_compact(view_df, f"성과_소재_TOP{top_n}_{f['start']}_{f['end']}", "ad", "ad")
 
 
@@ -4722,7 +3808,7 @@ def page_settings(engine) -> None:
 
     # --- DB Ping ---
     try:
-        db_ping(engine)
+        sql_read(engine, "SELECT 1 AS ok")
         st.success("DB 연결 성공 ✅")
     except Exception as e:
         st.error(f"DB 연결 실패: {e}")
@@ -4775,7 +3861,7 @@ def page_settings(engine) -> None:
         if dfm is None or dfm.empty:
             st.warning("dim_account_meta가 비어있습니다. 위에서 accounts.xlsx 동기화를 먼저 해주세요.")
         else:
-            st_dataframe_safe(dfm.head(50), use_container_width=True, height=360)
+            st.dataframe(dfm.head(50), use_container_width=True, height=360)
     except Exception as e:
         st.error(f"meta 조회 실패: {e}")
 
@@ -4819,12 +3905,6 @@ def page_settings(engine) -> None:
 # Main
 # -----------------------------
 
-
-
-# -----------------------------
-# Main
-# -----------------------------
-
 def main():
     try:
         engine = get_engine()
@@ -4839,14 +3919,14 @@ def main():
     meta = get_meta(engine)
     meta_ready = (meta is not None) and (not meta.empty)
 
-    # --- Sidebar: navigation (desktop-first, always visible on PC) ---
+    # --- Left nav (Naver-like) ---
     with st.sidebar:
         st.markdown("### 메뉴")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        if not meta_ready:
-            st.warning("처음 1회: accounts.xlsx 동기화가 필요합니다. 아래 '설정/연결'에서 동기화하세요.")
-
+        # Bootstrap: meta가 비어있으면 설정/연결만 먼저 열어 동기화할 수 있게 합니다.
+        if (not meta_ready) and ("nav_page" not in st.session_state):
+            st.session_state["nav_page"] = "설정/연결"
         nav_items = [
             "요약(한눈에)",
             "예산/잔액",
@@ -4856,22 +3936,22 @@ def main():
             "설정/연결",
         ]
         if not meta_ready:
+            st.warning("처음 1회: accounts.xlsx 동기화가 필요합니다. '설정/연결'에서 동기화 후 사용 가능합니다.")
             nav_items = ["설정/연결"]
-
-        # keep selection stable
-        if not meta_ready:
-            st.session_state["nav_page"] = "설정/연결"
-
         nav = st.radio(
-            "menu",
+            "nav",
             nav_items,
+            index=0,
             key="nav_page",
             label_visibility="collapsed",
         )
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if meta_ready:
+            st.caption("• 필터 변경 즉시 반영\\n• 쿼리는 캐시로 즉시 로드")
+        else:
+            st.caption("• 설정/연결에서 accounts.xlsx 동기화 후 사용")
 
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-
-    # Page title
+    # Page title (clean)
     st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -4899,6 +3979,7 @@ def main():
         page_perf_ad(meta, engine, f)
     else:
         page_settings(engine)
+
 
 
 if __name__ == "__main__":
