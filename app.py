@@ -966,7 +966,7 @@ def render_echarts_line(
     y = df[y_col].tolist()
 
     option = {
-        "title": {"text": title, "left": 10, "top": 6, "textStyle": {"fontSize": 13, "fontWeight": "bold"}},
+        "title": {"show": False},
         "grid": {"left": 54, "right": 18, "top": 44, "bottom": 34},
         "tooltip": {"trigger": "axis"},
         "xAxis": {"type": "category", "data": x, "axisTick": {"alignWithLabel": True}},
