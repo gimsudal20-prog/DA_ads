@@ -20,7 +20,6 @@ import os
 import time
 import re
 import io
-import hashlib
 import math
 import numpy as np
 from datetime import date, timedelta, datetime
@@ -538,103 +537,13 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 """
 
-# Extra CSS (moved from render_download_compact) — inject once to avoid repeated rerender cost
-EXTRA_UI_CSS = r"""<style>
-        .stDownloadButton button {
-            padding: 0.15rem 0.55rem !important;
-            font-size: 0.82rem !important;
-            line-height: 1.2 !important;
-            min-height: 28px !important;
-        }
-        
-/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-  background: rgba(0,0,0,.04) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
-  display:none !important; /* hide radio circle */
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
+st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
 
-/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-
-/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{
-  border: 0 !important;
-}
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) look like admin fields */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide the circle icon & make it look like a nav list */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-
-</style>"""
-
-st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
+    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -1085,6 +994,7 @@ def get_engine():
     connect_args = {
         "sslmode": "require",
         "connect_timeout": 10,
+        "options": "-c statement_timeout=15000",
         # TCP keepalive (psycopg2)
         "keepalives": 1,
         "keepalives_idle": 30,
@@ -1359,79 +1269,114 @@ def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
     return output.getvalue()
 
 
-# -----------------------------
-# Download bytes memo (session-local)
-# - Avoid df.to_json / read_json overhead
-# - Avoid repeated CSS injection inside download renderer
-# -----------------------------
-def _df_signature_light(df: pd.DataFrame) -> str:
-    """Fast-ish signature for download caching (session-local).
-
-    We intentionally hash only a small sample of rows to keep this cheap.
-    Collisions are extremely unlikely for our use-case (top tables, filtered views).
-    """
-    try:
-        from pandas.util import hash_pandas_object as _hpo
-        sample = df
-        if len(df) > 20:
-            sample = pd.concat([df.head(10), df.tail(10)], axis=0)
-        h = hashlib.blake2b(digest_size=16)
-        h.update(str(df.shape).encode("utf-8"))
-        h.update(("|".join(map(str, df.columns))).encode("utf-8"))
-        try:
-            h.update(_hpo(sample, index=True).values.tobytes())
-        except Exception:
-            # Fallback: partial CSV (bounded)
-            h.update(sample.to_csv(index=False).encode("utf-8")[:4096])
-        return h.hexdigest()
-    except Exception:
-        return f"{df.shape[0]}x{df.shape[1]}_{abs(hash(tuple(df.columns)))}"
-
-
-def _dl_cache() -> dict:
-    # { (sig, sheet_name): (csv_bytes, xlsx_bytes) }
-    return st.session_state.setdefault("_dl_bytes_cache", {})
-
-
-def _get_download_bytes(df: pd.DataFrame, sheet_name: str) -> Tuple[bytes, bytes]:
-    sig = _df_signature_light(df)
-    cache = _dl_cache()
-    key = (sig, str(sheet_name))
-    if key in cache:
-        return cache[key]
-
-    # keep cache bounded (avoid unbounded memory growth)
-    if len(cache) > 24:
-        cache.clear()
-
-    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31])
-    xlsx_bytes = output.getvalue()
-
-    cache[key] = (csv_bytes, xlsx_bytes)
-    return csv_bytes, xlsx_bytes
-
-
 def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str, key_prefix: str) -> None:
-    """Compact CSV/XLSX download renderer (fast).
-
-    - No per-call CSS injection
-    - No df.to_json roundtrip
-    - Session-local memo for bytes to avoid repeated XLSX builds
-    """
+    """렌더링 속도를 위해 CSV는 기본 제공, XLSX는 캐시된 bytes 사용."""
     if df is None or df.empty:
         return
 
-    csv_bytes, xlsx_bytes = _get_download_bytes(df, sheet_name)
+    df_json = df.to_json(orient="split")
+
+    st.markdown(
+        """
+        <style>
+        .stDownloadButton button {
+            padding: 0.15rem 0.55rem !important;
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            min-height: 28px !important;
+        }
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
         st.download_button(
             "CSV",
-            data=csv_bytes,
+            data=_df_json_to_csv_bytes(df_json),
             file_name=f"{filename_base}.csv",
             mime="text/csv",
             key=f"{key_prefix}_csv",
@@ -1440,7 +1385,7 @@ def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: st
     with c2:
         st.download_button(
             "XLSX",
-            data=xlsx_bytes,
+            data=_df_json_to_xlsx_bytes(df_json, sheet_name),
             file_name=f"{filename_base}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
@@ -1820,6 +1765,8 @@ def query_latest_dates(_engine) -> Dict[str, str]:
     return out
 
 
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
@@ -2335,114 +2282,6 @@ def query_campaign_bundle(
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_agg_slice(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
-    """캠페인 탭(메인 표/드롭다운)용: 기간 범위에서 캠페인 단위로 **집계된** 데이터만 조회합니다.
-
-    - (dt x 캠페인)처럼 큰 슬라이스를 가져오지 않고, 바로 캠페인 단위로 SUM 집계 → 초기 로딩/필터 전환 체감 개선
-    - 담당자/업체 필터는 cids로 DB에서 1차 축소(가능한 경우)
-    - campaign_tp → campaign_type(라벨)로 매핑
-    """
-    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
-        return pd.DataFrame(columns=[
-            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
-            "imp","clk","cost","conv","sales"
-        ])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    where_cid = ""
-    if cids:
-        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
-
-    join_campaign = ""
-    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
-    group_campaign = ""
-    if table_exists(_engine, "dim_campaign"):
-        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
-        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
-        group_campaign = ", c.campaign_name, c.campaign_tp"
-
-    sql = f"""
-    SELECT
-      f.customer_id::text AS customer_id,
-      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
-      COALESCE(NULLIF(m.manager,''),'') AS manager,
-      f.campaign_id,
-      {select_campaign},
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    JOIN dim_account_meta m
-      ON m.customer_id = f.customer_id::text
-    {join_campaign}
-    WHERE f.dt BETWEEN :d1 AND :d2
-      {where_cid}
-    GROUP BY f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=[
-            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
-            "imp","clk","cost","conv","sales"
-        ])
-
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
-    for c in ["imp","clk","cost","conv","sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
-    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
-    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
-
-    return df.reset_index(drop=True)
-
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_timeseries_one(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
-    """특정 캠페인 1개에 대한 일별 추세(상세 보기용)."""
-    if not table_exists(_engine, "fact_campaign_daily"):
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    sql = f"""
-    SELECT
-      f.dt::date AS dt,
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    WHERE f.dt BETWEEN :d1 AND :d2
-      AND f.customer_id::text = :cid
-      AND f.campaign_id = :camp
-    GROUP BY f.dt::date
-    ORDER BY f.dt::date
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": int(campaign_id)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    for c in ["imp","clk","cost","conv","sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    return df.reset_index(drop=True)
-
-
-
 def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
     """캠페인 탭용: (일자 x 캠페인) 슬라이스를 1회 조회해 캐시합니다.
     날짜 범위만 바뀔 때 DB를 치고, 이후 담당자/업체/유형/캠페인 선택은 pandas 필터로 처리합니다.
@@ -2570,6 +2409,40 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...]
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_one_timeseries(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
+    """캠페인(단일) 일별 추세. (선택 캠페인 상세용 - row 수 매우 적음)"""
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    sql = f"""
+    SELECT
+      f.dt::date AS dt,
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    WHERE f.dt BETWEEN :d1 AND :d2
+      AND f.customer_id::text = :cid
+      AND f.campaign_id::text = :camp
+    GROUP BY f.dt::date
+    ORDER BY f.dt::date
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(customer_id), "camp": str(campaign_id)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    return df
+
 def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """소재(전체) 일별 추세."""
     if not table_exists(_engine, "fact_ad_daily"):
@@ -3907,10 +3780,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.divider()
 
-    show_trend = st.toggle('추세 보기', value=False, key='ov_show_trend')
-    if not show_trend:
-        return
-
     # 상세(추세/Top) - 오류가 나도 KPI는 유지
     try:
         ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
@@ -4115,37 +3984,62 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     return df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
 
-
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         st.info("필터를 변경하면 즉시 반영됩니다.")
         return
 
+    # CSS가 누락되면 KPI/칩이 텍스트처럼 튀어나오는 문제가 있어서, 캠페인 탭 진입 시 1회 더 보증
+    try:
+        st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    except Exception:
+        pass
+
     st.markdown("## 🚀 성과 (캠페인)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     top_n = int(f.get("top_n_campaign", 200))
-    cids = tuple(sorted(tuple(f.get("selected_customer_ids", []) or [])))
-    type_sel = tuple(sorted(tuple(f.get("type_sel", tuple()) or tuple())))
+    cids = tuple(f.get("selected_customer_ids", []) or [])
+    type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
-    # -----------------------------
-    # 1) 메인용: 캠페인 단위 집계(작은 결과)만 조회 (캐시)
-    # -----------------------------
+    # ------------------------------------------------
+    # 1) 캠페인 메인 데이터는 '캠페인 단위 집계'만 DB에서 가져오기
+    #    (일자×캠페인 슬라이스를 통째로 가져오면 느리고 SSL 끊김이 쉽게 발생)
+    # ------------------------------------------------
+    base_sig = (str(f["start"]), str(f["end"]), tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
+    if st.session_state.get("_camp_base_sig_fast") != base_sig:
+        st.session_state["_camp_base_sig_fast"] = base_sig
+        st.session_state["camp_filter_key"] = "ALL"
+
     try:
-        df_all = query_campaign_agg_slice(engine, f["start"], f["end"], cids)
-        st.session_state["_camp_agg_last"] = df_all
+        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
+        st.session_state["_camp_bundle_last"] = bundle
     except Exception:
-        df_all = st.session_state.get("_camp_agg_last", pd.DataFrame())
-        st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
+        bundle = st.session_state.get("_camp_bundle_last", pd.DataFrame())
+        if bundle is None or bundle.empty:
+            st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
+        else:
+            st.warning("DB 연결이 일시적으로 불안정하여 **마지막 정상 데이터**로 표시 중입니다. (새로고침/잠시 후 재시도) ")
 
-    if df_all is None or df_all.empty:
+    if bundle is None or bundle.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    # 파생지표(CTR/CPC/CPA/ROAS) 계산
+    df_all = bundle.copy()
+
+    # meta merge (DB join 대신 pandas merge로 가볍게)
+    try:
+        df_all["customer_id"] = pd.to_numeric(df_all["customer_id"], errors="coerce").fillna(0).astype("int64")
+    except Exception:
+        pass
+    df_all = _perf_common_merge_meta(df_all, meta)
+
+    # ensure numeric + derived metrics
     df_all = add_rates(df_all)
 
-    # 캠페인 유형 필터 (pandas)
+    # 안전 필터(혹시 cache/merge 과정에서 누락 방지)
+    if cids:
+        df_all = df_all[df_all["customer_id"].isin([int(x) for x in cids])]
     if type_sel:
         df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
 
@@ -4153,13 +4047,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("선택한 필터 조건에서 캠페인이 없습니다.")
         return
 
-    # -----------------------------
-    # 2) 캠페인 선택(B 방식)
-    # -----------------------------
+    # ------------------------------------------------
+    # 2) 캠페인 선택(B 방식: '업체명 · 캠페인명'), 값은 customer_id|campaign_id
+    # ------------------------------------------------
     opt = df_all[["customer_id", "campaign_id", "account_name", "campaign_name", "campaign_type", "cost"]].copy()
     opt["account_name"] = opt.get("account_name", "").astype(str).fillna("").str.strip()
-    opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip()
-    opt["campaign_name"] = opt["campaign_name"].replace({"": "(이름 없음)"})
+    opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip().replace({"": "(이름 없음)"})
     opt["key"] = opt["customer_id"].astype(str) + "|" + opt["campaign_id"].astype(str)
     opt["label"] = opt["account_name"] + " · " + opt["campaign_name"]
     opt = opt.sort_values("cost", ascending=False).drop_duplicates("key", keep="first")
@@ -4179,40 +4072,36 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     with r0[1]:
         show_detail = st.toggle("상세 보기", value=False, key="camp_show_detail")
     with r0[2]:
-        if sel_key != "ALL":
-            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **pandas 필터**로 즉시 반영)")
-        else:
-            st.caption("전체 캠페인 표시 중")
+        st.caption("캠페인 선택 변경은 **즉시 반영(pandas 필터)**")
 
     df = df_all.copy()
     if sel_key != "ALL":
         df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
         df = df[df_key == sel_key].copy()
 
-    # -----------------------------
-    # 3) 상세(추세/Top5/도넛) - toggle ON일 때만 DB/차트 작업 수행
-    # -----------------------------
+    # ------------------------------------------------
+    # 3) 상세(추세/Top5/도넛) - 토글 ON일 때만 쿼리/렌더
+    # ------------------------------------------------
     if show_detail:
         st.markdown("### 📈 기간 추세")
 
         ts = pd.DataFrame()
         try:
             if sel_key == "ALL":
-                # 전체(선택 필터 반영) - row 수가 적어서 DB 1회로 충분
                 ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
             else:
                 cid_s, camp_s = sel_key.split("|", 1)
-                ts = query_campaign_timeseries_one(engine, f["start"], f["end"], int(cid_s), int(camp_s))
+                ts = query_campaign_one_timeseries(engine, f["start"], f["end"], int(cid_s), int(camp_s))
         except Exception:
             ts = pd.DataFrame()
 
         if ts is not None and not ts.empty:
-            ts = add_rates(ts)
+            ts2 = add_rates(ts.copy())
 
-            total_cost = float(ts["cost"].sum())
-            total_clk = float(ts["clk"].sum())
-            total_conv = float(ts["conv"].sum())
-            total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
+            total_cost = float(pd.to_numeric(ts2["cost"], errors="coerce").fillna(0).sum())
+            total_clk = float(pd.to_numeric(ts2["clk"], errors="coerce").fillna(0).sum())
+            total_conv = float(pd.to_numeric(ts2["conv"], errors="coerce").fillna(0).sum())
+            total_sales = float(pd.to_numeric(ts2.get("sales", 0), errors="coerce").fillna(0).sum()) if "sales" in ts2.columns else 0.0
             total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
 
             k1, k2, k3, k4 = st.columns(4)
@@ -4225,17 +4114,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with k4:
                 ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
 
-            # 비교 패널(기능 유지)
+            # 비교 패널 (오류 시 조용히 스킵)
             try:
                 render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
             except Exception:
                 pass
 
-            # (선택) ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
+            # ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
             try:
                 share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
                 share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                share = share[share["광고비"] > 0]
+                share = share[pd.to_numeric(share["광고비"], errors="coerce").fillna(0) > 0]
                 if share is not None and len(share) >= 2:
                     with st.expander("📊 광고유형별 광고비 비중", expanded=False):
                         render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
@@ -4250,27 +4139,25 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 key="camp_trend_metric",
             )
 
-            ts2 = ts.copy()
+            ts3 = ts2.copy()
             if metric_sel == "광고비":
-                ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts3, "cost", "광고비(원)", y_format=",.0f", height=260)
             elif metric_sel == "클릭":
-                ch = _chart_timeseries(ts2, "clk", "클릭", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts3, "clk", "클릭", y_format=",.0f", height=260)
             elif metric_sel == "전환":
-                ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts3, "conv", "전환", y_format=",.0f", height=260)
             else:
-                sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
-                ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
-                ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
-                ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
+                sales_s = pd.to_numeric(ts3.get("sales", 0), errors="coerce").fillna(0) if "sales" in ts3.columns else pd.Series([0.0] * len(ts3))
+                ts3["roas"] = (sales_s / ts3["cost"].replace(0, np.nan)) * 100
+                ts3["roas"] = pd.to_numeric(ts3["roas"], errors="coerce").fillna(0)
+                ch = _chart_timeseries(ts3, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
             if ch is not None:
                 render_chart(ch)
 
             st.divider()
-        else:
-            st.info("추세 데이터가 없습니다.")
 
-        # TOP5 (비용/클릭/전환) - 현재 선택 기준
+        # TOP5 (비용/클릭/전환) - 현재 선택(캠페인 포함) 기준
         top_cost = df.sort_values("cost", ascending=False).head(5)
         top_clk = df.sort_values("clk", ascending=False).head(5)
         top_conv = df.sort_values("conv", ascending=False).head(5)
@@ -4304,9 +4191,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         st.divider()
 
-    # -----------------
-    # 4) Main table - 현재 선택 기준
-    # -----------------
+    # ------------------------------------------------
+    # 4) Main table - 현재 선택 기준 (pandas 정렬/TopN)
+    # ------------------------------------------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
     disp = main_df.copy()
@@ -4349,12 +4236,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     summary_df = build_campaign_summary_rows_from_numeric(main_df, campaign_type_col="campaign_type", campaign_name_col="campaign_name")
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
+        display_df = pd.concat([summary_df, view_df], ignore_index=True)
     else:
         summary_df = pd.DataFrame(columns=cols)
+        display_df = view_df
 
     render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
-    render_download_compact(view_df if summary_df.empty else pd.concat([summary_df, view_df], ignore_index=True),
-                            f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
+    render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
