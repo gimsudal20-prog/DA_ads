@@ -273,14 +273,24 @@ section[data-testid="stSidebar"] .block-container{
   z-index: 10001;
 }
 
-/* Force sidebar visible on desktop even if Streamlit remembers a collapsed state */
+/* Force sidebar visible + sane width on desktop (avoid squished menu when Streamlit remembers collapsed) */
 @media (min-width: 900px){
   section[data-testid="stSidebar"]{
     transform: translateX(0) !important;
     margin-left: 0 !important;
+    min-width: 260px !important;
+    width: 260px !important;
+  }
+  /* Some Streamlit versions keep aria-expanded="false" even when we force translateX(0) */
+  section[data-testid="stSidebar"][aria-expanded="false"]{
+    transform: translateX(0) !important;
+    min-width: 260px !important;
+    width: 260px !important;
+  }
+  section[data-testid="stSidebar"] > div:first-child{
+    width: 260px !important;
   }
 }
-
 /* Main container spacing (compact) */
 .main .block-container{
   padding-top: 14px !important;
