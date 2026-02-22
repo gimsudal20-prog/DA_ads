@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.16 - 좀비 락 방어 및 초고속 벌크 인서트)
-- 원인 파악: 이전 강제 종료로 인한 DB Zombie Lock (Idle in transaction)으로 인해 0.1초짜리 작업이 4분간 무한 대기함
-- 엔진 개선: lock_timeout=10000(10초)을 설정하여 문이 잠겼을 때 무한 대기하지 않고 즉시 재시도하도록 조치
-- 속도 극대화: executemany_mode='values'를 적용하여 Native SQL 속도를 한계까지 끌어올림
-- 방식: 1줄 서기(max_workers=1) + 임시 테이블 완전 제거(Native Insert)
+collector.py - 네이버 검색광고 수집기 (v9.17 - 호환성 에러 픽스 및 완벽 안정화)
+- 수정사항: 깃허브 환경(SQLAlchemy)에서 버전 충돌을 일으키는 executemany_mode 파라미터 제거
+- 유지사항: 좀비 락 방어막(lock_timeout=10000), 1줄 서기(max_workers=1), 네이티브 인서트(임시 테이블 0개)
 """
 
 from __future__ import annotations
@@ -56,8 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.16_ZOMBIE_KILLER] ===", flush=True)
-print("=== DB 락 방어막 & 초고속 벌크 가속 ===", flush=True)
+print("=== [VERSION: v9.17_FINAL_STABLE] ===", flush=True)
+print("=== 문법 에러 해결 & 무사고 다이렉트 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -146,13 +144,10 @@ def get_engine() -> Engine:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
         
-    # 🌟 V9.16 핵심: lock_timeout=10000 으로 문이 잠겼을 때 10초 이상 미련하게 기다리지 않음
-    # executemany_mode='values' 로 다이렉트 꽂기 속도를 3배 이상 폭증시킴
+    # 버전에러를 뱉는 executemany_mode를 제거하고 안정적으로 유지 (좀비 방어막 10초 컷은 그대로 유지)
     return create_engine(
         db_url, 
         poolclass=NullPool,
-        executemany_mode='values',
-        executemany_values_page_size=1000,
         connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"},
         future=True
     )
@@ -220,7 +215,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         
     sql = f'INSERT INTO {table} ({col_names}) VALUES ({val_placeholders}) {conflict_clause}'
     
-    # 1000개 단위로 쾌속 적재
+    # 다이렉트 인서트
     CHUNK_SIZE = 1000
     for start_idx in range(0, len(df), CHUNK_SIZE):
         chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
@@ -562,7 +557,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # DB Lock의 위험이 사라졌으므로 안전하게 1명씩 처리하여 100% 무사고 달성
+    # DB Lock을 원천적으로 막기 위해 1줄 서기로 진행 (임시 테이블이 없어져서 속도는 충분히 빠릅니다)
     max_workers = 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
