@@ -20,6 +20,7 @@ import os
 import time
 import re
 import io
+import hashlib
 import math
 import numpy as np
 from datetime import date, timedelta, datetime
@@ -537,13 +538,103 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 """
 
-st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+# Extra CSS (moved from render_download_compact) — inject once to avoid repeated rerender cost
+EXTRA_UI_CSS = r"""<style>
+        .stDownloadButton button {
+            padding: 0.15rem 0.55rem !important;
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            min-height: 28px !important;
+        }
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
 
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
+</style>"""
+
+st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
-    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -994,7 +1085,6 @@ def get_engine():
     connect_args = {
         "sslmode": "require",
         "connect_timeout": 10,
-        "options": "-c statement_timeout=15000",
         # TCP keepalive (psycopg2)
         "keepalives": 1,
         "keepalives_idle": 30,
@@ -1269,114 +1359,79 @@ def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
     return output.getvalue()
 
 
+# -----------------------------
+# Download bytes memo (session-local)
+# - Avoid df.to_json / read_json overhead
+# - Avoid repeated CSS injection inside download renderer
+# -----------------------------
+def _df_signature_light(df: pd.DataFrame) -> str:
+    """Fast-ish signature for download caching (session-local).
+
+    We intentionally hash only a small sample of rows to keep this cheap.
+    Collisions are extremely unlikely for our use-case (top tables, filtered views).
+    """
+    try:
+        from pandas.util import hash_pandas_object as _hpo
+        sample = df
+        if len(df) > 20:
+            sample = pd.concat([df.head(10), df.tail(10)], axis=0)
+        h = hashlib.blake2b(digest_size=16)
+        h.update(str(df.shape).encode("utf-8"))
+        h.update(("|".join(map(str, df.columns))).encode("utf-8"))
+        try:
+            h.update(_hpo(sample, index=True).values.tobytes())
+        except Exception:
+            # Fallback: partial CSV (bounded)
+            h.update(sample.to_csv(index=False).encode("utf-8")[:4096])
+        return h.hexdigest()
+    except Exception:
+        return f"{df.shape[0]}x{df.shape[1]}_{abs(hash(tuple(df.columns)))}"
+
+
+def _dl_cache() -> dict:
+    # { (sig, sheet_name): (csv_bytes, xlsx_bytes) }
+    return st.session_state.setdefault("_dl_bytes_cache", {})
+
+
+def _get_download_bytes(df: pd.DataFrame, sheet_name: str) -> Tuple[bytes, bytes]:
+    sig = _df_signature_light(df)
+    cache = _dl_cache()
+    key = (sig, str(sheet_name))
+    if key in cache:
+        return cache[key]
+
+    # keep cache bounded (avoid unbounded memory growth)
+    if len(cache) > 24:
+        cache.clear()
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31])
+    xlsx_bytes = output.getvalue()
+
+    cache[key] = (csv_bytes, xlsx_bytes)
+    return csv_bytes, xlsx_bytes
+
+
 def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str, key_prefix: str) -> None:
-    """렌더링 속도를 위해 CSV는 기본 제공, XLSX는 캐시된 bytes 사용."""
+    """Compact CSV/XLSX download renderer (fast).
+
+    - No per-call CSS injection
+    - No df.to_json roundtrip
+    - Session-local memo for bytes to avoid repeated XLSX builds
+    """
     if df is None or df.empty:
         return
 
-    df_json = df.to_json(orient="split")
-
-    st.markdown(
-        """
-        <style>
-        .stDownloadButton button {
-            padding: 0.15rem 0.55rem !important;
-            font-size: 0.82rem !important;
-            line-height: 1.2 !important;
-            min-height: 28px !important;
-        }
-        
-/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-  background: rgba(0,0,0,.04) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
-  display:none !important; /* hide radio circle */
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
-
-/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-
-/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{
-  border: 0 !important;
-}
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) look like admin fields */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide the circle icon & make it look like a nav list */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
+    csv_bytes, xlsx_bytes = _get_download_bytes(df, sheet_name)
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
         st.download_button(
             "CSV",
-            data=_df_json_to_csv_bytes(df_json),
+            data=csv_bytes,
             file_name=f"{filename_base}.csv",
             mime="text/csv",
             key=f"{key_prefix}_csv",
@@ -1385,7 +1440,7 @@ div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !
     with c2:
         st.download_button(
             "XLSX",
-            data=_df_json_to_xlsx_bytes(df_json, sheet_name),
+            data=xlsx_bytes,
             file_name=f"{filename_base}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
@@ -1765,8 +1820,6 @@ def query_latest_dates(_engine) -> Dict[str, str]:
     return out
 
 
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
@@ -2282,6 +2335,114 @@ def query_campaign_bundle(
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_agg_slice(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
+    """캠페인 탭(메인 표/드롭다운)용: 기간 범위에서 캠페인 단위로 **집계된** 데이터만 조회합니다.
+
+    - (dt x 캠페인)처럼 큰 슬라이스를 가져오지 않고, 바로 캠페인 단위로 SUM 집계 → 초기 로딩/필터 전환 체감 개선
+    - 담당자/업체 필터는 cids로 DB에서 1차 축소(가능한 경우)
+    - campaign_tp → campaign_type(라벨)로 매핑
+    """
+    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
+        return pd.DataFrame(columns=[
+            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
+            "imp","clk","cost","conv","sales"
+        ])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    join_campaign = ""
+    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
+    group_campaign = ""
+    if table_exists(_engine, "dim_campaign"):
+        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
+        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
+        group_campaign = ", c.campaign_name, c.campaign_tp"
+
+    sql = f"""
+    SELECT
+      f.customer_id::text AS customer_id,
+      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
+      COALESCE(NULLIF(m.manager,''),'') AS manager,
+      f.campaign_id,
+      {select_campaign},
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    JOIN dim_account_meta m
+      ON m.customer_id = f.customer_id::text
+    {join_campaign}
+    WHERE f.dt BETWEEN :d1 AND :d2
+      {where_cid}
+    GROUP BY f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
+    """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
+            "imp","clk","cost","conv","sales"
+        ])
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    for c in ["imp","clk","cost","conv","sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
+    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_timeseries_one(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
+    """특정 캠페인 1개에 대한 일별 추세(상세 보기용)."""
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    sql = f"""
+    SELECT
+      f.dt::date AS dt,
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    WHERE f.dt BETWEEN :d1 AND :d2
+      AND f.customer_id::text = :cid
+      AND f.campaign_id = :camp
+    GROUP BY f.dt::date
+    ORDER BY f.dt::date
+    """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": int(campaign_id)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    for c in ["imp","clk","cost","conv","sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    return df.reset_index(drop=True)
+
+
+
 def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
     """캠페인 탭용: (일자 x 캠페인) 슬라이스를 1회 조회해 캐시합니다.
     날짜 범위만 바뀔 때 DB를 치고, 이후 담당자/업체/유형/캠페인 선택은 pandas 필터로 처리합니다.
@@ -2409,40 +2570,6 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...]
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_one_timeseries(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
-    """캠페인(단일) 일별 추세. (선택 캠페인 상세용 - row 수 매우 적음)"""
-    if not table_exists(_engine, "fact_campaign_daily"):
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    sql = f"""
-    SELECT
-      f.dt::date AS dt,
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    WHERE f.dt BETWEEN :d1 AND :d2
-      AND f.customer_id::text = :cid
-      AND f.campaign_id::text = :camp
-    GROUP BY f.dt::date
-    ORDER BY f.dt::date
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(customer_id), "camp": str(campaign_id)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    for c in ["imp", "clk", "cost", "conv", "sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    return df
-
 def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """소재(전체) 일별 추세."""
     if not table_exists(_engine, "fact_ad_daily"):
@@ -2526,8 +2653,11 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
     sales_expr = "SUM(COALESCE(fk.sales,0))" if "sales" in fk_cols else "0::numeric"
 
     where_cid = ""
+    where_cid_c = ""
     if cids:
-        where_cid = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+        _in_list = _sql_in_str_list(list(cids))
+        where_cid = f"AND fk.customer_id::text IN ({_in_list})"
+        where_cid_c = f"AND customer_id::text IN ({_in_list})"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
     if tp_keys and table_exists(_engine, "dim_campaign") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_keyword"):
@@ -2537,6 +2667,7 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
           SELECT customer_id::text AS customer_id, campaign_id::text AS campaign_id
           FROM dim_campaign
           WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+          {where_cid_c}
         ),
         g_f AS (
           SELECT g.customer_id::text AS customer_id, g.adgroup_id::text AS adgroup_id
@@ -3061,10 +3192,16 @@ def query_keyword_bundle(
     topn_cost: int = 300,
 ) -> pd.DataFrame:
     """
-    ✅ 속도 개선 포인트 (v7.3.1)
-    - fact_keyword_daily는 "집계(base)"만 하고,
-      cost TOP N / clk TOP10 / conv TOP10만 골라서(dim 조인 포함) 반환
-    - dim 조인은 선택된 keyword_id들에 대해서만 수행 → 대폭 가벼움
+    ✅ 키워드 탭 '메인 리스트'용 번들 쿼리 (고속)
+
+    목표:
+    - '일자×키워드' 같은 큰 슬라이스를 파이썬으로 가져와 groupby 하지 않음
+    - DB에서 키워드 단위로 바로 집계 후, cost TOP N + clk TOP10 + conv TOP10만 골라서
+      그 소량의 키워드에 대해서만 DIM 조인(키워드/그룹/캠페인명) 수행
+
+    성능 핵심:
+    - type_sel이 없으면 DIM 조인을 TOP 후보(picked)에만 수행 (가장 빠름)
+    - type_sel이 있으면, DIM에서 (customer_id, keyword_id)만 가볍게 scope로 뽑아 fact와 조인해 집계 (필터 정확 + 빠름)
     """
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
@@ -3083,29 +3220,22 @@ def query_keyword_bundle(
     else:
         kw_expr = "''::text"
 
-    # cid filter (TEXT/BIGINT 모두 안전)
-    cid_clause = ""
+    # customer filter (TEXT/BIGINT 모두 안전: 항상 문자열 리터럴)
+    cid_clause_fact = ""
+    cid_clause_dim = ""
     if customer_ids:
-        cid_clause = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
+        in_list = _sql_in_str_list(list(customer_ids))
+        cid_clause_fact = f"AND fk.customer_id::text IN ({in_list})"
+        cid_clause_dim  = f"AND k.customer_id::text IN ({in_list})"
 
-    # type filter는 campaign_tp 키로 (더 빠름)
+    # type filter keys (campaign_tp)
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_clause = ""
-    if tp_keys:
-        tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_clause = f"AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})"
+    tp_list = ",".join([f"'{x}'" for x in tp_keys]) if tp_keys else ""
 
-    sql = f"""
-    WITH scope AS (
-      SELECT
-        k.customer_id::text AS customer_id,
-        k.keyword_id::text  AS keyword_id,
-        COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
-        k.adgroup_id::text  AS adgroup_id,
-        COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
-        g.campaign_id::text AS campaign_id,
-        COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
-        COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
+    # 공통: 0만 있는 로우 제거(결과 영향 거의 없음, 속도만 개선)
+    nonzero_clause = "AND (fk.cost > 0 OR fk.clk > 0 OR fk.imp > 0 OR fk.conv > 0)"
+
+    case_type = """
         CASE
           WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
           WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
@@ -3113,179 +3243,201 @@ def query_keyword_bundle(
           WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
           WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
           ELSE '기타'
-        END AS campaign_type_label
-      FROM dim_keyword k
-      LEFT JOIN dim_adgroup g
-        ON k.customer_id::text = g.customer_id::text
-       AND k.adgroup_id::text = g.adgroup_id::text
-      LEFT JOIN dim_campaign c
-        ON g.customer_id::text = c.customer_id::text
-       AND g.campaign_id::text = c.campaign_id::text
-      WHERE 1=1
-        AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
-        {type_clause}
-    ),
-    base AS (
-      SELECT
-        fk.customer_id::text AS customer_id,
-        fk.keyword_id::text  AS keyword_id,
-        SUM(fk.imp)  AS imp,
-        SUM(fk.clk)  AS clk,
-        SUM(fk.cost) AS cost,
-        SUM(fk.conv) AS conv,
-        {sales_sum}  AS sales
-      FROM fact_keyword_daily fk
-      JOIN scope s
-        ON fk.customer_id::text = s.customer_id
-       AND fk.keyword_id::text  = s.keyword_id
-      WHERE fk.dt BETWEEN :d1 AND :d2
-        {cid_clause}
-      GROUP BY fk.customer_id::text, fk.keyword_id::text
-    ),
-    top_cost0 AS (
-      SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :topn_cost
-    ),
-    top_cost AS (
-      SELECT
-        customer_id, keyword_id,
-        ROW_NUMBER() OVER (ORDER BY cost DESC NULLS LAST) AS rn_cost
-      FROM top_cost0
-    ),
-    top_clk0 AS (
-      SELECT * FROM base ORDER BY clk DESC NULLS LAST LIMIT 10
-    ),
-    top_clk AS (
-      SELECT
-        customer_id, keyword_id,
-        ROW_NUMBER() OVER (ORDER BY clk DESC NULLS LAST) AS rn_clk
-      FROM top_clk0
-    ),
-    top_conv0 AS (
-      SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT 10
-    ),
-    top_conv AS (
-      SELECT
-        customer_id, keyword_id,
-        ROW_NUMBER() OVER (ORDER BY conv DESC NULLS LAST) AS rn_conv
-      FROM top_conv0
-    ),
-    picked AS (
-      SELECT
-        customer_id,
-        keyword_id,
-        MIN(rn_cost) AS rn_cost,
-        MIN(rn_clk)  AS rn_clk,
-        MIN(rn_conv) AS rn_conv
-      FROM (
-        SELECT customer_id, keyword_id, rn_cost, NULL::int rn_clk, NULL::int rn_conv FROM top_cost
-        UNION ALL
-        SELECT customer_id, keyword_id, NULL::int rn_cost, rn_clk, NULL::int rn_conv FROM top_clk
-        UNION ALL
-        SELECT customer_id, keyword_id, NULL::int rn_cost, NULL::int rn_clk, rn_conv FROM top_conv
-      ) u
-      GROUP BY customer_id, keyword_id
-    )
-    SELECT
-      p.customer_id,
-      p.keyword_id,
-      b.imp, b.clk, b.cost, b.conv, b.sales,
-      p.rn_cost, p.rn_clk, p.rn_conv,
-      s.keyword, s.adgroup_name, s.campaign_name, s.campaign_tp, s.campaign_type_label
-    FROM picked p
-    JOIN base b
-      ON p.customer_id = b.customer_id
-     AND p.keyword_id  = b.keyword_id
-    LEFT JOIN scope s
-      ON b.customer_id = s.customer_id
-     AND b.keyword_id  = s.keyword_id
-    WHERE COALESCE(s.campaign_type_label,'기타') <> '기타'
-    ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
+        END
     """
 
-    params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
-    df = sql_read(_engine, sql, params)
-    return df if df is not None else pd.DataFrame()
-
-    fk_cols = get_table_columns(_engine, "fact_keyword_daily")
-    sales_expr = "SUM(COALESCE(fk.sales,0)) AS sales" if "sales" in fk_cols else "0::bigint AS sales"
-
-    kw_cols = get_table_columns(_engine, "dim_keyword")
-    if "keyword" in kw_cols:
-        kw_expr = "k.keyword"
-    elif "keyword_name" in kw_cols:
-        kw_expr = "k.keyword_name"
-    else:
-        kw_expr = "''::text"
-
-    in_clause = ""
-    if customer_ids:
-        in_clause = f" AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))}) "
-
-    # type filter는 alias 참조 문제 때문에 마지막에 적용
-    type_filter = ""
-    if type_sel:
-        tquoted = ",".join(["'" + str(t).replace("'", "''") + "'" for t in type_sel])
-        type_filter = f" AND campaign_type_label IN ({tquoted}) "
-
-    sql = f"""
-    WITH base AS (
-        SELECT
+    if tp_keys:
+        # ✅ type_sel이 있으면: DIM에서 (customer_id, keyword_id)만 scope로 좁혀 fact와 조인해 집계
+        sql = f"""
+        WITH k_scope AS (
+          SELECT
+            k.customer_id::text AS customer_id,
+            k.keyword_id::text  AS keyword_id
+          FROM dim_keyword k
+          JOIN dim_adgroup g
+            ON k.customer_id::text = g.customer_id::text
+           AND k.adgroup_id::text  = g.adgroup_id::text
+          JOIN dim_campaign c
+            ON g.customer_id::text = c.customer_id::text
+           AND g.campaign_id::text = c.campaign_id::text
+          WHERE COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
+            AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})
+            {cid_clause_dim}
+        ),
+        base AS (
+          SELECT
             fk.customer_id::text AS customer_id,
-            fk.keyword_id::text AS keyword_id,
-            SUM(fk.imp) AS imp,
-            SUM(fk.clk) AS clk,
+            fk.keyword_id::text  AS keyword_id,
+            SUM(fk.imp)  AS imp,
+            SUM(fk.clk)  AS clk,
             SUM(fk.cost) AS cost,
             SUM(fk.conv) AS conv,
-            {sales_expr}
-        FROM fact_keyword_daily fk
-        WHERE fk.dt BETWEEN :d1 AND :d2
-        {in_clause}
-        GROUP BY fk.customer_id::text, fk.keyword_id::text
-    ),
-    joined AS (
+            {sales_sum}  AS sales
+          FROM fact_keyword_daily fk
+          JOIN k_scope ks
+            ON fk.customer_id::text = ks.customer_id
+           AND fk.keyword_id::text  = ks.keyword_id
+          WHERE fk.dt BETWEEN :d1 AND :d2
+            {cid_clause_fact}
+            {nonzero_clause}
+          GROUP BY fk.customer_id::text, fk.keyword_id::text
+        ),
+        top_cost0 AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :topn_cost),
+        top_cost AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY cost DESC NULLS LAST) AS rn_cost
+          FROM top_cost0
+        ),
+        top_clk0 AS (SELECT * FROM base ORDER BY clk DESC NULLS LAST LIMIT 10),
+        top_clk AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY clk DESC NULLS LAST) AS rn_clk
+          FROM top_clk0
+        ),
+        top_conv0 AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT 10),
+        top_conv AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY conv DESC NULLS LAST) AS rn_conv
+          FROM top_conv0
+        ),
+        picked AS (
+          SELECT
+            customer_id,
+            keyword_id,
+            MIN(rn_cost) AS rn_cost,
+            MIN(rn_clk)  AS rn_clk,
+            MIN(rn_conv) AS rn_conv
+          FROM (
+            SELECT customer_id, keyword_id, rn_cost, NULL::int rn_clk, NULL::int rn_conv FROM top_cost
+            UNION ALL
+            SELECT customer_id, keyword_id, NULL::int rn_cost, rn_clk, NULL::int rn_conv FROM top_clk
+            UNION ALL
+            SELECT customer_id, keyword_id, NULL::int rn_cost, NULL::int rn_clk, rn_conv FROM top_conv
+          ) u
+          GROUP BY customer_id, keyword_id
+        )
         SELECT
-            b.*,
-            COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
-            COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
-            COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
-            CASE
-                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
-                ELSE '기타'
-            END AS campaign_type_label
-        FROM base b
+          p.customer_id,
+          p.keyword_id,
+          b.imp, b.clk, b.cost, b.conv, b.sales,
+          p.rn_cost, p.rn_clk, p.rn_conv,
+          COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
+          COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
+          COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+          COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
+          {case_type} AS campaign_type_label
+        FROM picked p
+        JOIN base b
+          ON p.customer_id = b.customer_id
+         AND p.keyword_id  = b.keyword_id
         LEFT JOIN dim_keyword k
-            ON b.customer_id = k.customer_id::text AND b.keyword_id = k.keyword_id::text
+          ON b.customer_id = k.customer_id::text
+         AND b.keyword_id  = k.keyword_id::text
         LEFT JOIN dim_adgroup g
-            ON k.customer_id::text = g.customer_id::text AND k.adgroup_id::text = g.adgroup_id::text
+          ON k.customer_id::text = g.customer_id::text
+         AND k.adgroup_id::text  = g.adgroup_id::text
         LEFT JOIN dim_campaign c
-            ON g.customer_id::text = c.customer_id::text AND g.campaign_id::text = c.campaign_id::text
-        WHERE 1=1
-          AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
-    ),
-    ranked AS (
+          ON g.customer_id::text = c.customer_id::text
+         AND g.campaign_id::text = c.campaign_id::text
+        WHERE COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
+          AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})
+          AND COALESCE({case_type},'기타') <> '기타'
+        ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
+        """
+        params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
+    else:
+        # ✅ type_sel이 없으면: fact를 먼저 집계 → TOP 후보만 DIM 조인
+        sql = f"""
+        WITH base AS (
+          SELECT
+            fk.customer_id::text AS customer_id,
+            fk.keyword_id::text  AS keyword_id,
+            SUM(fk.imp)  AS imp,
+            SUM(fk.clk)  AS clk,
+            SUM(fk.cost) AS cost,
+            SUM(fk.conv) AS conv,
+            {sales_sum}  AS sales
+          FROM fact_keyword_daily fk
+          WHERE fk.dt BETWEEN :d1 AND :d2
+            {cid_clause_fact}
+            {nonzero_clause}
+          GROUP BY fk.customer_id::text, fk.keyword_id::text
+        ),
+        top_cost0 AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :topn_cost),
+        top_cost AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY cost DESC NULLS LAST) AS rn_cost
+          FROM top_cost0
+        ),
+        top_clk0 AS (SELECT * FROM base ORDER BY clk DESC NULLS LAST LIMIT 10),
+        top_clk AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY clk DESC NULLS LAST) AS rn_clk
+          FROM top_clk0
+        ),
+        top_conv0 AS (SELECT * FROM base ORDER BY conv DESC NULLS LAST LIMIT 10),
+        top_conv AS (
+          SELECT customer_id, keyword_id,
+                 ROW_NUMBER() OVER (ORDER BY conv DESC NULLS LAST) AS rn_conv
+          FROM top_conv0
+        ),
+        picked AS (
+          SELECT
+            customer_id,
+            keyword_id,
+            MIN(rn_cost) AS rn_cost,
+            MIN(rn_clk)  AS rn_clk,
+            MIN(rn_conv) AS rn_conv
+          FROM (
+            SELECT customer_id, keyword_id, rn_cost, NULL::int rn_clk, NULL::int rn_conv FROM top_cost
+            UNION ALL
+            SELECT customer_id, keyword_id, NULL::int rn_cost, rn_clk, NULL::int rn_conv FROM top_clk
+            UNION ALL
+            SELECT customer_id, keyword_id, NULL::int rn_cost, NULL::int rn_clk, rn_conv FROM top_conv
+          ) u
+          GROUP BY customer_id, keyword_id
+        )
         SELECT
-            j.*,
-            ROW_NUMBER() OVER (ORDER BY j.cost DESC NULLS LAST) AS rn_cost,
-            ROW_NUMBER() OVER (ORDER BY j.clk DESC NULLS LAST) AS rn_clk,
-            ROW_NUMBER() OVER (ORDER BY j.conv DESC NULLS LAST) AS rn_conv
-        FROM joined j
-        WHERE j.campaign_type_label <> '기타'
-        {type_filter}
-    )
-    SELECT *
-    FROM ranked
-    WHERE rn_cost <= :topn_cost OR rn_clk <= 10 OR rn_conv <= 10
-    ORDER BY rn_cost ASC
-    """
+          p.customer_id,
+          p.keyword_id,
+          b.imp, b.clk, b.cost, b.conv, b.sales,
+          p.rn_cost, p.rn_clk, p.rn_conv,
+          COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
+          COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
+          COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+          COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
+          {case_type} AS campaign_type_label
+        FROM picked p
+        JOIN base b
+          ON p.customer_id = b.customer_id
+         AND p.keyword_id  = b.keyword_id
+        LEFT JOIN dim_keyword k
+          ON b.customer_id = k.customer_id::text
+         AND b.keyword_id  = k.keyword_id::text
+        LEFT JOIN dim_adgroup g
+          ON k.customer_id::text = g.customer_id::text
+         AND k.adgroup_id::text  = g.adgroup_id::text
+        LEFT JOIN dim_campaign c
+          ON g.customer_id::text = c.customer_id::text
+         AND g.campaign_id::text = c.campaign_id::text
+        WHERE COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
+          AND COALESCE({case_type},'기타') <> '기타'
+        ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
+        """
+        params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
 
-    params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
     df = sql_read(_engine, sql, params)
-    return df if df is not None else pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
 
+    # typing / numeric safety
+    for c in ["imp", "clk", "cost", "conv", "sales", "rn_cost", "rn_clk", "rn_conv"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    if "customer_id" in df.columns:
+        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+
+    return df.reset_index(drop=True)
 
 # -----------------------------
 # Rates
@@ -3780,6 +3932,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.divider()
 
+    show_trend = st.toggle('추세 보기', value=False, key='ov_show_trend')
+    if not show_trend:
+        return
+
     # 상세(추세/Top) - 오류가 나도 KPI는 유지
     try:
         ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
@@ -3984,62 +4140,37 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     return df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
 
+
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         st.info("필터를 변경하면 즉시 반영됩니다.")
         return
 
-    # CSS가 누락되면 KPI/칩이 텍스트처럼 튀어나오는 문제가 있어서, 캠페인 탭 진입 시 1회 더 보증
-    try:
-        st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    except Exception:
-        pass
-
     st.markdown("## 🚀 성과 (캠페인)")
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     top_n = int(f.get("top_n_campaign", 200))
-    cids = tuple(f.get("selected_customer_ids", []) or [])
-    type_sel = tuple(f.get("type_sel", tuple()) or tuple())
+    cids = tuple(sorted(tuple(f.get("selected_customer_ids", []) or [])))
+    type_sel = tuple(sorted(tuple(f.get("type_sel", tuple()) or tuple())))
 
-    # ------------------------------------------------
-    # 1) 캠페인 메인 데이터는 '캠페인 단위 집계'만 DB에서 가져오기
-    #    (일자×캠페인 슬라이스를 통째로 가져오면 느리고 SSL 끊김이 쉽게 발생)
-    # ------------------------------------------------
-    base_sig = (str(f["start"]), str(f["end"]), tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
-    if st.session_state.get("_camp_base_sig_fast") != base_sig:
-        st.session_state["_camp_base_sig_fast"] = base_sig
-        st.session_state["camp_filter_key"] = "ALL"
-
+    # -----------------------------
+    # 1) 메인용: 캠페인 단위 집계(작은 결과)만 조회 (캐시)
+    # -----------------------------
     try:
-        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
-        st.session_state["_camp_bundle_last"] = bundle
+        df_all = query_campaign_agg_slice(engine, f["start"], f["end"], cids)
+        st.session_state["_camp_agg_last"] = df_all
     except Exception:
-        bundle = st.session_state.get("_camp_bundle_last", pd.DataFrame())
-        if bundle is None or bundle.empty:
-            st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
-        else:
-            st.warning("DB 연결이 일시적으로 불안정하여 **마지막 정상 데이터**로 표시 중입니다. (새로고침/잠시 후 재시도) ")
+        df_all = st.session_state.get("_camp_agg_last", pd.DataFrame())
+        st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
 
-    if bundle is None or bundle.empty:
+    if df_all is None or df_all.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    df_all = bundle.copy()
-
-    # meta merge (DB join 대신 pandas merge로 가볍게)
-    try:
-        df_all["customer_id"] = pd.to_numeric(df_all["customer_id"], errors="coerce").fillna(0).astype("int64")
-    except Exception:
-        pass
-    df_all = _perf_common_merge_meta(df_all, meta)
-
-    # ensure numeric + derived metrics
+    # 파생지표(CTR/CPC/CPA/ROAS) 계산
     df_all = add_rates(df_all)
 
-    # 안전 필터(혹시 cache/merge 과정에서 누락 방지)
-    if cids:
-        df_all = df_all[df_all["customer_id"].isin([int(x) for x in cids])]
+    # 캠페인 유형 필터 (pandas)
     if type_sel:
         df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
 
@@ -4047,12 +4178,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("선택한 필터 조건에서 캠페인이 없습니다.")
         return
 
-    # ------------------------------------------------
-    # 2) 캠페인 선택(B 방식: '업체명 · 캠페인명'), 값은 customer_id|campaign_id
-    # ------------------------------------------------
+    # -----------------------------
+    # 2) 캠페인 선택(B 방식)
+    # -----------------------------
     opt = df_all[["customer_id", "campaign_id", "account_name", "campaign_name", "campaign_type", "cost"]].copy()
     opt["account_name"] = opt.get("account_name", "").astype(str).fillna("").str.strip()
-    opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip().replace({"": "(이름 없음)"})
+    opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip()
+    opt["campaign_name"] = opt["campaign_name"].replace({"": "(이름 없음)"})
     opt["key"] = opt["customer_id"].astype(str) + "|" + opt["campaign_id"].astype(str)
     opt["label"] = opt["account_name"] + " · " + opt["campaign_name"]
     opt = opt.sort_values("cost", ascending=False).drop_duplicates("key", keep="first")
@@ -4072,36 +4204,40 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     with r0[1]:
         show_detail = st.toggle("상세 보기", value=False, key="camp_show_detail")
     with r0[2]:
-        st.caption("캠페인 선택 변경은 **즉시 반영(pandas 필터)**")
+        if sel_key != "ALL":
+            st.caption("선택 캠페인만 표시 중 (캠페인 변경은 **pandas 필터**로 즉시 반영)")
+        else:
+            st.caption("전체 캠페인 표시 중")
 
     df = df_all.copy()
     if sel_key != "ALL":
         df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
         df = df[df_key == sel_key].copy()
 
-    # ------------------------------------------------
-    # 3) 상세(추세/Top5/도넛) - 토글 ON일 때만 쿼리/렌더
-    # ------------------------------------------------
+    # -----------------------------
+    # 3) 상세(추세/Top5/도넛) - toggle ON일 때만 DB/차트 작업 수행
+    # -----------------------------
     if show_detail:
         st.markdown("### 📈 기간 추세")
 
         ts = pd.DataFrame()
         try:
             if sel_key == "ALL":
+                # 전체(선택 필터 반영) - row 수가 적어서 DB 1회로 충분
                 ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
             else:
                 cid_s, camp_s = sel_key.split("|", 1)
-                ts = query_campaign_one_timeseries(engine, f["start"], f["end"], int(cid_s), int(camp_s))
+                ts = query_campaign_timeseries_one(engine, f["start"], f["end"], int(cid_s), int(camp_s))
         except Exception:
             ts = pd.DataFrame()
 
         if ts is not None and not ts.empty:
-            ts2 = add_rates(ts.copy())
+            ts = add_rates(ts)
 
-            total_cost = float(pd.to_numeric(ts2["cost"], errors="coerce").fillna(0).sum())
-            total_clk = float(pd.to_numeric(ts2["clk"], errors="coerce").fillna(0).sum())
-            total_conv = float(pd.to_numeric(ts2["conv"], errors="coerce").fillna(0).sum())
-            total_sales = float(pd.to_numeric(ts2.get("sales", 0), errors="coerce").fillna(0).sum()) if "sales" in ts2.columns else 0.0
+            total_cost = float(ts["cost"].sum())
+            total_clk = float(ts["clk"].sum())
+            total_conv = float(ts["conv"].sum())
+            total_sales = float(ts.get("sales", 0).sum()) if "sales" in ts.columns else 0.0
             total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
 
             k1, k2, k3, k4 = st.columns(4)
@@ -4114,17 +4250,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with k4:
                 ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
 
-            # 비교 패널 (오류 시 조용히 스킵)
+            # 비교 패널(기능 유지)
             try:
                 render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
             except Exception:
                 pass
 
-            # ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
+            # (선택) ECharts 도넛: 광고유형별 광고비 비중 (2개 이상일 때만)
             try:
                 share = df_all.groupby("campaign_type", as_index=False)["cost"].sum().sort_values("cost", ascending=False)
                 share = share.rename(columns={"campaign_type": "광고유형", "cost": "광고비"})
-                share = share[pd.to_numeric(share["광고비"], errors="coerce").fillna(0) > 0]
+                share = share[share["광고비"] > 0]
                 if share is not None and len(share) >= 2:
                     with st.expander("📊 광고유형별 광고비 비중", expanded=False):
                         render_echarts_donut("광고유형별 광고비 비중", share, "광고유형", "광고비", height=280)
@@ -4139,25 +4275,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 key="camp_trend_metric",
             )
 
-            ts3 = ts2.copy()
+            ts2 = ts.copy()
             if metric_sel == "광고비":
-                ch = _chart_timeseries(ts3, "cost", "광고비(원)", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts2, "cost", "광고비(원)", y_format=",.0f", height=260)
             elif metric_sel == "클릭":
-                ch = _chart_timeseries(ts3, "clk", "클릭", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts2, "clk", "클릭", y_format=",.0f", height=260)
             elif metric_sel == "전환":
-                ch = _chart_timeseries(ts3, "conv", "전환", y_format=",.0f", height=260)
+                ch = _chart_timeseries(ts2, "conv", "전환", y_format=",.0f", height=260)
             else:
-                sales_s = pd.to_numeric(ts3.get("sales", 0), errors="coerce").fillna(0) if "sales" in ts3.columns else pd.Series([0.0] * len(ts3))
-                ts3["roas"] = (sales_s / ts3["cost"].replace(0, np.nan)) * 100
-                ts3["roas"] = pd.to_numeric(ts3["roas"], errors="coerce").fillna(0)
-                ch = _chart_timeseries(ts3, "roas", "ROAS(%)", y_format=",.0f", height=260)
+                sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
+                ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
+                ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
+                ch = _chart_timeseries(ts2, "roas", "ROAS(%)", y_format=",.0f", height=260)
 
             if ch is not None:
                 render_chart(ch)
 
             st.divider()
+        else:
+            st.info("추세 데이터가 없습니다.")
 
-        # TOP5 (비용/클릭/전환) - 현재 선택(캠페인 포함) 기준
+        # TOP5 (비용/클릭/전환) - 현재 선택 기준
         top_cost = df.sort_values("cost", ascending=False).head(5)
         top_clk = df.sort_values("clk", ascending=False).head(5)
         top_conv = df.sort_values("conv", ascending=False).head(5)
@@ -4191,9 +4329,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         st.divider()
 
-    # ------------------------------------------------
-    # 4) Main table - 현재 선택 기준 (pandas 정렬/TopN)
-    # ------------------------------------------------
+    # -----------------
+    # 4) Main table - 현재 선택 기준
+    # -----------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
     disp = main_df.copy()
@@ -4236,13 +4374,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     summary_df = build_campaign_summary_rows_from_numeric(main_df, campaign_type_col="campaign_type", campaign_name_col="campaign_name")
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
-        display_df = pd.concat([summary_df, view_df], ignore_index=True)
     else:
         summary_df = pd.DataFrame(columns=cols)
-        display_df = view_df
 
     render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
-    render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
+    render_download_compact(view_df if summary_df.empty else pd.concat([summary_df, view_df], ignore_index=True),
+                            f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
