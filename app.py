@@ -956,9 +956,14 @@ def render_echarts_line(
 
     # y
     df[y_col] = pd.to_numeric(df[y_col], errors="coerce").fillna(0.0)
+    # 소수점 제거(툴팁/축에 긴 소수점 뜨는 문제 방지)
+    try:
+        df[y_col] = df[y_col].round(0).astype("int64")
+    except Exception:
+        df[y_col] = df[y_col].round(0)
 
     x = df[x_col].astype(str).tolist()
-    y = df[y_col].astype(float).tolist()
+    y = df[y_col].tolist()
 
     option = {
         "title": {"text": title, "left": 10, "top": 6, "textStyle": {"fontSize": 13, "fontWeight": "bold"}},
@@ -2278,7 +2283,7 @@ def query_campaign_topn(
 
     df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
     df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+    # df = df[df["campaign_type"].astype(str).str.strip() != "기타"]  # keep "기타"도 포함(매핑 누락 시 전체가 사라지는 문제 방지)
 
     return df.reset_index(drop=True)
 
@@ -2413,7 +2418,7 @@ def query_campaign_bundle(
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
     df["campaign_type"] = df.get("campaign_tp", "").astype(str).map(campaign_tp_to_label)
     df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+    # df = df[df["campaign_type"].astype(str).str.strip() != "기타"]  # keep "기타"도 포함(매핑 누락 시 전체가 사라지는 문제 방지)
 
     return df.reset_index(drop=True)
 
@@ -2475,7 +2480,7 @@ def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
     df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
     df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
     df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
-    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+    # df = df[df["campaign_type"].astype(str).str.strip() != "기타"]  # keep "기타"도 포함(매핑 누락 시 전체가 사라지는 문제 방지)
     return df.reset_index(drop=True)
 # -----------------------------
 # Timeseries Queries (for charts)
@@ -4680,24 +4685,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
 
     
-    with st.expander("📊 소재 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.copy()
-        tmp = _attach_account_name(tmp, meta)
-        tmp["ad_name"] = tmp["ad_name"].astype(str).map(str.strip)
-        # 같은 소재명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-        g = tmp.groupby(["customer_id", "ad_name"], as_index=False)["cost"].sum()
-        g = _attach_account_name(g, meta)
-
-        multi_acc = g["customer_id"].nunique() > 1
-        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["ad_name"]}' if multi_acc else r["ad_name"], axis=1)
-
-        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-        if ch is not None:
-            render_chart(ch)
-        else:
-            st.info("그래프 표시 불가")
-
-
     st.divider()
     # -----------------
     # Main table (비용 TOP N)
