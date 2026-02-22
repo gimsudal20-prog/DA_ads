@@ -20,6 +20,7 @@ import os
 import time
 import re
 import io
+import hashlib
 import math
 import numpy as np
 from datetime import date, timedelta, datetime
@@ -537,13 +538,112 @@ table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
 """
 
-st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+# Extra CSS (moved from render_download_compact) — inject once to avoid repeated rerender cost
+EXTRA_UI_CSS = r"""<style>
+        .stDownloadButton button {
+            padding: 0.15rem 0.55rem !important;
+            font-size: 0.82rem !important;
+            line-height: 1.2 !important;
+            min-height: 28px !important;
+        }
+        
+/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
+section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label{
+  border: 0 !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  width: 100%;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
+  background: rgba(0,0,0,.04) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
+  display:none !important; /* hide radio circle */
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
+  margin:0 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
+  background: rgba(3,199,90,.10) !important;
+  border: 1px solid rgba(3,199,90,.24) !important;
+}
+
+/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
+.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
+.nv-ro{
+  height: 38px;
+  display:flex; align-items:center;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--nv-line);
+  background: #fff;
+  color: var(--nv-text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
+div[data-testid="stExpander"]{
+  background: var(--nv-panel) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details{
+  border: 0 !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 12px 14px !important;
+  font-weight: 800 !important;
+  color: var(--nv-text) !important;
+  background: #fff !important;
+}
+div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
+div[data-testid="stExpander"] > details > div{
+  padding: 12px 14px 14px 14px !important;
+  border-top: 1px solid var(--nv-line) !important;
+  background: #fff !important;
+}
+
+/* Disabled text inputs (read-only dates) look like admin fields */
+div[data-testid="stTextInput"] input[disabled]{
+  background: #F3F4F6 !important;
+  color: var(--nv-text) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+
+/* Sidebar radio: hide the circle icon & make it look like a nav list */
+div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
+div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
+
+</style>"""
+
+def inject_css_once() -> None:
+    if st.session_state.get('_nv_css_injected'):
+        return
+    st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
+    st.session_state['_nv_css_injected'] = True
+
+inject_css_once()
+
 
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
-    st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    inject_css_once()
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -1268,114 +1368,79 @@ def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
     return output.getvalue()
 
 
+# -----------------------------
+# Download bytes memo (session-local)
+# - Avoid df.to_json / read_json overhead
+# - Avoid repeated CSS injection inside download renderer
+# -----------------------------
+def _df_signature_light(df: pd.DataFrame) -> str:
+    """Fast-ish signature for download caching (session-local).
+
+    We intentionally hash only a small sample of rows to keep this cheap.
+    Collisions are extremely unlikely for our use-case (top tables, filtered views).
+    """
+    try:
+        from pandas.util import hash_pandas_object as _hpo
+        sample = df
+        if len(df) > 20:
+            sample = pd.concat([df.head(10), df.tail(10)], axis=0)
+        h = hashlib.blake2b(digest_size=16)
+        h.update(str(df.shape).encode("utf-8"))
+        h.update(("|".join(map(str, df.columns))).encode("utf-8"))
+        try:
+            h.update(_hpo(sample, index=True).values.tobytes())
+        except Exception:
+            # Fallback: partial CSV (bounded)
+            h.update(sample.to_csv(index=False).encode("utf-8")[:4096])
+        return h.hexdigest()
+    except Exception:
+        return f"{df.shape[0]}x{df.shape[1]}_{abs(hash(tuple(df.columns)))}"
+
+
+def _dl_cache() -> dict:
+    # { (sig, sheet_name): (csv_bytes, xlsx_bytes) }
+    return st.session_state.setdefault("_dl_bytes_cache", {})
+
+
+def _get_download_bytes(df: pd.DataFrame, sheet_name: str) -> Tuple[bytes, bytes]:
+    sig = _df_signature_light(df)
+    cache = _dl_cache()
+    key = (sig, str(sheet_name))
+    if key in cache:
+        return cache[key]
+
+    # keep cache bounded (avoid unbounded memory growth)
+    if len(cache) > 24:
+        cache.clear()
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31])
+    xlsx_bytes = output.getvalue()
+
+    cache[key] = (csv_bytes, xlsx_bytes)
+    return csv_bytes, xlsx_bytes
+
+
 def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str, key_prefix: str) -> None:
-    """렌더링 속도를 위해 CSV는 기본 제공, XLSX는 캐시된 bytes 사용."""
+    """Compact CSV/XLSX download renderer (fast).
+
+    - No per-call CSS injection
+    - No df.to_json roundtrip
+    - Session-local memo for bytes to avoid repeated XLSX builds
+    """
     if df is None or df.empty:
         return
 
-    df_json = df.to_json(orient="split")
-
-    st.markdown(
-        """
-        <style>
-        .stDownloadButton button {
-            padding: 0.15rem 0.55rem !important;
-            font-size: 0.82rem !important;
-            line-height: 1.2 !important;
-            min-height: 28px !important;
-        }
-        
-/* ---- Fix: Sidebar radio should look like nav list (no circles, no pills) ---- */
-section[data-testid="stSidebar"] div[role="radiogroup"]{gap:6px;}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label{
-  border: 0 !important;
-  background: transparent !important;
-  padding: 8px 12px !important;
-  margin: 0 !important;
-  border-radius: 10px !important;
-  width: 100%;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover{
-  background: rgba(0,0,0,.04) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child{
-  display:none !important; /* hide radio circle */
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p{
-  margin:0 !important;
-  font-size: 13px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked){
-  background: rgba(3,199,90,.10) !important;
-  border: 1px solid rgba(3,199,90,.24) !important;
-}
-
-/* ---- Fix: '기간'에서 자동 계산 시 날짜가 박스 밖으로 튀어나오는 문제 ---- */
-.nv-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
-.nv-lbl{font-size:12px;font-weight:800;color:var(--nv-muted);line-height:1;}
-.nv-ro{
-  height: 38px;
-  display:flex; align-items:center;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--nv-line);
-  background: #fff;
-  color: var(--nv-text);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-
-/* ---- 검색조건 박스(Expander) 네이버형: '붙어 보임/튀어나옴' 정리 ---- */
-div[data-testid="stExpander"]{
-  background: var(--nv-panel) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius) !important;
-  box-shadow: none !important;
-  overflow: hidden !important;
-}
-div[data-testid="stExpander"] > details{
-  border: 0 !important;
-}
-div[data-testid="stExpander"] > details > summary{
-  padding: 12px 14px !important;
-  font-weight: 800 !important;
-  color: var(--nv-text) !important;
-  background: #fff !important;
-}
-div[data-testid="stExpander"] > details > summary svg{ display:none !important; }
-div[data-testid="stExpander"] > details > div{
-  padding: 12px 14px 14px 14px !important;
-  border-top: 1px solid var(--nv-line) !important;
-  background: #fff !important;
-}
-
-/* Disabled text inputs (read-only dates) look like admin fields */
-div[data-testid="stTextInput"] input[disabled]{
-  background: #F3F4F6 !important;
-  color: var(--nv-text) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-
-/* Sidebar radio: hide the circle icon & make it look like a nav list */
-div[data-testid="stSidebar"] [data-testid="stRadio"] svg{ display:none !important; }
-div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !important; }
-
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
+    csv_bytes, xlsx_bytes = _get_download_bytes(df, sheet_name)
 
     c1, c2, c3 = st.columns([1, 1, 8])
     with c1:
         st.download_button(
             "CSV",
-            data=_df_json_to_csv_bytes(df_json),
+            data=csv_bytes,
             file_name=f"{filename_base}.csv",
             mime="text/csv",
             key=f"{key_prefix}_csv",
@@ -1384,7 +1449,7 @@ div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !
     with c2:
         st.download_button(
             "XLSX",
-            data=_df_json_to_xlsx_bytes(df_json, sheet_name),
+            data=xlsx_bytes,
             file_name=f"{filename_base}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
