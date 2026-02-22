@@ -2724,8 +2724,14 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
     return {"imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "ctr": ctr, "cpc": cpc, "cpa": cpa, "roas": roas}
 
 
+
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Altair diverging delta bars (0 centered). 상승=빨강, 하락=파랑."""
+    """Altair diverging delta bars (0 centered). 상승=빨강, 하락=파랑.
+
+    ✅ 보장:
+    - x축을 항상 0 기준 좌우 대칭으로 고정(전부 음수여도 0이 가운데)
+    - 막대는 0 기준점(0) 쪽은 평평, 반대쪽 끝만 둥글게(캡)
+    """
     if delta_df is None or delta_df.empty:
         return None
 
@@ -2737,21 +2743,29 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     if "order" in d.columns:
         d = d.sort_values("order", ascending=False)
 
-    # symmetric domain around 0
+    # symmetric domain around 0 (robust even when all negative)
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
     L = max(abs(mn), abs(mx), 1.0)
     pad = max(2.0, L * 0.12)
-    dom = [-L - pad, L + pad]
+    dom_min = -(L + pad)
+    dom_max = +(L + pad)
 
     d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
     d["_label"] = d["change_pct"].map(_pct_to_str)
 
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#056CF2", "#B4C4D9"])
+    # for x/x2 bars
+    d["start"] = 0.0
+    d["end"] = d["change_pct"]
+
+    color_scale = alt.Scale(
+        domain=["up", "down", "flat"],
+        range=["#EF4444", "#056CF2", "#B4C4D9"],  # up=red, down=blue (KR/Naver style)
+    )
+    x_scale = alt.Scale(domainMin=dom_min, domainMax=dom_max, nice=False)
 
     base = alt.Chart(d).encode(
         y=alt.Y("metric:N", sort=None, axis=alt.Axis(title=None, labelLimit=120)),
-        x=alt.X("change_pct:Q", scale=alt.Scale(domain=dom), axis=alt.Axis(title="증감율(%)", grid=True)),
         color=alt.Color("dir:N", scale=color_scale, legend=None),
         tooltip=[
             alt.Tooltip("metric:N", title="지표"),
@@ -2759,21 +2773,41 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
         ],
     )
 
-    bars = base.mark_bar(height=18, cornerRadiusEnd=10)
-
-    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="rgba(180,196,217,0.9)").encode(x="x:Q")
-
-    txt = (
-        alt.Chart(d)
-        .mark_text(align="left", dx=6, fontSize=12, color="#0f172a")
-        .encode(
-            y=alt.Y("metric:N", sort=None),
-            x=alt.X("change_pct:Q"),
-            text=alt.Text("_label:N"),
-        )
+    # Main square bars from 0 -> value (baseline side stays flat)
+    bars = base.mark_bar(height=18).encode(
+        x=alt.X(
+            "start:Q",
+            scale=x_scale,
+            axis=alt.Axis(title="증감율(%)", grid=True),
+        ),
+        x2=alt.X2("end:Q"),
     )
 
-    return (bars + zero + txt).properties(height=height)
+    # Rounded cap at the far end only
+    cap = base.mark_circle(size=170, filled=True).encode(
+        x=alt.X("end:Q", scale=x_scale, axis=None),
+    )
+
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="rgba(180,196,217,0.95)").encode(
+        x=alt.X("x:Q", scale=x_scale, axis=None)
+    )
+
+    # Labels: right-align for negative, left-align for positive/zero
+    d_pos = d[d["end"] >= 0].copy()
+    d_neg = d[d["end"] < 0].copy()
+
+    txt_pos = (
+        alt.Chart(d_pos)
+        .mark_text(align="left", dx=6, fontSize=12, color="#0f172a")
+        .encode(y=alt.Y("metric:N", sort=None), x=alt.X("end:Q", scale=x_scale, axis=None), text=alt.Text("_label:N"))
+    )
+    txt_neg = (
+        alt.Chart(d_neg)
+        .mark_text(align="right", dx=-6, fontSize=12, color="#0f172a")
+        .encode(y=alt.Y("metric:N", sort=None), x=alt.X("end:Q", scale=x_scale, axis=None), text=alt.Text("_label:N"))
+    )
+
+    return (bars + cap + zero + txt_pos + txt_neg).properties(height=height)
 
 
 
