@@ -630,20 +630,11 @@ div[data-testid="stSidebar"] [data-testid="stRadio"] label{ padding-left: 10px !
 
 </style>"""
 
-def inject_css_once() -> None:
-    if st.session_state.get('_nv_css_injected'):
-        return
-    st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
-    st.session_state['_nv_css_injected'] = True
-
-inject_css_once()
-
-
+st.markdown(GLOBAL_UI_CSS + EXTRA_UI_CSS, unsafe_allow_html=True)
 
 
 def render_hero(latest: dict, build_tag: str = BUILD_TAG) -> None:
     """Naver-like topbar (sticky)."""
-    inject_css_once()
     latest = latest or {}
 
     def _dt(key_a: str, key_b: str) -> str:
@@ -1830,8 +1821,6 @@ def query_latest_dates(_engine) -> Dict[str, str]:
 
 
 
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
-
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     """최근 데이터 날짜를 1회 쿼리로 가져옵니다 (왕복/로딩 체감 개선)."""
@@ -2346,6 +2335,114 @@ def query_campaign_bundle(
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_agg_slice(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
+    """캠페인 탭(메인 표/드롭다운)용: 기간 범위에서 캠페인 단위로 **집계된** 데이터만 조회합니다.
+
+    - (dt x 캠페인)처럼 큰 슬라이스를 가져오지 않고, 바로 캠페인 단위로 SUM 집계 → 초기 로딩/필터 전환 체감 개선
+    - 담당자/업체 필터는 cids로 DB에서 1차 축소(가능한 경우)
+    - campaign_tp → campaign_type(라벨)로 매핑
+    """
+    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_account_meta"):
+        return pd.DataFrame(columns=[
+            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
+            "imp","clk","cost","conv","sales"
+        ])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    where_cid = ""
+    if cids:
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+
+    join_campaign = ""
+    select_campaign = "''::text AS campaign_name, ''::text AS campaign_tp"
+    group_campaign = ""
+    if table_exists(_engine, "dim_campaign"):
+        join_campaign = "LEFT JOIN dim_campaign c ON c.customer_id::text = f.customer_id::text AND c.campaign_id = f.campaign_id"
+        select_campaign = "COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name, COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp"
+        group_campaign = ", c.campaign_name, c.campaign_tp"
+
+    sql = f"""
+    SELECT
+      f.customer_id::text AS customer_id,
+      COALESCE(NULLIF(m.account_name,''),'') AS account_name,
+      COALESCE(NULLIF(m.manager,''),'') AS manager,
+      f.campaign_id,
+      {select_campaign},
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    JOIN dim_account_meta m
+      ON m.customer_id = f.customer_id::text
+    {join_campaign}
+    WHERE f.dt BETWEEN :d1 AND :d2
+      {where_cid}
+    GROUP BY f.customer_id::text, m.account_name, m.manager, f.campaign_id{group_campaign}
+    """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type",
+            "imp","clk","cost","conv","sales"
+        ])
+
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
+    for c in ["imp","clk","cost","conv","sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["campaign_tp"] = df.get("campaign_tp", "").astype(str)
+    df["campaign_type"] = df["campaign_tp"].map(campaign_tp_to_label)
+    df.loc[df["campaign_type"].astype(str).str.strip() == "", "campaign_type"] = "기타"
+    df = df[df["campaign_type"].astype(str).str.strip() != "기타"]
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_campaign_timeseries_one(_engine, d1: date, d2: date, customer_id: int, campaign_id: int) -> pd.DataFrame:
+    """특정 캠페인 1개에 대한 일별 추세(상세 보기용)."""
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
+    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
+
+    sql = f"""
+    SELECT
+      f.dt::date AS dt,
+      SUM(f.imp)  AS imp,
+      SUM(f.clk)  AS clk,
+      SUM(f.cost) AS cost,
+      SUM(f.conv) AS conv,
+      {sales_expr} AS sales
+    FROM fact_campaign_daily f
+    WHERE f.dt BETWEEN :d1 AND :d2
+      AND f.customer_id::text = :cid
+      AND f.campaign_id = :camp
+    GROUP BY f.dt::date
+    ORDER BY f.dt::date
+    """
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": int(campaign_id)})
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+
+    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+    for c in ["imp","clk","cost","conv","sales"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    return df.reset_index(drop=True)
+
+
+
 def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
     """캠페인 탭용: (일자 x 캠페인) 슬라이스를 1회 조회해 캐시합니다.
     날짜 범위만 바뀔 때 DB를 치고, 이후 담당자/업체/유형/캠페인 선택은 pandas 필터로 처리합니다.
@@ -3810,6 +3907,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.divider()
 
+    show_trend = st.toggle('추세 보기', value=False, key='ov_show_trend')
+    if not show_trend:
+        return
+
     # 상세(추세/Top) - 오류가 나도 KPI는 유지
     try:
         ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
@@ -4014,6 +4115,7 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     return df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
 
+
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         st.info("필터를 변경하면 즉시 반영됩니다.")
@@ -4023,45 +4125,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.caption(f"기간: {f['start']} ~ {f['end']}")
 
     top_n = int(f.get("top_n_campaign", 200))
-    cids = tuple(f.get("selected_customer_ids", []) or [])
-    type_sel = tuple(f.get("type_sel", tuple()) or tuple())
+    cids = tuple(sorted(tuple(f.get("selected_customer_ids", []) or [])))
+    type_sel = tuple(sorted(tuple(f.get("type_sel", tuple()) or tuple())))
 
     # -----------------------------
-    # 1) 날짜 범위만 DB 조회 (캐시). 이후 필터는 pandas에서 처리
+    # 1) 메인용: 캠페인 단위 집계(작은 결과)만 조회 (캐시)
     # -----------------------------
-    range_sig = (str(f["start"]), str(f["end"]))
     try:
-        df_daily_all = query_campaign_daily_slice(engine, f["start"], f["end"])
-        st.session_state["_camp_daily_last"] = df_daily_all
+        df_all = query_campaign_agg_slice(engine, f["start"], f["end"], cids)
+        st.session_state["_camp_agg_last"] = df_all
     except Exception:
-        df_daily_all = st.session_state.get("_camp_daily_last", pd.DataFrame())
+        df_all = st.session_state.get("_camp_agg_last", pd.DataFrame())
         st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
 
-    if df_daily_all is None or df_daily_all.empty:
+    if df_all is None or df_all.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    # range 단위로 캠페인 집계(= rerun마다 groupby 재계산 방지)
-    if st.session_state.get("_camp_range_sig") != range_sig:
-        st.session_state["_camp_range_sig"] = range_sig
-        dims = ["customer_id", "campaign_id", "account_name", "manager", "campaign_name", "campaign_tp", "campaign_type"]
-        agg_all = df_daily_all.groupby(dims, as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum()
-        agg_all = add_rates(agg_all)
-        st.session_state["_camp_agg_all"] = agg_all
-        # 기본값 리셋
-        st.session_state["camp_filter_key"] = "ALL"
+    # 파생지표(CTR/CPC/CPA/ROAS) 계산
+    df_all = add_rates(df_all)
 
-    agg_all = st.session_state.get("_camp_agg_all", pd.DataFrame())
-    if agg_all is None or agg_all.empty:
-        st.warning("캠페인 집계 결과가 비어있습니다.")
-        return
-
-    # -----------------------------
-    # 2) 담당자/업체/유형 필터는 pandas 필터로 즉시 반영
-    # -----------------------------
-    df_all = agg_all
-    if cids:
-        df_all = df_all[df_all["customer_id"].isin([int(x) for x in cids])]
+    # 캠페인 유형 필터 (pandas)
     if type_sel:
         df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
 
@@ -4070,13 +4154,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     # -----------------------------
-    # 3) 캠페인 선택(B 방식)
+    # 2) 캠페인 선택(B 방식)
     # -----------------------------
-    base_sig = (range_sig, tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
-    if st.session_state.get("_camp_base_sig") != base_sig:
-        st.session_state["_camp_base_sig"] = base_sig
-        st.session_state["camp_filter_key"] = "ALL"
-
     opt = df_all[["customer_id", "campaign_id", "account_name", "campaign_name", "campaign_type", "cost"]].copy()
     opt["account_name"] = opt.get("account_name", "").astype(str).fillna("").str.strip()
     opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip()
@@ -4111,25 +4190,25 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         df = df[df_key == sel_key].copy()
 
     # -----------------------------
-    # 4) 상세(추세/Top5/도넛) - toggle ON일 때만 계산/렌더
+    # 3) 상세(추세/Top5/도넛) - toggle ON일 때만 DB/차트 작업 수행
     # -----------------------------
     if show_detail:
         st.markdown("### 📈 기간 추세")
-        dft = df_daily_all.copy()
-        if cids:
-            dft = dft[dft["customer_id"].isin([int(x) for x in cids])]
-        if type_sel:
-            dft = dft[dft.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
-        if sel_key != "ALL":
-            key_series = dft["customer_id"].astype(str) + "|" + dft["campaign_id"].astype(str)
-            dft = dft[key_series == sel_key].copy()
 
         ts = pd.DataFrame()
-        if dft is not None and not dft.empty:
-            ts = dft.groupby("dt", as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum().sort_values("dt")
-            ts = add_rates(ts)
+        try:
+            if sel_key == "ALL":
+                # 전체(선택 필터 반영) - row 수가 적어서 DB 1회로 충분
+                ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+            else:
+                cid_s, camp_s = sel_key.split("|", 1)
+                ts = query_campaign_timeseries_one(engine, f["start"], f["end"], int(cid_s), int(camp_s))
+        except Exception:
+            ts = pd.DataFrame()
 
         if ts is not None and not ts.empty:
+            ts = add_rates(ts)
+
             total_cost = float(ts["cost"].sum())
             total_clk = float(ts["clk"].sum())
             total_conv = float(ts["conv"].sum())
@@ -4146,7 +4225,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             with k4:
                 ui_metric_or_stmetric("총 ROAS", f"{total_roas:.0f}%", "매출/광고비", key="kpi_camp_roas")
 
-            # 비교 패널(필요 시) - 기존 기능 유지
+            # 비교 패널(기능 유지)
             try:
                 render_period_compare_panel(engine, "campaign", f["start"], f["end"], cids, type_sel, key_prefix="camp", expanded=False)
             except Exception:
@@ -4188,8 +4267,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 render_chart(ch)
 
             st.divider()
+        else:
+            st.info("추세 데이터가 없습니다.")
 
-        # TOP5 (비용/클릭/전환) - 현재 선택(캠페인 포함) 기준
+        # TOP5 (비용/클릭/전환) - 현재 선택 기준
         top_cost = df.sort_values("cost", ascending=False).head(5)
         top_clk = df.sort_values("clk", ascending=False).head(5)
         top_conv = df.sort_values("conv", ascending=False).head(5)
@@ -4224,7 +4305,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.divider()
 
     # -----------------
-    # 5) Main table (fast) - 현재 선택 기준
+    # 4) Main table - 현재 선택 기준
     # -----------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
@@ -4268,13 +4349,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     summary_df = build_campaign_summary_rows_from_numeric(main_df, campaign_type_col="campaign_type", campaign_name_col="campaign_name")
     if summary_df is not None and not summary_df.empty:
         summary_df = summary_df[cols].copy()
-        display_df = pd.concat([summary_df, view_df], ignore_index=True)
     else:
         summary_df = pd.DataFrame(columns=cols)
-        display_df = view_df
 
     render_pinned_summary_grid(view_df, summary_df, key="camp_main_grid", height=560)
-    render_download_compact(display_df, f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
+    render_download_compact(view_df if summary_df.empty else pd.concat([summary_df, view_df], ignore_index=True),
+                            f"성과_캠페인_TOP{top_n}_{f['start']}_{f['end']}", "campaign", "camp")
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
