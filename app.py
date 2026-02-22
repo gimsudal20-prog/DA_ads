@@ -28,9 +28,6 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-# Plotly (preferred for charts)
-import plotly.express as px
-import plotly.graph_objects as go
 
 
 # Optional UI components (shadcn-ui style)
@@ -1888,7 +1885,7 @@ def _chart_timeseries(
     y_format: str = ",.0f",
     height: int = 320,
 ):
-    """Curved time-series line (Plotly)."""
+    """Altair time-series line chart (fast, clean)."""
     if df is None or df.empty:
         return None
     if x_col not in df.columns or y_col not in df.columns:
@@ -1899,20 +1896,26 @@ def _chart_timeseries(
     d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
     d = d.dropna(subset=[x_col]).sort_values(x_col)
 
-    fig = px.line(d, x=x_col, y=y_col)
-    fig.update_traces(mode="lines", line_shape="spline")
-    fig.update_layout(
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        xaxis_title="",
-        yaxis_title=y_title or "",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    # 한글/가독: 날짜는 MM/DD로 표시 (요일까지 원하면 여기서 labelExpr 확장 가능)
+    base = (
+        alt.Chart(d)
+        .encode(
+            x=alt.X(
+                f"{x_col}:T",
+                axis=alt.Axis(title=None, format="%m/%d", labelAngle=0),
+            ),
+            y=alt.Y(f"{y_col}:Q", axis=alt.Axis(title=y_title or None, format=y_format)),
+            tooltip=[
+                alt.Tooltip(f"{x_col}:T", title="일자", format="%Y-%m-%d"),
+                alt.Tooltip(f"{y_col}:Q", title=y_title or y_col, format=y_format),
+            ],
+        )
+        .properties(height=height)
     )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(180,196,217,0.35)", zeroline=False, tickformat=y_format)
-    return fig
+
+    line = base.mark_line(interpolate="monotone", strokeWidth=2)
+    pts = base.mark_point(size=40, opacity=0.0)  # hover target
+    return (line + pts).interactive(bind_y=False)
 
 
 def _disambiguate_label(df: pd.DataFrame, base_col: str, parts: List[str], id_col: Optional[str] = None, max_len: int = 38) -> pd.Series:
@@ -1955,11 +1958,10 @@ def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_title: str = "", top_n: int = 10, height: int = 420):
-    """Rounded progress-style bars (Plotly overlay). x_title is kept for backward-compatibility."""
+    """Altair progress-style horizontal bars (background + value + label)."""
     if df is None or df.empty:
         return None
 
-    # unit inference
     unit = "원" if ("원" in str(x_title)) else ("%" if ("%" in str(x_title)) else "")
 
     d = df[[label_col, value_col]].copy()
@@ -1970,11 +1972,11 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
     d = d.groupby(label_col, as_index=False)[value_col].sum()
 
     d = d.sort_values(value_col, ascending=False).head(int(top_n))
-    d = d.sort_values(value_col, ascending=True)  # 위에서부터 큰값 보이게(가독)
+    d = d.sort_values(value_col, ascending=True)
 
-    labels = d[label_col].tolist()
-    vals = d[value_col].tolist()
-    max_val = max(vals) if vals else 0
+    vmax = float(d[value_col].max()) if len(d) else 0.0
+    if vmax <= 0:
+        vmax = 1.0
 
     def _fmt(v: float) -> str:
         if unit == "원":
@@ -1983,43 +1985,38 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
             return f"{v:.1f}%"
         return f"{format_number_commas(v)}{unit}"
 
-    fig = go.Figure()
+    d["_label_val"] = d[value_col].map(lambda v: _fmt(float(v)))
+
     # background bar
-    fig.add_trace(
-        go.Bar(
-            x=[max_val] * len(labels),
-            y=labels,
-            orientation="h",
-            marker=dict(color="rgba(180,196,217,0.22)"),
-            hoverinfo="skip",
-        )
-    )
-    # actual bar
-    fig.add_trace(
-        go.Bar(
-            x=vals,
-            y=labels,
-            orientation="h",
-            marker=dict(color="#3D9DF2"),
-            text=[_fmt(v) for v in vals],
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate="%{y}<br>%{x:,}" + (unit if unit != "원" else "원") + "<extra></extra>",
+    bg = (
+        alt.Chart(d)
+        .mark_bar(cornerRadiusEnd=10, cornerRadiusTopRight=10, cornerRadiusBottomRight=10, color="rgba(180,196,217,0.22)")
+        .encode(
+            x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=[0, vmax]), axis=None),
+            y=alt.Y(f"{label_col}:N", sort=None, axis=alt.Axis(title=None, labelLimit=260)),
         )
     )
 
-    fig.update_layout(
-        barmode="overlay",
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="",
-        yaxis_title="",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    val = (
+        alt.Chart(d)
+        .mark_bar(cornerRadiusEnd=10, cornerRadiusTopRight=10, cornerRadiusBottomRight=10, color="#3D9DF2")
+        .encode(
+            x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=[0, vmax]), axis=alt.Axis(title=None, grid=False)),
+            y=alt.Y(f"{label_col}:N", sort=None, axis=None),
+        )
     )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
-    return fig
+
+    txt = (
+        alt.Chart(d)
+        .mark_text(align="left", dx=6, color="#0f172a", fontSize=12)
+        .encode(
+            x=alt.X(f"{value_col}:Q", scale=alt.Scale(domain=[0, vmax]), axis=None),
+            y=alt.Y(f"{label_col}:N", sort=None, axis=None),
+            text=alt.Text("_label_val:N"),
+        )
+    )
+
+    return (bg + val + txt).properties(height=height)
 
 
 
@@ -2577,10 +2574,17 @@ def query_keyword_bundle(
     if df is None or df.empty:
         return pd.DataFrame()
 
+    
     # typing / numeric safety
-    for c in ["imp", "clk", "cost", "conv", "sales", "rn_cost", "rn_clk", "rn_conv"]:
+    for c in ["imp", "clk", "cost", "conv", "sales"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    # rn_* 는 NULL을 0으로 만들면 TOP10 필터가 깨짐(0도 <=10이니까)
+    for c in ["rn_cost", "rn_clk", "rn_conv"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")  # keep NaN
+
     if "customer_id" in df.columns:
         df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
 
@@ -2721,67 +2725,82 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
 
 
 def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
-    """Delta bar chart: + blue, - red (Plotly)."""
+    """Altair diverging delta bars (0 centered). 상승=빨강, 하락=파랑."""
     if delta_df is None or delta_df.empty:
         return None
 
     d = delta_df.copy()
     d["metric"] = d["metric"].astype(str)
-    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0)
-    d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
+    d["change_pct"] = pd.to_numeric(d["change_pct"], errors="coerce").fillna(0.0)
 
-    # 원하는 순서 유지
+    # keep desired order (top -> bottom)
     if "order" in d.columns:
         d = d.sort_values("order", ascending=False)
 
-    fig = px.bar(
-        d,
-        x="change_pct",
-        y="metric",
-        orientation="h",
-        color="dir",
-        color_discrete_map={"up": "#056CF2", "down": "#EF4444", "flat": "#B4C4D9"},
-        text=d["change_pct"].map(_pct_to_str),
-    )
-
-    # 0 기준선
-    fig.add_vline(x=0, line_width=1, line_color="rgba(180,196,217,0.8)")
-
-    # 축 범위 여유
+    # symmetric domain around 0
     mn = float(d["change_pct"].min())
     mx = float(d["change_pct"].max())
-    pad = max(2.0, (mx - mn) * 0.12)
-    fig.update_xaxes(range=[mn - pad, mx + pad])
+    L = max(abs(mn), abs(mx), 1.0)
+    pad = max(2.0, L * 0.12)
+    dom = [-L - pad, L + pad]
 
-    fig.update_traces(textposition="outside", cliponaxis=False)
-    fig.update_layout(
-        template="plotly_white",
-        height=height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-        xaxis_title="증감율(%)",
-        yaxis_title="",
-        font=dict(family="Pretendard, Apple SD Gothic Neo, Malgun Gothic, sans-serif"),
+    d["dir"] = d["change_pct"].apply(lambda x: "up" if x > 0 else ("down" if x < 0 else "flat"))
+    d["_label"] = d["change_pct"].map(_pct_to_str)
+
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#056CF2", "#B4C4D9"])
+
+    base = alt.Chart(d).encode(
+        y=alt.Y("metric:N", sort=None, axis=alt.Axis(title=None, labelLimit=120)),
+        x=alt.X("change_pct:Q", scale=alt.Scale(domain=dom), axis=alt.Axis(title="증감율(%)", grid=True)),
+        color=alt.Color("dir:N", scale=color_scale, legend=None),
+        tooltip=[
+            alt.Tooltip("metric:N", title="지표"),
+            alt.Tooltip("change_pct:Q", title="증감율(%)", format=".1f"),
+        ],
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(180,196,217,0.25)", zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
-    return fig
+
+    bars = base.mark_bar(height=18, cornerRadiusEnd=10)
+
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="rgba(180,196,217,0.9)").encode(x="x:Q")
+
+    txt = (
+        alt.Chart(d)
+        .mark_text(align="left", dx=6, fontSize=12, color="#0f172a")
+        .encode(
+            y=alt.Y("metric:N", sort=None),
+            x=alt.X("change_pct:Q"),
+            text=alt.Text("_label:N"),
+        )
+    )
+
+    return (bars + zero + txt).properties(height=height)
 
 
 
 def render_chart(obj, *, height: int | None = None) -> None:
-    """Render a chart object with Streamlit. Plotly preferred."""
+    """Render a chart object with Streamlit (Altair preferred)."""
     if obj is None:
         return
+    # Altair
+    if isinstance(obj, alt.Chart):
+        st.altair_chart(obj, use_container_width=True)
+        return
+    # Vega-Lite charts composed (LayerChart etc.)
     try:
-        mod = obj.__class__.__module__
+        if obj.__class__.__module__.startswith("altair"):
+            st.altair_chart(obj, use_container_width=True)
+            return
     except Exception:
-        mod = ""
-    if mod.startswith("plotly"):
-        st.plotly_chart(obj, use_container_width=True, config={"displayModeBar": False})
-    else:
-        # fallback (Altair etc.)
-        render_chart(obj)
+        pass
+    # Fallback: try Streamlit native
+    try:
+        st.altair_chart(obj, use_container_width=True)
+    except Exception:
+        try:
+            st.write(obj)
+        except Exception:
+            pass
+
 
 def render_period_compare_panel(
     engine,
@@ -3376,23 +3395,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.markdown("#### ✅ 전환 TOP5")
                 ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key="camp_top5_conv", height=240)
 
-        with st.expander("📊 캠페인 광고비 TOP10 그래프", expanded=False):
-            tmp = bundle.copy()
-            tmp = _attach_account_name(tmp, meta)
-            tmp["campaign_name"] = tmp["campaign_name"].astype(str).map(str.strip)
-            # 같은 캠페인명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-            g = tmp.groupby(["customer_id", "campaign_name"], as_index=False)["cost"].sum()
-            g = _attach_account_name(g, meta)
-
-            g["label"] = g["account_name"].astype(str).str.strip() + " · " + g["campaign_name"].astype(str).str.strip()
-
-            ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-            if ch is not None:
-                render_chart(ch)
-            else:
-                st.info("그래프 표시 불가")
-
-        st.divider()
+    st.divider()
 
     # -----------------
     # 4) Main table (fast)
@@ -3468,9 +3471,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         return
 
     # TOP10
-    top_cost = bundle[bundle["rn_cost"] <= 10].sort_values("rn_cost")
-    top_clk = bundle[bundle["rn_clk"] <= 10].sort_values("rn_clk")
-    top_conv = bundle[bundle["rn_conv"] <= 10].sort_values("rn_conv")
+    top_cost = bundle[bundle["rn_cost"].notna() & bundle["rn_cost"].between(1, 10)].sort_values("rn_cost")
+    top_clk = bundle[bundle["rn_clk"].notna() & bundle["rn_clk"].between(1, 10)].sort_values("rn_clk")
+    top_conv = bundle[bundle["rn_conv"].notna() & bundle["rn_conv"].between(1, 10)].sort_values("rn_conv")
 
     def _fmt_top(df: pd.DataFrame, metric: str) -> pd.DataFrame:
         if df is None or df.empty:
@@ -3500,28 +3503,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.markdown("#### ✅ 전환 TOP10")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
 
-    
-    with st.expander("📊 키워드 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.copy()
-        tmp = _attach_account_name(tmp, meta)
-        tmp["keyword"] = tmp["keyword"].astype(str).map(str.strip)
-        # 같은 키워드명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-        g = tmp.groupby(["customer_id", "keyword"], as_index=False)["cost"].sum()
-        g = _attach_account_name(g, meta)
-
-        multi_acc = g["customer_id"].nunique() > 1
-        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["keyword"]}' if multi_acc else r["keyword"], axis=1)
-
-        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-        if ch is not None:
-            render_chart(ch)
-        else:
-            st.info("그래프 표시 불가")
-
-
     st.divider()
     # Top N list (광고비 기준)
-    df = bundle[bundle["rn_cost"] <= top_n].sort_values("rn_cost").copy()
+    df = bundle[bundle["rn_cost"].notna() & bundle["rn_cost"].between(1, top_n)].sort_values("rn_cost").copy()
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
     df = df.dropna(subset=["customer_id"]).copy()
     df["customer_id"] = df["customer_id"].astype("int64")
