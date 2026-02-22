@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.18 - 초고속 덤프트럭 엔진)
-- 무한 멈춤(Hang) 원인 해결: Pandas의 느려터진 1줄씩 Insert를 버리고, psycopg2 execute_values로 수만 건 1초 컷 적용
-- 진행 상황 실시간 중계: 어디서 작업 중인지 알 수 없던 답답함 해소를 위해 상세 로그(API 호출/DB 적재 등) 추가
-- 안정성: 임시 테이블 생성(CREATE TABLE) 완전 제거, 완벽한 1줄 서기 무사고 유지
+collector.py - 네이버 검색광고 수집기 (v9.19 - 초고속 덤프트럭 호환성 패치)
+- 무한 멈춤(Hang) 원인 해결: psycopg2 execute_values(덤프트럭) 유지
+- 에러 픽스: SQLAlchemy 버전에 따라 raw_connection()이 Context Manager(with 구문)를 지원하지 않는 문제(_ConnectionFairy 에러)를 전통적인 try-finally 구문으로 해결
+- 안정성: 1줄 서기(max_workers=1) 유지
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.18_TURBO_ENGINE] ===", flush=True)
-print("=== C언어 기반 덤프트럭 초고속 벌크 적재 ===", flush=True)
+print("=== [VERSION: v9.19_FAIRY_FIX] ===", flush=True)
+print("=== 덤프트럭 호환성 완벽 패치 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -196,12 +196,11 @@ def ensure_tables(engine: Engine):
             time.sleep(3)
             if attempt == 2: raise e
 
-# 🌟 30분 멈춤의 원흉을 박살낸 초고속 덤프트럭 기능 (execute_values)
+# 🌟 v9.19 핵심 패치: _ConnectionFairy 에러 방지를 위해 with 구문 대신 정통 try-finally 사용
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     df = df.sort_values(by=pk_cols)
-    # DB에 안전하게 들어가도록 모든 빈 값을 None으로 통일
     df = df.astype(object).where(pd.notnull(df), None)
     
     cols = list(df.columns)
@@ -217,18 +216,22 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         conflict_clause = f'ON CONFLICT ({pk_str}) DO NOTHING'
         
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
-    
-    # 데이터를 리스트형 튜플로 완벽하게 묶음 (psycopg2 전용 초고속 형태)
     tuples = list(df.itertuples(index=False, name=None))
     
     for attempt in range(3):
+        raw_conn = None
+        cur = None
         try:
-            with engine.raw_connection() as raw_conn:
-                with raw_conn.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-                raw_conn.commit()
-            break
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            # 초고속 덤프트럭 발동
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            raw_conn.commit()
+            break # 성공시 루프 탈출
         except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except: pass
             err_msg = str(e).lower()
             if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
                 log(f"⚠️ DB 연결 불안정 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
@@ -236,6 +239,13 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             else:
                 log(f"❌ Upsert Error in {table}: {e}")
                 break
+        finally:
+            if cur:
+                try: cur.close()
+                except: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except: pass
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
@@ -256,17 +266,21 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     cols = list(df.columns)
     col_names = ", ".join([f'"{c}"' for c in cols])
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s'
-    
     tuples = list(df.itertuples(index=False, name=None))
     
     for attempt in range(3):
+        raw_conn = None
+        cur = None
         try:
-            with engine.raw_connection() as raw_conn:
-                with raw_conn.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-                raw_conn.commit()
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            raw_conn.commit()
             break
         except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except: pass
             err_msg = str(e).lower()
             if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
                 log(f"⚠️ DB 사실 삽입 튕김 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
@@ -274,6 +288,13 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             else:
                 log(f"❌ Fact Insert Error in {table}: {e}")
                 break
+        finally:
+            if cur:
+                try: cur.close()
+                except: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except: pass
 
 # -------------------------
 # 4. 데이터 조회 (계층 구조)
@@ -557,7 +578,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 1줄 서기로 충돌 없이 진행
+    # 1줄 서기 무사고 모드 유지
     max_workers = 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
