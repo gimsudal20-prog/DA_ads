@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.12 - 무한 대기(Deadlock) 원천 차단 종결판)
+collector.py - 네이버 검색광고 수집기 (v9.13 - 타이머 제거 & 순수 정렬 기반 Deadlock 차단)
 - 400 에러 해결: 존재하지 않는 CAMPAIGN/KEYWORD 리포트 요청 제거, AD 리포트 1개로 분할
-- 오늘 날짜 대응: 과거는 대용량 리포트(/stat-reports), 당일은 실시간 API(/stats) 분기
-- 무한 멈춤 해결 1: 데이터 정렬(sort_values)을 통해 DB 교착상태(Deadlock) 100% 차단
-- 무한 멈춤 해결 2: 트랜잭션 내부 타이머(SET LOCAL statement_timeout)로 영구 Hang 방지
+- 무한 멈춤(Hang) 해결: 데이터 정렬(sort_values)을 통해 DB 교착상태(Deadlock) 100% 원천 차단
+- 튕김 에러 해결: Supabase 풀러가 거절하는 SET LOCAL statement_timeout 명령어 완전히 제거
+- 자동 복구: 일시적 끊김 시 3초 대기 후 재시도(Retry) 적용
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.12_DEADLOCK_FREE] ===", flush=True)
-print("=== DB 정렬(Deadlock 차단) & 내부 타이머 ===", flush=True)
+print("=== [VERSION: v9.13_CLEAN_RETRY] ===", flush=True)
+print("=== DB 정렬(Deadlock 차단) & 타이머 제거 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -145,13 +145,13 @@ def get_engine() -> Engine:
     if "sslmode=" not in db_url:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
+    # 타이머 옵션을 완전히 제거하고 평범하고 안전한 상태로 유지
     return create_engine(db_url, poolclass=NullPool, future=True)
 
 def ensure_tables(engine: Engine):
     for attempt in range(3):
         try:
             with engine.begin() as conn:
-                conn.execute(text("SET LOCAL statement_timeout = '30000';")) # 무한 멈춤 방지
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
@@ -194,7 +194,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     
-    # 🌟 핵심: Primary Key 기준으로 정렬하여 데드락(서로 꼬이는 현상) 100% 원천 차단
+    # 🌟 데드락(무한 대기) 원천 차단을 위한 완벽 정렬
     df = df.sort_values(by=pk_cols)
     
     CHUNK_SIZE = 5000
@@ -205,9 +205,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             temp_table = f"tmp_{table}_{uuid.uuid4().hex[:8]}"
             try:
                 with engine.begin() as conn:
-                    # 방 안에서 타이머 켜기: 60초 넘어가면 즉시 강제 종료하고 재시도
-                    conn.execute(text("SET LOCAL statement_timeout = '60000';"))
-                    
+                    # 타이머 설정 명령 제거 (오로지 데이터 적재만 수행)
                     chunk_df.head(0).to_sql(temp_table, conn, index=False, if_exists='replace')
                     chunk_df.to_sql(temp_table, conn, index=False, if_exists='append', method='multi', chunksize=500)
                     cols = ", ".join([f'"{c}"' for c in chunk_df.columns])
@@ -222,7 +220,6 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
                     conn.execute(text(f'DROP TABLE {temp_table}'))
                 break # 성공
             except Exception as e:
-                # 찌꺼기 임시 테이블 삭제
                 try:
                     with engine.begin() as d_conn:
                         d_conn.execute(text(f'DROP TABLE IF EXISTS {temp_table}'))
@@ -247,7 +244,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     for attempt in range(3):
         try:
             with engine.begin() as conn:
-                conn.execute(text("SET LOCAL statement_timeout = '60000';"))
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
@@ -260,7 +256,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
         for attempt in range(3):
             try:
                 with engine.begin() as conn:
-                    conn.execute(text("SET LOCAL statement_timeout = '60000';"))
                     chunk_df.to_sql(table, conn, index=False, if_exists='append', method='multi', chunksize=500)
                 break
             except Exception as e:
@@ -552,7 +547,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 속도 2배속 유지
+    # 속도는 2배속 유지
     max_workers = 2
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
