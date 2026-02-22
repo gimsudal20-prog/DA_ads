@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.17 - 호환성 에러 픽스 및 완벽 안정화)
-- 수정사항: 깃허브 환경(SQLAlchemy)에서 버전 충돌을 일으키는 executemany_mode 파라미터 제거
-- 유지사항: 좀비 락 방어막(lock_timeout=10000), 1줄 서기(max_workers=1), 네이티브 인서트(임시 테이블 0개)
+collector.py - 네이버 검색광고 수집기 (v9.18 - 초고속 덤프트럭 엔진)
+- 무한 멈춤(Hang) 원인 해결: Pandas의 느려터진 1줄씩 Insert를 버리고, psycopg2 execute_values로 수만 건 1초 컷 적용
+- 진행 상황 실시간 중계: 어디서 작업 중인지 알 수 없던 답답함 해소를 위해 상세 로그(API 호출/DB 적재 등) 추가
+- 안정성: 임시 테이블 생성(CREATE TABLE) 완전 제거, 완벽한 1줄 서기 무사고 유지
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -54,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.17_FINAL_STABLE] ===", flush=True)
-print("=== 문법 에러 해결 & 무사고 다이렉트 ===", flush=True)
+print("=== [VERSION: v9.18_TURBO_ENGINE] ===", flush=True)
+print("=== C언어 기반 덤프트럭 초고속 벌크 적재 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -144,7 +147,6 @@ def get_engine() -> Engine:
         joiner = "&" if "?" in db_url else "?"
         db_url += f"{joiner}sslmode=require"
         
-    # 버전에러를 뱉는 executemany_mode를 제거하고 안정적으로 유지 (좀비 방어막 10초 컷은 그대로 유지)
     return create_engine(
         db_url, 
         poolclass=NullPool,
@@ -194,17 +196,18 @@ def ensure_tables(engine: Engine):
             time.sleep(3)
             if attempt == 2: raise e
 
+# 🌟 30분 멈춤의 원흉을 박살낸 초고속 덤프트럭 기능 (execute_values)
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
     df = df.sort_values(by=pk_cols)
-    df = df.where(pd.notnull(df), None)
+    # DB에 안전하게 들어가도록 모든 빈 값을 None으로 통일
+    df = df.astype(object).where(pd.notnull(df), None)
     
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in pk_cols]
     
     col_names = ", ".join([f'"{c}"' for c in cols])
-    val_placeholders = ", ".join([f":{c}" for c in cols])
     pk_str = ", ".join([f'"{c}"' for c in pk_cols])
     
     if update_cols:
@@ -213,35 +216,33 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     else:
         conflict_clause = f'ON CONFLICT ({pk_str}) DO NOTHING'
         
-    sql = f'INSERT INTO {table} ({col_names}) VALUES ({val_placeholders}) {conflict_clause}'
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     
-    # 다이렉트 인서트
-    CHUNK_SIZE = 1000
-    for start_idx in range(0, len(df), CHUNK_SIZE):
-        chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
-        records = chunk_df.to_dict(orient='records')
-        
-        for attempt in range(3):
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text(sql), records)
-                time.sleep(0.1)
+    # 데이터를 리스트형 튜플로 완벽하게 묶음 (psycopg2 전용 초고속 형태)
+    tuples = list(df.itertuples(index=False, name=None))
+    
+    for attempt in range(3):
+        try:
+            with engine.raw_connection() as raw_conn:
+                with raw_conn.cursor() as cur:
+                    psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+                raw_conn.commit()
+            break
+        except Exception as e:
+            err_msg = str(e).lower()
+            if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
+                log(f"⚠️ DB 연결 불안정 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
+                time.sleep(3)
+            else:
+                log(f"❌ Upsert Error in {table}: {e}")
                 break
-            except Exception as e:
-                err_msg = str(e).lower()
-                if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
-                    log(f"⚠️ DB 연결 불안정 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
-                    time.sleep(3)
-                else:
-                    log(f"❌ Upsert Error in {table}: {e}")
-                    break
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last')
     df = df.sort_values(by=['dt', 'customer_id', pk])
-    df = df.where(pd.notnull(df), None)
+    df = df.astype(object).where(pd.notnull(df), None)
     
     for attempt in range(3):
         try:
@@ -254,28 +255,25 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             
     cols = list(df.columns)
     col_names = ", ".join([f'"{c}"' for c in cols])
-    val_placeholders = ", ".join([f":{c}" for c in cols])
-    sql = f'INSERT INTO {table} ({col_names}) VALUES ({val_placeholders})'
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s'
     
-    CHUNK_SIZE = 1000
-    for start_idx in range(0, len(df), CHUNK_SIZE):
-        chunk_df = df.iloc[start_idx:start_idx+CHUNK_SIZE]
-        records = chunk_df.to_dict(orient='records')
-        
-        for attempt in range(3):
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text(sql), records)
-                time.sleep(0.1)
+    tuples = list(df.itertuples(index=False, name=None))
+    
+    for attempt in range(3):
+        try:
+            with engine.raw_connection() as raw_conn:
+                with raw_conn.cursor() as cur:
+                    psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+                raw_conn.commit()
+            break
+        except Exception as e:
+            err_msg = str(e).lower()
+            if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
+                log(f"⚠️ DB 사실 삽입 튕김 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
+                time.sleep(3)
+            else:
+                log(f"❌ Fact Insert Error in {table}: {e}")
                 break
-            except Exception as e:
-                err_msg = str(e).lower()
-                if attempt < 2 and ("operationalerror" in err_msg or "closed" in err_msg or "timeout" in err_msg or "deadlock" in err_msg):
-                    log(f"⚠️ DB 사실 삽입 튕김 ({table}) - 재시도 {attempt+1}/3... 3초 대기")
-                    time.sleep(3)
-                else:
-                    log(f"❌ Fact Insert Error in {table}: {e}")
-                    break
 
 # -------------------------
 # 4. 데이터 조회 (계층 구조)
@@ -453,6 +451,7 @@ def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
+    log(f"   > [ {account_name} ] 네이버 API에서 데이터 구조(캠페인/키워드/소재) 조회 중...")
     camp_list = list_campaigns(customer_id)
     if not camp_list: return
     
@@ -491,13 +490,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         fields = extract_ad_creative_fields(a)
                         ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or fields["ad_title"], "status": a.get("status"), **fields})
 
+    log(f"   > [ {account_name} ] DB에 데이터 구조 초고속 적재 중...")
     upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
     upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
     if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
     if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     
     if target_date == date.today():
-        log(f"   > [ {account_name} ] 당일 데이터 실시간 수집 중 (/stats API) ...")
+        log(f"   > [ {account_name} ] 네이버 API에서 당일 실시간 성과 가져오는 중...")
         if target_camp_ids:
             raw = get_stats_range(customer_id, target_camp_ids, target_date)
             rows = [parse_stats(r, target_date, customer_id, "campaign_id") for r in raw]
@@ -513,7 +513,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             rows = [parse_stats(r, target_date, customer_id, "ad_id") for r in raw]
             replace_fact_range(engine, "fact_ad_daily", rows, customer_id, target_date)
     else:
-        log(f"   > [ {account_name} ] 대용량 AD 리포트 1회 통합 처리 중...")
+        log(f"   > [ {account_name} ] 네이버 대용량 리포트 다운로드 및 DB 쾌속 적재 중...")
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
         if ad_df is not None and not ad_df.empty:
             process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date)
@@ -557,7 +557,7 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # DB Lock을 원천적으로 막기 위해 1줄 서기로 진행 (임시 테이블이 없어져서 속도는 충분히 빠릅니다)
+    # 1줄 서기로 충돌 없이 진행
     max_workers = 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
