@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.27 - 리포트 쿼터 초과 방지 패치)
-- 핵심 패치: 네이버 API의 계정당 동시 리포트 생성 제한(Quota)을 피하기 위해, 다운로드가 완료된 리포트를 즉각 DELETE 요청하여 휴지통을 비우는 로직 추가
-- 유지 사항: 엑셀 파일(accounts.xlsx) 무적 인식, 대문짝 날짜 출력, 초고속 덤프트럭 완벽 유지
+collector.py - 네이버 검색광고 수집기 (v9.28 - TSV 컬럼 파싱 대참사 해결 및 적재량 브리핑)
+- 원인: 네이버 리포트의 헤더명(캠페인 ID)과 코드의 탐색어(캠페인아이디) 불일치로 인해 다운로드한 데이터를 전량 폐기하고 있었음
+- 해결: "캠페인id", "키워드id", "소재id" 등 실제 파일과 일치하는 키워드 추가
+- 추가: 실제로 몇 건이 DB에 적재되었는지 실시간으로 로그(📊) 출력 기능 탑재
 """
 
 from __future__ import annotations
@@ -56,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.27_QUOTA_CLEANER] ===", flush=True)
-print("=== 네이버 리포트 한도 초과 방지 (휴지통 비우기) ===", flush=True)
+print("=== [VERSION: v9.28_DATA_RESCUE] ===", flush=True)
+print("=== 컬럼 인식 오류 수정 및 적재 브리핑 탑재 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -90,7 +91,6 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
         try:
             r = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=TIMEOUT)
             if r.status_code == 403:
-                if attempt == 0: log(f"🚫 [권한 없음] {customer_id} 계정 (스킵)")
                 if raise_error: raise requests.HTTPError(f"403 Forbidden: {customer_id}", response=r)
                 return 403, None
             if r.status_code == 429 or r.status_code >= 500:
@@ -262,7 +262,6 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
         "roas": (sales / cost_ex_vat * 100) if cost_ex_vat > 0 else 0.0
     }
 
-# 🌟 V9.27 핵심: 리포트를 다 쓰면 네이버 서버에서 찌꺼기를 즉시 삭제!
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
     payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
     status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
@@ -289,33 +288,42 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
         
         r = requests.get(download_url, headers=make_headers("GET", "/report-download", customer_id), timeout=60)
         r.raise_for_status()
+        r.encoding = 'utf-8' # 한글 깨짐 방지 강제 인코딩
         return pd.read_csv(io.StringIO(r.text.strip()), sep='\t') if r.text.strip() else pd.DataFrame()
     except: 
         return pd.DataFrame()
     finally:
-        # 🌟 가장 중요한 한 줄: 다 다운받았으면 네이버 휴지통에서 즉각 삭제 (할당량 리셋)
         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date):
+def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
     if df is None or df.empty: return
+    
+    # 🌟 V9.28 핵심: 실제 네이버 엑셀에 적혀있는 "캠페인 ID", "키워드 ID"를 완벽하게 인식하도록 매칭 키워드 대폭 수정
     def _find(kws):
         for c in df.columns:
+            c_clean = str(c).replace(" ", "").lower()
             for kw in kws:
-                if kw in str(c).replace(" ", "").lower(): return c
+                if kw in c_clean: return c
         return None
-    camp_col = _find(["캠페인아이디", "campaignid", "campaign_id"])
-    kw_col   = _find(["키워드아이디", "keywordid", "keyword_id"])
-    ad_col   = _find(["소재아이디", "adid", "ad_id"])
+        
+    camp_col = _find(["캠페인id", "캠페인아이디", "campaignid", "campaign_id"])
+    kw_col   = _find(["키워드id", "키워드아이디", "keywordid", "keyword_id"])
+    ad_col   = _find(["소재id", "광고id", "소재아이디", "adid", "ad_id"])
     imp_col, clk_col, cost_col, conv_col, sales_col = _find(["노출수", "imp"]), _find(["클릭수", "clk"]), _find(["총비용", "비용", "cost"]), _find(["총전환수", "전환수", "conv"]), _find(["전환매출액", "매출액", "sales"])
+    
+    # 컬럼을 단 하나도 못 찾았다면, 핑계 대지 않고 무슨 컬럼이 있었는지 토해냄
+    if not camp_col and not kw_col and not ad_col:
+        log(f"⚠️ [ {account_name} ] 리포트 파싱 대실패! 네이버가 준 컬럼들: {list(df.columns)}")
+        return
     
     for c in [imp_col, clk_col, cost_col, conv_col, sales_col]:
         if c: df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["_cost_ex_vat"] = (df[cost_col] / 1.1).round().astype(int) if cost_col else 0
 
     def _save_agg(group_col, table_name, id_col_name):
-        if not group_col: return
+        if not group_col: return 0
         valid_df = df[df[group_col].notna() & (df[group_col].astype(str).str.strip() != '')].copy()
-        if valid_df.empty: return
+        if valid_df.empty: return 0
         g = valid_df.groupby(group_col).agg({imp_col: 'sum' if imp_col else 'max', clk_col: 'sum' if clk_col else 'max', "_cost_ex_vat": 'sum', conv_col: 'sum' if conv_col else 'max', sales_col: 'sum' if sales_col else 'max'}).reset_index()
         rows = []
         for _, row in g.iterrows():
@@ -323,10 +331,16 @@ def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_
             sales = int(row[sales_col]) if sales_col else 0
             rows.append({"dt": target_date, "customer_id": str(customer_id), id_col_name: str(row[group_col]), "imp": int(row[imp_col]) if imp_col else 0, "clk": int(row[clk_col]) if clk_col else 0, "cost": cost, "conv": float(row[conv_col]) if conv_col else 0.0, "sales": sales, "roas": (sales / cost * 100) if cost > 0 else 0.0})
         replace_fact_range(engine, table_name, rows, customer_id, target_date)
+        return len(rows)
 
-    _save_agg(camp_col, "fact_campaign_daily", "campaign_id")
-    _save_agg(kw_col, "fact_keyword_daily", "keyword_id")
-    _save_agg(ad_col, "fact_ad_daily", "ad_id")
+    c_cnt = _save_agg(camp_col, "fact_campaign_daily", "campaign_id")
+    k_cnt = _save_agg(kw_col, "fact_keyword_daily", "keyword_id")
+    a_cnt = _save_agg(ad_col, "fact_ad_daily", "ad_id")
+    
+    # 🌟 V9.28 신규: 데이터 적재에 성공했으면, 허공에 버리지 않았다는 증거를 출력!
+    total_inserted = c_cnt + k_cnt + a_cnt
+    if total_inserted > 0:
+        log(f"   📊 [ {account_name} ] 데이터 적재 완료 (캠페인 {c_cnt}건 / 키워드 {k_cnt}건 / 소재 {a_cnt}건)")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -360,7 +374,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
-        if ad_df is not None and not ad_df.empty: process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date)
+        if ad_df is not None and not ad_df.empty: process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date, account_name)
     log(f"✅ 완료: {account_name}")
 
 def main():
