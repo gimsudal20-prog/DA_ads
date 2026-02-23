@@ -1,4 +1,4 @@
-name: Manual Backfill (3 Days Chunk)
+name: Super Fast Backfill (10 Days Chunk)
 
 on:
   workflow_dispatch: # 수동 실행 버튼
@@ -8,17 +8,16 @@ jobs:
     runs-on: ubuntu-latest
     
     strategy:
-      fail-fast: false # 하나가 실패해도 나머지는 계속 진행
+      max-parallel: 1 # DB 과부하를 막기 위해 1개 묶음씩 차례대로 안전하게 실행
+      fail-fast: false
       matrix:
         period:
-          # 2월 1일 ~ 2월 21일 (3일 단위 분할)
-          - {start: "2026-02-01", end: "2026-02-03"}
-          - {start: "2026-02-04", end: "2026-02-06"}
-          - {start: "2026-02-07", end: "2026-02-09"}
-          - {start: "2026-02-10", end: "2026-02-12"}
-          - {start: "2026-02-13", end: "2026-02-15"}
-          - {start: "2026-02-16", end: "2026-02-18"}
-          - {start: "2026-02-19", end: "2026-02-21"}
+          # 1월 1일 ~ 2월 21일을 10일 단위로 크게 쪼갬
+          - {start: "2026-01-01", end: "2026-01-10"}
+          - {start: "2026-01-11", end: "2026-01-20"}
+          - {start: "2026-01-21", end: "2026-01-31"}
+          - {start: "2026-02-01", end: "2026-02-10"}
+          - {start: "2026-02-11", end: "2026-02-21"}
 
     env:
       TZ: Asia/Seoul
@@ -37,20 +36,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache pip
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Backfill Loop (Chunk)
+      - name: Run Express Backfill Loop
         shell: python
         run: |
           import subprocess
@@ -69,16 +60,15 @@ jobs:
           current = start_date
           while current <= end_date:
               d_str = current.strftime("%Y-%m-%d")
-              print(f"🚀 [수집 시작] 날짜: {d_str}")
+              print(f"\n🚀 [하이패스 수집 시작] 날짜: {d_str}")
               
               try:
-                  # collector.py 실행
-                  subprocess.run(["python", "collector.py", "--date", d_str], check=True)
+                  # 🌟 핵심: --skip_dim 옵션을 켜서 구조 수집을 건너뛰고 쾌속 질주!
+                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim"], check=True)
               except subprocess.CalledProcessError:
                   print(f"❌ 실패: {d_str}")
-                  # 하나가 실패해도 다음 날짜 진행
               
               current += timedelta(days=1)
-              time.sleep(10) # 넉넉하게 10초 대기하여 DB 과부하 방지
+              time.sleep(3) # 날짜 넘어갈 때 아주 짧은 휴식
 
-          print("✅ 해당 구간 수집 완료")
+          print(f"✅ {start_str} ~ {end_str} 구간 쾌속 수집 완료!")
