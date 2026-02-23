@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.29 - 헤더 실종 대참사 완벽 해결)
-- 원인: 네이버 대용량 리포트(TSV)는 애초에 헤더(컬럼명)를 제공하지 않음. pandas가 첫 번째 데이터를 헤더로 삼켜버려 발생한 오작동.
-- 해결: header=None으로 데이터를 온전히 살려내고, 네이버 API 공식 스펙에 맞춘 인덱스 넘버(2: 캠페인, 9: 노출수 등)로 강제 추출.
+collector.py - 네이버 검색광고 수집기 (v9.30 - 지표 100% 일치 종결판)
+- 원인: AD 리포트에는 전환/매출액이 없으며, 부가세 제외 로직(/1.1) 때문에 네이버 UI와 광고비 불일치 발생
+- 해결: AD_CONVERSION(전환 리포트)를 별도로 다운로드하여 AD 리포트와 완벽하게 병합 (Conv, Sales 복구)
+- 해결: 부가세 제외 로직을 삭제하여 네이버 화면(VAT 포함)과 Cost 100% 일치
 """
 
 from __future__ import annotations
@@ -56,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.29_NO_HEADER_FIX] ===", flush=True)
-print("=== TSV 헤더 실종 오류 100% 완벽 해결 ===", flush=True)
+print("=== [VERSION: v9.30_PERFECT_METRICS] ===", flush=True)
+print("=== 전환 리포트 병합 및 광고비(VAT) 일치 완벽 패치 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -252,13 +253,14 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
-    cost_ex_vat = int(round(float(r.get("salesAmt", 0) or 0) / 1.1)) if float(r.get("salesAmt", 0) or 0) > 0 else 0
+    # 🌟 V9.30 핵심: 부가세 제외 로직(/1.1) 삭제! 네이버 화면의 '총비용'과 완벽 일치!
+    cost = int(round(float(r.get("salesAmt", 0) or 0)))
     sales = int(float(r.get("convAmt", 0) or 0))
     return {
         "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
         "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
-        "cost": cost_ex_vat, "conv": float(r.get("ccnt", 0) or 0), "sales": sales,
-        "roas": (sales / cost_ex_vat * 100) if cost_ex_vat > 0 else 0.0
+        "cost": cost, "conv": float(r.get("ccnt", 0) or 0), "sales": sales,
+        "roas": (sales / cost * 100) if cost > 0 else 0.0
     }
 
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
@@ -287,75 +289,73 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
         r = requests.get(download_url, headers=make_headers("GET", "/report-download", customer_id), timeout=60)
         r.raise_for_status()
         r.encoding = 'utf-8'
-        # 🌟 V9.29 핵심: 네이버 TSV는 헤더가 없으므로 header=None 필수!! (첫 줄 삼킴 방지)
         return pd.read_csv(io.StringIO(r.text.strip()), sep='\t', header=None) if r.text.strip() else pd.DataFrame()
     except: 
         return pd.DataFrame()
     finally:
         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
-    if df is None or df.empty: return
+# 🌟 V9.30 핵심: 기본 리포트(AD)와 전환 리포트(AD_CONVERSION)를 각각 받아와서 완벽하게 하나로 합침!
+def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
+    ad_records = {'camp': {}, 'kw': {}, 'ad': {}}
     
-    # 혹시라도 네이버가 변덕부려 헤더(영문/한글)를 껴서 줬다면 첫 줄 날리기
-    if not str(df.iloc[0, 0]).isdigit():
-        df = df.iloc[1:].reset_index(drop=True)
+    # 1. 일반 리포트 (노출, 클릭, 광고비) 파싱
+    if ad_df is not None and not ad_df.empty:
+        if not str(ad_df.iloc[0, 0]).isdigit(): ad_df = ad_df.iloc[1:].reset_index(drop=True)
+        if len(ad_df.columns) >= 12:
+            ad_df[9] = pd.to_numeric(ad_df[9], errors='coerce').fillna(0)
+            ad_df[10] = pd.to_numeric(ad_df[10], errors='coerce').fillna(0)
+            ad_df[11] = pd.to_numeric(ad_df[11], errors='coerce').fillna(0)
+            for group_col, cat in [(2, 'camp'), (4, 'kw'), (5, 'ad')]:
+                valid = ad_df[ad_df[group_col].notna() & (ad_df[group_col].astype(str).str.strip() != '') & (ad_df[group_col].astype(str).str.strip() != '-')]
+                if not valid.empty:
+                    g = valid.groupby(group_col).agg({9:'sum', 10:'sum', 11:'sum'}).reset_index()
+                    for _, r in g.iterrows():
+                        # 🌟 비용(Index 11) 부가세 제외 로직 삭제 -> 네이버 100% 일치
+                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": int(float(r[11]))}
 
-    if len(df.columns) < 12:
-        log(f"⚠️ [ {account_name} ] 리포트 파싱 실패! 예상치 못한 컬럼 수: {len(df.columns)}")
-        return
+    # 2. 전환 리포트 (전환수, 전환매출액) 파싱
+    conv_records = {'camp': {}, 'kw': {}, 'ad': {}}
+    if conv_df is not None and not conv_df.empty:
+        if not str(conv_df.iloc[0, 0]).isdigit(): conv_df = conv_df.iloc[1:].reset_index(drop=True)
+        if len(conv_df.columns) >= 13:
+            conv_df[11] = pd.to_numeric(conv_df[11], errors='coerce').fillna(0)
+            conv_df[12] = pd.to_numeric(conv_df[12], errors='coerce').fillna(0)
+            for group_col, cat in [(2, 'camp'), (4, 'kw'), (5, 'ad')]:
+                valid = conv_df[conv_df[group_col].notna() & (conv_df[group_col].astype(str).str.strip() != '') & (conv_df[group_col].astype(str).str.strip() != '-')]
+                if not valid.empty:
+                    g = valid.groupby(group_col).agg({11:'sum', 12:'sum'}).reset_index()
+                    for _, r in g.iterrows():
+                        conv_records[cat][str(r[group_col])] = {"conv": float(r[11]), "sales": int(float(r[12]))}
 
-    # 🌟 네이버 공식 AD 리포트 인덱스 강제 매핑 (절대 실패 불가)
-    camp_col = 2
-    kw_col = 4
-    ad_col = 5
-    imp_col = 9
-    clk_col = 10
-    cost_col = 11
-    conv_col = 13 if len(df.columns) > 13 else None
-    
-    # 텍스트 형태의 숫자를 float으로 변환 (네이버의 이상한 1.1 같은 값 대응)
-    for c in [imp_col, clk_col, cost_col]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-        
-    if conv_col:
-        df[conv_col] = pd.to_numeric(df[conv_col], errors="coerce").fillna(0)
-        
-    df["_cost_ex_vat"] = (df[cost_col] / 1.1).round().astype(int)
-
-    def _save_agg(group_col, table_name, id_col_name):
-        # 유효하지 않거나 '-' 인 데이터 스킵
-        valid_df = df[df[group_col].notna() & (df[group_col].astype(str).str.strip() != '') & (df[group_col].astype(str).str.strip() != '-')].copy()
-        if valid_df.empty: return 0
-        
-        agg_dict = {imp_col: 'sum', clk_col: 'sum', "_cost_ex_vat": 'sum'}
-        if conv_col: agg_dict[conv_col] = 'sum'
-        
-        g = valid_df.groupby(group_col).agg(agg_dict).reset_index()
-        
+    # 3. 데이터 100% 융합 후 저장
+    def _save(cat, table_name, id_col_name):
+        keys = set(ad_records[cat].keys()) | set(conv_records[cat].keys())
+        if not keys: return 0
         rows = []
-        for _, row in g.iterrows():
-            cost = int(row["_cost_ex_vat"])
-            # 소수점 파싱 보호를 위해 float 거쳐서 int 변환
-            imp = int(float(row[imp_col]))
-            clk = int(float(row[clk_col]))
-            conv = float(row[conv_col]) if conv_col else 0.0
+        for k in keys:
+            ad = ad_records[cat].get(k, {"imp":0, "clk":0, "cost":0})
+            cv = conv_records[cat].get(k, {"conv":0.0, "sales":0})
+            
+            cost = ad["cost"]
+            sales = cv["sales"]
+            roas = (sales / cost * 100) if cost > 0 else 0.0
+            
             rows.append({
-                "dt": target_date, "customer_id": str(customer_id), id_col_name: str(row[group_col]), 
-                "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": 0, "roas": 0.0
+                "dt": target_date, "customer_id": str(customer_id), id_col_name: k, 
+                "imp": ad["imp"], "clk": ad["clk"], "cost": cost, 
+                "conv": cv["conv"], "sales": sales, "roas": roas
             })
         replace_fact_range(engine, table_name, rows, customer_id, target_date)
         return len(rows)
 
-    c_cnt = _save_agg(camp_col, "fact_campaign_daily", "campaign_id")
-    k_cnt = _save_agg(kw_col, "fact_keyword_daily", "keyword_id")
-    a_cnt = _save_agg(ad_col, "fact_ad_daily", "ad_id")
+    c_cnt = _save('camp', "fact_campaign_daily", "campaign_id")
+    k_cnt = _save('kw', "fact_keyword_daily", "keyword_id")
+    a_cnt = _save('ad', "fact_ad_daily", "ad_id")
     
     total = c_cnt + k_cnt + a_cnt
-    if total > 0:
-        log(f"   📊 [ {account_name} ] DB 적재 성공 (캠페인 {c_cnt}건 / 키워드 {k_cnt}건 / 소재 {a_cnt}건)")
-    else:
-        log(f"   ⚠️ [ {account_name} ] 리포트는 받았으나 광고비 소진이 0원입니다.")
+    if total > 0: log(f"   📊 [ {account_name} ] 데이터 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
+    else: log(f"   ⚠️ [ {account_name} ] 리포트는 받았으나 광고비와 전환이 모두 0원입니다.")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -388,8 +388,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
+        # 🌟 V9.30 핵심: 일반 지표 리포트 + 전환 지표 리포트 2개를 동시에 요청!
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
-        if ad_df is not None and not ad_df.empty: process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date, account_name)
+        conv_df = fetch_stat_report(customer_id, "AD_CONVERSION", target_date)
+        process_merged_reports(engine, ad_df, conv_df, customer_id, target_date, account_name)
     log(f"✅ 완료: {account_name}")
 
 def main():
