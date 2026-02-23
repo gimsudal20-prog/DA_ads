@@ -3279,7 +3279,6 @@ def query_keyword_bundle(
         ON g.customer_id::text = c.customer_id::text
        AND g.campaign_id::text = c.campaign_id::text
       WHERE 1=1
-        AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
         {type_clause}
         {cid_scope_clause}
     ),
@@ -3422,8 +3421,7 @@ def query_keyword_bundle(
         LEFT JOIN dim_campaign c
             ON g.customer_id::text = c.customer_id::text AND g.campaign_id::text = c.campaign_id::text
         WHERE 1=1
-          AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
-    ),
+      ),
     ranked AS (
         SELECT
             j.*,
