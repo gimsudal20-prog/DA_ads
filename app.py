@@ -1768,7 +1768,6 @@ def normalize_campaign_tp_keys(keys: List[str]) -> List[str]:
             seen.add(s)
     return out
 
-return out
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=3600, show_spinner=False)
