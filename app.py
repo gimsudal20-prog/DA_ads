@@ -1733,6 +1733,31 @@ def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
             seen.add(x)
     return out
 
+def _tp_norm_key(x: str) -> str:
+    """Normalize campaign type tokens for robust comparison."""
+    s = (x or "").strip().lower()
+    s = re.sub(r"[\s_-]+", "", s)
+    return s
+
+
+def label_to_tp_norms(labels: Tuple[str, ...]) -> List[str]:
+    """Return normalized tokens derived from selected labels (handles KR/EN/variants)."""
+    out: List[str] = []
+    seen = set()
+    for lab in labels:
+        lab_s = str(lab).strip()
+        cands = []
+        if lab_s:
+            cands.append(lab_s)  # raw label (e.g. '쇼핑검색')
+        cands.extend(_LABEL_TO_TP_KEYS.get(lab_s, []))  # mapped keys (e.g. 'shopping_search')
+        for c in cands:
+            n = _tp_norm_key(str(c))
+            if n and n not in seen:
+                out.append(n)
+                seen.add(n)
+    return out
+
+
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=3600, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
@@ -3241,12 +3266,12 @@ def query_keyword_bundle(
     if customer_ids:
         cid_scope_clause = f"AND k.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
 
-    # type filter는 campaign_tp 키로 (더 빠름)
-    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    # type filter (campaign_tp는 저장 형태가 제각각이라 정규화해서 비교)
+    tp_norms = label_to_tp_norms(type_sel) if type_sel else []
     type_clause = ""
-    if tp_keys:
-        tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_clause = f"AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})"
+    if tp_norms:
+        tp_list = ",".join(["'" + str(x).replace("'", "''") + "'" for x in tp_norms])
+        type_clause = "AND lower(regexp_replace(COALESCE(c.campaign_tp,''), '[\\s_-]', '', 'g')) IN (" + tp_list + ")"
 
     sql = f"""
     WITH scope AS (
@@ -3260,12 +3285,12 @@ def query_keyword_bundle(
         COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
         COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
         CASE
-          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
-          ELSE '기타'
+          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('website','powerlink','파워링크') THEN '파워링크'
+          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('shopping','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
+          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
+          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('place','placesearch','플레이스') THEN '플레이스'
+          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('brandsearch','브랜드검색') THEN '브랜드검색'
+          ELSE COALESCE(NULLIF(TRIM(c.campaign_tp),''),'기타')
         END AS campaign_type_label
       FROM dim_keyword k
       LEFT JOIN dim_adgroup g
