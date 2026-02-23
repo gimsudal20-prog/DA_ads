@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.26 - 날짜 출력 복구 & 엑셀 무적 패치)
-- 누락된 기능 복구: 시작 시 현재 작업 중인 '대상 날짜'를 대문짝만하게 출력하도록 수정
-- 안정성 강화: accounts.xlsx 파일이 확장자만 xlsx이고 내부가 csv인 경우까지 대비하여 이중 파싱 적용
-- 유지 사항: 10차선 고속도로(workers), 덤프트럭(execute_values), 하이패스(skip_dim) 완벽 유지
+collector.py - 네이버 검색광고 수집기 (v9.27 - 리포트 쿼터 초과 방지 패치)
+- 핵심 패치: 네이버 API의 계정당 동시 리포트 생성 제한(Quota)을 피하기 위해, 다운로드가 완료된 리포트를 즉각 DELETE 요청하여 휴지통을 비우는 로직 추가
+- 유지 사항: 엑셀 파일(accounts.xlsx) 무적 인식, 대문짝 날짜 출력, 초고속 덤프트럭 완벽 유지
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.26_DATE_LOG_RESTORED] ===", flush=True)
-print("=== 작업 날짜 복구 & 엑셀 무적 인식 ===", flush=True)
+print("=== [VERSION: v9.27_QUOTA_CLEANER] ===", flush=True)
+print("=== 네이버 리포트 한도 초과 방지 (휴지통 비우기) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -263,26 +262,39 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
         "roas": (sales / cost_ex_vat * 100) if cost_ex_vat > 0 else 0.0
     }
 
+# 🌟 V9.27 핵심: 리포트를 다 쓰면 네이버 서버에서 찌꺼기를 즉시 삭제!
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
     payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
     status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
-    if status != 200 or not data or "reportJobId" not in data: return pd.DataFrame()
+    
+    if status != 200 or not data or "reportJobId" not in data: 
+        log(f"⚠️ [ {customer_id} ] 리포트 생성 거절 (한도 초과 의심)")
+        return pd.DataFrame()
+        
     job_id = data["reportJobId"]
     download_url = None
-    for _ in range(30):
-        time.sleep(2)
-        s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
-        if s_status == 200 and s_data:
-            if s_data.get("status") == "BUILT":
-                download_url = s_data.get("downloadUrl")
-                break
-            elif s_data.get("status") in ["ERROR", "NONE"]: return pd.DataFrame()
-    if not download_url: return pd.DataFrame()
+    
     try:
+        for _ in range(30):
+            time.sleep(2)
+            s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
+            if s_status == 200 and s_data:
+                if s_data.get("status") == "BUILT":
+                    download_url = s_data.get("downloadUrl")
+                    break
+                elif s_data.get("status") in ["ERROR", "NONE"]: 
+                    return pd.DataFrame()
+                    
+        if not download_url: return pd.DataFrame()
+        
         r = requests.get(download_url, headers=make_headers("GET", "/report-download", customer_id), timeout=60)
         r.raise_for_status()
         return pd.read_csv(io.StringIO(r.text.strip()), sep='\t') if r.text.strip() else pd.DataFrame()
-    except: return pd.DataFrame()
+    except: 
+        return pd.DataFrame()
+    finally:
+        # 🌟 가장 중요한 한 줄: 다 다운받았으면 네이버 휴지통에서 즉각 삭제 (할당량 리셋)
+        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
 def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_id: str, target_date: date):
     if df is None or df.empty: return
@@ -363,7 +375,6 @@ def main():
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
     
-    # 🌟 V9.26 핵심 복구: 어떤 날짜를 작업하는지 대문짝만하게 출력!
     print("\n" + "="*50, flush=True)
     print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
@@ -372,16 +383,12 @@ def main():
     if args.customer_id:
         accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
-        # 🌟 무적 엑셀 파싱 (xlsx 인데 속은 csv 인 경우까지 완벽 방어)
         if os.path.exists("accounts.xlsx"):
             df_acc = None
-            try:
-                df_acc = pd.read_excel("accounts.xlsx")
-            except Exception:
-                try:
-                    df_acc = pd.read_csv("accounts.xlsx") # 확장자 훼이크 대비
-                except Exception as e:
-                    log(f"⚠️ accounts.xlsx 파싱 실패: {e}")
+            try: df_acc = pd.read_excel("accounts.xlsx")
+            except:
+                try: df_acc = pd.read_csv("accounts.xlsx")
+                except Exception as e: log(f"⚠️ accounts.xlsx 파싱 실패: {e}")
             
             if df_acc is not None:
                 id_col, name_col = None, None
@@ -393,30 +400,23 @@ def main():
                 if id_col and name_col:
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
-                        if cid and cid.lower() != 'nan':
-                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                        if cid and cid.lower() != 'nan': accounts_info.append({"id": cid, "name": str(row[name_col])})
                     log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
 
-        # 엑셀 실패 시 DB Fallback
         if not accounts_info:
             try:
                 with engine.connect() as conn:
-                    res = conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))
-                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))]
             except:
                 try:
                     with engine.connect() as conn:
-                        res = conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))
-                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))]
                 except:
                     try:
                         with engine.connect() as conn:
-                            res = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))
-                            accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+                            accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))]
                     except: pass
-        
-        if not accounts_info and CUSTOMER_ID:
-            accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
+        if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
         log("⚠️ 수집할 계정이 없습니다.")
