@@ -63,12 +63,12 @@ jobs:
               print(f"\n🚀 [하이패스 수집 시작] 날짜: {d_str}")
               
               try:
-                  # 🌟 핵심: --skip_dim 옵션을 켜서 구조 수집을 건너뛰고 쾌속 질주!
-                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim"], check=True)
+                  # 🌟 핵심: 10개 업체를 한 번에 묶어서 다운로드 받도록 --workers 10 추가!
+                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "10"], check=True)
               except subprocess.CalledProcessError:
                   print(f"❌ 실패: {d_str}")
               
               current += timedelta(days=1)
-              time.sleep(3) # 날짜 넘어갈 때 아주 짧은 휴식
+              time.sleep(3) 
 
           print(f"✅ {start_str} ~ {end_str} 구간 쾌속 수집 완료!")
