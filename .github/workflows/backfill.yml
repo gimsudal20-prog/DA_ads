@@ -1,29 +1,31 @@
-name: Patch Missing Dates (Hole Fixer)
+name: Super Fast Backfill (10 Days Chunk)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 수동 실행 버튼
 
 jobs:
-  patch-holes:
+  run-backfill:
     runs-on: ubuntu-latest
+    
     strategy:
-      max-parallel: 1 # 안전하게 하루치씩 순서대로
+      max-parallel: 1 # DB 과부하를 막기 위해 1개 묶음씩 차례대로 안전하게 실행
       fail-fast: false
       matrix:
-        target_date:
-          # 대표님이 찾아내신 빵꾸난 날짜 6개만 족집게처럼 수집!
-          - "2026-01-09"
-          - "2026-01-18"
-          - "2026-01-21"
-          - "2026-01-24"
-          - "2026-01-27"
-          - "2026-01-30"
+        period:
+          # 1월 1일 ~ 2월 22일(어제)까지 10~12일 단위로 쪼갬
+          - {start: "2026-01-01", end: "2026-01-10"}
+          - {start: "2026-01-11", end: "2026-01-20"}
+          - {start: "2026-01-21", end: "2026-01-31"}
+          - {start: "2026-02-01", end: "2026-02-10"}
+          - {start: "2026-02-11", end: "2026-02-22"}
 
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      START_DATE: ${{ matrix.period.start }}
+      END_DATE: ${{ matrix.period.end }}
 
     steps:
       - name: Checkout code
@@ -39,7 +41,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Hole Fixer
+      - name: Run Express Backfill Loop
+        shell: python
         run: |
-          echo "🚀 빵꾸난 날짜 수집 시작: ${{ matrix.target_date }}"
-          python collector.py --date ${{ matrix.target_date }} --skip_dim --workers 10
+          import subprocess
+          import time
+          import os
+          from datetime import datetime, timedelta
+
+          start_str = os.getenv("START_DATE")
+          end_str = os.getenv("END_DATE")
+          
+          print(f"📌 작업 구간: {start_str} ~ {end_str}")
+
+          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+
+          current = start_date
+          while current <= end_date:
+              d_str = current.strftime("%Y-%m-%d")
+              
+              try:
+                  # 🌟 핵심: 10배속 덤프트럭 유지 + 에러 없이 완벽히 꽂아넣기
+                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "10"], check=True)
+              except subprocess.CalledProcessError:
+                  print(f"❌ 실패: {d_str}")
+              
+              current += timedelta(days=1)
+              time.sleep(3) 
+
+          print(f"✅ {start_str} ~ {end_str} 구간 쾌속 수집 완료!")
