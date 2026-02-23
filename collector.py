@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.21 - 다차선 고속도로 옵션 추가)
-- 추가사항: --workers 옵션을 통해 백필 시 10배 빠른 동시 처리 가능
+collector.py - 네이버 검색광고 수집기 (v9.22 - 업체 목록 동기화 패치)
+- 원인 파악: 기존 코드가 accounts 테이블이 아닌 dim_account_meta 테이블을 바라보고 있어 신규 추가된 업체가 누락됨
+- 엔진 개선: 1순위로 accounts 테이블을 조회하도록 로직 수정 (컬럼명 예외 처리 포함)
+- 유지 사항: 초고속 덤프트럭(execute_values) + 다차선 고속도로(--workers) 백필 완벽 지원
 """
 
 from __future__ import annotations
@@ -55,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.21_MULTI_LANE] ===", flush=True)
-print("=== 10차선 고속도로 개통 (작업자 옵션) ===", flush=True)
+print("=== [VERSION: v9.22_SYNC_ACCOUNTS] ===", flush=True)
+print("=== accounts 테이블 목록 동기화 패치 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -357,24 +359,42 @@ def main():
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
-    # 🌟 워커 개수 옵션 추가 (기본은 안전하게 1, 원할 때 늘릴 수 있음)
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
-    accounts_info = [{"id": args.customer_id, "name": "Target Account"}] if args.customer_id else []
     
-    if not accounts_info:
+    accounts_info = []
+    if args.customer_id:
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
+    else:
         try:
             with engine.connect() as conn:
-                accounts_info = [{"id": row[0], "name": row[1] or "Unknown"} for row in conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta"))]
-        except: pass
-        if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
+                # 🌟 1순위: 새롭게 추가하신 accounts 테이블에서 최우선으로 목록을 읽어옵니다.
+                try:
+                    result = conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))
+                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
+                except Exception:
+                    try:
+                        # 컬럼명이 id, name 인 경우를 대비
+                        result = conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))
+                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
+                    except Exception:
+                        # 2순위: 기존 백업용 dim_account_meta 테이블에서 조회
+                        result = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))
+                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
+        except Exception as e:
+            log(f"⚠️ 업체 목록 조회 실패: {e}")
+            pass
+        
+        if not accounts_info and CUSTOMER_ID:
+            accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: return
+    
+    # 🌟 드디어! 새롭게 추가하신 업체까지 모두 합산된 진짜 개수가 찍힐 것입니다!
     log(f"📋 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
-    # 🌟 --workers 옵션으로 넘겨받은 숫자만큼 쫙 열어서 초고속 동시 처리!
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
