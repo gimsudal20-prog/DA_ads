@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.22 - 업체 목록 동기화 패치)
-- 원인 파악: 기존 코드가 accounts 테이블이 아닌 dim_account_meta 테이블을 바라보고 있어 신규 추가된 업체가 누락됨
-- 엔진 개선: 1순위로 accounts 테이블을 조회하도록 로직 수정 (컬럼명 예외 처리 포함)
-- 유지 사항: 초고속 덤프트럭(execute_values) + 다차선 고속도로(--workers) 백필 완벽 지원
+collector.py - 네이버 검색광고 수집기 (v9.24 - accounts.xlsx 파일 직접 연동 패치)
+- 원인 파악: 엑셀 파일(accounts.xlsx)을 업데이트했지만, DB 테이블만 조회하고 있어서 목록이 반영 안 됨
+- 핵심 수정: 1순위로 로컬의 accounts.xlsx 파일을 읽어와서 수집 목록을 구성하도록 우선순위 변경
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.22_SYNC_ACCOUNTS] ===", flush=True)
-print("=== accounts 테이블 목록 동기화 패치 ===", flush=True)
+print("=== [VERSION: v9.24_EXCEL_SYNC] ===", flush=True)
+print("=== accounts.xlsx 파일 1순위 연동 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -347,7 +346,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
-        log(f"   > [ {account_name} ] 리포트 요청 대기 중...")
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
         if ad_df is not None and not ad_df.empty: process_all_facts_from_ad_report(engine, ad_df, customer_id, target_date)
     log(f"✅ 완료: {account_name}")
@@ -368,32 +366,49 @@ def main():
     if args.customer_id:
         accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
-        try:
-            with engine.connect() as conn:
-                # 🌟 1순위: 새롭게 추가하신 accounts 테이블에서 최우선으로 목록을 읽어옵니다.
+        # 🌟 1순위: 로컬에 있는 accounts.xlsx 엑셀 파일을 가장 먼저 읽어옵니다.
+        if os.path.exists("accounts.xlsx"):
+            try:
+                df_acc = pd.read_excel("accounts.xlsx")
+                # 컬럼명이 id/name 이거나 customer_id/account_name 인 경우 자동 대응
+                id_col = "customer_id" if "customer_id" in df_acc.columns else ("id" if "id" in df_acc.columns else None)
+                name_col = "account_name" if "account_name" in df_acc.columns else ("name" if "name" in df_acc.columns else None)
+                
+                if id_col and name_col:
+                    for _, row in df_acc.iterrows():
+                        cid = str(row[id_col]).strip()
+                        if cid and cid.lower() != 'nan':
+                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                    log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 불러왔습니다.")
+            except Exception as e:
+                log(f"⚠️ accounts.xlsx 읽기 실패: {e}")
+
+        # 2순위: 엑셀 파일이 없거나 실패하면 기존처럼 DB에서 읽어옴
+        if not accounts_info:
+            try:
+                with engine.connect() as conn:
+                    res = conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))
+                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+            except:
                 try:
-                    result = conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))
-                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
-                except Exception:
+                    with engine.connect() as conn:
+                        res = conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))
+                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+                except:
                     try:
-                        # 컬럼명이 id, name 인 경우를 대비
-                        result = conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))
-                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
-                    except Exception:
-                        # 2순위: 기존 백업용 dim_account_meta 테이블에서 조회
-                        result = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))
-                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in result]
-        except Exception as e:
-            log(f"⚠️ 업체 목록 조회 실패: {e}")
-            pass
+                        with engine.connect() as conn:
+                            res = conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))
+                            accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in res]
+                    except: pass
         
         if not accounts_info and CUSTOMER_ID:
             accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
-    if not accounts_info: return
-    
-    # 🌟 드디어! 새롭게 추가하신 업체까지 모두 합산된 진짜 개수가 찍힐 것입니다!
-    log(f"📋 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
+    if not accounts_info: 
+        log("⚠️ 수집할 계정이 없습니다.")
+        return
+        
+    log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
