@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.24 - accounts.xlsx 파일 직접 연동 패치)
-- 원인 파악: 엑셀 파일(accounts.xlsx)을 업데이트했지만, DB 테이블만 조회하고 있어서 목록이 반영 안 됨
-- 핵심 수정: 1순위로 로컬의 accounts.xlsx 파일을 읽어와서 수집 목록을 구성하도록 우선순위 변경
+collector.py - 네이버 검색광고 수집기 (v9.25 - 엑셀 한글 컬럼명 스마트 인식 패치)
+- 원인 파악: accounts.xlsx 파일의 컬럼명이 한글('업체명', '커스텀 ID')이라 기존 코드(영문 검색)가 인식하지 못하고 DB로 Fallback됨
+- 핵심 수정: 컬럼명에서 공백을 제거하고 '커스텀id', '업체명' 등의 한글을 완벽하게 찾아내도록 스마트 인식 기능 추가
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.24_EXCEL_SYNC] ===", flush=True)
-print("=== accounts.xlsx 파일 1순위 연동 ===", flush=True)
+print("=== [VERSION: v9.25_KOREAN_EXCEL] ===", flush=True)
+print("=== 엑셀 한글 컬럼명 완벽 인식 패치 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -366,24 +366,39 @@ def main():
     if args.customer_id:
         accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
-        # 🌟 1순위: 로컬에 있는 accounts.xlsx 엑셀 파일을 가장 먼저 읽어옵니다.
+        # 🌟 1순위: 로컬 엑셀 파일(accounts.xlsx) 한글/영문 컬럼 완벽 인식
         if os.path.exists("accounts.xlsx"):
             try:
                 df_acc = pd.read_excel("accounts.xlsx")
-                # 컬럼명이 id/name 이거나 customer_id/account_name 인 경우 자동 대응
-                id_col = "customer_id" if "customer_id" in df_acc.columns else ("id" if "id" in df_acc.columns else None)
-                name_col = "account_name" if "account_name" in df_acc.columns else ("name" if "name" in df_acc.columns else None)
+                
+                # ID 컬럼 찾기 (공백 무시, 대소문자 무시)
+                id_col = None
+                for c in df_acc.columns:
+                    c_clean = str(c).replace(" ", "").lower()
+                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]:
+                        id_col = c
+                        break
+                        
+                # Name 컬럼 찾기
+                name_col = None
+                for c in df_acc.columns:
+                    c_clean = str(c).replace(" ", "").lower()
+                    if c_clean in ["업체명", "accountname", "account_name", "name"]:
+                        name_col = c
+                        break
                 
                 if id_col and name_col:
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
                         if cid and cid.lower() != 'nan':
                             accounts_info.append({"id": cid, "name": str(row[name_col])})
-                    log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 불러왔습니다.")
+                    log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
+                else:
+                    log(f"⚠️ 엑셀 파일은 찾았으나, ['커스텀 ID', '업체명'] 컬럼을 찾지 못했습니다. 컬럼명: {list(df_acc.columns)}")
             except Exception as e:
                 log(f"⚠️ accounts.xlsx 읽기 실패: {e}")
 
-        # 2순위: 엑셀 파일이 없거나 실패하면 기존처럼 DB에서 읽어옴
+        # 2순위: 엑셀 파일이 없거나 실패하면 기존처럼 DB에서 읽어옴 (Fallback)
         if not accounts_info:
             try:
                 with engine.connect() as conn:
