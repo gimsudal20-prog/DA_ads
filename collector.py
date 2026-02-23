@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.25 - 엑셀 한글 컬럼명 스마트 인식 패치)
-- 원인 파악: accounts.xlsx 파일의 컬럼명이 한글('업체명', '커스텀 ID')이라 기존 코드(영문 검색)가 인식하지 못하고 DB로 Fallback됨
-- 핵심 수정: 컬럼명에서 공백을 제거하고 '커스텀id', '업체명' 등의 한글을 완벽하게 찾아내도록 스마트 인식 기능 추가
+collector.py - 네이버 검색광고 수집기 (v9.26 - 날짜 출력 복구 & 엑셀 무적 패치)
+- 누락된 기능 복구: 시작 시 현재 작업 중인 '대상 날짜'를 대문짝만하게 출력하도록 수정
+- 안정성 강화: accounts.xlsx 파일이 확장자만 xlsx이고 내부가 csv인 경우까지 대비하여 이중 파싱 적용
+- 유지 사항: 10차선 고속도로(workers), 덤프트럭(execute_values), 하이패스(skip_dim) 완벽 유지
 """
 
 from __future__ import annotations
@@ -56,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.25_KOREAN_EXCEL] ===", flush=True)
-print("=== 엑셀 한글 컬럼명 완벽 인식 패치 ===", flush=True)
+print("=== [VERSION: v9.26_DATE_LOG_RESTORED] ===", flush=True)
+print("=== 작업 날짜 복구 & 엑셀 무적 인식 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -362,30 +363,32 @@ def main():
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
     
+    # 🌟 V9.26 핵심 복구: 어떤 날짜를 작업하는지 대문짝만하게 출력!
+    print("\n" + "="*50, flush=True)
+    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print("="*50 + "\n", flush=True)
+
     accounts_info = []
     if args.customer_id:
         accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
-        # 🌟 1순위: 로컬 엑셀 파일(accounts.xlsx) 한글/영문 컬럼 완벽 인식
+        # 🌟 무적 엑셀 파싱 (xlsx 인데 속은 csv 인 경우까지 완벽 방어)
         if os.path.exists("accounts.xlsx"):
+            df_acc = None
             try:
                 df_acc = pd.read_excel("accounts.xlsx")
-                
-                # ID 컬럼 찾기 (공백 무시, 대소문자 무시)
-                id_col = None
+            except Exception:
+                try:
+                    df_acc = pd.read_csv("accounts.xlsx") # 확장자 훼이크 대비
+                except Exception as e:
+                    log(f"⚠️ accounts.xlsx 파싱 실패: {e}")
+            
+            if df_acc is not None:
+                id_col, name_col = None, None
                 for c in df_acc.columns:
                     c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]:
-                        id_col = c
-                        break
-                        
-                # Name 컬럼 찾기
-                name_col = None
-                for c in df_acc.columns:
-                    c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["업체명", "accountname", "account_name", "name"]:
-                        name_col = c
-                        break
+                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
+                    if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
                 
                 if id_col and name_col:
                     for _, row in df_acc.iterrows():
@@ -393,12 +396,8 @@ def main():
                         if cid and cid.lower() != 'nan':
                             accounts_info.append({"id": cid, "name": str(row[name_col])})
                     log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
-                else:
-                    log(f"⚠️ 엑셀 파일은 찾았으나, ['커스텀 ID', '업체명'] 컬럼을 찾지 못했습니다. 컬럼명: {list(df_acc.columns)}")
-            except Exception as e:
-                log(f"⚠️ accounts.xlsx 읽기 실패: {e}")
 
-        # 2순위: 엑셀 파일이 없거나 실패하면 기존처럼 DB에서 읽어옴 (Fallback)
+        # 엑셀 실패 시 DB Fallback
         if not accounts_info:
             try:
                 with engine.connect() as conn:
