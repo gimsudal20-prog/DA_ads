@@ -224,7 +224,7 @@ GLOBAL_UI_CSS = """
   --nv-text:#1A1C20;
   --nv-muted:rgba(26,28,32,.62);
   --nv-green:#03C75A;
-  --nv-up:#EF4444; /* up(증가)=빨강(국내표준) */
+  --nv-up:#2563EB; /* up(증가)=파랑 */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
   --nv-shadow:0 2px 10px rgba(0,0,0,.06);
@@ -398,8 +398,8 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
-.kpi .d.neg{color:var(--nv-blue);}   /* 감소(▼) = 파랑(국내표준) */
+.kpi .d.pos{color:var(--nv-blue);} /* 증가(▲) = 파랑 */
+.kpi .d.neg{color:var(--nv-red);} /* 감소(▼) = 빨강 */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
@@ -432,8 +432,8 @@ input[type="text"], textarea{
 }
 .delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
 .delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-red);} /* 증가 = 빨강(국내표준) */
-.delta-chip.neg .v{color: var(--nv-blue);}   /* 감소 = 파랑(국내표준) */
+.delta-chip.pos .v{color: var(--nv-blue);} /* 증가 = 파랑 */
+.delta-chip.neg .v{color: var(--nv-red);} /* 감소 = 빨강 */
 .delta-chip.zero .v{color: rgba(26,28,32,.72);} 
 @media (max-width: 1200px){
   .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -643,7 +643,7 @@ def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_pref
 
     def _fmt_pct1(x) -> str:
         try:
-            return f"{float(x):.1f}%"
+            return f"{float(x):.0f}%"
         except Exception:
             return "0.0%"
 
@@ -796,7 +796,7 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height
         return (
             f"<div class='nv-pbar'>"
             f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
-            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
+            f"  <div class='nv-pbar-txt'>{pv:.0f}%</div>"
             f"</div>"
         )
 
@@ -958,10 +958,10 @@ def render_echarts_line(
     df[y_col] = pd.to_numeric(df[y_col], errors="coerce").fillna(0.0)
 
     x = df[x_col].astype(str).tolist()
-    y = df[y_col].astype(float).tolist()
+    y = df[y_col].round(0).astype('int64').tolist()
 
     option = {
-        "title": {"text": title, "left": 10, "top": 6, "textStyle": {"fontSize": 13, "fontWeight": "bold"}},
+        "title": {"show": False},
         "grid": {"left": 54, "right": 18, "top": 44, "bottom": 34},
         "tooltip": {"trigger": "axis"},
         "xAxis": {"type": "category", "data": x, "axisTick": {"alignWithLabel": True}},
@@ -1012,24 +1012,25 @@ def render_echarts_delta_bars(delta_df: pd.DataFrame, *, height: int = 260) -> N
 
     data = []
     for m, v in zip(cats, vals):
+        v_i = int(round(float(v)))
         if v > 0:
-            color = "#EF4444"  # up=red
+            color = "#2563EB"  # up=blue
             br = [0, 10, 10, 0]  # round right only
             pos = "right"
-            fmt = f"+{v:.1f}%"
+            fmt = f"+{v_i}%"
         elif v < 0:
-            color = "#2563EB"  # down=blue
+            color = "#EF4444"  # down=red
             br = [10, 0, 0, 10]  # round left only
             pos = "left"
-            fmt = f"{v:.1f}%"
+            fmt = f"{v_i}%"
         else:
             color = "#B4C4D9"
             br = [0, 0, 0, 0]
             pos = "right"
-            fmt = "+0.0%"
+            fmt = "+0%"
         data.append(
             {
-                "value": v,
+                "value": v_i,
                 "label": {"show": True, "position": pos, "formatter": fmt, "fontWeight": "bold"},
                 "itemStyle": {"color": color, "borderRadius": br},
             }
@@ -1574,7 +1575,7 @@ def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
             return ""
         if float(x) == 0.0:
             return "0%"
-        return f"{float(x):.1f}%"
+        return f"{float(x):.0f}%"
 
     out[col] = s.map(_fmt)
     return out
@@ -2869,7 +2870,7 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
         if unit == "원":
             return f"{format_number_commas(v)}원"
         if unit == "%":
-            return f"{v:.1f}%"
+            return f"{v:.0f}%"
         return f"{format_number_commas(v)}{unit}"
 
     d["__label"] = d[value_col].map(lambda v: _fmt(float(v)))
@@ -3510,7 +3511,7 @@ def _pct_to_str(p: Optional[float]) -> str:
     try:
         if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
             return "—"
-        return f"{float(p):+.1f}%"
+        return f"{float(p):+.0f}%"
     except Exception:
         return "—"
 
@@ -3522,10 +3523,10 @@ def _pct_to_arrow(p: Optional[float]) -> str:
             return "—"
         p = float(p)
         if p > 0:
-            return f"▲ {abs(p):.1f}%"
+            return f"▲ {abs(p):.0f}%"
         if p < 0:
-            return f"▼ {abs(p):.1f}%"
-        return f"• {abs(p):.1f}%"
+            return f"▼ {abs(p):.0f}%"
+        return f"• {abs(p):.0f}%"
     except Exception:
         return "—"
 
@@ -3632,7 +3633,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d_cap = d.copy()
     d_cap["val"] = d_cap["flat_end"]
 
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#2563EB", "#B4C4D9"])
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#2563EB", "#EF4444", "#B4C4D9"])
 
     y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
     x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
