@@ -1,31 +1,28 @@
-name: Super Fast Backfill (10 Days Chunk)
+name: Patch Missing Dates (Hole Fixer)
 
 on:
-  workflow_dispatch: # 수동 실행 버튼
+  workflow_dispatch:
 
 jobs:
-  run-backfill:
+  patch-holes:
     runs-on: ubuntu-latest
-    
     strategy:
-      max-parallel: 1 # DB 과부하를 막기 위해 1개 묶음씩 차례대로 안전하게 실행
+      max-parallel: 1 # 안전하게 하루치씩 순서대로
       fail-fast: false
       matrix:
-        period:
-          # 1월 1일 ~ 2월 22일(어제)까지 10~12일 단위로 쪼갬
-          - {start: "2026-01-01", end: "2026-01-10"}
-          - {start: "2026-01-11", end: "2026-01-20"}
-          - {start: "2026-01-21", end: "2026-01-31"}
-          - {start: "2026-02-01", end: "2026-02-10"}
-          - {start: "2026-02-11", end: "2026-02-22"}
+        target_date:
+          # 2월 14일 ~ 2월 18일 빵꾸난 날짜 족집게 수집!
+          - "2026-02-14"
+          - "2026-02-15"
+          - "2026-02-16"
+          - "2026-02-17"
+          - "2026-02-18"
 
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      START_DATE: ${{ matrix.period.start }}
-      END_DATE: ${{ matrix.period.end }}
 
     steps:
       - name: Checkout code
@@ -41,34 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Express Backfill Loop
-        shell: python
+      - name: Run Hole Fixer
         run: |
-          import subprocess
-          import time
-          import os
-          from datetime import datetime, timedelta
-
-          start_str = os.getenv("START_DATE")
-          end_str = os.getenv("END_DATE")
-          
-          print(f"📌 작업 구간: {start_str} ~ {end_str}")
-
-          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
-          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
-
-          current = start_date
-          while current <= end_date:
-              d_str = current.strftime("%Y-%m-%d")
-              print(f"\n🚀 [하이패스 수집 시작] 날짜: {d_str}")
-              
-              try:
-                  # 🌟 핵심: 10개 업체를 한 번에 묶어서 다운로드 받도록 --workers 10 유지!
-                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "10"], check=True)
-              except subprocess.CalledProcessError:
-                  print(f"❌ 실패: {d_str}")
-              
-              current += timedelta(days=1)
-              time.sleep(3) 
-
-          print(f"✅ {start_str} ~ {end_str} 구간 쾌속 수집 완료!")
+          echo "🚀 빵꾸난 날짜 수집 시작: ${{ matrix.target_date }}"
+          python collector.py --date ${{ matrix.target_date }} --skip_dim --workers 10
