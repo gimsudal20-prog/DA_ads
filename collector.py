@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.19 - 초고속 덤프트럭 호환성 패치)
-- 무한 멈춤(Hang) 원인 해결: psycopg2 execute_values(덤프트럭) 유지
-- 에러 픽스: SQLAlchemy 버전에 따라 raw_connection()이 Context Manager(with 구문)를 지원하지 않는 문제(_ConnectionFairy 에러)를 전통적인 try-finally 구문으로 해결
-- 안정성: 1줄 서기(max_workers=1) 유지
+collector.py - 네이버 검색광고 수집기 (v9.20 - 백필용 하이패스 모드 추가)
+- 덤프트럭 엔진 및 1줄 서기 무사고 로직 완벽 유지
+- 핵심 추가: 과거 데이터 수집 시 6시간 걸리던 '차원(Dimension) 구조 수집'을 생략하고 5분 만에 성과만 수집하는 --skip_dim 플래그 도입
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.19_FAIRY_FIX] ===", flush=True)
-print("=== 덤프트럭 호환성 완벽 패치 ===", flush=True)
+print("=== [VERSION: v9.20_BACKFILL_EXPRESS] ===", flush=True)
+print("=== 하이패스 모드 탑재 (구조 생략 / 성과 집중) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -196,7 +195,6 @@ def ensure_tables(engine: Engine):
             time.sleep(3)
             if attempt == 2: raise e
 
-# 🌟 v9.19 핵심 패치: _ConnectionFairy 에러 방지를 위해 with 구문 대신 정통 try-finally 사용
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
@@ -224,10 +222,9 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            # 초고속 덤프트럭 발동
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
             raw_conn.commit()
-            break # 성공시 루프 탈출
+            break
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
@@ -469,53 +466,58 @@ def process_all_facts_from_ad_report(engine: Engine, df: pd.DataFrame, customer_
 # -------------------------
 # 7. 메인 처리기 (단일 계정)
 # -------------------------
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     log(f"🚀 처리 시작: {account_name} ({customer_id}) / 날짜: {target_date}")
     
-    log(f"   > [ {account_name} ] 네이버 API에서 데이터 구조(캠페인/키워드/소재) 조회 중...")
-    camp_list = list_campaigns(customer_id)
-    if not camp_list: return
-    
-    camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+    # 🌟 백필용 플래그가 켜져 있으면 이 무거운 작업을 완전히 점프(Skip)합니다!
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
+    
+    if not skip_dim:
+        log(f"   > [ {account_name} ] 네이버 API에서 데이터 구조(캠페인/키워드/소재) 조회 중...")
+        camp_list = list_campaigns(customer_id)
+        if not camp_list: return
+        
+        camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
 
-    for c in camp_list:
-        cid = c.get("nccCampaignId")
-        if not cid: continue
-        target_camp_ids.append(cid)
-        camp_rows.append({
-            "customer_id": customer_id, "campaign_id": cid, 
-            "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
-        })
-        ags = list_adgroups(customer_id, cid)
-        for g in ags:
-            gid = g.get("nccAdgroupId")
-            if not gid: continue
-            ag_rows.append({
-                "customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid,
-                "adgroup_name": g.get("name"), "status": g.get("status")
+        for c in camp_list:
+            cid = c.get("nccCampaignId")
+            if not cid: continue
+            target_camp_ids.append(cid)
+            camp_rows.append({
+                "customer_id": customer_id, "campaign_id": cid, 
+                "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
             })
-            if not SKIP_KEYWORD_DIM:
-                kws = list_keywords(customer_id, gid)
-                for k in kws:
-                    kid = k.get("nccKeywordId")
-                    if kid:
-                        target_kw_ids.append(kid)
-                        kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
-            if not SKIP_AD_DIM:
-                ads = list_ads(customer_id, gid)
-                for a in ads:
-                    aid = a.get("nccAdId")
-                    if aid:
-                        target_ad_ids.append(aid)
-                        fields = extract_ad_creative_fields(a)
-                        ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or fields["ad_title"], "status": a.get("status"), **fields})
+            ags = list_adgroups(customer_id, cid)
+            for g in ags:
+                gid = g.get("nccAdgroupId")
+                if not gid: continue
+                ag_rows.append({
+                    "customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid,
+                    "adgroup_name": g.get("name"), "status": g.get("status")
+                })
+                if not SKIP_KEYWORD_DIM:
+                    kws = list_keywords(customer_id, gid)
+                    for k in kws:
+                        kid = k.get("nccKeywordId")
+                        if kid:
+                            target_kw_ids.append(kid)
+                            kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
+                if not SKIP_AD_DIM:
+                    ads = list_ads(customer_id, gid)
+                    for a in ads:
+                        aid = a.get("nccAdId")
+                        if aid:
+                            target_ad_ids.append(aid)
+                            fields = extract_ad_creative_fields(a)
+                            ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or fields["ad_title"], "status": a.get("status"), **fields})
 
-    log(f"   > [ {account_name} ] DB에 데이터 구조 초고속 적재 중...")
-    upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
-    upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-    if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-    if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+        log(f"   > [ {account_name} ] DB에 데이터 구조 초고속 적재 중...")
+        upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+        upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+        if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+        if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+    else:
+        log(f"   ⚡ [ {account_name} ] 백필 하이패스 모드 (구조 수집 생략)")
     
     if target_date == date.today():
         log(f"   > [ {account_name} ] 네이버 API에서 당일 실시간 성과 가져오는 중...")
@@ -551,6 +553,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
+    # 🌟 백필 스위치 추가
+    parser.add_argument("--skip_dim", action="store_true", help="차원 테이블 수집 건너뛰기 (초고속 백필 모드)")
     args = parser.parse_args()
     
     if args.date:
@@ -578,13 +582,13 @@ def main():
 
     log(f"📋 수집 대상 계정: {len(accounts_info)}개")
 
-    # 1줄 서기 무사고 모드 유지
     max_workers = 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for acc in accounts_info:
             futures.append(
-                executor.submit(process_account, engine, acc["id"], acc["name"], target_date)
+                # 백필 스위치 전달
+                executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim)
             )
         for future in concurrent.futures.as_completed(futures):
             try:
