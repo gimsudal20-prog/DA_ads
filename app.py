@@ -1726,12 +1726,30 @@ def campaign_tp_to_label(tp: str) -> str:
 
 
 def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
+    """
+    UI에서 선택한 라벨(예: '쇼핑검색')을
+    DB의 dim_campaign.campaign_tp 값(영문 키 또는 한글 라벨)과 매칭 가능한 키 리스트로 변환합니다.
+
+    - 기존: 영문 키(_CAMPAIGN_TP_LABEL)만 반환 → campaign_tp가 한글로 저장된 경우 필터가 전부 누락
+    - 개선: 라벨 자체(소문자/공백 제거)를 함께 포함
+    """
     keys: List[str] = []
     for lab in labels:
-        keys.extend(_LABEL_TO_TP_KEYS.get(str(lab), []))
-    out = []
+        s = str(lab or '').strip()
+        if not s:
+            continue
+        # 1) 영문 키 매핑(기존 로직 유지)
+        keys.extend(_LABEL_TO_TP_KEYS.get(s, []))
+        # 2) 라벨 자체도 포함 (campaign_tp가 '쇼핑검색'처럼 한글로 저장된 케이스 대응)
+        ls = s.lower()
+        keys.append(ls)
+        keys.append(ls.replace(' ', ''))
+
+    out: List[str] = []
     seen = set()
     for x in keys:
+        if not x:
+            continue
         if x not in seen:
             out.append(x)
             seen.add(x)
@@ -3264,11 +3282,11 @@ def query_keyword_bundle(
         COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
         COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
         CASE
-          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
+          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색','쇼핑') THEN '쇼핑검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','파워콘텐츠') THEN '파워콘텐츠'
+          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
+          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
           ELSE '기타'
         END AS campaign_type_label
       FROM dim_keyword k
@@ -3355,7 +3373,7 @@ def query_keyword_bundle(
     LEFT JOIN scope s
       ON b.customer_id = s.customer_id
      AND b.keyword_id  = s.keyword_id
-    WHERE COALESCE(s.campaign_type_label,'기타') <> '기타'
+    WHERE 1=1
     ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
     """
 
@@ -3406,11 +3424,11 @@ def query_keyword_bundle(
             COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
             COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
             CASE
-                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
+                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색','쇼핑') THEN '쇼핑검색'
+                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','파워콘텐츠') THEN '파워콘텐츠'
+                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
+                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
                 ELSE '기타'
             END AS campaign_type_label
         FROM base b
@@ -3429,7 +3447,7 @@ def query_keyword_bundle(
             ROW_NUMBER() OVER (ORDER BY j.clk DESC NULLS LAST) AS rn_clk,
             ROW_NUMBER() OVER (ORDER BY j.conv DESC NULLS LAST) AS rn_conv
         FROM joined j
-        WHERE j.campaign_type_label <> '기타'
+        WHERE 1=1
         {type_filter}
     )
     SELECT *
