@@ -1790,6 +1790,16 @@ _CAMPAIGN_TP_LABEL = {
     "place_search": "플레이스",
     "brand_search": "브랜드검색",
     "brandsearch": "브랜드검색",
+    "powerlink": "파워링크",
+    "powerlinktext": "파워링크",
+    "shoppingsearch": "쇼핑검색",
+    "쇼핑검색": "쇼핑검색",
+    "파워링크": "파워링크",
+    "플레이스": "플레이스",
+    "브랜드검색": "브랜드검색",
+    "파워콘텐츠": "파워콘텐츠",
+    "placesearch": "플레이스",
+    "powercontents": "파워콘텐츠",
 }
 _LABEL_TO_TP_KEYS: Dict[str, List[str]] = {}
 for k, v in _CAMPAIGN_TP_LABEL.items():
@@ -1805,15 +1815,48 @@ def campaign_tp_to_label(tp: str) -> str:
 
 
 def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
+    """
+    UI에서 선택된 라벨(파워링크/쇼핑검색/플레이스...)을 DB의 campaign_tp 값들과 매칭하기 위한 키 리스트로 변환.
+    - DB에 이미 한글 라벨(예: '쇼핑검색')이 저장된 케이스도 커버
+    - 언더스코어/공백 유무(예: shopping_search vs shoppingsearch)도 일부 커버
+    """
     keys: List[str] = []
     for lab in labels:
-        keys.extend(_LABEL_TO_TP_KEYS.get(str(lab), []))
-    out = []
+        s = str(lab).strip()
+        if not s:
+            continue
+        # 1) 기존 매핑(영문 코드)
+        keys.extend(_LABEL_TO_TP_KEYS.get(s, []))
+        # 2) DB에 라벨 자체가 들어온 케이스(한글 포함)
+        keys.append(s)
+        keys.append(s.lower())
+        # 3) 공백/언더스코어/하이픈 제거 버전
+        sn = re.sub(r"[\s\-_]+", "", s.lower())
+        if sn and sn != s.lower():
+            keys.append(sn)
+        # 4) 대표 라벨별 추가 변형
+        if s == '쇼핑검색':
+            keys.extend(['shopping', 'shopping_search', 'shoppingsearch', '쇼핑검색'])
+        elif s == '파워링크':
+            keys.extend(['web_site', 'website', 'power_link', 'powerlink', '파워링크'])
+        elif s == '플레이스':
+            keys.extend(['place', 'place_search', 'placesearch', '플레이스'])
+        elif s == '브랜드검색':
+            keys.extend(['brand_search', 'brandsearch', '브랜드검색'])
+        elif s == '파워콘텐츠':
+            keys.extend(['power_content', 'power_contents', 'powercontent', 'powercontents', '파워콘텐츠'])
+
+    out: List[str] = []
     seen = set()
     for x in keys:
-        if x not in seen:
-            out.append(x)
-            seen.add(x)
+        if x is None:
+            continue
+        x2 = str(x).strip()
+        if not x2:
+            continue
+        if x2 not in seen:
+            out.append(x2)
+            seen.add(x2)
     return out
 
 
@@ -3344,11 +3387,11 @@ def query_keyword_bundle(
         COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
         COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
         CASE
-          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
+          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
+          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
+          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
           ELSE '기타'
         END AS campaign_type_label
       FROM dim_keyword k
@@ -3487,11 +3530,11 @@ def query_keyword_bundle(
             COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
             COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
             CASE
-                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
+                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
+                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
+                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
+                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
                 ELSE '기타'
             END AS campaign_type_label
         FROM base b
