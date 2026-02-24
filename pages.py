@@ -12,6 +12,7 @@ import streamlit as st
 
 # Shared logic & queries
 from data import *  # noqa
+from data import _period_compare_range  # noqa: F401
 from ui import *  # noqa
 
 # -----------------------------
@@ -1219,5 +1220,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
