@@ -4,14 +4,11 @@ from state import FilterState
 from database import get_engine
 
 init_page()
-
-st.markdown("# 📊 네이버 검색광고 대시보드")
-st.markdown("""
-이 앱은 사이드바를 통해 여러 페이지로 탐색할 수 있습니다. 
-왼쪽 사이드바에서 메뉴를 선택해주세요!
-""")
-
 FilterState.init()
 engine = get_engine()
 
-st.info("👈 좌측 'Pages' 메뉴를 이용해 '요약', '캠페인' 등으로 이동하세요.")
+# 대문 페이지를 보여주지 않고 바로 '01_요약' 페이지로 강제 이동시킵니다.
+try:
+    st.switch_page("pages/01_요약.py")
+except Exception as e:
+    st.error("🚨 pages 폴더 내부의 파일을 찾지 못했습니다. 파일명과 폴더명을 다시 확인해 주세요.")
