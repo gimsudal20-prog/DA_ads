@@ -12,7 +12,8 @@ import streamlit as st
 
 # Shared logic & queries
 from data import *  # noqa
-from data import _period_compare_range  # noqa: F401
+# NOTE: underscore-prefixed helpers are not imported by "from data import *".
+from data import _period_compare_range, _pct_to_arrow  # noqa: F401
 from ui import *  # noqa
 
 # -----------------------------

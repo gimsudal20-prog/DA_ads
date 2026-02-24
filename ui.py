@@ -1423,49 +1423,6 @@ def render_period_compare_panel(
         )
         ui_table_or_dataframe(mini, key=f"{key_prefix}_{entity}_pcmp_table", height=210)
 
-# 기존 ui.py 하단에 아래 함수들을 추가해 주세요.
-
-def render_empty_state(msg: str, sub: str = "좌측 사이드바에서 기간이나 필터 조건을 변경해보세요.") -> None:
-    """데이터가 없을 때 표시하는 친절한 빈 상태(Empty State) UI"""
-    st.markdown(
-        f"""
-        <div class='nv-empty'>
-            <div class='icon'>📭</div>
-            <div class='msg'>{msg}</div>
-            <div class='sub'>{sub}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# 기존 ui_metric_or_stmetric 함수를 아래와 같이 교체합니다. (tooltip 파라미터 추가)
-def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str, tooltip: str = "") -> None:
-    """Naver-like KPI card: compact, ▲/▼ delta, 툴팁 지원."""
-    label = (desc or "").strip()
-    delta_html = f"<div class='d'><span class='chip'>{label}</span></div>" if label else "<div class='d'></div>"
-
-    m = re.search(r"([+-])\s*([0-9]+(?:\.[0-9]+)?)\s*%", label)
-    if m:
-        sign = m.group(1)
-        num = m.group(2)
-        arrow = "▲" if sign == "+" else "▼"
-        cls = "pos" if sign == "+" else "neg"
-        label2 = (label.replace(m.group(0), "").replace("  ", " ").strip()) or ""
-        chip = f"<span class='chip'>{label2}</span>" if label2 else ""
-        delta_html = f"<div class='d {cls}'>{chip}{arrow} {num}%</div>"
-
-    tooltip_html = f"<span class='tooltip'>{tooltip}</span>" if tooltip else ""
-
-    st.markdown(
-        f"""<div class='kpi' id='{key}'>
-            {tooltip_html}
-            <div class='k'>{title}</div>
-            <div class='v'>{value}</div>
-            {delta_html}
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
 # -----------------------------
 # Pages
 # -----------------------------

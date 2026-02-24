@@ -1805,41 +1805,47 @@ def query_keyword_bundle(
         {cid_clause}
       GROUP BY fk.customer_id::text, fk.keyword_id::text
     ),
+    -- Pick a stable set of IDs (top by cost / clicks / conversions), then rank using base metrics.
+    -- NOTE: Avoid UNION of SELECT * with mismatched column names (can break at runtime).
     top_cost0 AS (
-      SELECT customer_id, keyword_id, cost
+      SELECT customer_id, keyword_id
       FROM base
       WHERE cost IS NOT NULL
       ORDER BY cost DESC
       LIMIT {int(topn_cost)}
     ),
     top_clk0 AS (
-      SELECT customer_id, keyword_id, clk
+      SELECT customer_id, keyword_id
       FROM base
       WHERE clk IS NOT NULL
       ORDER BY clk DESC
       LIMIT {int(topn_cost)}
     ),
     top_conv0 AS (
-      SELECT customer_id, keyword_id, conv
+      SELECT customer_id, keyword_id
       FROM base
       WHERE conv IS NOT NULL
       ORDER BY conv DESC
       LIMIT {int(topn_cost)}
     ),
+    picked_ids AS (
+      SELECT customer_id, keyword_id FROM top_cost0
+      UNION
+      SELECT customer_id, keyword_id FROM top_clk0
+      UNION
+      SELECT customer_id, keyword_id FROM top_conv0
+    ),
     picked AS (
       SELECT
-        customer_id,
-        keyword_id,
-        ROW_NUMBER() OVER (ORDER BY cost DESC NULLS LAST) AS rn_cost,
-        ROW_NUMBER() OVER (ORDER BY clk  DESC NULLS LAST) AS rn_clk,
-        ROW_NUMBER() OVER (ORDER BY conv DESC NULLS LAST) AS rn_conv
-      FROM (
-        SELECT * FROM top_cost0
-        UNION
-        SELECT * FROM top_clk0
-        UNION
-        SELECT * FROM top_conv0
-      ) u
+        i.customer_id,
+        i.keyword_id,
+        ROW_NUMBER() OVER (ORDER BY b.cost DESC NULLS LAST) AS rn_cost,
+        ROW_NUMBER() OVER (ORDER BY b.clk  DESC NULLS LAST) AS rn_clk,
+        ROW_NUMBER() OVER (ORDER BY b.conv DESC NULLS LAST) AS rn_conv
+      FROM picked_ids i
+      JOIN base b
+        ON i.customer_id = b.customer_id
+       AND i.keyword_id  = b.keyword_id
     ),
     scope AS (
       SELECT
