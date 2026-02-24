@@ -1,59 +1,70 @@
-import io
-import re
-from typing import Dict, List, Optional, Tuple
-from datetime import date, timedelta
-import pandas as pd
-import streamlit as st
+# -----------------------------
+# Campaign type label & Meta loading
+# -----------------------------
+_CAMPAIGN_TP_LABEL = {
+    "web_site": "파워링크",
+    "website": "파워링크",
+    "power_link": "파워링크",
+    "shopping": "쇼핑검색",
+    "shopping_search": "쇼핑검색",
+    "power_content": "파워콘텐츠",
+    "power_contents": "파워콘텐츠",
+    "powercontent": "파워콘텐츠",
+    "place": "플레이스",
+    "place_search": "플레이스",
+    "brand_search": "브랜드검색",
+    "brandsearch": "브랜드검색",
+}
+_LABEL_TO_TP_KEYS: Dict[str, List[str]] = {}
+for k, v in _CAMPAIGN_TP_LABEL.items():
+    _LABEL_TO_TP_KEYS.setdefault(v, []).append(k)
 
-# db.py에서 코어 함수 가져오기
-from db import sql_read, sql_exec, table_exists, get_table_columns, _sql_in_str_list, _HASH_FUNCS
 
-# ---- 기초 설정/메타 조회 ----
-def get_latest_dates(_engine) -> dict:
-    # 기존 get_latest_dates 복사
-    pass
+def campaign_tp_to_label(tp: str) -> str:
+    t = (tp or "").strip()
+    if not t:
+        return ""
+    key = t.lower()
+    return _CAMPAIGN_TP_LABEL.get(key, t)
 
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=600, show_spinner=False)
-def get_meta(_engine) -> pd.DataFrame:
-    # 기존 get_meta 복사
-    pass
 
-def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None:
-    # 기존 업데이트 로직 복사
-    pass
+def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
+    keys: List[str] = []
+    for lab in labels:
+        keys.extend(_LABEL_TO_TP_KEYS.get(str(lab), []))
+    out = []
+    seen = set()
+    for x in keys:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
 
-# ---- 데이터 가공 헬퍼 ----
-def add_rates(df: pd.DataFrame) -> pd.DataFrame:
-    # 전환율, CPC 등 파생변수 추가 복사
-    pass
 
-def finalize_display_cols(df: pd.DataFrame) -> pd.DataFrame:
-    # AgGrid 표시용 컬럼 후처리 복사
-    pass
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=3600, show_spinner=False)
+def load_dim_campaign(_engine) -> pd.DataFrame:
+    if not table_exists(_engine, "dim_campaign"):
+        return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
+    df = sql_read(_engine, "SELECT customer_id, campaign_id, campaign_name, campaign_tp FROM dim_campaign")
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
+    df["campaign_tp"] = df.get("campaign_tp", "").fillna("")
+    df["campaign_type_label"] = df["campaign_tp"].astype(str).map(campaign_tp_to_label)
+    df.loc[df["campaign_type_label"].astype(str).str.strip() == "", "campaign_type_label"] = "기타"
+    return df
 
-def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> Dict[str, float]:
-    # 기존 totals 복사
-    pass
 
-# ---- 핵심 비즈니스 쿼리 (캐싱) ----
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
-def query_budget_bundle(_engine, cids: Tuple[int, ...], yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
-    # 긴 SQL문 포함 복사
-    pass
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], topn_cost: int = 200, top_k: int = 5) -> pd.DataFrame:
-    # 긴 SQL문 포함 복사
-    pass
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], type_sel: Tuple[str, ...], topn_cost: int = 300) -> pd.DataFrame:
-    # 긴 SQL문 포함 복사
-    pass
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], topn_cost: int = 200, top_k: int = 5) -> pd.DataFrame:
-    # 긴 SQL문 포함 복사
-    pass
-
-# 그 외 query_*_timeseries 함수들도 모두 여기에 배치
+def get_campaign_type_options(dim_campaign: pd.DataFrame) -> List[str]:
+    if dim_campaign is None or dim_campaign.empty:
+        return []
+    raw = dim_campaign.get("campaign_tp", pd.Series([], dtype=str))
+    present = set()
+    for x in raw.dropna().astype(str).tolist():
+        lab = campaign_tp_to_label(x)
+        lab = str(lab).strip()
+        if lab and lab not in ("미분류", "종합", "기타"):
+            present.add(lab)
+    order = ["파워링크", "쇼핑검색", "파워콘텐츠", "플레이스", "브랜드검색"]
+    opts = [x for x in order if x in present]
+    extra = sorted([x for x in present if x not in set(order)])
+    return opts + extra
