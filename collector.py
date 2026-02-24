@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v9.30 - 지표 100% 일치 종결판)
-- 원인: AD 리포트에는 전환/매출액이 없으며, 부가세 제외 로직(/1.1) 때문에 네이버 UI와 광고비 불일치 발생
-- 해결: AD_CONVERSION(전환 리포트)를 별도로 다운로드하여 AD 리포트와 완벽하게 병합 (Conv, Sales 복구)
-- 해결: 부가세 제외 로직을 삭제하여 네이버 화면(VAT 포함)과 Cost 100% 일치
+collector.py - 네이버 검색광고 수집기 (v9.31 - 광고비 부가세(VAT) 포함 패치)
+- 원인: 네이버 대용량 리포트(TSV)로 내려받은 데이터의 '총비용'은 API 스펙상 [부가세 제외] 금액임
+- 해결: TSV에서 읽은 비용(Index 11)에 1.1을 곱하여 부가세(VAT)를 포함시킨 뒤 적재하도록 수정 (네이버 화면과 100% 일치)
 """
 
 from __future__ import annotations
@@ -57,8 +56,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v9.30_PERFECT_METRICS] ===", flush=True)
-print("=== 전환 리포트 병합 및 광고비(VAT) 일치 완벽 패치 ===", flush=True)
+print("=== [VERSION: v9.31_VAT_INCLUDED] ===", flush=True)
+print("=== 광고비 부가세(VAT) 10% 포함 완벽 일치 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -253,7 +252,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
-    # 🌟 V9.30 핵심: 부가세 제외 로직(/1.1) 삭제! 네이버 화면의 '총비용'과 완벽 일치!
     cost = int(round(float(r.get("salesAmt", 0) or 0)))
     sales = int(float(r.get("convAmt", 0) or 0))
     return {
@@ -295,7 +293,6 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
     finally:
         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-# 🌟 V9.30 핵심: 기본 리포트(AD)와 전환 리포트(AD_CONVERSION)를 각각 받아와서 완벽하게 하나로 합침!
 def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
     ad_records = {'camp': {}, 'kw': {}, 'ad': {}}
     
@@ -311,8 +308,9 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
                 if not valid.empty:
                     g = valid.groupby(group_col).agg({9:'sum', 10:'sum', 11:'sum'}).reset_index()
                     for _, r in g.iterrows():
-                        # 🌟 비용(Index 11) 부가세 제외 로직 삭제 -> 네이버 100% 일치
-                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": int(float(r[11]))}
+                        # 🌟 V9.31 핵심: TSV의 순수 비용(r[11])에 1.1을 곱해 부가세를 포함시킴! (네이버 화면과 100% 일치)
+                        cost_vat = int(round(float(r[11]) * 1.1))
+                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": cost_vat}
 
     # 2. 전환 리포트 (전환수, 전환매출액) 파싱
     conv_records = {'camp': {}, 'kw': {}, 'ad': {}}
@@ -339,6 +337,7 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
             
             cost = ad["cost"]
             sales = cv["sales"]
+            # 🌟 수정된 cost(VAT 포함)를 바탕으로 ROAS 재계산
             roas = (sales / cost * 100) if cost > 0 else 0.0
             
             rows.append({
@@ -388,7 +387,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
-        # 🌟 V9.30 핵심: 일반 지표 리포트 + 전환 지표 리포트 2개를 동시에 요청!
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
         conv_df = fetch_stat_report(customer_id, "AD_CONVERSION", target_date)
         process_merged_reports(engine, ad_df, conv_df, customer_id, target_date, account_name)
