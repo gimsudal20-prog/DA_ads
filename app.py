@@ -21,9 +21,87 @@ import time
 import re
 import io
 import math
+import logging
+import traceback
+import uuid
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
+# -----------------------------
+# Logging / error surfacing
+# -----------------------------
+_LOG = logging.getLogger("da_ads")
+if not _LOG.handlers:
+    _lvl = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, _lvl, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+def _err_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+def _df_with_error(where: str, exc: Exception, sql: str | None = None) -> pd.DataFrame:
+    """Return an empty DataFrame carrying error metadata in df.attrs['_err'] and log the exception."""
+    eid = _err_id()
+    try:
+        _LOG.exception("ERR %s | %s | %s", eid, where, str(exc))
+    except Exception:
+        pass
+    df = pd.DataFrame()
+    df.attrs["_err"] = {
+        "id": eid,
+        "where": where,
+        "type": type(exc).__name__,
+        "msg": str(exc)[:400],
+    }
+    if sql:
+        df.attrs["_err"]["sql"] = str(sql)[:800]
+    return df
+
+def _empty_df(columns: Optional[List[str]] = None, like: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Create an empty DataFrame with optional columns and preserve df.attrs['_err'] if present."""
+    out = pd.DataFrame(columns=columns) if columns else pd.DataFrame()
+    try:
+        if like is not None and hasattr(like, "attrs") and like.attrs.get("_err"):
+            out.attrs["_err"] = like.attrs.get("_err")
+    except Exception:
+        pass
+    return out
+
+def _show_df_error(df: Optional[pd.DataFrame], title: str = "데이터") -> bool:
+    """If df carries error metadata, show an error banner and return True."""
+    try:
+        if df is None:
+            return False
+        err = getattr(df, "attrs", {}).get("_err")
+        if not err:
+            return False
+        eid = err.get("id", "")
+        where = err.get("where", "")
+        et = err.get("type", "")
+        msg = err.get("msg", "")
+        st.error(
+            f"{title} 로드 실패 ({et})\n\n"
+            f"- 위치: {where}\n"
+            f"- 오류ID: {eid}\n"
+            f"- 메시지: {msg}\n\n"
+            "Streamlit Cloud면 **Manage app → Logs**에서 오류ID로 검색하면 원인 추적이 빨라요."
+        )
+        return True
+    except Exception:
+        return False
+
+def _safe_div(a: float, b: float, default: float = 0.0) -> float:
+    try:
+        a = float(a)
+        b = float(b)
+        if b == 0.0:
+            return default
+        return a / b
+    except Exception:
+        return default
+
 
 import pandas as pd
 import streamlit as st
@@ -224,7 +302,7 @@ GLOBAL_UI_CSS = """
   --nv-text:#1A1C20;
   --nv-muted:rgba(26,28,32,.62);
   --nv-green:#03C75A;
-  --nv-up:#2563EB; /* up(증가)=파랑 */
+  --nv-up:#EF4444; /* up(증가)=빨강(국내표준) */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
   --nv-shadow:0 2px 10px rgba(0,0,0,.06);
@@ -398,8 +476,8 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-blue);} /* 증가(▲) = 파랑 */
-.kpi .d.neg{color:var(--nv-red);} /* 감소(▼) = 빨강 */
+.kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
+.kpi .d.neg{color:var(--nv-blue);}   /* 감소(▼) = 파랑(국내표준) */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
@@ -432,8 +510,8 @@ input[type="text"], textarea{
 }
 .delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
 .delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-blue);} /* 증가 = 파랑 */
-.delta-chip.neg .v{color: var(--nv-red);} /* 감소 = 빨강 */
+.delta-chip.pos .v{color: var(--nv-red);} /* 증가 = 빨강(국내표준) */
+.delta-chip.neg .v{color: var(--nv-blue);}   /* 감소 = 파랑(국내표준) */
 .delta-chip.zero .v{color: rgba(26,28,32,.72);} 
 @media (max-width: 1200px){
   .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -643,7 +721,7 @@ def render_timeseries_chart(ts: pd.DataFrame, entity: str = "campaign", key_pref
 
     def _fmt_pct1(x) -> str:
         try:
-            return f"{float(x):.0f}%"
+            return f"{float(x):.1f}%"
         except Exception:
             return "0.0%"
 
@@ -796,7 +874,7 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height
         return (
             f"<div class='nv-pbar'>"
             f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
-            f"  <div class='nv-pbar-txt'>{pv:.0f}%</div>"
+            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
             f"</div>"
         )
 
@@ -958,10 +1036,10 @@ def render_echarts_line(
     df[y_col] = pd.to_numeric(df[y_col], errors="coerce").fillna(0.0)
 
     x = df[x_col].astype(str).tolist()
-    y = df[y_col].round(0).astype('int64').tolist()
+    y = df[y_col].astype(float).tolist()
 
     option = {
-        "title": {"show": False},
+        "title": {"text": title, "left": 10, "top": 6, "textStyle": {"fontSize": 13, "fontWeight": "bold"}},
         "grid": {"left": 54, "right": 18, "top": 44, "bottom": 34},
         "tooltip": {"trigger": "axis"},
         "xAxis": {"type": "category", "data": x, "axisTick": {"alignWithLabel": True}},
@@ -1012,25 +1090,24 @@ def render_echarts_delta_bars(delta_df: pd.DataFrame, *, height: int = 260) -> N
 
     data = []
     for m, v in zip(cats, vals):
-        v_i = int(round(float(v)))
         if v > 0:
-            color = "#2563EB"  # up=blue
+            color = "#EF4444"  # up=red
             br = [0, 10, 10, 0]  # round right only
             pos = "right"
-            fmt = f"+{v_i}%"
+            fmt = f"+{v:.1f}%"
         elif v < 0:
-            color = "#EF4444"  # down=red
+            color = "#2563EB"  # down=blue
             br = [10, 0, 0, 10]  # round left only
             pos = "left"
-            fmt = f"{v_i}%"
+            fmt = f"{v:.1f}%"
         else:
             color = "#B4C4D9"
             br = [0, 0, 0, 0]
             pos = "right"
-            fmt = "+0%"
+            fmt = "+0.0%"
         data.append(
             {
-                "value": v_i,
+                "value": v,
                 "label": {"show": True, "position": pos, "formatter": fmt, "fontWeight": "bold"},
                 "itemStyle": {"color": color, "borderRadius": br},
             }
@@ -1171,7 +1248,11 @@ def _reset_engine_cache() -> None:
         pass
 
 def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) -> pd.DataFrame:
-    """DB read with retry for transient connection errors (SSL closed, idle timeout, etc.)."""
+    """DB read with retry for transient connection errors.
+
+    - 실패 시 예외를 터뜨리기보다 **빈 DataFrame**을 반환하고,
+      df.attrs['_err']에 오류 메타데이터를 담아 UI에서 원인 표시가 가능하게 합니다.
+    """
     last_err: Exception | None = None
     _engine = engine
 
@@ -1181,6 +1262,7 @@ def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) 
                 return pd.read_sql(text(sql), conn, params=params or {})
         except Exception as e:
             last_err = e
+
             # 1) 풀 내부 죽은 커넥션 제거
             try:
                 _engine.dispose()
@@ -1198,8 +1280,9 @@ def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) 
             if i < retries:
                 time.sleep(0.35 * (2 ** i))
                 continue
-            raise last_err
 
+            # 최종 실패: 로그 + 빈 DF 반환(에러 메타 포함)
+            return _df_with_error("sql_read", last_err, sql=sql)
 
 def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) -> None:
     last_err = None
@@ -1575,7 +1658,7 @@ def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
             return ""
         if float(x) == 0.0:
             return "0%"
-        return f"{float(x):.0f}%"
+        return f"{float(x):.1f}%"
 
     out[col] = s.map(_fmt)
     return out
@@ -1733,31 +1816,6 @@ def label_to_tp_keys(labels: Tuple[str, ...]) -> List[str]:
             seen.add(x)
     return out
 
-def _tp_norm_key(x: str) -> str:
-    """Normalize campaign type tokens for robust comparison."""
-    s = (x or "").strip().lower()
-    s = re.sub(r"[\s_-]+", "", s)
-    return s
-
-
-def label_to_tp_norms(labels: Tuple[str, ...]) -> List[str]:
-    """Return normalized tokens derived from selected labels (handles KR/EN/variants)."""
-    out: List[str] = []
-    seen = set()
-    for lab in labels:
-        lab_s = str(lab).strip()
-        cands = []
-        if lab_s:
-            cands.append(lab_s)  # raw label (e.g. '쇼핑검색')
-        cands.extend(_LABEL_TO_TP_KEYS.get(lab_s, []))  # mapped keys (e.g. 'shopping_search')
-        for c in cands:
-            n = _tp_norm_key(str(c))
-            if n and n not in seen:
-                out.append(n)
-                seen.add(n)
-    return out
-
-
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=3600, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
@@ -1765,7 +1823,7 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
         return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
     df = sql_read(_engine, "SELECT customer_id, campaign_id, campaign_name, campaign_tp FROM dim_campaign")
     if df is None or df.empty:
-        return pd.DataFrame(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"])
+        return _empty_df(columns=["customer_id", "campaign_id", "campaign_name", "campaign_tp"], like=df)
     df["campaign_tp"] = df.get("campaign_tp", "").fillna("")
     df["campaign_type_label"] = df["campaign_tp"].astype(str).map(campaign_tp_to_label)
     df.loc[df["campaign_type_label"].astype(str).str.strip() == "", "campaign_type_label"] = "기타"
@@ -1884,7 +1942,7 @@ def get_meta(_engine) -> pd.DataFrame:
     )
 
     if df is None or df.empty:
-        return pd.DataFrame(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"])
+        return _empty_df(columns=["customer_id", "account_name", "manager", "monthly_budget", "updated_at"], like=df)
 
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype("int64")
     df["monthly_budget"] = pd.to_numeric(df.get("monthly_budget", 0), errors="coerce").fillna(0).astype("int64")
@@ -1925,7 +1983,8 @@ def query_latest_dates(_engine) -> Dict[str, str]:
             df = sql_read(_engine, f"SELECT MAX(dt) AS mx FROM {t}")
             mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
             out[str(t)] = str(mx)[:10] if mx is not None else "-"
-        except Exception:
+        except Exception as e:
+            _LOG.exception("ERR %s | %s | %s", _err_id(), "query_latest_dates", str(e))
             continue
     return out
 
@@ -2489,7 +2548,7 @@ def query_campaign_daily_slice(_engine, d1: date, d2: date) -> pd.DataFrame:
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     if df is None or df.empty:
-        return pd.DataFrame(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"])
+        return _empty_df(columns=["dt","customer_id","account_name","manager","campaign_id","campaign_name","campaign_tp","campaign_type","imp","clk","cost","conv","sales"], like=df)
 
     # types
     df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
@@ -2564,7 +2623,7 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...]
         df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+        return _empty_df(columns=["dt", "imp", "clk", "cost", "conv", "sales"], like=df)
 
     for c in ["imp", "clk", "cost", "conv", "sales"]:
         if c in df.columns:
@@ -2608,7 +2667,7 @@ def query_campaign_one_timeseries(
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": str(campaign_id)})
     if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+        return _empty_df(columns=["dt", "imp", "clk", "cost", "conv", "sales"], like=df)
 
     for c in ["imp", "clk", "cost", "conv", "sales"]:
         if c in df.columns:
@@ -2681,7 +2740,7 @@ def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
         df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+        return _empty_df(columns=["dt", "imp", "clk", "cost", "conv", "sales"], like=df)
 
     for c in ["imp", "clk", "cost", "conv", "sales"]:
         if c in df.columns:
@@ -2755,7 +2814,7 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
         df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
+        return _empty_df(columns=["dt", "imp", "clk", "cost", "conv", "sales"], like=df)
 
     for c in ["imp", "clk", "cost", "conv", "sales"]:
         if c in df.columns:
@@ -2895,7 +2954,7 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
         if unit == "원":
             return f"{format_number_commas(v)}원"
         if unit == "%":
-            return f"{v:.0f}%"
+            return f"{v:.1f}%"
         return f"{format_number_commas(v)}{unit}"
 
     d["__label"] = d[value_col].map(lambda v: _fmt(float(v)))
@@ -3266,12 +3325,12 @@ def query_keyword_bundle(
     if customer_ids:
         cid_scope_clause = f"AND k.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
 
-    # type filter (campaign_tp는 저장 형태가 제각각이라 정규화해서 비교)
-    tp_norms = label_to_tp_norms(type_sel) if type_sel else []
+    # type filter는 campaign_tp 키로 (더 빠름)
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
     type_clause = ""
-    if tp_norms:
-        tp_list = ",".join(["'" + str(x).replace("'", "''") + "'" for x in tp_norms])
-        type_clause = "AND lower(regexp_replace(COALESCE(c.campaign_tp,''), '[\\s_-]', '', 'g')) IN (" + tp_list + ")"
+    if tp_keys:
+        tp_list = ",".join([f"'{x}'" for x in tp_keys])
+        type_clause = f"AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})"
 
     sql = f"""
     WITH scope AS (
@@ -3285,12 +3344,12 @@ def query_keyword_bundle(
         COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
         COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
         CASE
-          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('website','powerlink','파워링크') THEN '파워링크'
-          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('shopping','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
-          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
-          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('place','placesearch','플레이스') THEN '플레이스'
-          WHEN lower(regexp_replace(trim(c.campaign_tp), '[\\s_-]', '', 'g')) IN ('brandsearch','브랜드검색') THEN '브랜드검색'
-          ELSE COALESCE(NULLIF(TRIM(c.campaign_tp),''),'기타')
+          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
+          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
+          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
+          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
+          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+          ELSE '기타'
         END AS campaign_type_label
       FROM dim_keyword k
       LEFT JOIN dim_adgroup g
@@ -3515,15 +3574,6 @@ def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
     return _shift_month(d1, -1), _shift_month(d2, -1)
 
 
-def _safe_div(a: float, b: float) -> float:
-    try:
-        if b == 0:
-            return 0.0
-        return float(a) / float(b)
-    except Exception:
-        return 0.0
-
-
 def _pct_change(curr: float, prev: float) -> Optional[float]:
     """Percent change. If prev==0 and curr>0 -> None (N/A)."""
     if prev == 0:
@@ -3536,7 +3586,7 @@ def _pct_to_str(p: Optional[float]) -> str:
     try:
         if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
             return "—"
-        return f"{float(p):+.0f}%"
+        return f"{float(p):+.1f}%"
     except Exception:
         return "—"
 
@@ -3548,10 +3598,10 @@ def _pct_to_arrow(p: Optional[float]) -> str:
             return "—"
         p = float(p)
         if p > 0:
-            return f"▲ {abs(p):.0f}%"
+            return f"▲ {abs(p):.1f}%"
         if p < 0:
-            return f"▼ {abs(p):.0f}%"
-        return f"• {abs(p):.0f}%"
+            return f"▼ {abs(p):.1f}%"
+        return f"• {abs(p):.1f}%"
     except Exception:
         return "—"
 
@@ -3576,7 +3626,8 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
             ts = query_keyword_timeseries(_engine, d1, d2, cids, type_sel)
         else:
             ts = query_ad_timeseries(_engine, d1, d2, cids, type_sel)
-    except Exception:
+    except Exception as e:
+        _LOG.exception("ERR %s | %s | %s", _err_id(), "get_entity_totals", str(e))
         ts = pd.DataFrame()
 
     if ts is None or ts.empty:
@@ -3592,21 +3643,10 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
     cost = _sum("cost")
     conv = _sum("conv")
     sales = _sum("sales")
-
-    # NameError 방지: 일부 배포본에서 _safe_div 누락/스코프 이슈가 있어도 계산은 진행되도록 가드
-    safe_div = globals().get("_safe_div")
-    if safe_div is None:
-        def safe_div(a, b) -> float:
-            try:
-                b = float(b)
-                return float(a) / b if b != 0 else 0.0
-            except Exception:
-                return 0.0
-
-    ctr = safe_div(clk, imp) * 100.0
-    cpc = safe_div(cost, clk)
-    cpa = safe_div(cost, conv)
-    roas = safe_div(sales, cost) * 100.0
+    ctr = _safe_div(clk, imp) * 100.0
+    cpc = _safe_div(cost, clk)
+    cpa = _safe_div(cost, conv)
+    roas = _safe_div(sales, cost) * 100.0
 
     return {"imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "ctr": ctr, "cpc": cpc, "cpa": cpa, "roas": roas}
 
@@ -3658,7 +3698,7 @@ def _chart_delta_bars(delta_df: pd.DataFrame, height: int = 260):
     d_cap = d.copy()
     d_cap["val"] = d_cap["flat_end"]
 
-    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#2563EB", "#EF4444", "#B4C4D9"])
+    color_scale = alt.Scale(domain=["up", "down", "flat"], range=["#EF4444", "#2563EB", "#B4C4D9"])
 
     y_enc = alt.Y("metric:N", sort=y_sort, title=None, axis=alt.Axis(labelLimit=260))
     x_axis = alt.Axis(grid=True, gridColor="#EBEEF2")
@@ -4203,6 +4243,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
 
     if bundle is None or bundle.empty:
+        if _show_df_error(bundle, "캠페인 데이터"):
+            return
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
@@ -4449,6 +4491,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
     if bundle is None or bundle.empty:
+        if _show_df_error(bundle, "키워드 데이터"):
+            return
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
@@ -4459,7 +4503,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     def _fmt_top(df: pd.DataFrame, metric: str) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=["업체명", "키워드", metric])
+            return _empty_df(columns=["업체명", "키워드", metric], like=df)
         x = df.copy()
         x["customer_id"] = pd.to_numeric(x["customer_id"], errors="coerce").astype("Int64")
         x = x.dropna(subset=["customer_id"]).copy()
@@ -4502,7 +4546,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     # -----------------------------
     try:
         ts = query_keyword_timeseries(engine, f["start"], f["end"], cids, type_sel)
-    except Exception:
+    except Exception as e:
+        _LOG.exception("ERR %s | %s | %s", _err_id(), "page_perf_keyword:timeseries", str(e))
         ts = pd.DataFrame()
 
     if ts is not None and not ts.empty:
@@ -4615,6 +4660,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
     if bundle is None or bundle.empty:
+        if _show_df_error(bundle, "소재 데이터"):
+            return
         st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
         return
 
@@ -4626,7 +4673,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     # -----------------------------
     try:
         ts = query_ad_timeseries(engine, f["start"], f["end"], cids, type_sel)
-    except Exception:
+    except Exception as e:
+        _LOG.exception("ERR %s | %s | %s", _err_id(), "page_perf_ad:timeseries", str(e))
         ts = pd.DataFrame()
 
     if ts is not None and not ts.empty:
