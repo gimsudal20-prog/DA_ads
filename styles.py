@@ -331,34 +331,8 @@ table.nv-table td{padding:10px 12px; border-bottom:1px solid var(--nv-line); ver
 table.nv-table tr:hover td{background: rgba(0,0,0,.02);}
 table.nv-table td.num{text-align:right; font-variant-numeric: tabular-nums;}
 
-/* ---- 마이크로 인터랙션 (툴팁) ---- */
-.kpi { position: relative; cursor: default; }
-.kpi .tooltip {
-  visibility: hidden; width: 140px; background-color: rgba(0,0,0,0.8); color: #fff;
-  text-align: center; border-radius: 6px; padding: 6px 8px; font-size: 11px;
-  position: absolute; z-index: 10; bottom: 105%; left: 50%; transform: translateX(-50%);
-  opacity: 0; transition: opacity 0.2s; font-weight: normal; pointer-events: none;
-}
-.kpi:hover .tooltip { visibility: visible; opacity: 1; }
-
-/* ---- 빈 상태 (Empty State) ---- */
-.nv-empty {
-  padding: 50px 20px; text-align: center; background: var(--nv-panel);
-  border: 1px dashed var(--nv-line2); border-radius: var(--nv-radius); margin: 20px 0;
-}
-.nv-empty .icon { font-size: 36px; margin-bottom: 12px; filter: grayscale(100%); opacity: 0.6; }
-.nv-empty .msg { font-size: 15px; font-weight: 800; color: var(--nv-text); }
-.nv-empty .sub { font-size: 13px; color: var(--nv-muted); margin-top: 8px; }
-
-/* ---- 탭(Tab) 스타일 최적화 ---- */
-div[data-testid="stTabs"] button {
-  font-weight: 700 !important; color: var(--nv-muted) !important;
-}
-div[data-testid="stTabs"] button[aria-selected="true"] {
-  color: var(--nv-green) !important; border-bottom-color: var(--nv-green) !important;
-}
-
 </style>
+
 """
 
 EXTRA_UI_CSS = """
