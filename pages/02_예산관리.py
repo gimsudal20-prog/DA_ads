@@ -8,21 +8,18 @@ from sqlalchemy import text
 from utils import init_page, format_currency, format_number_commas
 from state import FilterState
 from ui_sidebar import render_sidebar
-from database import get_engine, sql_read, sql_exec, table_exists
+from database import get_engine, sql_read, sql_exec, table_exists, get_meta
 from ui_components import ui_metric_or_stmetric, ui_table_or_dataframe
 
-# --- 예산 관련 임계값 설정 ---
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
 @st.cache_data(show_spinner=False, ttl=180)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
-    """예산/비즈머니/전일소진/최근N일평균/당월소진을 한 번에 가져옵니다."""
     if not (table_exists(_engine, "dim_account_meta") and table_exists(_engine, "fact_campaign_daily") and table_exists(_engine, "fact_bizmoney_daily")):
         return pd.DataFrame()
 
-    # 파라미터 바인딩 적용
     params = {
         "y": str(yesterday), "a1": str(avg_d1), "a2": str(avg_d2),
         "m1": str(month_d1), "m2": str(month_d2),
@@ -41,15 +38,13 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
       FROM dim_account_meta m {where_cid}
     ),
     biz AS (
-      SELECT DISTINCT ON (customer_id::text)
-        customer_id::text AS customer_id, bizmoney_balance, dt AS last_update
+      SELECT DISTINCT ON (customer_id::text) customer_id::text AS customer_id, bizmoney_balance, dt AS last_update
       FROM fact_bizmoney_daily
       WHERE customer_id::text IN (SELECT customer_id FROM meta)
       ORDER BY customer_id::text, dt DESC
     ),
     camp AS (
-      SELECT
-        customer_id::text AS customer_id,
+      SELECT customer_id::text AS customer_id,
         SUM(cost) FILTER (WHERE dt = :y) AS y_cost,
         SUM(cost) FILTER (WHERE dt BETWEEN :a1 AND :a2) AS avg_sum_cost,
         SUM(cost) FILTER (WHERE dt BETWEEN :m1 AND :m2) AS month_cost
@@ -57,8 +52,7 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
       WHERE customer_id::text IN (SELECT customer_id FROM meta) AND dt BETWEEN :min_dt AND :max_dt
       GROUP BY customer_id::text
     )
-    SELECT
-      meta.customer_id, meta.account_name, meta.manager, meta.monthly_budget,
+    SELECT meta.customer_id, meta.account_name, meta.manager, meta.monthly_budget,
       COALESCE(biz.bizmoney_balance,0) AS bizmoney_balance, biz.last_update,
       COALESCE(camp.y_cost,0) AS y_cost, COALESCE(camp.avg_sum_cost,0) AS avg_sum_cost,
       COALESCE(camp.month_cost,0) AS current_month_cost
@@ -81,16 +75,13 @@ def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None
                  {"b": int(monthly_budget), "cid": int(customer_id)})
 
 def render_budget_month_table_with_bars(table_df: pd.DataFrame, height: int = 520):
-    if table_df is None or table_df.empty:
-        st.info("표시할 데이터가 없습니다.")
-        return
+    if table_df is None or table_df.empty: return
     df = table_df.copy()
-    
     def _bar(pct, status) -> str:
-        pv = float(pct) if not pd.isna(pct) else 0.0
+        pv = float(pct) if pd.notna(pct) else 0.0
         width = max(0.0, min(pv, 120.0))
         stt = str(status or "")
-        fill = "var(--nv-red)" if stt.startswith("🔴") else "#F59E0B" if stt.startswith("🟡") else "var(--nv-green)" if stt.startswith("🟢") else "rgba(0,0,0,.25)"
+        fill = "var(--nv-red)" if "🔴" in stt else "#F59E0B" if "🟡" in stt else "var(--nv-green)" if "🟢" in stt else "rgba(0,0,0,.25)"
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div><div class='nv-pbar-txt'>{pv:.0f}%</div></div>"
 
     if "집행률(%)" in df.columns:
@@ -109,13 +100,9 @@ def render_budget_month_table_with_bars(table_df: pd.DataFrame, height: int = 52
     st.markdown(f"<div class='nv-table-wrap' style='max-height:{height}px'>{html}</div>", unsafe_allow_html=True)
 
 
-# --- 메인 렌더링 ---
 init_page()
 engine = get_engine()
-
-# Meta 데이터 로드 (메타가 없으면 설정 페이지로 유도)
-meta = sql_read(engine, "SELECT * FROM dim_account_meta") if table_exists(engine, "dim_account_meta") else pd.DataFrame()
-
+meta = get_meta(engine)
 render_sidebar(meta, engine)
 f = FilterState.get()
 
@@ -124,13 +111,11 @@ if not f.get("ready"):
     st.stop()
 
 st.markdown("## 💰 전체 예산 / 잔액 관리")
-
 cids = tuple(f.get("selected_customer_ids", []))
 yesterday = date.today() - timedelta(days=1)
 end_dt = f.get("end", yesterday)
 avg_d2 = end_dt - timedelta(days=1)
 avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-
 month_d1 = end_dt.replace(day=1)
 month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
 
@@ -148,7 +133,6 @@ biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float
 
 biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
 biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
-
 biz_view["상태"] = "🟢 여유"
 biz_view.loc[biz_view["bizmoney_balance"].astype(float) < biz_view["threshold"].astype(float), "상태"] = "🔴 충전필요"
 
@@ -169,17 +153,14 @@ with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_curren
 with c3: ui_metric_or_stmetric('충전 필요 계정', f"{count_low_balance}건", '임계치 미만', 'm_need_topup')
 
 st.divider()
-
 show_only_topup = st.checkbox("충전필요만 보기", value=False)
 biz_view["_rank"] = biz_view["상태"].map(lambda s: 0 if "충전필요" in str(s) else 1)
 biz_view = biz_view.sort_values(["_rank", "bizmoney_balance", "account_name"]).drop(columns=["_rank"])
-
 if show_only_topup:
     biz_view = biz_view[biz_view["상태"].str.contains("충전필요", na=False)]
 
 view_cols = ["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "전일 소진액", "상태", "확인일자"]
 display_df = biz_view[view_cols].rename(columns={"account_name": "업체명", "manager": "담당자"})
-
 ui_table_or_dataframe(display_df, key="budget_biz_table", height=400)
 
 st.divider()
