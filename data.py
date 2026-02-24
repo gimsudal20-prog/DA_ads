@@ -1931,6 +1931,9 @@ def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
     # 전월대비 (default)
     return _shift_month(d1, -1), _shift_month(d2, -1)
 
+
+# Public alias (import * friendly)
+period_compare_range = _period_compare_range
 def _safe_div(a: float, b: float) -> float:
     try:
         if b == 0:
@@ -1968,6 +1971,9 @@ def _pct_to_arrow(p: Optional[float]) -> str:
     except Exception:
         return "—"
 
+
+# Public alias (import * friendly)
+pct_to_arrow = _pct_to_arrow
 def _fmt_point(p: Optional[float]) -> str:
     """Point change string like +1.2p. Robust to None/NaN."""
     try:
