@@ -1585,6 +1585,58 @@ def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
 # -----------------------------
 # Campaign summary rows (Naver-like)
 # -----------------------------
+def finalize_display_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """캠페인/요약 테이블 표시용 포맷터(안전).
+    - 노출/클릭/전환 등: 정수 콤마
+    - 광고비/매출/CPC/CPA 등: 원 단위 콤마
+    - CTR/CVR: 소수 1자리
+    - ROAS: 정수(%)
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    def _to_num(s):
+        return pd.to_numeric(s, errors="coerce")
+
+    # money-like columns
+    money_cols = [c for c in out.columns if (
+        c.endswith("(원)") or c in {"광고비","비용","매출","전환매출","CPC(원)","CPA(원)","평균CPC(원)","평균CPA(원)"}
+    )]
+    for c in money_cols:
+        try:
+            out[c] = _to_num(out[c]).fillna(0).round(0).astype("int64").map(lambda x: f"{x:,}원")
+        except Exception:
+            # leave as-is if unexpected
+            pass
+
+    # integer count-like columns
+    int_cols = [c for c in out.columns if (
+        c in {"노출","클릭","전환","전환수","전환건수"} or c.endswith("(건)")
+    )]
+    for c in int_cols:
+        try:
+            out[c] = _to_num(out[c]).fillna(0).round(0).astype("int64").map(lambda x: f"{x:,}")
+        except Exception:
+            pass
+
+    # percent columns
+    pct_cols = [c for c in out.columns if c.endswith("(%)")]
+    for c in pct_cols:
+        try:
+            v = _to_num(out[c]).fillna(0)
+            if c in {"CTR(%)","CVR(%)"}:
+                out[c] = v.round(1).map(lambda x: f"{x:.1f}")
+            elif c == "ROAS(%)":
+                out[c] = v.round(0).astype("int64").map(lambda x: f"{x:,}%")
+            else:
+                out[c] = v.round(1).map(lambda x: f"{x:.1f}")
+        except Exception:
+            pass
+
+    return out
+
 def build_campaign_summary_rows_from_numeric(
     df_numeric: pd.DataFrame,
     campaign_type_col: str = "campaign_type",
@@ -3251,11 +3303,11 @@ def query_keyword_bundle(
         COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
         COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
         CASE
-          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+          WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('web_site','website','power_link','powerlink') THEN '파워링크'
+          WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('shopping','shopping_search') THEN '쇼핑검색'
+          WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
+          WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('place','place_search') THEN '플레이스'
+          WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('brand_search','brandsearch') THEN '브랜드검색'
           ELSE '기타'
         END AS campaign_type_label
       FROM dim_keyword k
@@ -3392,11 +3444,11 @@ def query_keyword_bundle(
             COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
             COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
             CASE
-                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink') THEN '파워링크'
-                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search') THEN '쇼핑검색'
-                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
-                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search') THEN '플레이스'
-                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch') THEN '브랜드검색'
+                WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('web_site','website','power_link','powerlink') THEN '파워링크'
+                WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('shopping','shopping_search') THEN '쇼핑검색'
+                WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('power_content','power_contents','powercontent') THEN '파워콘텐츠'
+                WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('place','place_search') THEN '플레이스'
+                WHEN replace(replace(lower(trim(c.campaign_tp)), '_', ''), '-', '') IN ('brand_search','brandsearch') THEN '브랜드검색'
                 ELSE '기타'
             END AS campaign_type_label
         FROM base b
