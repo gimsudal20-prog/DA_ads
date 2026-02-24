@@ -359,7 +359,6 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
 }
 
 </style>
-
 """
 
 EXTRA_UI_CSS = """
