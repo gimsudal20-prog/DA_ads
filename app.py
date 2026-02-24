@@ -1666,6 +1666,51 @@ def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
 
 
 
+
+
+# -----------------------------
+# Period compare helper (DoD/WoW/MoM)
+# -----------------------------
+import calendar as _calendar
+
+def _coerce_date(x) -> date:
+    if isinstance(x, datetime):
+        return x.date()
+    if isinstance(x, date):
+        return x
+    if isinstance(x, str):
+        try:
+            return datetime.fromisoformat(x).date()
+        except Exception:
+            pass
+    return date.today()
+
+def _shift_month(d: date, months: int) -> date:
+    y = d.year + ((d.month - 1 + months) // 12)
+    m = (d.month - 1 + months) % 12 + 1
+    last = _calendar.monthrange(y, m)[1]
+    return date(y, m, min(d.day, last))
+
+def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
+    """Return (base_start, base_end) date range to compare against."""
+    s = _coerce_date(d1)
+    e = _coerce_date(d2)
+    if e < s:
+        s, e = e, s
+
+    mode = (mode or "").strip()
+    if mode in ("전일대비", "전일 대비", "DoD", "DOD"):
+        return (s - timedelta(days=1), e - timedelta(days=1))
+    if mode in ("전주대비", "전주 대비", "WoW", "WOW"):
+        return (s - timedelta(days=7), e - timedelta(days=7))
+    if mode in ("전월대비", "전월 대비", "MoM", "MOM"):
+        return (_shift_month(s, -1), _shift_month(e, -1))
+
+    span = (e - s).days + 1
+    base_end = s - timedelta(days=1)
+    base_start = base_end - timedelta(days=max(span, 1) - 1)
+    return (base_start, base_end)
+
 # -----------------------------
 # Campaign summary rows (Naver-like)
 # -----------------------------
