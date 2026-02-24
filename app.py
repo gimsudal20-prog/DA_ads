@@ -398,8 +398,8 @@ input[type="text"], textarea{
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
-.kpi .d.neg{color:var(--nv-blue);}   /* 감소(▼) = 파랑(국내표준) */
+.kpi .d.pos{color:var(--nv-blue);} /* 증가(▲) = 파랑 */
+.kpi .d.neg{color:var(--nv-red);}   /* 감소(▼) = 빨강 */
 .kpi .chip{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
@@ -432,8 +432,8 @@ input[type="text"], textarea{
 }
 .delta-chip .v .arr{display:inline-block; width: 18px; font-weight: 900;}
 .delta-chip .v .p{font-weight: 800; color: var(--nv-muted); margin-left: 4px;}
-.delta-chip.pos .v{color: var(--nv-red);} /* 증가 = 빨강(국내표준) */
-.delta-chip.neg .v{color: var(--nv-blue);}   /* 감소 = 파랑(국내표준) */
+.delta-chip.pos .v{color: var(--nv-blue);} /* 증가 = 파랑 */
+.delta-chip.neg .v{color: var(--nv-red);}   /* 감소 = 빨강 */
 .delta-chip.zero .v{color: rgba(26,28,32,.72);} 
 @media (max-width: 1200px){
   .delta-chip-row{grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -900,34 +900,6 @@ def render_echarts_donut(title: str, data: pd.DataFrame, label_col: str, value_c
     d[label_col] = d[label_col].astype(str)
     d[value_col] = pd.to_numeric(d[value_col], errors="coerce").fillna(0.0)
 
-    # NOTE: 안전장치 - 예전 파일에 _pct_to_arrow 누락 시 NameError 방지
-    _pct_arrow_fn = globals().get('_pct_to_arrow')
-    if _pct_arrow_fn is None:
-        def _pct_arrow_fn(p):
-            try:
-                import math as _math
-                import pandas as _pd
-                if p is None:
-                    return '—'
-                try:
-                    if isinstance(p, float) and _math.isnan(p):
-                        return '—'
-                except Exception:
-                    pass
-                try:
-                    if hasattr(_pd, 'isna') and _pd.isna(p):
-                        return '—'
-                except Exception:
-                    pass
-                p = float(p)
-                if p > 0:
-                    return f"▲ {abs(p):.1f}%"
-                if p < 0:
-                    return f"▼ {abs(p):.1f}%"
-                return f"• {abs(p):.1f}%"
-            except Exception:
-                return '—'
-
     items = [{"name": n, "value": float(v)} for n, v in zip(d[label_col].tolist(), d[value_col].tolist()) if float(v) > 0]
     if not items:
         return
@@ -983,17 +955,17 @@ def render_echarts_line(
             df[x_col] = df[x_col].astype(str)
 
     # y
-    df[y_col] = pd.to_numeric(df[y_col], errors="coerce").fillna(0.0)
+    df[y_col] = pd.to_numeric(df[y_col], errors="coerce").fillna(0.0).round(0).astype(int)
 
     x = df[x_col].astype(str).tolist()
-    y = df[y_col].astype(float).tolist()
+    y = df[y_col].astype(int).tolist()
 
     option = {
-        "title": {"text": title, "left": 10, "top": 6, "textStyle": {"fontSize": 13, "fontWeight": "bold"}},
-        "grid": {"left": 54, "right": 18, "top": 44, "bottom": 34},
+        "title": {"show": False},
+        "grid": {"left": 54, "right": 18, "top": 18, "bottom": 34},
         "tooltip": {"trigger": "axis"},
         "xAxis": {"type": "category", "data": x, "axisTick": {"alignWithLabel": True}},
-        "yAxis": {"type": "value", "name": y_name, "nameTextStyle": {"padding": [0, 0, 0, 6]}},
+        "yAxis": {"type": "value", "name": y_name, "nameTextStyle": {"padding": [0, 0, 0, 6]}, "axisLabel": {"formatter": "{value}"}},
         "series": [
             {
                 "type": "line",
@@ -1040,29 +1012,34 @@ def render_echarts_delta_bars(delta_df: pd.DataFrame, *, height: int = 260) -> N
 
     data = []
     for m, v in zip(cats, vals):
-        if v > 0:
-            color = "#EF4444"  # up=red
+        try:
+            v = float(v)
+        except Exception:
+            v = 0.0
+        # 그래프/툴팁 소수점 제거
+        v_disp = float(int(round(v)))
+        if v_disp > 0:
+            color = "#2563EB"  # up=blue
             br = [0, 10, 10, 0]  # round right only
             pos = "right"
-            fmt = f"+{v:.1f}%"
-        elif v < 0:
-            color = "#2563EB"  # down=blue
+            fmt = f"+{v_disp:.0f}%"
+        elif v_disp < 0:
+            color = "#EF4444"  # down=red
             br = [10, 0, 0, 10]  # round left only
             pos = "left"
-            fmt = f"{v:.1f}%"
+            fmt = f"{v_disp:.0f}%"
         else:
             color = "#B4C4D9"
             br = [0, 0, 0, 0]
             pos = "right"
-            fmt = "+0.0%"
+            fmt = "+0%"
         data.append(
             {
-                "value": v,
+                "value": v_disp,
                 "label": {"show": True, "position": pos, "formatter": fmt, "fontWeight": "bold"},
                 "itemStyle": {"color": color, "borderRadius": br},
             }
         )
-
     option = {
         "grid": {"left": 70, "right": 24, "top": 12, "bottom": 26},
         "xAxis": {
@@ -2576,49 +2553,6 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...]
 
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-def query_campaign_one_timeseries(
-    _engine,
-    d1: date,
-    d2: date,
-    customer_id: int,
-    campaign_id: str,
-) -> pd.DataFrame:
-    """캠페인(단일) 일별 추세. (선택 캠페인만 빠르게)"""
-    if not table_exists(_engine, "fact_campaign_daily"):
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    has_sales = _fact_has_sales(_engine, "fact_campaign_daily")
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    sql = f"""
-    SELECT
-      f.dt::date AS dt,
-      SUM(f.imp)  AS imp,
-      SUM(f.clk)  AS clk,
-      SUM(f.cost) AS cost,
-      SUM(f.conv) AS conv,
-      {sales_expr} AS sales
-    FROM fact_campaign_daily f
-    WHERE f.dt BETWEEN :d1 AND :d2
-      AND f.customer_id::text = :cid
-      AND f.campaign_id::text = :camp
-    GROUP BY f.dt::date
-    ORDER BY f.dt::date
-    """
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(int(customer_id)), "camp": str(campaign_id)})
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
-
-    for c in ["imp", "clk", "cost", "conv", "sales"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    return df
-
-
 def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> pd.DataFrame:
     """소재(전체) 일별 추세."""
     if not table_exists(_engine, "fact_ad_daily"):
@@ -2897,7 +2831,7 @@ def _chart_progress_bars(df: pd.DataFrame, label_col: str, value_col: str, x_tit
         if unit == "원":
             return f"{format_number_commas(v)}원"
         if unit == "%":
-            return f"{v:.1f}%"
+            return f"{v:.0f}%"
         return f"{format_number_commas(v)}{unit}"
 
     d["__label"] = d[value_col].map(lambda v: _fmt(float(v)))
@@ -3779,6 +3713,9 @@ def render_period_compare_panel(
         dclk = cur["clk"] - base["clk"]
 
         dconv = cur["conv"] - base["conv"]
+
+        droas_p = (cur["roas"] - base["roas"]) * 100.0
+
         dcost_pct = _pct_change(cur["cost"], base["cost"])
 
         dclk_pct = _pct_change(cur["clk"], base["clk"])
@@ -3861,7 +3798,7 @@ def render_period_compare_panel(
                 ["클릭", format_number_commas(cur["clk"]), format_number_commas(base["clk"]), f"{_pct_to_str(_pct_change(cur['clk'], base['clk']))}"],
                 ["전환", format_number_commas(cur["conv"]), format_number_commas(base["conv"]), f"{_pct_to_str(_pct_change(cur['conv'], base['conv']))}"],
                 ["매출", format_currency(cur["sales"]), format_currency(base["sales"]), _pct_to_str(_pct_change(cur["sales"], base["sales"]))],
-                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{_pct_to_str(_pct_change(cur['roas'], base['roas']))}"],
+                ["ROAS(%)", format_roas(cur["roas"]), format_roas(base["roas"]), f"{_fmt_point((cur.get('roas',0.0) or 0.0) - (base.get('roas',0.0) or 0.0))}"],
             ],
             columns=["지표", "현재", "비교기간", "증감"],
         )
@@ -4177,44 +4114,67 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     top_n = int(f.get("top_n_campaign", 200))
     cids = tuple(f.get("selected_customer_ids", []) or [])
-    if (f.get("manager") or f.get("account")) and not cids:
-        st.warning("선택한 담당자/계정에 매칭되는 customer_id를 찾지 못했습니다. (accounts.xlsx 동기화/메타 확인 필요)")
+    if (f.get('manager') or f.get('account')) and not cids:
+        st.warning('선택한 담당자/계정에 매칭되는 customer_id를 찾지 못했습니다. (accounts.xlsx 동기화/메타 확인 필요)')
         return
 
     type_sel = tuple(f.get("type_sel", tuple()) or tuple())
 
     # -----------------------------
-    # 1) 메인 조회: 캠페인 단위 bundle(집계)만 조회 (빠름)
-    #    - 광고비 TopN + 클릭/전환 TopK를 UNION해서 누락 방지
+    # 1) 날짜 범위만 DB 조회 (캐시). 이후 필터는 pandas에서 처리
     # -----------------------------
+    range_sig = (str(f["start"]), str(f["end"]))
     try:
-        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=10)
+        df_daily_all = query_campaign_daily_slice(engine, f["start"], f["end"])
+        st.session_state["_camp_daily_last"] = df_daily_all
     except Exception:
-        bundle = pd.DataFrame()
+        df_daily_all = st.session_state.get("_camp_daily_last", pd.DataFrame())
         st.error("DB 연결 오류로 캠페인 데이터를 불러오지 못했습니다. (일시적일 수 있어요)\n잠시 후 다시 시도해 주세요.")
 
-    if bundle is None or bundle.empty:
+    if df_daily_all is None or df_daily_all.empty:
         st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
         return
 
-    # meta merge + derived metrics
-    df_all = _perf_common_merge_meta(bundle, meta)
-    df_all = add_rates(df_all)
+    # range 단위로 캠페인 집계(= rerun마다 groupby 재계산 방지)
+    if st.session_state.get("_camp_range_sig") != range_sig:
+        st.session_state["_camp_range_sig"] = range_sig
+        dims = ["customer_id", "campaign_id", "account_name", "manager", "campaign_name", "campaign_tp", "campaign_type"]
+        agg_all = df_daily_all.groupby(dims, as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum()
+        agg_all = add_rates(agg_all)
+        st.session_state["_camp_agg_all"] = agg_all
+        # 기본값 리셋
+        st.session_state["camp_filter_key"] = "ALL"
 
-    # normalize labels
-    df_all["account_name"] = df_all.get("account_name", "").astype(str).fillna("").str.strip()
-    df_all["campaign_name"] = df_all.get("campaign_name", "").astype(str).fillna("").str.strip()
-    df_all.loc[df_all["campaign_name"] == "", "campaign_name"] = "(이름 없음)"
+    agg_all = st.session_state.get("_camp_agg_all", pd.DataFrame())
+    if agg_all is None or agg_all.empty:
+        st.warning("캠페인 집계 결과가 비어있습니다.")
+        return
 
     # -----------------------------
-    # 2) 캠페인 선택(B 방식) - 선택은 pandas 필터로 즉시 반영
+    # 2) 담당자/업체/유형 필터는 pandas 필터로 즉시 반영
     # -----------------------------
-    base_sig = (str(f["start"]), str(f["end"]), tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
+    df_all = agg_all
+    if cids:
+        df_all = df_all[df_all["customer_id"].isin([int(x) for x in cids])]
+    if type_sel:
+        df_all = df_all[df_all.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
+
+    if df_all is None or df_all.empty:
+        st.warning("선택한 필터 조건에서 캠페인이 없습니다.")
+        return
+
+    # -----------------------------
+    # 3) 캠페인 선택(B 방식)
+    # -----------------------------
+    base_sig = (range_sig, tuple(int(x) for x in cids), tuple(str(x) for x in type_sel), int(top_n))
     if st.session_state.get("_camp_base_sig") != base_sig:
         st.session_state["_camp_base_sig"] = base_sig
         st.session_state["camp_filter_key"] = "ALL"
 
     opt = df_all[["customer_id", "campaign_id", "account_name", "campaign_name", "campaign_type", "cost"]].copy()
+    opt["account_name"] = opt.get("account_name", "").astype(str).fillna("").str.strip()
+    opt["campaign_name"] = opt.get("campaign_name", "").astype(str).fillna("").str.strip()
+    opt["campaign_name"] = opt["campaign_name"].replace({"": "(이름 없음)"})
     opt["key"] = opt["customer_id"].astype(str) + "|" + opt["campaign_id"].astype(str)
     opt["label"] = opt["account_name"] + " · " + opt["campaign_name"]
     opt = opt.sort_values("cost", ascending=False).drop_duplicates("key", keep="first")
@@ -4240,39 +4200,30 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.caption("전체 캠페인 표시 중")
 
     df = df_all.copy()
-    sel_cid: Optional[int] = None
-    sel_camp: Optional[str] = None
     if sel_key != "ALL":
-        try:
-            a, b = str(sel_key).split("|", 1)
-            sel_cid = int(a)
-            sel_camp = str(b)
-        except Exception:
-            sel_cid, sel_camp = None, None
-
-        if sel_cid is not None and sel_camp is not None:
-            df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
-            df = df[df_key == sel_key].copy()
+        df_key = df["customer_id"].astype(str) + "|" + df["campaign_id"].astype(str)
+        df = df[df_key == sel_key].copy()
 
     # -----------------------------
-    # 3) 상세(추세/Top5/도넛) - toggle ON일 때만 DB를 추가로 조회
+    # 4) 상세(추세/Top5/도넛) - toggle ON일 때만 계산/렌더
     # -----------------------------
     if show_detail:
         st.markdown("### 📈 기간 추세")
+        dft = df_daily_all.copy()
+        if cids:
+            dft = dft[dft["customer_id"].isin([int(x) for x in cids])]
+        if type_sel:
+            dft = dft[dft.get("campaign_type", "").astype(str).isin([str(x) for x in type_sel])]
+        if sel_key != "ALL":
+            key_series = dft["customer_id"].astype(str) + "|" + dft["campaign_id"].astype(str)
+            dft = dft[key_series == sel_key].copy()
 
         ts = pd.DataFrame()
-        try:
-            if sel_key == "ALL":
-                ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-            else:
-                if sel_cid is not None and sel_camp is not None:
-                    ts = query_campaign_one_timeseries(engine, f["start"], f["end"], sel_cid, sel_camp)
-        except Exception:
-            ts = pd.DataFrame()
-
-        if ts is not None and not ts.empty:
+        if dft is not None and not dft.empty:
+            ts = dft.groupby("dt", as_index=False)[["imp", "clk", "cost", "conv", "sales"]].sum().sort_values("dt")
             ts = add_rates(ts)
 
+        if ts is not None and not ts.empty:
             total_cost = float(ts["cost"].sum())
             total_clk = float(ts["clk"].sum())
             total_conv = float(ts["conv"].sum())
@@ -4330,8 +4281,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             elif metric_sel == "전환":
                 _render("conv", "전환")
             else:
+                sales_s = pd.to_numeric(ts2["sales"], errors="coerce").fillna(0) if "sales" in ts2.columns else pd.Series([0.0] * len(ts2))
+                ts2["roas"] = (sales_s / ts2["cost"].replace(0, np.nan)) * 100
+                ts2["roas"] = pd.to_numeric(ts2["roas"], errors="coerce").fillna(0)
                 _render("roas", "ROAS(%)")
-
         st.divider()
 
         # TOP5 (비용/클릭/전환) - 현재 선택(캠페인 포함) 기준
@@ -4369,7 +4322,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.divider()
 
     # -----------------
-    # 4) Main table (fast) - 현재 선택 기준
+    # 5) Main table (fast) - 현재 선택 기준
     # -----------------
     main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
 
@@ -4708,24 +4661,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
 
     
-    with st.expander("📊 소재 광고비 TOP10 그래프", expanded=False):
-        tmp = bundle.copy()
-        tmp = _attach_account_name(tmp, meta)
-        tmp["ad_name"] = tmp["ad_name"].astype(str).map(str.strip)
-        # 같은 소재명이 여러 줄로 있으면 합산해서 1개로 보여줌(중복 제거)
-        g = tmp.groupby(["customer_id", "ad_name"], as_index=False)["cost"].sum()
-        g = _attach_account_name(g, meta)
-
-        multi_acc = g["customer_id"].nunique() > 1
-        g["label"] = g.apply(lambda r: f'{r["account_name"]} · {r["ad_name"]}' if multi_acc else r["ad_name"], axis=1)
-
-        ch = _chart_progress_bars(g, "label", "cost", "광고비(원)", top_n=10, height=320)
-        if ch is not None:
-            render_chart(ch)
-        else:
-            st.info("그래프 표시 불가")
-
-
     st.divider()
     # -----------------
     # Main table (비용 TOP N)
