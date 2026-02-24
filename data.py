@@ -1,6 +1,9 @@
 # -----------------------------
 # Campaign type label & Meta loading
 # -----------------------------
+
+from typing import Dict, List, Optional, Tuple
+
 _CAMPAIGN_TP_LABEL = {
     "web_site": "파워링크",
     "website": "파워링크",
@@ -68,3 +71,4 @@ def get_campaign_type_options(dim_campaign: pd.DataFrame) -> List[str]:
     opts = [x for x in order if x in present]
     extra = sorted([x for x in present if x not in set(order)])
     return opts + extra
+
