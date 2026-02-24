@@ -3337,76 +3337,74 @@ def query_keyword_bundle(
     topn_cost: int = 300,
 ) -> pd.DataFrame:
     """
-    ✅ 속도 개선 포인트 (v7.3.1)
-    - fact_keyword_daily는 "집계(base)"만 하고,
-      cost TOP N / clk TOP10 / conv TOP10만 골라서(dim 조인 포함) 반환
-    - dim 조인은 선택된 keyword_id들에 대해서만 수행 → 대폭 가벼움
+    ✅ 키워드 번들 조회(안정화/누락 방어)
+    - 기존: dim_keyword를 scope로 잡고 fact를 inner join → dim 누락 시(특히 쇼핑검색) 통째로 0건이 되는 문제
+    - 개선: fact_keyword_daily를 먼저 집계(base) → TOPN만 뽑고 → dim은 LEFT JOIN(있으면 붙이고 없으면 빈 값)
+    - type 필터는 campaign_tp 정규화(regexp_replace)로 한글/언더스코어/공백 변형까지 커버
     """
     if not table_exists(_engine, "fact_keyword_daily"):
-        return pd.DataFrame()
-    if not (table_exists(_engine, "dim_keyword") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_campaign")):
         return pd.DataFrame()
 
     fk_cols = get_table_columns(_engine, "fact_keyword_daily")
     sales_sum = "SUM(COALESCE(fk.sales,0))" if "sales" in fk_cols else "0::numeric"
 
-    # dim_keyword 키워드 컬럼명 호환
-    kw_cols = get_table_columns(_engine, "dim_keyword")
+    # fact에 id가 있으면(없어도 안전하게)
+    has_fk_adgroup = "adgroup_id" in fk_cols
+    has_fk_campaign = "campaign_id" in fk_cols
+    has_fk_tp = "campaign_tp" in fk_cols
+
+    adgroup_pick = ", MAX(fk.adgroup_id::text) AS adgroup_id" if has_fk_adgroup else ", NULL::text AS adgroup_id"
+    campaign_pick = ", MAX(fk.campaign_id::text) AS campaign_id" if has_fk_campaign else ", NULL::text AS campaign_id"
+    tp_pick = ", MAX(COALESCE(NULLIF(TRIM(fk.campaign_tp),''),'')) AS fk_campaign_tp" if has_fk_tp else ", ''::text AS fk_campaign_tp"
+
+    # dim_keyword 키워드 컬럼명 호환 + adgroup_id 존재여부
+    kw_cols = get_table_columns(_engine, "dim_keyword") if table_exists(_engine, "dim_keyword") else []
     if "keyword" in kw_cols:
         kw_expr = "k.keyword"
     elif "keyword_name" in kw_cols:
         kw_expr = "k.keyword_name"
     else:
         kw_expr = "''::text"
+    k_has_adgroup = "adgroup_id" in kw_cols
+
+    # dim_adgroup / dim_campaign 컬럼 호환
+    g_cols = get_table_columns(_engine, "dim_adgroup") if table_exists(_engine, "dim_adgroup") else []
+    g_has_campaign = "campaign_id" in g_cols
+
+    c_cols = get_table_columns(_engine, "dim_campaign") if table_exists(_engine, "dim_campaign") else []
+    c_has_tp = "campaign_tp" in c_cols
 
     # cid filter (TEXT/BIGINT 모두 안전)
     cid_clause = ""
     if customer_ids:
         cid_clause = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
 
-    cid_scope_clause = ""
-    if customer_ids:
-        cid_scope_clause = f"AND k.customer_id::text IN ({_sql_in_str_list(list(customer_ids))})"
+    # type filter (campaign_tp 정규화 후 비교)
+    tp_keys_raw = label_to_tp_keys(type_sel) if type_sel else []
+    tp_norm: List[str] = []
+    for x in tp_keys_raw:
+        if x is None:
+            continue
+        s = str(x).strip().lower()
+        if not s:
+            continue
+        s = re.sub(r"[\s\-_]+", "", s)
+        if s and s not in tp_norm:
+            tp_norm.append(s)
 
-    # type filter는 campaign_tp 키로 (더 빠름)
-    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_clause = ""
-    if tp_keys:
-        tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_clause = f"AND LOWER(COALESCE(c.campaign_tp,'')) IN ({tp_list})"
+    tp_list = ",".join(["'" + t.replace("'", "''") + "'" for t in tp_norm]) if tp_norm else ""
+    # postgres 정규화: 소문자 + trim + 공백/언더스코어/하이픈 제거
+    tp_norm_sql = "regexp_replace(lower(trim(COALESCE(NULLIF(TRIM(b.fk_campaign_tp),''), NULLIF(TRIM(c.campaign_tp),''),''))), '[\\s\\-_]+', '', 'g')"
+
+    type_clause = f"AND {tp_norm_sql} IN ({tp_list})" if tp_list else ""
+
+    # 조인 키들 (dim 누락에도 최대한 붙도록)
+    k_adgroup_expr = "k.adgroup_id::text" if k_has_adgroup else "NULL::text"
+    g_campaign_expr = "g.campaign_id::text" if g_has_campaign else "NULL::text"
+    c_tp_expr = "c.campaign_tp" if c_has_tp else "''::text"
 
     sql = f"""
-    WITH scope AS (
-      SELECT
-        k.customer_id::text AS customer_id,
-        k.keyword_id::text  AS keyword_id,
-        COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
-        k.adgroup_id::text  AS adgroup_id,
-        COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
-        g.campaign_id::text AS campaign_id,
-        COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
-        COALESCE(NULLIF(TRIM(c.campaign_tp),''),'')   AS campaign_tp,
-        CASE
-          WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
-          WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
-          WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
-          WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
-          WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
-          ELSE '기타'
-        END AS campaign_type_label
-      FROM dim_keyword k
-      LEFT JOIN dim_adgroup g
-        ON k.customer_id::text = g.customer_id::text
-       AND k.adgroup_id::text = g.adgroup_id::text
-      LEFT JOIN dim_campaign c
-        ON g.customer_id::text = c.customer_id::text
-       AND g.campaign_id::text = c.campaign_id::text
-      WHERE 1=1
-        AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
-        {type_clause}
-        {cid_scope_clause}
-    ),
-    base AS (
+    WITH base AS (
       SELECT
         fk.customer_id::text AS customer_id,
         fk.keyword_id::text  AS keyword_id,
@@ -3415,10 +3413,10 @@ def query_keyword_bundle(
         SUM(fk.cost) AS cost,
         SUM(fk.conv) AS conv,
         {sales_sum}  AS sales
+        {adgroup_pick}
+        {campaign_pick}
+        {tp_pick}
       FROM fact_keyword_daily fk
-      JOIN scope s
-        ON fk.customer_id::text = s.customer_id
-       AND fk.keyword_id::text  = s.keyword_id
       WHERE fk.dt BETWEEN :d1 AND :d2
         {cid_clause}
       GROUP BY fk.customer_id::text, fk.keyword_id::text
@@ -3471,194 +3469,39 @@ def query_keyword_bundle(
       p.keyword_id,
       b.imp, b.clk, b.cost, b.conv, b.sales,
       p.rn_cost, p.rn_clk, p.rn_conv,
-      s.keyword, s.adgroup_name, s.campaign_name, s.campaign_tp, s.campaign_type_label
+      COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
+      COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
+      COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
+      COALESCE(NULLIF(TRIM(COALESCE(NULLIF(TRIM(b.fk_campaign_tp),''), NULLIF(TRIM({c_tp_expr}),''),'')),''),'') AS campaign_tp,
+      CASE
+        WHEN {tp_norm_sql} IN ('website','powerlink','파워링크') THEN '파워링크'
+        WHEN {tp_norm_sql} IN ('shopping','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
+        WHEN {tp_norm_sql} IN ('powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
+        WHEN {tp_norm_sql} IN ('place','placesearch','플레이스') THEN '플레이스'
+        WHEN {tp_norm_sql} IN ('brandsearch','브랜드검색') THEN '브랜드검색'
+        ELSE '기타'
+      END AS campaign_type_label
     FROM picked p
     JOIN base b
       ON p.customer_id = b.customer_id
      AND p.keyword_id  = b.keyword_id
-    LEFT JOIN scope s
-      ON b.customer_id = s.customer_id
-     AND b.keyword_id  = s.keyword_id
-    WHERE COALESCE(s.campaign_type_label,'기타') <> '기타'
+    LEFT JOIN dim_keyword k
+      ON b.customer_id = k.customer_id::text
+     AND b.keyword_id  = k.keyword_id::text
+    LEFT JOIN dim_adgroup g
+      ON b.customer_id = g.customer_id::text
+     AND COALESCE(NULLIF(TRIM(b.adgroup_id),''), NULLIF(TRIM({k_adgroup_expr}),'')) = g.adgroup_id::text
+    LEFT JOIN dim_campaign c
+      ON b.customer_id = c.customer_id::text
+     AND COALESCE(NULLIF(TRIM(b.campaign_id),''), NULLIF(TRIM({g_campaign_expr}),'')) = c.campaign_id::text
+    WHERE 1=1
+      {type_clause}
     ORDER BY COALESCE(p.rn_cost, 999999), b.cost DESC NULLS LAST
     """
 
     params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
     df = sql_read(_engine, sql, params)
     return df if df is not None else pd.DataFrame()
-
-    fk_cols = get_table_columns(_engine, "fact_keyword_daily")
-    sales_expr = "SUM(COALESCE(fk.sales,0)) AS sales" if "sales" in fk_cols else "0::bigint AS sales"
-
-    kw_cols = get_table_columns(_engine, "dim_keyword")
-    if "keyword" in kw_cols:
-        kw_expr = "k.keyword"
-    elif "keyword_name" in kw_cols:
-        kw_expr = "k.keyword_name"
-    else:
-        kw_expr = "''::text"
-
-    in_clause = ""
-    if customer_ids:
-        in_clause = f" AND fk.customer_id::text IN ({_sql_in_str_list(list(customer_ids))}) "
-
-    # type filter는 alias 참조 문제 때문에 마지막에 적용
-    type_filter = ""
-    if type_sel:
-        tquoted = ",".join(["'" + str(t).replace("'", "''") + "'" for t in type_sel])
-        type_filter = f" AND campaign_type_label IN ({tquoted}) "
-
-    sql = f"""
-    WITH base AS (
-        SELECT
-            fk.customer_id::text AS customer_id,
-            fk.keyword_id::text AS keyword_id,
-            SUM(fk.imp) AS imp,
-            SUM(fk.clk) AS clk,
-            SUM(fk.cost) AS cost,
-            SUM(fk.conv) AS conv,
-            {sales_expr}
-        FROM fact_keyword_daily fk
-        WHERE fk.dt BETWEEN :d1 AND :d2
-        {in_clause}
-        GROUP BY fk.customer_id::text, fk.keyword_id::text
-    ),
-    joined AS (
-        SELECT
-            b.*,
-            COALESCE(NULLIF(TRIM({kw_expr}),''),'') AS keyword,
-            COALESCE(NULLIF(TRIM(g.adgroup_name),''),'') AS adgroup_name,
-            COALESCE(NULLIF(TRIM(c.campaign_name),''),'') AS campaign_name,
-            CASE
-                WHEN lower(trim(c.campaign_tp)) IN ('web_site','website','power_link','powerlink','파워링크') THEN '파워링크'
-                WHEN lower(trim(c.campaign_tp)) IN ('shopping','shopping_search','shoppingsearch','쇼핑검색') THEN '쇼핑검색'
-                WHEN lower(trim(c.campaign_tp)) IN ('power_content','power_contents','powercontent','powercontents','파워콘텐츠') THEN '파워콘텐츠'
-                WHEN lower(trim(c.campaign_tp)) IN ('place','place_search','placesearch','플레이스') THEN '플레이스'
-                WHEN lower(trim(c.campaign_tp)) IN ('brand_search','brandsearch','브랜드검색') THEN '브랜드검색'
-                ELSE '기타'
-            END AS campaign_type_label
-        FROM base b
-        LEFT JOIN dim_keyword k
-            ON b.customer_id = k.customer_id::text AND b.keyword_id = k.keyword_id::text
-        LEFT JOIN dim_adgroup g
-            ON k.customer_id::text = g.customer_id::text AND k.adgroup_id::text = g.adgroup_id::text
-        LEFT JOIN dim_campaign c
-            ON g.customer_id::text = c.customer_id::text AND g.campaign_id::text = c.campaign_id::text
-        WHERE 1=1
-          AND COALESCE(NULLIF(trim(c.campaign_tp),''),'') <> ''
-    ),
-    ranked AS (
-        SELECT
-            j.*,
-            ROW_NUMBER() OVER (ORDER BY j.cost DESC NULLS LAST) AS rn_cost,
-            ROW_NUMBER() OVER (ORDER BY j.clk DESC NULLS LAST) AS rn_clk,
-            ROW_NUMBER() OVER (ORDER BY j.conv DESC NULLS LAST) AS rn_conv
-        FROM joined j
-        WHERE j.campaign_type_label <> '기타'
-        {type_filter}
-    )
-    SELECT *
-    FROM ranked
-    WHERE rn_cost <= :topn_cost OR rn_clk <= 10 OR rn_conv <= 10
-    ORDER BY rn_cost ASC
-    """
-
-    params = {"d1": str(d1), "d2": str(d2), "topn_cost": int(topn_cost)}
-    df = sql_read(_engine, sql, params)
-    return df if df is not None else pd.DataFrame()
-
-
-# -----------------------------
-# Rates
-# -----------------------------
-def add_rates(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-
-    out["ctr"] = (out["clk"] / out["imp"].replace(0, np.nan)) * 100
-    out["cpc"] = out["cost"] / out["clk"].replace(0, np.nan)
-    out["cpa"] = out["cost"] / out["conv"].replace(0, np.nan)
-    out["roas"] = (out["sales"] / out["cost"].replace(0, np.nan)) * 100
-
-    return out
-
-
-
-
-# -----------------------------
-# Period comparison (DoD / WoW / MoM)
-# -----------------------------
-
-def _last_day_of_month(y: int, m: int) -> int:
-    if m == 12:
-        nxt = date(y + 1, 1, 1)
-    else:
-        nxt = date(y, m + 1, 1)
-    return (nxt - timedelta(days=1)).day
-
-
-def _shift_month(d: date, months: int) -> date:
-    """Shift month while clamping day (e.g. Mar 31 -> Feb 28/29)."""
-    base = (d.year * 12) + (d.month - 1) + int(months)
-    y = base // 12
-    m = (base % 12) + 1
-    day = min(int(d.day), _last_day_of_month(int(y), int(m)))
-    return date(int(y), int(m), int(day))
-
-
-def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
-    mode = str(mode or "").strip()
-    if mode == "전일대비":
-        return d1 - timedelta(days=1), d2 - timedelta(days=1)
-    if mode == "전주대비":
-        return d1 - timedelta(days=7), d2 - timedelta(days=7)
-    # 전월대비 (default)
-    return _shift_month(d1, -1), _shift_month(d2, -1)
-
-
-def _pct_change(curr: float, prev: float) -> Optional[float]:
-    """Percent change. If prev==0 and curr>0 -> None (N/A)."""
-    if prev == 0:
-        return 0.0 if curr == 0 else None
-    return (float(curr) - float(prev)) / float(prev) * 100.0
-
-
-def _pct_to_str(p: Optional[float]) -> str:
-    """Signed percent string. Robust to None/NaN."""
-    try:
-        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
-            return "—"
-        return f"{float(p):+.1f}%"
-    except Exception:
-        return "—"
-
-
-def _pct_to_arrow(p: Optional[float]) -> str:
-    """Arrow percent string (▲/▼). Robust to None/NaN."""
-    try:
-        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
-            return "—"
-        p = float(p)
-        if p > 0:
-            return f"▲ {abs(p):.1f}%"
-        if p < 0:
-            return f"▼ {abs(p):.1f}%"
-        return f"• {abs(p):.1f}%"
-    except Exception:
-        return "—"
-
-
-def _fmt_point(p: Optional[float]) -> str:
-    """Point change string like +1.2p. Robust to None/NaN."""
-    try:
-        if p is None or (isinstance(p, float) and math.isnan(p)) or (hasattr(pd, "isna") and pd.isna(p)):
-            return "—"
-        return f"{float(p):+.1f}p"
-    except Exception:
-        return "—"
-
-
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]) -> Dict[str, float]:
     entity = str(entity or "").lower().strip()
