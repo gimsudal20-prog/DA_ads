@@ -3,16 +3,13 @@ import pandas as pd
 from utils import init_page
 from state import FilterState
 from ui_sidebar import render_sidebar
-from database import get_engine, sql_read, table_exists
+from database import get_engine, sql_read, table_exists, get_meta
 from ui_performance import render_performance_page
 
 init_page()
 engine = get_engine()
+meta = get_meta(engine)
 
-# 메타 조회 (공통)
-meta = sql_read(engine, "SELECT * FROM dim_account_meta") if table_exists(engine, "dim_account_meta") else pd.DataFrame()
-
-# 사이드바 렌더링 및 필터 가져오기
 render_sidebar(meta, engine)
 filters = FilterState.get()
 
