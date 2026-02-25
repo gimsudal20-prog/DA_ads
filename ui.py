@@ -47,18 +47,18 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
+# Import ONLY needed helpers explicitly from data.py to avoid circular/missing imports
 from data import (
     format_currency,
     format_number_commas,
     format_roas,
     finalize_ctr_col,
     finalize_display_cols,
-    build_campaign_summary_rows_from_numeric,
-    query_latest_dates,
     _period_compare_range,
     get_entity_totals,
     _pct_change,
     _pct_to_str,
+    _fmt_point,
 )
 
 try: alt.data_transformers.disable_max_rows()
@@ -94,7 +94,7 @@ def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool, cond_
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
         base_align = {"textAlign": "right"} if c in right_cols else {}
         
-        # 숫자인 경우 1,000 단위 콤마
+        # 1,000 단위 콤마
         if c in right_cols and JsCode is not None:
             cd["valueFormatter"] = JsCode("""
             function(params) {
@@ -212,6 +212,7 @@ def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None
         except Exception: pass
     st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
 
+
 # ==========================================
 # Dual Axis Charts (비용 vs 효율)
 # ==========================================
@@ -258,7 +259,7 @@ def render_echarts_dow_bar(ts: pd.DataFrame, height: int = 300) -> None:
     df["weekday"] = df["dt"].dt.weekday # 0:월 ~ 6:일
     
     dow_map = {0:"월", 1:"화", 2:"수", 3:"목", 4:"금", 5:"토", 6:"일"}
-    grouped = df.groupby("weekday").agg({"cost": "sum", "sales": "sum", "clk": "sum", "conv": "sum"}).reset_index()
+    grouped = df.groupby("weekday")[["cost", "sales", "clk", "conv"]].sum().reset_index()
     
     # 누락된 요일 0으로 채우기
     all_days = pd.DataFrame({"weekday": range(7)})
@@ -354,7 +355,7 @@ def render_period_compare_panel(engine, entity: str, d1: date, d2: date, cids: T
         def _delta_chip(label: str, value: str, sign: Optional[float]) -> str:
             cls = "zero" if sign is None else ("pos" if sign > 0 else "neg")
             arrow = "•" if sign is None else ("▲" if sign > 0 else "▼")
-            vhtml = re.sub(r"\\(([^)]*)\\)", r"<span class='p'>(\1)</span>", str(value))
+            vhtml = re.sub(r"\(([^)]*)\)", r"<span class='p'>(\1)</span>", str(value))
             return f"<div class='delta-chip {cls}'><div class='l'>{label}</div><div class='v'><span class='arr'>{arrow}</span>{vhtml}</div></div>"
 
         chips = [
@@ -372,6 +373,63 @@ def render_period_compare_panel(engine, entity: str, d1: date, d2: date, cids: T
         ])
         st.markdown("#### 📊 증감율(%) 막대그래프")
         if HAS_ECHARTS and st_echarts is not None: render_echarts_delta_bars(delta_df, height=260)
+
+
+def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height: int = 520) -> None:
+    if table_df is None or table_df.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+    df = table_df.copy()
+
+    def _bar(pct, status) -> str:
+        try: pv = float(pct)
+        except Exception: pv = 0.0
+        pv = 0.0 if math.isnan(pv) else pv
+        width = max(0.0, min(pv, 120.0))
+        stt = str(status or "")
+        if stt.startswith("🔴"): fill = "var(--nv-red)"
+        elif stt.startswith("🟡"): fill = "#F59E0B"
+        elif stt.startswith("🟢"): fill = "var(--nv-green)"
+        else: fill = "rgba(0,0,0,.25)"
+        return (
+            f"<div class='nv-pbar'>"
+            f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
+            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
+            f"</div>"
+        )
+
+    if "집행률(%)" in df.columns:
+        df["집행률"] = [_bar(p, s) for p, s in zip(df["집행률(%)"].tolist(), df.get("상태", "").tolist())]
+        df = df.drop(columns=["집행률(%)"])
+        cols = list(df.columns)
+        if "상태" in cols and "집행률" in cols:
+            cols.remove("집행률")
+            cols.insert(cols.index("상태"), "집행률")
+            df = df[cols]
+
+    html = df.to_html(index=False, escape=False, classes="nv-table")
+    html = re.sub(r"<td>([\d,]+원)</td>", r"<td class='num'>\1</td>", html)
+    html = re.sub(r"<td>([\d,]+)</td>", r"<td class='num'>\1</td>", html)
+    st.markdown(f"<div class='nv-table-wrap' style='max-height:{height}px'>{html}</div>", unsafe_allow_html=True)
+
+
+def _df_json_to_csv_bytes(df_json: str) -> bytes:
+    return pd.read_json(io.StringIO(df_json), orient="split").to_csv(index=False).encode("utf-8-sig")
+
+def _df_json_to_xlsx_bytes(df_json: str, sheet_name: str) -> bytes:
+    df = pd.read_json(io.StringIO(df_json), orient="split")
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31])
+    return output.getvalue()
+
+def render_download_compact(df: pd.DataFrame, filename_base: str, sheet_name: str, key_prefix: str) -> None:
+    if df is None or df.empty: return
+    df_json = df.to_json(orient="split")
+    st.markdown("<style>.stDownloadButton button { padding: 0.15rem 0.55rem !important; font-size: 0.82rem !important; min-height: 28px !important; }</style>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1, 8])
+    with c1: st.download_button("CSV", data=_df_json_to_csv_bytes(df_json), file_name=f"{filename_base}.csv", mime="text/csv", key=f"{key_prefix}_csv", use_container_width=True)
+    with c2: st.download_button("XLSX", data=_df_json_to_xlsx_bytes(df_json, sheet_name), file_name=f"{filename_base}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"{key_prefix}_xlsx", use_container_width=True)
 
 # ==========================================
 # [NEW] Excel 다중 시트 통합 보고서 생성
@@ -394,7 +452,7 @@ def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame,
             if kw_df is not None and not kw_df.empty:
                 kw_df.to_excel(writer, index=False, sheet_name="키워드_상세")
     except Exception as e:
-        # Fallback to single CSV if openpyxl fails
+        # openpyxl 이 없거나 에러 발생 시 단일 CSV로 fallback
         return overview_df.to_csv(index=False).encode("utf-8-sig") if overview_df is not None else b""
         
     return output.getvalue()
