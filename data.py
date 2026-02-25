@@ -605,6 +605,9 @@ def seed_from_accounts_xlsx(engine, df: Optional[pd.DataFrame] = None) -> Dict[s
         df = pd.read_excel(ACCOUNTS_XLSX)
 
     acc = normalize_accounts_columns(df)
+    
+    if acc.empty:
+        return {"meta": 0}
 
     upsert_meta = """
     INSERT INTO dim_account_meta (customer_id, account_name, manager, updated_at)
@@ -616,7 +619,15 @@ def seed_from_accounts_xlsx(engine, df: Optional[pd.DataFrame] = None) -> Dict[s
     """
 
     with engine.begin() as conn:
+        # 1. Update existing or insert new accounts
         conn.execute(text(upsert_meta), acc.to_dict(orient="records"))
+        
+        # 2. Delete accounts that are no longer in the provided excel file
+        cid_list = tuple(acc["customer_id"].tolist())
+        if cid_list:
+            cid_str = ",".join(map(str, cid_list))
+            delete_meta = f"DELETE FROM dim_account_meta WHERE customer_id NOT IN ({cid_str});"
+            conn.execute(text(delete_meta))
 
     return {"meta": int(len(acc))}
 
@@ -1237,17 +1248,9 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 # -----------------------------
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
-
-
-@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_keyword_timeseries_by_type(
     _engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...]
 ) -> pd.DataFrame:
-    """
-    키워드 일자별 추세 + 캠페인 유형(파워링크/쇼핑검색 등) 분해.
-    - Multi-line 비교 차트용
-    - dim_keyword → dim_adgroup → dim_campaign 경로로 campaign_tp를 매핑
-    """
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame(columns=["dt", "campaign_type_label", "imp", "clk", "cost", "conv", "sales"])
 
@@ -1262,7 +1265,6 @@ def query_keyword_timeseries_by_type(
     dim_ag_exists = table_exists(_engine, "dim_adgroup")
     dim_cp_exists = table_exists(_engine, "dim_campaign")
 
-    # fallback: dims 없는 경우 -> 전체 단일 라인
     if not (dim_kw_exists and dim_ag_exists and dim_cp_exists):
         sql = f"""
         SELECT
@@ -1281,8 +1283,6 @@ def query_keyword_timeseries_by_type(
         """
         return sql_read(_engine, sql, {"d1": d1, "d2": d2})
 
-
-    # join key columns check (스키마가 다르면 안전하게 전체로 폴백)
     dim_kw_cols = get_table_columns(_engine, "dim_keyword")
     dim_ag_cols = get_table_columns(_engine, "dim_adgroup")
     dim_cp_cols = get_table_columns(_engine, "dim_campaign")
@@ -1304,7 +1304,6 @@ def query_keyword_timeseries_by_type(
         """
         return sql_read(_engine, sql, {"d1": d1, "d2": d2})
 
-    # campaign_tp column detect
     cp_cols = get_table_columns(_engine, "dim_campaign")
     cp_tp_col = None
     for c in ["campaign_tp", "campaignType", "type", "campaign_type"]:
@@ -1312,7 +1311,7 @@ def query_keyword_timeseries_by_type(
             cp_tp_col = c
             break
     if cp_tp_col is None:
-        cp_tp_col = "campaign_tp"  # best-effort
+        cp_tp_col = "campaign_tp"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
     type_clause = ""
@@ -1320,7 +1319,6 @@ def query_keyword_timeseries_by_type(
         tp_list = ",".join([f"'{x}'" for x in tp_keys])
         type_clause = f"AND LOWER(COALESCE(m.campaign_tp,'')) IN ({tp_list})"
 
-    # Label mapping (SQL CASE)
     case_parts = []
     for k, v in _CAMPAIGN_TP_LABEL.items():
         case_parts.append(f"WHEN LOWER(COALESCE(m.campaign_tp,'')) = '{k}' THEN '{v}'")
@@ -1394,7 +1392,6 @@ def query_ad_topn(
 
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
     if "creative_text" in ad_cols:
-        # 확장소재(creative_text) > 소재이름(ad_name) > 소재ID(ad_id)
         ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)"
         ad_raw_select = "NULLIF(TRIM(a.creative_text),'') AS creative_text_raw, NULLIF(TRIM(a.ad_name),'') AS ad_name_raw"
     else:
@@ -1515,7 +1512,6 @@ def query_ad_bundle(
 
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
     if "creative_text" in ad_cols:
-        # 확장소재(creative_text) > 소재이름(ad_name) > 소재ID(ad_id)
         ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)"
         ad_raw_select = "NULLIF(TRIM(a.creative_text),'') AS creative_text_raw, NULLIF(TRIM(a.ad_name),'') AS ad_name_raw"
     else:
