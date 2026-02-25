@@ -237,6 +237,20 @@ def _sql_in_str_list(values: List[int]) -> str:
     return ",".join(safe) if safe else "''"
 
 
+def _sql_in_text_list(values: List[str]) -> str:
+    """텍스트 값용 IN 리스트(따옴표/이스케이프 포함)."""
+    safe: List[str] = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        s = s.replace("'", "''")
+        safe.append(f"'{s}'")
+    return ",".join(safe) if safe else "''"
+
+
 # -----------------------------
 # Download helpers (cached)
 # -----------------------------
@@ -1697,7 +1711,7 @@ def query_keyword_bundle(
 
     # type filter (label -> tp keys)
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    tp_in = _sql_in_str_list(tp_keys)
+    tp_in = _sql_in_text_list([str(x).lower() for x in tp_keys])
 
     # dim tables existence + key cols
     has_dim_keyword = table_exists(_engine, "dim_keyword")
