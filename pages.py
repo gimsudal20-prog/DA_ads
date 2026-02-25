@@ -534,7 +534,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         bundle = pd.DataFrame()
 
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
+        render_empty_state(
+            title="데이터가 없습니다",
+            message="오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기간을 **어제** 또는 **최근 7일**로 확인해보세요.",
+            action_period_mode="최근 7일",
+            action_label="기간을 '최근 7일'로 바꾸기",
+            key="empty_campaign",
+        )
         return
 
     # 메타(업체명/담당자) 부착
@@ -572,16 +578,14 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         return x[keep_cols]
 
     with st.expander("📌 성과별 TOP5 (캠페인)", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("#### 💸 광고비 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='camp_top5_cost', height=240)
-        with c2:
-            st.markdown("#### 🖱️ 클릭 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='camp_top5_clk', height=240)
-        with c3:
-            st.markdown("#### ✅ 전환 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='camp_top5_conv', height=240)
+        render_top_tabs(
+            _fmt_top(top_cost, "광고비"),
+            _fmt_top(top_clk, "클릭"),
+            _fmt_top(top_conv, "전환"),
+            key_prefix="camp_top5",
+            height=240,
+            labels=("💸 광고비 TOP5", "🖱️ 클릭 TOP5", "✅ 전환 TOP5"),
+        )
 
     st.divider()
 
@@ -697,7 +701,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
+        render_empty_state(
+            title="데이터가 없습니다",
+            message="오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기간을 **어제** 또는 **최근 7일**로 확인해보세요.",
+            action_period_mode="최근 7일",
+            action_label="기간을 '최근 7일'로 바꾸기",
+            key="empty_keyword",
+        )
         return
 
     # TOP10
@@ -722,16 +732,14 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         return x.rename(columns={"account_name": "업체명", "keyword": "키워드"})[["업체명", "키워드", metric]]
 
     with st.expander("📌 성과별 TOP10 키워드", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("#### 💸 광고비 TOP10")
-            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='kw_top10_cost', height=240)
-        with c2:
-            st.markdown("#### 🖱️ 클릭 TOP10")
-            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='kw_top10_clk', height=240)
-        with c3:
-            st.markdown("#### ✅ 전환 TOP10")
-            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='kw_top10_conv', height=240)
+        render_top_tabs(
+            _fmt_top(top_cost, "광고비"),
+            _fmt_top(top_clk, "클릭"),
+            _fmt_top(top_conv, "전환"),
+            key_prefix="kw_top10",
+            height=240,
+            labels=("💸 광고비 TOP10", "🖱️ 클릭 TOP10", "✅ 전환 TOP10"),
+        )
 
     
     # (중복 그래프 제거)
@@ -863,7 +871,13 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
+        render_empty_state(
+            title="데이터가 없습니다",
+            message="선택한 필터/기간에서 소재 데이터가 없어요. 기간을 **최근 7일**로 바꾸거나, 수집 상태(dim_ad/fact_ad_daily)를 확인해보세요.",
+            action_period_mode="최근 7일",
+            action_label="기간을 '최근 7일'로 바꾸기",
+            key="empty_ad",
+        )
         return
 
     df = _perf_common_merge_meta(bundle, meta)
@@ -953,16 +967,14 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         return x[["업체명", "캠페인", "소재내용", metric]]
 
     with st.expander("📌 성과별 TOP5 (소재)", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("#### 💸 광고비 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_cost, "광고비"), key='ad_top5_cost', height=240)
-        with c2:
-            st.markdown("#### 🖱️ 클릭 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_clk, "클릭"), key='ad_top5_clk', height=240)
-        with c3:
-            st.markdown("#### ✅ 전환 TOP5")
-            ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
+        render_top_tabs(
+            _fmt_top(top_cost, "광고비"),
+            _fmt_top(top_clk, "클릭"),
+            _fmt_top(top_conv, "전환"),
+            key_prefix="ad_top5",
+            height=240,
+            labels=("💸 광고비 TOP5", "🖱️ 클릭 TOP5", "✅ 전환 TOP5"),
+        )
 
     st.divider()
     # -----------------
@@ -1130,7 +1142,9 @@ def main():
     meta = get_meta(engine)
     meta_ready = (meta is not None) and (not meta.empty)
 
-    # --- Sidebar: navigation (desktop-first, always visible on PC) ---
+    f = None  # filters (built in sidebar)
+
+    # --- Sidebar: navigation + filters (always reachable without scrolling back to top) ---
     with st.sidebar:
         st.markdown("### 메뉴")
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
@@ -1162,20 +1176,21 @@ def main():
 
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
+        # Filters (skip on settings)
+        if nav != "설정/연결":
+            if not meta_ready:
+                st.error("dim_account_meta가 비어있습니다. '설정/연결'에서 accounts.xlsx 동기화를 먼저 해주세요.")
+            else:
+                st.divider()
+                dim_campaign = load_dim_campaign(engine)
+                type_opts = get_campaign_type_options(dim_campaign)
+                f = build_filters(meta, type_opts, engine)
+
     # Page title
     st.markdown(f"<div class='nv-h1'>{nav}</div>", unsafe_allow_html=True)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # Filters (skip on settings)
-    f = None
-    if nav != "설정/연결":
-        if not meta_ready:
-            st.error("dim_account_meta가 비어있습니다. 좌측 메뉴의 '설정/연결'에서 accounts.xlsx 동기화를 먼저 해주세요.")
-            return
-        dim_campaign = load_dim_campaign(engine)
-        type_opts = get_campaign_type_options(dim_campaign)
-        f = build_filters(meta, type_opts, engine)
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    # (filters are rendered in sidebar)
 
     # Route
     if nav == "요약(한눈에)":

@@ -154,7 +154,53 @@ def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool) -> li
     out = []
     for c in cols:
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
-        if c in right_cols:
+
+        # Conditional formatting (ROAS/CTR): 목표 미달(옅은 붉은색) / 초과(옅은 푸른색)
+        # - df가 문자열(예: "123%", "1,234")로 들어와도 파싱되게 처리
+        if JsCode is not None and any(k in str(c) for k in ["ROAS", "CTR(%)", "CTR"]):
+            try:
+                cd["cellStyle"] = JsCode(
+                    """
+function(params){
+  var v = params.value;
+  var n = null;
+  if(v === null || v === undefined){ n = null; }
+  else if(typeof v === 'number'){ n = v; }
+  else {
+    var s = String(v);
+    s = s.replace(/,/g,'').replace(/\s/g,'').replace('%','');
+    var p = parseFloat(s);
+    n = isNaN(p) ? null : p;
+  }
+
+  var style = {textAlign: 'right'};
+
+  // ROAS
+  if(String(params.colDef.field).indexOf('ROAS') !== -1){
+    if(n !== null){
+      style.backgroundColor = (n < 100) ? 'rgba(239,68,68,0.10)' : 'rgba(37,99,235,0.10)';
+    }
+    return style;
+  }
+
+  // CTR
+  if(String(params.colDef.field).indexOf('CTR') !== -1){
+    if(n !== null){
+      if(n < 1){ style.backgroundColor = 'rgba(239,68,68,0.10)'; }
+      else if(n >= 3){ style.backgroundColor = 'rgba(37,99,235,0.10)'; }
+    }
+    return style;
+  }
+
+  return style;
+}
+"""
+                )
+            except Exception:
+                # Fall back to alignment only
+                if c in right_cols:
+                    cd["cellStyle"] = {"textAlign": "right"}
+        elif c in right_cols:
             cd["cellStyle"] = {"textAlign": "right"}
         out.append(cd)
     if len(cache) > 64:
@@ -434,6 +480,29 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
         except Exception:
             pass
 
+    def _kpi_tooltip(t: str) -> str:
+        tt = str(t or "")
+        if "ROAS" in tt:
+            return "ROAS = 전환매출 ÷ 광고비 × 100"
+        if "CTR" in tt:
+            return "CTR = 클릭 ÷ 노출 × 100"
+        if "CPC" in tt:
+            return "CPC = 광고비 ÷ 클릭"
+        if "CPA" in tt:
+            return "CPA = 광고비 ÷ 전환"
+        if "전환" in tt and "총" in tt:
+            return "선택 기간 내 전환수 합계"
+        if "광고비" in tt:
+            return "선택 기간 내 광고비 합계"
+        if "클릭" in tt:
+            return "선택 기간 내 클릭수 합계"
+        if "노출" in tt:
+            return "선택 기간 내 노출수 합계"
+        return ""
+
+    tip = _kpi_tooltip(title)
+    tip_html = f"<span class='nv-tip' data-tip='{tip}'>ⓘ</span>" if tip else ""
+
     label = (desc or "").strip()
     delta_html = f"<div class='d'><span class='chip'>{label}</span></div>" if label else "<div class='d'></div>"
 
@@ -450,12 +519,94 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
 
     st.markdown(
         f"""<div class='kpi' id='{key}'>
-            <div class='k'>{title}</div>
+            <div class='k'>{title}{tip_html}</div>
             <div class='v'>{value}</div>
             {delta_html}
         </div>""",
         unsafe_allow_html=True,
     )
+
+
+def set_filter_period(mode: str) -> Tuple[date, date]:
+    """Update filters_v8 period + widget states (used by empty-state CTA buttons)."""
+    today = date.today()
+    sv = st.session_state.get("filters_v8", {}) or {}
+
+    if mode == "오늘":
+        d2 = today
+        d1 = today
+    elif mode == "어제":
+        d2 = today - timedelta(days=1)
+        d1 = d2
+    elif mode == "최근 7일":
+        d2 = today - timedelta(days=1)
+        d1 = d2 - timedelta(days=6)
+    elif mode == "이번 달":
+        d2 = today
+        d1 = date(today.year, today.month, 1)
+    elif mode == "지난 달":
+        first_this = date(today.year, today.month, 1)
+        d2 = first_this - timedelta(days=1)
+        d1 = date(d2.year, d2.month, 1)
+    else:
+        # direct select or unknown: keep current
+        d1 = sv.get("d1") or (today - timedelta(days=1))
+        d2 = sv.get("d2") or (today - timedelta(days=1))
+
+    sv.update({"period_mode": mode, "d1": d1, "d2": d2})
+    st.session_state["filters_v8"] = sv
+
+    # sync widget states (best-effort)
+    st.session_state["f_period_mode"] = mode
+    st.session_state["f_d1"] = d1
+    st.session_state["f_d2"] = d2
+    st.session_state["f_d1_ro"] = str(d1)
+    st.session_state["f_d2_ro"] = str(d2)
+    return d1, d2
+
+
+def render_empty_state(
+    title: str = "데이터가 없습니다",
+    message: str = "선택한 기간/필터 조합에서 조회된 데이터가 없어요.",
+    action_period_mode: str = "최근 7일",
+    action_label: str = "기간을 '최근 7일'로 변경",
+    key: str = "empty_state",
+) -> None:
+    """Friendly empty state with a CTA button to fix common cause."""
+    st.markdown(
+        f"""
+<div class='nv-empty'>
+  <div class='ic'>📭</div>
+  <div class='t'>{title}</div>
+  <div class='m'>{message}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    cols = st.columns([1, 3, 1])
+    with cols[1]:
+        if st.button(action_label, key=f"{key}_cta"):
+            set_filter_period(action_period_mode)
+            st.rerun()
+
+
+def render_top_tabs(
+    cost_df: pd.DataFrame,
+    click_df: pd.DataFrame,
+    conv_df: pd.DataFrame,
+    key_prefix: str,
+    height: int = 240,
+    labels: Tuple[str, str, str] = ("💸 광고비 TOP", "🖱️ 클릭 TOP", "✅ 전환 TOP"),
+) -> None:
+    """TOP tables UI: use tabs instead of 3-column narrow layout."""
+    t1, t2, t3 = st.tabs(list(labels))
+    with t1:
+        ui_table_or_dataframe(cost_df, key=f"{key_prefix}_cost", height=height)
+    with t2:
+        ui_table_or_dataframe(click_df, key=f"{key_prefix}_clk", height=height)
+    with t3:
+        ui_table_or_dataframe(conv_df, key=f"{key_prefix}_conv", height=height)
 
 
 def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
