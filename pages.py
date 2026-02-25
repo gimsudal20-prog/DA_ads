@@ -202,6 +202,22 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     return f
 
 
+def _render_empty_state_no_data(key: str = "empty") -> None:
+    st.markdown("### 🫥 데이터가 없습니다")
+    st.caption("오늘 데이터는 수집 지연이 있을 수 있어요. 아래 버튼으로 기간을 **최근 7일(오늘 제외)**로 바꿔 다시 조회해보세요.")
+    c1, c2 = st.columns([1, 3])
+    if c1.button("📅 최근 7일로", key=f"{key}_set7", type="primary"):
+        try:
+            if "filters_v8" in st.session_state and isinstance(st.session_state["filters_v8"], dict):
+                st.session_state["filters_v8"]["period_mode"] = "최근 7일"
+            st.cache_data.clear()
+        except Exception:
+            pass
+        st.rerun()
+    with c2:
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
+
 def render_filter_summary_bar(f: Dict, meta: pd.DataFrame) -> None:
     """Compact one-line summary shown on the main area (keeps the UI 'report-like')."""
     try:
@@ -534,7 +550,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         bundle = pd.DataFrame()
 
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
+        _render_empty_state_no_data(key="empty_bundle")
         return
 
     # 메타(업체명/담당자) 부착
@@ -698,7 +714,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     bundle = query_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (오늘 데이터는 수집 지연으로 비어있을 수 있어요. 기본값인 **어제**로 확인해보세요.)")
+        _render_empty_state_no_data(key="empty_bundle")
         return
 
     # --- timeseries (for 전체 멀티라인 비교) ---
@@ -1015,7 +1031,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
     if bundle is None or bundle.empty:
-        st.warning("데이터 없음 (dim_ad/dim_adgroup/dim_campaign 또는 fact_ad_daily 확인)")
+        _render_empty_state_no_data(key="empty_ad")
         return
 
     # -----------------------------

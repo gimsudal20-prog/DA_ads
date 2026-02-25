@@ -193,11 +193,9 @@ input[type="text"], textarea{
   border-radius: 10px;
   padding: 10px 12px;
 }
-.kpi:hover{
-  box-shadow: 0 6px 18px rgba(0,0,0,.06);
-  border-color: var(--nv-line2);
-}
 .kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
+.kpi .k .kpi-tip{margin-left:6px; font-size:12px; opacity:.55; cursor:help;}
+.kpi .k .kpi-tip:hover{opacity:.9;}
 .kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
 .kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
 .kpi .d.pos{color:var(--nv-red);} /* 증가(▲) = 빨강(국내표준) */
@@ -206,55 +204,6 @@ input[type="text"], textarea{
   font-size:11px; padding:2px 6px; border-radius:999px;
   border:1px solid var(--nv-line); color:var(--nv-muted);
 }
-
-/* KPI tooltip (micro interaction) */
-.nv-tip{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  width: 18px;
-  height: 18px;
-  margin-left: 6px;
-  border-radius: 999px;
-  border: 1px solid var(--nv-line);
-  color: rgba(26,28,32,.58);
-  font-size: 12px;
-  font-weight: 900;
-  cursor: help;
-  position: relative;
-}
-.nv-tip:hover{border-color: var(--nv-line2); background: rgba(0,0,0,.03);}
-.nv-tip::after{
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 8px);
-  transform: translateX(-50%);
-  background: rgba(26,28,32,.92);
-  color: #fff;
-  padding: 8px 10px;
-  border-radius: 10px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .12s ease;
-  z-index: 9999;
-}
-.nv-tip:hover::after{opacity: 1;}
-
-/* Empty state */
-.nv-empty{
-  border: 1px dashed var(--nv-line2);
-  background: rgba(148,163,184,0.10);
-  border-radius: 16px;
-  padding: 18px 16px;
-  text-align: center;
-}
-.nv-empty .ic{font-size: 34px; line-height: 1;}
-.nv-empty .t{margin-top: 6px; font-size: 14px; font-weight: 900; color: rgba(26,28,32,.88);}
-.nv-empty .m{margin-top: 4px; font-size: 12px; font-weight: 700; color: rgba(26,28,32,.62);}
 
 /* Delta chips (period compare) */
 .delta-chip-row{

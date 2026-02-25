@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import io
+import html
 import math
 import numpy as np
 from datetime import date, timedelta, datetime
@@ -146,68 +147,61 @@ def _aggrid_mode(name: str):
 _AGGRID_COLDEF_CACHE: dict = {}
 
 
-def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool) -> list:
-    key = (tuple(cols), tuple(sorted(right_cols)), int(bool(enable_filter)))
+def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool, cond_thresholds: Optional[dict] = None) -> list:
+    cond_thresholds = cond_thresholds or {}
+    # cache key includes thresholds (rounded) to avoid excessive growth
+    th_key = tuple(sorted((k, round(v.get("low", 0.0), 4), round(v.get("high", 0.0), 4)) for k, v in cond_thresholds.items()))
+    key = (tuple(cols), tuple(sorted(right_cols)), int(bool(enable_filter)), th_key)
     cache = _AGGRID_COLDEF_CACHE
     if key in cache:
         return cache[key]
+
     out = []
     for c in cols:
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
 
-        # Conditional formatting (ROAS/CTR): 목표 미달(옅은 붉은색) / 초과(옅은 푸른색)
-        # - df가 문자열(예: "123%", "1,234")로 들어와도 파싱되게 처리
-        if JsCode is not None and any(k in str(c) for k in ["ROAS", "CTR(%)", "CTR"]):
+        # Right align numeric-like cols
+        base_align = {"textAlign": "right"} if c in right_cols else {}
+
+        # Conditional formatting for ROAS/CTR columns
+        th = cond_thresholds.get(c)
+        if th and JsCode is not None:
+            low = float(th.get("low", 0.0))
+            high = float(th.get("high", 0.0))
+            align_stmt = 'style.textAlign = "right";' if c in right_cols else ""
             try:
-                cd["cellStyle"] = JsCode(
-                    """
-function(params){
-  var v = params.value;
-  var n = null;
-  if(v === null || v === undefined){ n = null; }
-  else if(typeof v === 'number'){ n = v; }
-  else {
-    var s = String(v);
-    s = s.replace(/,/g,'').replace(/\s/g,'').replace('%','');
-    var p = parseFloat(s);
-    n = isNaN(p) ? null : p;
-  }
-
-  var style = {textAlign: 'right'};
-
-  // ROAS
-  if(String(params.colDef.field).indexOf('ROAS') !== -1){
-    if(n !== null){
-      style.backgroundColor = (n < 100) ? 'rgba(239,68,68,0.10)' : 'rgba(37,99,235,0.10)';
-    }
-    return style;
-  }
-
-  // CTR
-  if(String(params.colDef.field).indexOf('CTR') !== -1){
-    if(n !== null){
-      if(n < 1){ style.backgroundColor = 'rgba(239,68,68,0.10)'; }
-      else if(n >= 3){ style.backgroundColor = 'rgba(37,99,235,0.10)'; }
-    }
-    return style;
-  }
-
+                cd["cellStyle"] = JsCode(f"""
+function(params){{
+  const v = params.value;
+  let n = NaN;
+  if(typeof v === 'number'){{ n = v; }}
+  else if(v !== null && v !== undefined){{
+    const s = String(v).replace(/[^0-9\.\-]/g,'');
+    n = parseFloat(s);
+  }}
+  let bg = '';
+  if(!isNaN(n)){{
+    if(n < {low}) bg = 'rgba(239,68,68,0.10)';        // soft red
+    else if(n >= {high}) bg = 'rgba(37,99,235,0.10)'; // soft blue
+  }}
+  const style = {{}};
+  if(bg) style.backgroundColor = bg;
+  {align_stmt}
   return style;
-}
-"""
-                )
+}}
+""")
             except Exception:
-                # Fall back to alignment only
-                if c in right_cols:
-                    cd["cellStyle"] = {"textAlign": "right"}
-        elif c in right_cols:
-            cd["cellStyle"] = {"textAlign": "right"}
+                cd["cellStyle"] = base_align
+        else:
+            if base_align:
+                cd["cellStyle"] = base_align
+
         out.append(cd)
+
     if len(cache) > 64:
         cache.clear()
     cache[key] = out
     return out
-
 
 def _aggrid_grid_options(
     cols: List[str],
@@ -215,12 +209,13 @@ def _aggrid_grid_options(
     right_cols: Optional[set] = None,
     quick_filter: str = "",
     enable_filter: bool = False,
+    cond_thresholds: Optional[dict] = None,
 ) -> dict:
     right_cols = right_cols or set()
     pinned_rows = pinned_rows or []
     grid = {
         "defaultColDef": {"sortable": True, "filter": bool(enable_filter), "resizable": True},
-        "columnDefs": _aggrid_coldefs(cols, right_cols, enable_filter),
+        "columnDefs": _aggrid_coldefs(cols, right_cols, enable_filter, cond_thresholds=cond_thresholds),
         "pinnedTopRowData": pinned_rows,
         "suppressRowClickSelection": True,
         "animateRows": False,
@@ -480,29 +475,6 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
         except Exception:
             pass
 
-    def _kpi_tooltip(t: str) -> str:
-        tt = str(t or "")
-        if "ROAS" in tt:
-            return "ROAS = 전환매출 ÷ 광고비 × 100"
-        if "CTR" in tt:
-            return "CTR = 클릭 ÷ 노출 × 100"
-        if "CPC" in tt:
-            return "CPC = 광고비 ÷ 클릭"
-        if "CPA" in tt:
-            return "CPA = 광고비 ÷ 전환"
-        if "전환" in tt and "총" in tt:
-            return "선택 기간 내 전환수 합계"
-        if "광고비" in tt:
-            return "선택 기간 내 광고비 합계"
-        if "클릭" in tt:
-            return "선택 기간 내 클릭수 합계"
-        if "노출" in tt:
-            return "선택 기간 내 노출수 합계"
-        return ""
-
-    tip = _kpi_tooltip(title)
-    tip_html = f"<span class='nv-tip' data-tip='{tip}'>ⓘ</span>" if tip else ""
-
     label = (desc or "").strip()
     delta_html = f"<div class='d'><span class='chip'>{label}</span></div>" if label else "<div class='d'></div>"
 
@@ -517,96 +489,36 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str, key: str) -> None:
         chip = f"<span class='chip'>{label2}</span>" if label2 else ""
         delta_html = f"<div class='d {cls}'>{chip}{arrow} {num}%</div>"
 
+        # --- micro tooltip (formula) ---
+    def _kpi_formula(t: str) -> str:
+        t = (t or "").strip()
+        if not t:
+            return ""
+        if "ROAS" in t:
+            return "ROAS = 전환매출 / 광고비 × 100"
+        if "CTR" in t:
+            return "CTR = 클릭 / 노출 × 100"
+        if "CPC" in t:
+            return "CPC = 광고비 / 클릭"
+        if "CPA" in t:
+            return "CPA = 광고비 / 전환"
+        if "CVR" in t or "전환율" in t:
+            return "전환율(CVR) = 전환 / 클릭 × 100"
+        return ""
+
+    _formula = _kpi_formula(title)
+    _title_esc = html.escape(str(title))
+    _tip_html = f"<span class='kpi-tip' title='{html.escape(_formula)}'>ⓘ</span>" if _formula else ""
+    title_html = f"{_title_esc}{_tip_html}"
+
     st.markdown(
         f"""<div class='kpi' id='{key}'>
-            <div class='k'>{title}{tip_html}</div>
+            <div class='k'>{title_html}</div>
             <div class='v'>{value}</div>
             {delta_html}
         </div>""",
         unsafe_allow_html=True,
     )
-
-
-def set_filter_period(mode: str) -> Tuple[date, date]:
-    """Update filters_v8 period + widget states (used by empty-state CTA buttons)."""
-    today = date.today()
-    sv = st.session_state.get("filters_v8", {}) or {}
-
-    if mode == "오늘":
-        d2 = today
-        d1 = today
-    elif mode == "어제":
-        d2 = today - timedelta(days=1)
-        d1 = d2
-    elif mode == "최근 7일":
-        d2 = today - timedelta(days=1)
-        d1 = d2 - timedelta(days=6)
-    elif mode == "이번 달":
-        d2 = today
-        d1 = date(today.year, today.month, 1)
-    elif mode == "지난 달":
-        first_this = date(today.year, today.month, 1)
-        d2 = first_this - timedelta(days=1)
-        d1 = date(d2.year, d2.month, 1)
-    else:
-        # direct select or unknown: keep current
-        d1 = sv.get("d1") or (today - timedelta(days=1))
-        d2 = sv.get("d2") or (today - timedelta(days=1))
-
-    sv.update({"period_mode": mode, "d1": d1, "d2": d2})
-    st.session_state["filters_v8"] = sv
-
-    # sync widget states (best-effort)
-    st.session_state["f_period_mode"] = mode
-    st.session_state["f_d1"] = d1
-    st.session_state["f_d2"] = d2
-    st.session_state["f_d1_ro"] = str(d1)
-    st.session_state["f_d2_ro"] = str(d2)
-    return d1, d2
-
-
-def render_empty_state(
-    title: str = "데이터가 없습니다",
-    message: str = "선택한 기간/필터 조합에서 조회된 데이터가 없어요.",
-    action_period_mode: str = "최근 7일",
-    action_label: str = "기간을 '최근 7일'로 변경",
-    key: str = "empty_state",
-) -> None:
-    """Friendly empty state with a CTA button to fix common cause."""
-    st.markdown(
-        f"""
-<div class='nv-empty'>
-  <div class='ic'>📭</div>
-  <div class='t'>{title}</div>
-  <div class='m'>{message}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    cols = st.columns([1, 3, 1])
-    with cols[1]:
-        if st.button(action_label, key=f"{key}_cta"):
-            set_filter_period(action_period_mode)
-            st.rerun()
-
-
-def render_top_tabs(
-    cost_df: pd.DataFrame,
-    click_df: pd.DataFrame,
-    conv_df: pd.DataFrame,
-    key_prefix: str,
-    height: int = 240,
-    labels: Tuple[str, str, str] = ("💸 광고비 TOP", "🖱️ 클릭 TOP", "✅ 전환 TOP"),
-) -> None:
-    """TOP tables UI: use tabs instead of 3-column narrow layout."""
-    t1, t2, t3 = st.tabs(list(labels))
-    with t1:
-        ui_table_or_dataframe(cost_df, key=f"{key_prefix}_cost", height=height)
-    with t2:
-        ui_table_or_dataframe(click_df, key=f"{key_prefix}_clk", height=height)
-    with t3:
-        ui_table_or_dataframe(conv_df, key=f"{key_prefix}_conv", height=height)
 
 
 def ui_table_or_dataframe(df: pd.DataFrame, key: str, height: int = 260) -> None:
@@ -936,12 +848,34 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
         # right-align numeric-like columns if present
         right_cols = {c for c in df.columns if any(k in c for k in ["노출", "클릭", "광고비", "전환", "매출", "CTR", "CPC", "CPA", "ROAS"])}
 
+    # --- Conditional formatting thresholds (ROAS/CTR 등): 분포 기반으로 상/하단을 은은하게 하이라이트 ---
+    def _to_num_series(s: pd.Series) -> pd.Series:
+        # accept numbers or formatted strings (%, 원, 콤마 등)
+        if s is None:
+            return pd.Series(dtype="float64")
+        if pd.api.types.is_numeric_dtype(s):
+            return pd.to_numeric(s, errors="coerce")
+        x = s.astype(str).str.replace(r"[^0-9\.-]", "", regex=True)
+        return pd.to_numeric(x, errors="coerce")
+
+    _cond_cols = [c for c in df.columns if any(k in c for k in ["ROAS", "CTR"])]
+    _cond_thresholds = {}  # field -> {low, high}
+    for _c in _cond_cols:
+        _num = _to_num_series(df[_c]).dropna()
+        if len(_num) >= 12:
+            _cond_thresholds[_c] = {
+                "low": float(_num.quantile(0.33)),
+                "high": float(_num.quantile(0.67)),
+            }
+    # COND_FMT_THRESHOLDS
+
         grid = _aggrid_grid_options(
             cols=list(df.columns),
             pinned_rows=[],
             right_cols=right_cols,
             quick_filter=q or "",
             enable_filter=True,
+            cond_thresholds=_cond_thresholds,
         )
 
         AgGrid(
