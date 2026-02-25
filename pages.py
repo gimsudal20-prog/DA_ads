@@ -1294,6 +1294,24 @@ def page_settings(engine) -> None:
                 st.error(f"실패: {e}")
 
 
+    st.divider()
+    st.markdown("### 🗑️ 중복/미사용 계정 DB에서 삭제")
+    st.caption("비용이 0원으로 뜨는 예전 커스텀 ID를 DB(dim_account_meta)에서 영구 삭제합니다.")
+
+    del_cid = st.text_input("삭제할 계정의 커스텀 ID (숫자만 입력)", placeholder="예: 1234567")
+    if st.button("🗑️ 해당 ID 삭제", type="primary"):
+        if del_cid.strip() and del_cid.strip().isdigit():
+            try:
+                # data.py에 있는 sql_exec를 이용해 삭제 쿼리 실행
+                sql_exec(engine, "DELETE FROM dim_account_meta WHERE customer_id = :cid", {"cid": int(del_cid.strip())})
+                st.success(f"커스텀 ID {del_cid} 삭제 완료! (캐시를 비우고 다시 확인해주세요)")
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"삭제 실패: {e}")
+        else:
+            st.warning("유효한 숫자 ID를 입력해주세요.")
+
+
 # -----------------------------
 # Main
 # -----------------------------
