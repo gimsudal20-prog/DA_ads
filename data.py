@@ -240,7 +240,6 @@ def _sql_in_text_list(values: List[str]) -> str:
 def _fact_has_sales(engine, fact_table: str) -> bool:
     return "sales" in get_table_columns(engine, fact_table)
 
-
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=180, show_spinner=False)
 def query_budget_bundle(
     _engine,
@@ -1092,64 +1091,63 @@ def query_ad_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...], type
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
 
-    fad_cols = get_table_columns(_engine, "fact_ad_daily")
-    has_sales = "sales" in fad_cols
+    has_sales = _fact_has_sales(_engine, "fact_ad_daily")
     sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    has_ag = "adgroup_id" in fad_cols
-    has_cp = "campaign_id" in fad_cols
-    ag_expr = "f.adgroup_id::text" if has_ag else "NULL::text"
-    cp_expr = "f.campaign_id::text" if has_cp else "NULL::text"
 
     where_cid = ""
     if cids:
         where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_filter = ""
-    if tp_keys:
+    if tp_keys and table_exists(_engine, "dim_campaign") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_ad"):
         tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(m.campaign_tp), ''), '')) IN ({tp_list})"
-
-    dim_ad_exists = table_exists(_engine, "dim_ad")
-    dim_ag_exists = table_exists(_engine, "dim_adgroup")
-    dim_cp_exists = table_exists(_engine, "dim_campaign")
-
-    join_ad = "LEFT JOIN dim_ad a ON b.customer_id = a.customer_id::text AND b.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS adgroup_id, NULL::text AS campaign_id) a ON 1=0"
-    join_ag = "LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND COALESCE(b.f_adgroup_id, a.adgroup_id::text) = g.adgroup_id::text" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id) g ON 1=0"
-    join_cp = "LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND COALESCE(b.f_campaign_id, a.campaign_id::text, g.campaign_id::text) = c.campaign_id::text" if dim_cp_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_tp) c ON 1=0"
-
-    sql = f"""
-    WITH base AS (
-      SELECT
-        f.dt::date AS dt,
-        f.customer_id::text AS customer_id,
-        f.ad_id::text AS ad_id,
-        {ag_expr} AS f_adgroup_id,
-        {cp_expr} AS f_campaign_id,
-        SUM(f.imp) AS imp, SUM(f.clk) AS clk, SUM(f.cost) AS cost, SUM(f.conv) AS conv, {sales_expr} AS sales
-      FROM fact_ad_daily f
-      WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-      GROUP BY 1, 2, 3, 4, 5
-    ),
-    mapped AS (
-      SELECT
-        b.dt, b.imp, b.clk, b.cost, b.conv, b.sales,
-        COALESCE(NULLIF(c.campaign_tp,''), '') AS campaign_tp
-      FROM base b
-      {join_ad}
-      {join_ag}
-      {join_cp}
-    )
-    SELECT
-      m.dt,
-      SUM(m.imp) AS imp, SUM(m.clk) AS clk, SUM(m.cost) AS cost, SUM(m.conv) AS conv, SUM(m.sales) AS sales
-    FROM mapped m
-    WHERE 1=1 {type_filter}
-    GROUP BY m.dt
-    ORDER BY m.dt
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id::text AS campaign_id
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        g_f AS (
+          SELECT g.customer_id::text AS customer_id, g.adgroup_id::text AS adgroup_id
+          FROM dim_adgroup g
+          JOIN c_f c ON g.customer_id::text = c.customer_id AND g.campaign_id::text = c.campaign_id
+        ),
+        a_f AS (
+          SELECT a.customer_id::text AS customer_id, a.ad_id::text AS ad_id
+          FROM dim_ad a
+          JOIN g_f g ON a.customer_id::text = g.customer_id AND a.adgroup_id::text = g.adgroup_id
+        )
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_ad_daily f
+        JOIN a_f a ON f.customer_id::text = a.customer_id AND f.ad_id::text = a.ad_id
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    else:
+        sql = f"""
+        SELECT
+          f.dt::date AS dt,
+          SUM(f.imp)  AS imp,
+          SUM(f.clk)  AS clk,
+          SUM(f.cost) AS cost,
+          SUM(f.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_ad_daily f
+        WHERE f.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY f.dt::date
+        ORDER BY f.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if df is None or df.empty:
         return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
@@ -1167,63 +1165,62 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
         return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
 
     fk_cols = get_table_columns(_engine, "fact_keyword_daily")
-    has_sales = "sales" in fk_cols
-    sales_expr = "SUM(COALESCE(f.sales,0))" if has_sales else "0::numeric"
-
-    has_ag = "adgroup_id" in fk_cols
-    has_cp = "campaign_id" in fk_cols
-    ag_expr = "f.adgroup_id::text" if has_ag else "NULL::text"
-    cp_expr = "f.campaign_id::text" if has_cp else "NULL::text"
+    sales_expr = "SUM(COALESCE(fk.sales,0))" if "sales" in fk_cols else "0::numeric"
 
     where_cid = ""
     if cids:
-        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
+        where_cid = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_filter = ""
-    if tp_keys:
+    if tp_keys and table_exists(_engine, "dim_campaign") and table_exists(_engine, "dim_adgroup") and table_exists(_engine, "dim_keyword"):
         tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(m.campaign_tp), ''), '')) IN ({tp_list})"
-
-    dim_kw_exists = table_exists(_engine, "dim_keyword")
-    dim_ag_exists = table_exists(_engine, "dim_adgroup")
-    dim_cp_exists = table_exists(_engine, "dim_campaign")
-
-    join_kw = "LEFT JOIN dim_keyword k ON b.customer_id = k.customer_id::text AND b.keyword_id = k.keyword_id::text" if dim_kw_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS keyword_id, NULL::text AS adgroup_id, NULL::text AS campaign_id) k ON 1=0"
-    join_ag = "LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND COALESCE(b.f_adgroup_id, k.adgroup_id::text) = g.adgroup_id::text" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id) g ON 1=0"
-    join_cp = "LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND COALESCE(b.f_campaign_id, k.campaign_id::text, g.campaign_id::text) = c.campaign_id::text" if dim_cp_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_tp) c ON 1=0"
-
-    sql = f"""
-    WITH base AS (
-      SELECT
-        f.dt::date AS dt,
-        f.customer_id::text AS customer_id,
-        f.keyword_id::text AS keyword_id,
-        {ag_expr} AS f_adgroup_id,
-        {cp_expr} AS f_campaign_id,
-        SUM(f.imp) AS imp, SUM(f.clk) AS clk, SUM(f.cost) AS cost, SUM(f.conv) AS conv, {sales_expr} AS sales
-      FROM fact_keyword_daily f
-      WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-      GROUP BY 1, 2, 3, 4, 5
-    ),
-    mapped AS (
-      SELECT
-        b.dt, b.imp, b.clk, b.cost, b.conv, b.sales,
-        COALESCE(NULLIF(c.campaign_tp,''), '') AS campaign_tp
-      FROM base b
-      {join_kw}
-      {join_ag}
-      {join_cp}
-    )
-    SELECT
-      m.dt,
-      SUM(m.imp) AS imp, SUM(m.clk) AS clk, SUM(m.cost) AS cost, SUM(m.conv) AS conv, SUM(m.sales) AS sales
-    FROM mapped m
-    WHERE 1=1 {type_filter}
-    GROUP BY m.dt
-    ORDER BY m.dt
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+        sql = f"""
+        WITH c_f AS (
+          SELECT customer_id::text AS customer_id, campaign_id::text AS campaign_id
+          FROM dim_campaign
+          WHERE LOWER(COALESCE(campaign_tp,'')) IN ({tp_list})
+        ),
+        g_f AS (
+          SELECT g.customer_id::text AS customer_id, g.adgroup_id::text AS adgroup_id
+          FROM dim_adgroup g
+          JOIN c_f c ON g.customer_id::text = c.customer_id AND g.campaign_id::text = c.campaign_id
+        ),
+        k_f AS (
+          SELECT k.customer_id::text AS customer_id, k.keyword_id::text AS keyword_id
+          FROM dim_keyword k
+          JOIN g_f g ON k.customer_id::text = g.customer_id AND k.adgroup_id::text = g.adgroup_id
+        )
+        SELECT
+          fk.dt::date AS dt,
+          SUM(fk.imp)  AS imp,
+          SUM(fk.clk)  AS clk,
+          SUM(fk.cost) AS cost,
+          SUM(fk.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_keyword_daily fk
+        JOIN k_f k ON fk.customer_id::text = k.customer_id AND fk.keyword_id::text = k.keyword_id
+        WHERE fk.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY fk.dt::date
+        ORDER BY fk.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    else:
+        sql = f"""
+        SELECT
+          fk.dt::date AS dt,
+          SUM(fk.imp)  AS imp,
+          SUM(fk.clk)  AS clk,
+          SUM(fk.cost) AS cost,
+          SUM(fk.conv) AS conv,
+          {sales_expr} AS sales
+        FROM fact_keyword_daily fk
+        WHERE fk.dt BETWEEN :d1 AND :d2
+          {where_cid}
+        GROUP BY fk.dt::date
+        ORDER BY fk.dt::date
+        """
+        df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
 
     if df is None or df.empty:
         return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "conv", "sales"])
@@ -1239,6 +1236,7 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 # Altair Charts (rounded / smooth)
 # -----------------------------
 
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_ad_topn(
     _engine,
     d1: date,
@@ -1256,29 +1254,48 @@ def query_ad_topn(
 
     has_ag = "adgroup_id" in fad_cols
     has_cp = "campaign_id" in fad_cols
-    ag_expr = "f.adgroup_id::text" if has_ag else "NULL::text"
-    cp_expr = "f.campaign_id::text" if has_cp else "NULL::text"
+    ag_expr = "MIN(f.adgroup_id::text)" if has_ag else "NULL::text"
+    cp_expr = "MIN(f.campaign_id::text)" if has_cp else "NULL::text"
 
     where_cid = ""
     if cids:
         where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_filter = ""
-    if tp_keys:
-        tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(m.campaign_tp), ''), '')) IN ({tp_list})"
+    tp_in = _sql_in_text_list([str(x).lower() for x in tp_keys])
 
     dim_ad_exists = table_exists(_engine, "dim_ad")
     dim_ag_exists = table_exists(_engine, "dim_adgroup")
     dim_cp_exists = table_exists(_engine, "dim_campaign")
 
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
-    ad_text_expr = "COALESCE(NULLIF(a.creative_text,''), NULLIF(a.ad_name,''), '')" if "creative_text" in ad_cols else "COALESCE(a.ad_name,'')"
+    ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), '')" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), '')"
 
-    join_ad = "LEFT JOIN dim_ad a ON b.customer_id = a.customer_id::text AND b.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS ad_name, NULL::text AS creative_text) a ON 1=0"
-    join_ag = "LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND COALESCE(b.f_adgroup_id, a.adgroup_id::text) = g.adgroup_id::text" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
-    join_cp = "LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND COALESCE(b.f_campaign_id, a.campaign_id::text, g.campaign_id::text) = c.campaign_id::text" if dim_cp_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+    cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
+    cp_tp_col = "campaign_tp" if "campaign_tp" in cp_cols else ("campaign_type" if "campaign_type" in cp_cols else None)
+    cp_name_col = "campaign_name" if "campaign_name" in cp_cols else ("name" if "name" in cp_cols else None)
+    
+    ag_cols = get_table_columns(_engine, "dim_adgroup") if dim_ag_exists else set()
+    ag_name_col = "adgroup_name" if "adgroup_name" in ag_cols else ("name" if "name" in ag_cols else None)
+
+    dim_ad_adgroup_expr = "a.adgroup_id::text" if (dim_ad_exists and "adgroup_id" in ad_cols) else "NULL::text"
+    dim_ad_campaign_expr = "a.campaign_id::text" if (dim_ad_exists and "campaign_id" in ad_cols) else "NULL::text"
+    dim_ag_campaign_expr = "g.campaign_id::text" if (dim_ag_exists and "campaign_id" in ag_cols) else "NULL::text"
+
+    adgroup_join_key = f"COALESCE(NULLIF(p.f_adgroup_id, ''), NULLIF({dim_ad_adgroup_expr}, ''))"
+    campaign_join_key = f"COALESCE(NULLIF(p.f_campaign_id, ''), NULLIF({dim_ad_campaign_expr}, ''), NULLIF({dim_ag_campaign_expr}, ''))"
+
+    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS ad_name, NULL::text AS creative_text) a ON 1=0"
+    join_ag = f"LEFT JOIN dim_adgroup g ON p.customer_id = g.customer_id::text AND g.adgroup_id::text = {adgroup_join_key}" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
+    join_cp = f"LEFT JOIN dim_campaign c ON p.customer_id = c.customer_id::text AND c.campaign_id::text = {campaign_join_key}" if dim_cp_exists else f"LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+
+    type_filter_clause = ""
+    if tp_keys and dim_cp_exists and cp_tp_col:
+        type_filter_clause = f"AND LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) IN ({tp_in})"
+
+    campaign_name_expr = f"COALESCE(NULLIF(TRIM(c.{cp_name_col}),''),'')" if cp_name_col else "''"
+    campaign_tp_expr = f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}),''),'')" if cp_tp_col else "''"
+    adgroup_name_expr = f"COALESCE(NULLIF(TRIM(g.{ag_name_col}),''),'')" if ag_name_col else "''"
 
     sql = f"""
     WITH base AS (
@@ -1287,36 +1304,34 @@ def query_ad_topn(
         f.ad_id::text AS ad_id,
         {ag_expr} AS f_adgroup_id,
         {cp_expr} AS f_campaign_id,
-        SUM(f.imp)  AS imp,
-        SUM(f.clk)  AS clk,
-        SUM(f.cost) AS cost,
-        SUM(f.conv) AS conv,
+        SUM(COALESCE(f.imp,0))  AS imp,
+        SUM(COALESCE(f.clk,0))  AS clk,
+        SUM(COALESCE(f.cost,0)) AS cost,
+        SUM(COALESCE(f.conv,0)) AS conv,
         {sales_expr} AS sales
       FROM fact_ad_daily f
       WHERE f.dt BETWEEN :d1 AND :d2
         {where_cid}
-      GROUP BY 1, 2, 3, 4
+      GROUP BY f.customer_id::text, f.ad_id::text
     ),
-    mapped AS (
-      SELECT
-        b.customer_id, b.ad_id, b.imp, b.clk, b.cost, b.conv, b.sales,
-        {ad_text_expr} AS ad_name,
-        COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
-        COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
-        COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp
-      FROM base b
-      {join_ad}
-      {join_ag}
-      {join_cp}
-    ),
-    filtered AS (
-      SELECT *
-      FROM mapped m
-      WHERE 1=1 {type_filter}
+    top AS (
+      SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim
     )
-    SELECT * FROM filtered
-    ORDER BY cost DESC NULLS LAST
-    LIMIT :lim
+    SELECT
+      p.customer_id,
+      p.ad_id,
+      p.imp, p.clk, p.cost, p.conv, p.sales,
+      {ad_text_expr} AS ad_name,
+      {adgroup_name_expr} AS adgroup_name,
+      {campaign_name_expr} AS campaign_name,
+      {campaign_tp_expr} AS campaign_tp
+    FROM top p
+    {join_ad}
+    {join_ag}
+    {join_cp}
+    WHERE 1=1
+      {type_filter_clause}
+    ORDER BY p.cost DESC NULLS LAST
     """
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim": int(top_n)})
@@ -1353,29 +1368,48 @@ def query_ad_bundle(
 
     has_ag = "adgroup_id" in fad_cols
     has_cp = "campaign_id" in fad_cols
-    ag_expr = "f.adgroup_id::text" if has_ag else "NULL::text"
-    cp_expr = "f.campaign_id::text" if has_cp else "NULL::text"
+    ag_expr = "MIN(f.adgroup_id::text)" if has_ag else "NULL::text"
+    cp_expr = "MIN(f.campaign_id::text)" if has_cp else "NULL::text"
 
     where_cid = ""
     if cids:
         where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})"
 
     tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    type_filter = ""
-    if tp_keys:
-        tp_list = ",".join([f"'{x}'" for x in tp_keys])
-        type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(m.campaign_tp), ''), '')) IN ({tp_list})"
+    tp_in = _sql_in_text_list([str(x).lower() for x in tp_keys])
 
     dim_ad_exists = table_exists(_engine, "dim_ad")
     dim_ag_exists = table_exists(_engine, "dim_adgroup")
     dim_cp_exists = table_exists(_engine, "dim_campaign")
 
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
-    ad_text_expr = "COALESCE(NULLIF(a.creative_text,''), NULLIF(a.ad_name,''), '')" if "creative_text" in ad_cols else "COALESCE(a.ad_name,'')"
+    ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), '')" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), '')"
 
-    join_ad = "LEFT JOIN dim_ad a ON b.customer_id = a.customer_id::text AND b.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS ad_name, NULL::text AS creative_text) a ON 1=0"
-    join_ag = "LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND COALESCE(b.f_adgroup_id, a.adgroup_id::text) = g.adgroup_id::text" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
-    join_cp = "LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND COALESCE(b.f_campaign_id, a.campaign_id::text, g.campaign_id::text) = c.campaign_id::text" if dim_cp_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+    cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
+    cp_tp_col = "campaign_tp" if "campaign_tp" in cp_cols else ("campaign_type" if "campaign_type" in cp_cols else None)
+    cp_name_col = "campaign_name" if "campaign_name" in cp_cols else ("name" if "name" in cp_cols else None)
+    
+    ag_cols = get_table_columns(_engine, "dim_adgroup") if dim_ag_exists else set()
+    ag_name_col = "adgroup_name" if "adgroup_name" in ag_cols else ("name" if "name" in ag_cols else None)
+
+    dim_ad_adgroup_expr = "a.adgroup_id::text" if (dim_ad_exists and "adgroup_id" in ad_cols) else "NULL::text"
+    dim_ad_campaign_expr = "a.campaign_id::text" if (dim_ad_exists and "campaign_id" in ad_cols) else "NULL::text"
+    dim_ag_campaign_expr = "g.campaign_id::text" if (dim_ag_exists and "campaign_id" in ag_cols) else "NULL::text"
+
+    adgroup_join_key = f"COALESCE(NULLIF(p.f_adgroup_id, ''), NULLIF({dim_ad_adgroup_expr}, ''))"
+    campaign_join_key = f"COALESCE(NULLIF(p.f_campaign_id, ''), NULLIF({dim_ad_campaign_expr}, ''), NULLIF({dim_ag_campaign_expr}, ''))"
+
+    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS ad_name, NULL::text AS creative_text) a ON 1=0"
+    join_ag = f"LEFT JOIN dim_adgroup g ON p.customer_id = g.customer_id::text AND g.adgroup_id::text = {adgroup_join_key}" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
+    join_cp = f"LEFT JOIN dim_campaign c ON p.customer_id = c.customer_id::text AND c.campaign_id::text = {campaign_join_key}" if dim_cp_exists else f"LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+
+    type_filter_clause = ""
+    if tp_keys and dim_cp_exists and cp_tp_col:
+        type_filter_clause = f"AND LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) IN ({tp_in})"
+
+    campaign_name_expr = f"COALESCE(NULLIF(TRIM(c.{cp_name_col}),''),'')" if cp_name_col else "''"
+    campaign_tp_expr = f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}),''),'')" if cp_tp_col else "''"
+    adgroup_name_expr = f"COALESCE(NULLIF(TRIM(g.{ag_name_col}),''),'')" if ag_name_col else "''"
 
     sql = f"""
     WITH base AS (
@@ -1384,15 +1418,15 @@ def query_ad_bundle(
         f.ad_id::text AS ad_id,
         {ag_expr} AS f_adgroup_id,
         {cp_expr} AS f_campaign_id,
-        SUM(f.imp)  AS imp,
-        SUM(f.clk)  AS clk,
-        SUM(f.cost) AS cost,
-        SUM(f.conv) AS conv,
+        SUM(COALESCE(f.imp,0))  AS imp,
+        SUM(COALESCE(f.clk,0))  AS clk,
+        SUM(COALESCE(f.cost,0)) AS cost,
+        SUM(COALESCE(f.conv,0)) AS conv,
         {sales_expr} AS sales
       FROM fact_ad_daily f
       WHERE f.dt BETWEEN :d1 AND :d2
         {where_cid}
-      GROUP BY 1, 2, 3, 4
+      GROUP BY f.customer_id::text, f.ad_id::text
     ),
     cost_top AS (SELECT * FROM base ORDER BY cost DESC NULLS LAST LIMIT :lim_cost),
     clk_top  AS (SELECT * FROM base ORDER BY clk  DESC NULLS LAST LIMIT :lim_k),
@@ -1403,26 +1437,22 @@ def query_ad_bundle(
       SELECT * FROM clk_top
       UNION
       SELECT * FROM conv_top
-    ),
-    mapped AS (
-      SELECT
-        b.customer_id, b.ad_id, b.imp, b.clk, b.cost, b.conv, b.sales,
-        {ad_text_expr} AS ad_name,
-        COALESCE(NULLIF(g.adgroup_name,''),'') AS adgroup_name,
-        COALESCE(NULLIF(c.campaign_name,''),'') AS campaign_name,
-        COALESCE(NULLIF(c.campaign_tp,''),'') AS campaign_tp
-      FROM picked b
-      {join_ad}
-      {join_ag}
-      {join_cp}
-    ),
-    filtered AS (
-      SELECT *
-      FROM mapped m
-      WHERE 1=1 {type_filter}
     )
-    SELECT * FROM filtered
-    ORDER BY cost DESC NULLS LAST
+    SELECT
+      p.customer_id,
+      p.ad_id,
+      p.imp, p.clk, p.cost, p.conv, p.sales,
+      {ad_text_expr} AS ad_name,
+      {adgroup_name_expr} AS adgroup_name,
+      {campaign_name_expr} AS campaign_name,
+      {campaign_tp_expr} AS campaign_tp
+    FROM picked p
+    {join_ad}
+    {join_ag}
+    {join_cp}
+    WHERE 1=1
+      {type_filter_clause}
+    ORDER BY p.cost DESC NULLS LAST
     """
 
     df = sql_read(
