@@ -1948,6 +1948,9 @@ def _pct_change(curr: float, prev: float) -> Optional[float]:
         return 0.0 if curr == 0 else None
     return (float(curr) - float(prev)) / float(prev) * 100.0
 
+
+# Public alias (import * friendly)
+pct_change = _pct_change
 def _pct_to_str(p: Optional[float]) -> str:
     """Signed percent string. Robust to None/NaN."""
     try:
