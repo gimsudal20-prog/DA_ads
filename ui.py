@@ -101,6 +101,19 @@ def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool, cond_
     for c in cols:
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
         base_align = {"textAlign": "right"} if c in right_cols else {}
+        
+        # 숫자인 경우 1,000 단위 콤마를 찍어주는 포매터 추가
+        if c in right_cols and JsCode is not None:
+            cd["valueFormatter"] = JsCode("""
+            function(params) {
+                if (params.value == null) return '';
+                if (!isNaN(params.value) && typeof params.value === 'number') {
+                    return Number(params.value).toLocaleString('ko-KR');
+                }
+                return params.value;
+            }
+            """)
+
         th = cond_thresholds.get(c)
         if th and JsCode is not None:
             low = float(th.get("low", 0.0))
