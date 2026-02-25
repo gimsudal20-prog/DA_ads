@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import os
+import math
+import time
+import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -11,15 +14,15 @@ import pandas as pd
 import streamlit as st
 
 # Shared logic & queries
-from data import *  # noqa
+from data import * # noqa
 # NOTE: Public aliases live in data.py, so import * is safe (period_compare_range / pct_to_arrow).
 from data import period_compare_range, pct_to_arrow  # noqa: F401
-from ui import *  # noqa
+from ui import * # noqa
 
 # -----------------------------
 # Build / Thresholds (Budget)
 # -----------------------------
-BUILD_TAG = os.getenv("APP_BUILD", "v8.6.12 (Refactor hotfix: compare helpers + keyword top union fix, 2026-02-24)")
+BUILD_TAG = os.getenv("APP_BUILD", "v8.6.13 (NameError Hotfix)")
 
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
@@ -97,71 +100,39 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         r1 = st.columns([1.1, 1.2, 1.2, 2.2], gap="small")
 
         period_mode = r1[0].selectbox(
-
             "기간",
-
             ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
-
             index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
-
             key="f_period_mode",
-
         )
 
-
         if period_mode == "직접 선택":
-
             d1 = r1[1].date_input("시작일", sv.get("d1", default_start), key="f_d1")
-
             d2 = r1[2].date_input("종료일", sv.get("d2", default_end), key="f_d2")
-
         else:
-
             # compute dates from mode (no extra widgets)
-
             if period_mode == "오늘":
-
                 d2 = today
-
                 d1 = today
-
             elif period_mode == "어제":
-
                 d2 = today - timedelta(days=1)
-
                 d1 = d2
-
             elif period_mode == "최근 7일":
-
                 d2 = today - timedelta(days=1)
-
                 d1 = d2 - timedelta(days=6)
-
             elif period_mode == "이번 달":
-
                 d2 = today
-
                 d1 = date(today.year, today.month, 1)
-
             elif period_mode == "지난 달":
-
                 first_this = date(today.year, today.month, 1)
-
                 d2 = first_this - timedelta(days=1)
-
                 d1 = date(d2.year, d2.month, 1)
-
             else:
-
                 d2 = sv.get("d2", default_end)
-
                 d1 = sv.get("d1", default_start)
 
-
             # show read-only dates (consistent height, no '튀어나옴')
-
             r1[1].text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
-
             r1[2].text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
 
 
@@ -526,6 +497,16 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     if df is None or df.empty:
         return df
     return df.merge(meta[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
+
+def _attach_account_name(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
+    """메타 정보에서 업체명을 가져와 병합하는 헬퍼 함수"""
+    if df is None or df.empty or meta is None or meta.empty:
+        return df
+    out = df.copy()
+    if "customer_id" in out.columns and "customer_id" in meta.columns and "account_name" in meta.columns:
+        meta_map = meta.set_index("customer_id")["account_name"].to_dict()
+        out["account_name"] = out["customer_id"].map(meta_map).fillna("")
+    return out
 
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -982,8 +963,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         with c3:
             st.markdown("#### ✅ 전환 TOP5")
             ui_table_or_dataframe(_fmt_top(top_conv, "전환"), key='ad_top5_conv', height=240)
-    # (삭제) 📊 소재 광고비 TOP10 그래프 - 중복/불필요로 제거
-
 
     st.divider()
     # -----------------
@@ -1130,12 +1109,6 @@ def page_settings(engine) -> None:
                 st.success("완료! 캐시 비우고 다시 조회해보세요.")
             except Exception as e:
                 st.error(f"실패: {e}")
-
-
-# -----------------------------
-# Main
-# -----------------------------
-
 
 
 # -----------------------------
