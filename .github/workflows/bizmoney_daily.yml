@@ -3,8 +3,8 @@ name: Daily BizMoney Collector
 on:
   workflow_dispatch: {}
   schedule:
-    # 한국 시간 02:00 (UTC 17:00 전날)
-    - cron: "0 17 * * *"
+    # 4시간마다 실행
+    - cron: "0 */4 * * *"
 
 jobs:
   run-bizmoney:
