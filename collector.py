@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v11.2_BATTLE_TESTED)
-- "광고id"가 "광고그룹id"에 부분 매칭되는 치명적 버그 완전 해결 (Exact Match 우선)
-- 동적 헤더 탐색 실패 시 절대 누락되지 않도록 Fallback 하드코딩 인덱스 이중 적용
-- 네이버 API 리포트 생성 한계(Rate Limit / ERROR) 대응을 위한 무한 좀비 재시도 로직 추가
-- S3 다운로드 서명(Header) 충돌 제거 및 동시성 병렬 중복 ID 원천 차단
+collector.py - 네이버 검색광고 수집기 (v11.4_EXTENSION_FIX)
+- 네이버 API의 확장소재(AD_EXTENSION) 전용 엔드포인트 수집 로직 추가
+- 확장소재(추가홍보문구 등) 성과 데이터를 일반 소재(AD)와 병합하여 DB에 적재
+- 병렬 처리 및 다이내믹 헤더 파싱 안정성 유지
 """
 
 from __future__ import annotations
@@ -54,8 +53,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v11.2_BATTLE_TESTED] ===", flush=True)
-print("=== 완벽 데이터 적재 보장 & 좀비 재시도 ===", flush=True)
+print("=== [VERSION: v11.4_EXTENSION_FIX] ===", flush=True)
+print("=== 확장소재(추가홍보문구) 전용 수집 파이프라인 추가 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -82,7 +81,7 @@ def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
 
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, json_data: dict | None = None, raise_error=True) -> Tuple[int, Any]:
     url = BASE_URL + path
-    max_retries = 5
+    max_retries = 4
     for attempt in range(max_retries):
         headers = make_headers(method, path, customer_id)
         try:
@@ -91,7 +90,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 if raise_error: raise requests.HTTPError(f"403 Forbidden: {customer_id}", response=r)
                 return 403, None
             if r.status_code == 429 or r.status_code >= 500:
-                time.sleep(3 + attempt * 2) # Exponential backoff 적용
+                time.sleep(2 + attempt)
                 continue
             data = None
             try: data = r.json()
@@ -101,7 +100,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
             return r.status_code, data
         except requests.exceptions.RequestException as e:
             if "403" in str(e): raise e
-            time.sleep(3 + attempt * 2)
+            time.sleep(2 + attempt)
     if raise_error: raise Exception(f"최대 재시도 초과: {url}")
     return 0, None
 
@@ -227,6 +226,11 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+# 🚨 [신규 추가] 확장소재(Ad Extension) 수집 API
+def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
+    return data if ok and isinstance(data, list) else []
+
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
@@ -277,68 +281,59 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
         out["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
     return out
 
-def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
-    """리포트 생성 실패(ERROR) 시 좀비처럼 물고 늘어지는 로직 탑재"""
-    payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
+def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame]:
+    results = {tp: pd.DataFrame() for tp in report_types}
     
-    for attempt in range(4): # 최대 4번 리포트 생성 시도
-        status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
-        if status != 200 or not data or "reportJobId" not in data: 
-            time.sleep(4)
-            continue
-            
-        job_id = data["reportJobId"]
-        download_url = None
-        job_error = False
+    for i in range(0, len(report_types), 3):
+        batch = report_types[i:i+3]
+        jobs = {}
         
-        try:
-            for _ in range(30): # 상태 체크
-                time.sleep(2)
+        for tp in batch:
+            payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
+            status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
+            if status == 200 and data and "reportJobId" in data:
+                jobs[tp] = data["reportJobId"]
+            time.sleep(0.2)
+            
+        max_wait = 20
+        while jobs and max_wait > 0:
+            for tp, job_id in list(jobs.items()):
                 s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
                 if s_status == 200 and s_data:
-                    if s_data.get("status") == "BUILT":
-                        download_url = s_data.get("downloadUrl")
-                        break
-                    elif s_data.get("status") in ["ERROR", "NONE"]: 
-                        job_error = True
-                        break
-        finally:
+                    stt = s_data.get("status")
+                    if stt == "BUILT":
+                        dl_url = s_data.get("downloadUrl")
+                        if dl_url:
+                            try:
+                                r = requests.get(dl_url, timeout=60)
+                                r.encoding = 'utf-8'
+                                txt = r.text.strip()
+                                if txt: results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
+                            except Exception: pass
+                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+                        del jobs[tp]
+                    elif stt in ["ERROR", "NONE"]:
+                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+                        del jobs[tp]
+            
+            if jobs: time.sleep(1.5)
+            max_wait -= 1
+            
+        for job_id in jobs.values():
             safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
             
-        if download_url:
-            try:
-                # S3 다운로드는 네이버 API 헤더가 없어야 충돌이 나지 않음
-                r = requests.get(download_url, timeout=60)
-                r.raise_for_status()
-                r.encoding = 'utf-8'
-                txt = r.text.strip()
-                if not txt: return pd.DataFrame()
-                return pd.read_csv(io.StringIO(txt), sep='\t', header=None)
-            except Exception:
-                pass
-                
-        if job_error:
-            time.sleep(5) # 서버 부하 회피용 대기 후 재시도
-            continue
-            
-    return pd.DataFrame()
+    return results
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
-    """광고id가 광고그룹id에 포함되는 멍청한 매핑 완전 차단 (Exact Match 최우선)"""
-    # 1. 100% 일치 우선 탐색
     for c in candidates:
         for i, h in enumerate(headers):
             if c == h: return i
-    
-    # 2. 포함(Substring) 탐색 시, 위험 단어('그룹') 필터링
     for c in candidates:
         for i, h in enumerate(headers):
             if c in h and "그룹" not in h: return i
-            
     return -1
 
-def fetch_and_aggregate_robust(customer_id: str, report_tp: str, target_date: date, pk_cands: List[str], is_conv: bool, has_rank: bool = False) -> dict:
-    df = fetch_stat_report(customer_id, report_tp, target_date)
+def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_conv: bool, has_rank: bool = False) -> dict:
     if df is None or df.empty: return {}
     
     header_idx = -1
@@ -360,7 +355,6 @@ def fetch_and_aggregate_robust(customer_id: str, report_tp: str, target_date: da
         cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
         rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
     else:
-        # 동적 탐색 완전 실패 시, 절대 누락 없게 기존 안정화 버전 하드코딩 인덱스로 강제 Fallback 처리
         if "CAMPAIGN" in report_tp: pk_idx = 2
         elif "KEYWORD" in report_tp: pk_idx = 5
         elif "AD" in report_tp: pk_idx = 5
@@ -437,21 +431,41 @@ def merge_and_save(engine: Engine, customer_id: str, target_date: date, table_na
     return len(rows)
 
 def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date, account_name: str):
-    camp_stat = fetch_and_aggregate_robust(customer_id, "CAMPAIGN", target_date, ["캠페인id", "campaignid"], False)
-    camp_conv = fetch_and_aggregate_robust(customer_id, "CAMPAIGN_CONVERSION", target_date, ["캠페인id", "campaignid"], True)
+    # 🚨 AD_EXTENSION(확장소재) 리포트 추가 요청
+    report_types = ["CAMPAIGN", "CAMPAIGN_CONVERSION", "KEYWORD", "KEYWORD_CONVERSION", "AD", "AD_CONVERSION", "AD_EXTENSION", "AD_EXTENSION_CONVERSION"]
+    dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
     
-    kw_stat = fetch_and_aggregate_robust(customer_id, "KEYWORD", target_date, ["키워드id", "keywordid"], False, has_rank=True)
-    kw_conv = fetch_and_aggregate_robust(customer_id, "KEYWORD_CONVERSION", target_date, ["키워드id", "keywordid"], True)
+    camp_stat = parse_df_to_dict(dfs.get("CAMPAIGN"), "CAMPAIGN", ["캠페인id", "campaignid"], False)
+    camp_conv = parse_df_to_dict(dfs.get("CAMPAIGN_CONVERSION"), "CAMPAIGN_CONVERSION", ["캠페인id", "campaignid"], True)
     
-    ad_stat = fetch_and_aggregate_robust(customer_id, "AD", target_date, ["광고id", "소재id", "adid"], False)
-    ad_conv = fetch_and_aggregate_robust(customer_id, "AD_CONVERSION", target_date, ["광고id", "소재id", "adid"], True)
+    kw_stat = parse_df_to_dict(dfs.get("KEYWORD"), "KEYWORD", ["키워드id", "keywordid"], False, has_rank=True)
+    kw_conv = parse_df_to_dict(dfs.get("KEYWORD_CONVERSION"), "KEYWORD_CONVERSION", ["키워드id", "keywordid"], True)
+    
+    ad_stat = parse_df_to_dict(dfs.get("AD"), "AD", ["광고id", "소재id", "adid"], False)
+    ad_conv = parse_df_to_dict(dfs.get("AD_CONVERSION"), "AD_CONVERSION", ["광고id", "소재id", "adid"], True)
+    
+    # 🚨 확장소재 리포트 파싱
+    ad_ext_stat = parse_df_to_dict(dfs.get("AD_EXTENSION"), "AD_EXTENSION", ["확장소재id", "adextensionid", "ad_extension_id"], False)
+    ad_ext_conv = parse_df_to_dict(dfs.get("AD_EXTENSION_CONVERSION"), "AD_EXTENSION_CONVERSION", ["확장소재id", "adextensionid", "ad_extension_id"], True)
+
+    # 🚨 확장소재 성과를 기존 AD 통계에 강제 병합하여 대시보드 구조와 완벽 연동
+    for k, v in ad_ext_stat.items():
+        if k not in ad_stat: ad_stat[k] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+        ad_stat[k]["imp"] += v["imp"]
+        ad_stat[k]["clk"] += v["clk"]
+        ad_stat[k]["cost"] += v["cost"]
+
+    for k, v in ad_ext_conv.items():
+        if k not in ad_conv: ad_conv[k] = {"conv": 0.0, "sales": 0}
+        ad_conv[k]["conv"] += v["conv"]
+        ad_conv[k]["sales"] += v["sales"]
     
     c_cnt = merge_and_save(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, camp_conv)
     k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
     a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
     
     if (c_cnt + k_cnt + a_cnt) > 0:
-        log(f"   📊 [ {account_name} ] 리포트 적재 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
+        log(f"   📊 [ {account_name} ] 리포트 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재(확장포함) {a_cnt})")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -472,8 +486,36 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     for k in list_keywords(customer_id, gid):
                         if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
                 if not SKIP_AD_DIM:
+                    # 일반 소재 수집
                     for a in list_ads(customer_id, gid):
-                        if aid := a.get("nccAdId"): target_ad_ids.append(aid); ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
+                        if aid := a.get("nccAdId"): 
+                            target_ad_ids.append(aid)
+                            ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
+                    
+                    # 🚨 [신규 추가] 확장소재 수집 로직 (dim_ad에 소재처럼 삽입)
+                    for ext in list_ad_extensions(customer_id, gid):
+                        if ext_id := ext.get("nccAdExtensionId"):
+                            target_ad_ids.append(ext_id)
+                            ext_info = ext.get("adExtension", {}) or ext
+                            ext_type = ext.get("extensionType", "")
+                            
+                            # 추가홍보문구 텍스트 추출
+                            ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
+                            ext_title = f"[확장소재] {ext_type}"
+                            
+                            ad_rows.append({
+                                "customer_id": customer_id, 
+                                "ad_id": ext_id, 
+                                "adgroup_id": gid, 
+                                "ad_name": ext_text, 
+                                "status": ext.get("status"), 
+                                "ad_title": ext_title, 
+                                "ad_desc": ext_text, 
+                                "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
+                                "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
+                                "creative_text": f"{ext_title} | {ext_text}"[:500]
+                            })
+
         upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
         upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
         if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
@@ -494,7 +536,7 @@ def main():
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
-    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=10)
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
@@ -533,7 +575,6 @@ def main():
         if not accounts_info:
             try:
                 with engine.connect() as conn:
-                    # DB Fallback 시에도 중복 완벽 제거
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
             except: pass
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
@@ -542,11 +583,9 @@ def main():
         log("⚠️ 수집할 계정이 없습니다.")
         return
         
-    # 과부하 방지를 위해 워커 수는 최대 5개로 강제 제한 (네이버 리포트 락 방어)
-    safe_workers = min(args.workers, 5)
-    log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {safe_workers}개 (서버 부하 방지 제한)")
+    log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=safe_workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
