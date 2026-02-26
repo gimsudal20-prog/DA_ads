@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v11.0 - 리포트 분리 및 매핑 완벽 고도화)
-- 쇼핑검색 확장소재(추가홍보문구) 정상 수집
-- 키워드 평균순위(avg_rnk) 정상 수집
-- 캠페인/키워드/소재 리포트를 각각 개별 요청하여 ID 믹스 현상 원천 차단
-- 실시간(/stats) 및 과거 리포트 모두 부가세 10% 포함 일괄 적용
+collector.py - 네이버 검색광고 수집기 (v11.1 - 다이내믹 헤더 파싱 및 스레드 충돌 완벽 해결)
+- 리포트 종류별로 달라지는 열(Column) 순서를 헤더명으로 동적 탐색하여 캠페인/키워드 누락 해결
+- accounts.xlsx 중복 ID로 인한 DB 병렬 삽입(Duplicate Key) 에러 원천 차단
+- 쇼핑검색 확장소재 및 키워드 평균순위 수집 유지
 """
 
 from __future__ import annotations
@@ -54,8 +53,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v11.0_PRO_COLLECTOR] ===", flush=True)
-print("=== 평균순위 & 쇼핑확장소재 수집 엔진 ===", flush=True)
+print("=== [VERSION: v11.1_FINAL_FIX] ===", flush=True)
+print("=== 다이내믹 헤더 매핑 & 중복 에러 차단 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -130,7 +129,6 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-            # 기존 테이블에 평균순위 컬럼 추가 시도
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
@@ -229,23 +227,15 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     return data if ok and isinstance(data, list) else []
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
-    """쇼핑검색 및 확장소재까지 아우를 수 있도록 추출 로직 고도화"""
     ad_inner = ad_obj.get("ad", {})
-    
-    title = ""
-    desc = ""
-    
-    # 1. 파워링크 등 텍스트형 우선 매핑
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
-    # 2. 쇼핑검색 (상품형 및 추가홍보문구)
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         title = title or ad_inner["shoppingProduct"].get("name", "")
     if "addPromoText" in ad_inner:
         desc = desc or ad_inner["addPromoText"]
         
-    # 3. 기타 예외 (카탈로그, 파워콘텐츠 등)
     if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
     if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
     
@@ -256,10 +246,8 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     if pc_url: creative_text += f" | {pc_url}"
     
     return {
-        "ad_title": str(title)[:200], 
-        "ad_desc": str(desc)[:200], 
-        "pc_landing_url": str(pc_url)[:500], 
-        "mobile_landing_url": str(m_url)[:500], 
+        "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
+        "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
         "creative_text": str(creative_text)[:500]
     }
 
@@ -276,8 +264,7 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
-    """당일 실시간 데이터 파싱 (VAT 적용 및 평균순위 추가)"""
-    cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1)) # 부가세 10% 일괄 적용 수정
+    cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1)) # VAT
     sales = int(float(r.get("convAmt", 0) or 0))
     out = {
         "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
@@ -292,13 +279,10 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
     payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
     status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
-    
-    if status != 200 or not data or "reportJobId" not in data: 
-        return pd.DataFrame()
+    if status != 200 or not data or "reportJobId" not in data: return pd.DataFrame()
         
     job_id = data["reportJobId"]
     download_url = None
-    
     try:
         for _ in range(30):
             time.sleep(2)
@@ -311,52 +295,75 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
                     return pd.DataFrame()
                     
         if not download_url: return pd.DataFrame()
-        
         r = requests.get(download_url, headers=make_headers("GET", "/report-download", customer_id), timeout=60)
         r.raise_for_status()
         r.encoding = 'utf-8'
         return pd.read_csv(io.StringIO(r.text.strip()), sep='\t', header=None) if r.text.strip() else pd.DataFrame()
-    except: 
-        return pd.DataFrame()
-    finally:
-        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+    except: return pd.DataFrame()
+    finally: safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def fetch_and_aggregate(customer_id: str, report_tp: str, target_date: date, id_col_idx: int, is_conv: bool, has_rank: bool = False) -> dict:
-    """개별 리포트를 정확하게 다운로드 및 매핑"""
+def get_col_idx(headers: List[str], candidates: List[str]) -> int:
+    for c in candidates:
+        for i, h in enumerate(headers):
+            if c in h: return i
+    return -1
+
+def fetch_and_aggregate_robust(customer_id: str, report_tp: str, target_date: date, pk_cands: List[str], is_conv: bool, has_rank: bool = False) -> dict:
+    """다이내믹 헤더 파싱을 통해 리포트 타입별로 꼬인 열 순서를 정확하게 찾아냄"""
     df = fetch_stat_report(customer_id, report_tp, target_date)
     if df is None or df.empty: return {}
     
-    # 첫번째 헤더 열 드랍 처리
-    if not str(df.iloc[0, 0]).isdigit(): 
-        df = df.iloc[1:].reset_index(drop=True)
-        
+    header_idx = -1
+    for i in range(min(5, len(df))):
+        row_vals = [str(x).replace(" ", "").lower() for x in df.iloc[i].fillna("")]
+        if any(c in row_vals for c in ["캠페인id", "campaignid", "키워드id", "keywordid", "광고id", "소재id", "adid"]):
+            header_idx = i
+            break
+            
+    if header_idx == -1: return {}
+    
+    headers = [str(x).lower().replace(" ", "").replace("_", "") for x in df.iloc[header_idx].fillna("")]
+    df = df.iloc[header_idx+1:].reset_index(drop=True)
+    
+    pk_idx = get_col_idx(headers, pk_cands)
+    if pk_idx == -1: return {}
+    
+    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
+    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
+    imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
+    clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
+    cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
+    rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
+    
     res = {}
     for _, r in df.iterrows():
         try:
-            obj_id = str(r[id_col_idx]).strip()
+            obj_id = str(r[pk_idx]).strip()
             if not obj_id or obj_id == '-': continue
             
             if obj_id not in res:
                 res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             if is_conv:
-                c_idx = 6 if "CAMPAIGN" in report_tp else 9
-                s_idx = 7 if "CAMPAIGN" in report_tp else 10
-                res[obj_id]["conv"] += float(r[c_idx] if len(r) > c_idx and pd.notna(r[c_idx]) else 0)
-                res[obj_id]["sales"] += int(float(r[s_idx] if len(r) > s_idx and pd.notna(r[s_idx]) else 0))
+                if conv_idx != -1 and len(r) > conv_idx:
+                    res[obj_id]["conv"] += float(r[conv_idx] if pd.notna(r[conv_idx]) else 0)
+                if sales_idx != -1 and len(r) > sales_idx:
+                    res[obj_id]["sales"] += int(float(r[sales_idx] if pd.notna(r[sales_idx]) else 0))
             else:
-                i_idx = 5 if "CAMPAIGN" in report_tp else 8
-                ck_idx = 6 if "CAMPAIGN" in report_tp else 9
-                cs_idx = 7 if "CAMPAIGN" in report_tp else 10
-                
-                imp = int(float(r[i_idx] if len(r) > i_idx and pd.notna(r[i_idx]) else 0))
-                res[obj_id]["imp"] += imp
-                res[obj_id]["clk"] += int(float(r[ck_idx] if len(r) > ck_idx and pd.notna(r[ck_idx]) else 0))
-                res[obj_id]["cost"] += int(round(float(r[cs_idx] if len(r) > cs_idx and pd.notna(r[cs_idx]) else 0) * 1.1)) # VAT 10%
-                
-                if has_rank and len(r) > 11:
-                    rnk = float(r[11] if pd.notna(r[11]) else 0)
-                    if rnk > 0:
+                if imp_idx != -1 and len(r) > imp_idx:
+                    imp = int(float(r[imp_idx] if pd.notna(r[imp_idx]) else 0))
+                    res[obj_id]["imp"] += imp
+                else: imp = 0
+                    
+                if clk_idx != -1 and len(r) > clk_idx:
+                    res[obj_id]["clk"] += int(float(r[clk_idx] if pd.notna(r[clk_idx]) else 0))
+                    
+                if cost_idx != -1 and len(r) > cost_idx:
+                    res[obj_id]["cost"] += int(round(float(r[cost_idx] if pd.notna(r[cost_idx]) else 0) * 1.1)) # VAT
+                    
+                if has_rank and rank_idx != -1 and len(r) > rank_idx:
+                    rnk = float(r[rank_idx] if pd.notna(r[rank_idx]) else 0)
+                    if rnk > 0 and imp > 0:
                         res[obj_id]["rank_sum"] += (rnk * imp)
                         res[obj_id]["rank_cnt"] += imp
         except Exception:
@@ -377,37 +384,27 @@ def merge_and_save(engine: Engine, customer_id: str, target_date: date, table_na
         avg_rnk = (s["rank_sum"] / s["rank_cnt"]) if s["rank_cnt"] > 0 else 0.0
         
         row = {
-            "dt": target_date,
-            "customer_id": str(customer_id),
-            pk_name: k,
-            "imp": s["imp"],
-            "clk": s["clk"],
-            "cost": cost,
-            "conv": c["conv"],
-            "sales": sales,
-            "roas": roas
+            "dt": target_date, "customer_id": str(customer_id), pk_name: k,
+            "imp": s["imp"], "clk": s["clk"], "cost": cost,
+            "conv": c["conv"], "sales": sales, "roas": roas
         }
         if pk_name == "keyword_id":
             row["avg_rnk"] = round(avg_rnk, 2)
             
         rows.append(row)
-        
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date, account_name: str):
-    """과거 성과 데이터를 캠페인/키워드/소재 단위별로 각각 정확하게 다운로드 및 머지"""
-    # 1. Fetch
-    camp_stat = fetch_and_aggregate(customer_id, "CAMPAIGN", target_date, 2, False)
-    camp_conv = fetch_and_aggregate(customer_id, "CAMPAIGN_CONVERSION", target_date, 2, True)
+    camp_stat = fetch_and_aggregate_robust(customer_id, "CAMPAIGN", target_date, ["캠페인id", "campaignid"], False)
+    camp_conv = fetch_and_aggregate_robust(customer_id, "CAMPAIGN_CONVERSION", target_date, ["캠페인id", "campaignid"], True)
     
-    kw_stat = fetch_and_aggregate(customer_id, "KEYWORD", target_date, 5, False, has_rank=True)
-    kw_conv = fetch_and_aggregate(customer_id, "KEYWORD_CONVERSION", target_date, 5, True)
+    kw_stat = fetch_and_aggregate_robust(customer_id, "KEYWORD", target_date, ["키워드id", "keywordid"], False, has_rank=True)
+    kw_conv = fetch_and_aggregate_robust(customer_id, "KEYWORD_CONVERSION", target_date, ["키워드id", "keywordid"], True)
     
-    ad_stat = fetch_and_aggregate(customer_id, "AD", target_date, 5, False)
-    ad_conv = fetch_and_aggregate(customer_id, "AD_CONVERSION", target_date, 5, True)
+    ad_stat = fetch_and_aggregate_robust(customer_id, "AD", target_date, ["광고id", "소재id", "adid"], False)
+    ad_conv = fetch_and_aggregate_robust(customer_id, "AD_CONVERSION", target_date, ["광고id", "소재id", "adid"], True)
     
-    # 2. Save
     c_cnt = merge_and_save(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, camp_conv)
     k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
     a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
@@ -446,7 +443,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
-        # 고도화된 개별 리포트 매핑 적용
         process_daily_reports_v2(engine, customer_id, target_date, account_name)
     log(f"✅ 완료: {account_name}")
 
@@ -485,10 +481,13 @@ def main():
                     if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
                 
                 if id_col and name_col:
+                    seen_ids = set() # 🚨 ID 중복 제거 로직 추가 (DB 충돌 방지)
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
-                        if cid and cid.lower() != 'nan': accounts_info.append({"id": cid, "name": str(row[name_col])})
-                    log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
+                        if cid and cid.lower() != 'nan' and cid not in seen_ids:
+                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                            seen_ids.add(cid)
+                    log(f"🟢 accounts.xlsx 엑셀 파일에서 중복을 제외한 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
 
         if not accounts_info:
             try:
