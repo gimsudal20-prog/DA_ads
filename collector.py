@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v10.7 - 안정화 롤백)
+collector.py - 네이버 검색광고 수집기 (v10.8 - 평균순위 & 쇼핑검색 확장소재 추가)
 - 네이버 API 정책상 불가능한 '검색어' 자동 수집 로직을 제거하여 오류를 해결했습니다.
 - 광고비 부가세(VAT) 10% 포함 로직은 정상 유지됩니다.
+- 쇼핑검색 카탈로그, 추가홍보문구 등을 식별하도록 소재 추출 로직을 강화했습니다.
+- 키워드 평균순위(avg_rnk)를 수집하여 DB에 적재합니다.
 """
 
 from __future__ import annotations
@@ -52,8 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v10.7_STABLE_ROLLBACK] ===", flush=True)
-print("=== 안정화 버전 (부가세 10% 포함) ===", flush=True)
+print("=== [VERSION: v10.8_STABLE_EXTENSIONS] ===", flush=True)
+print("=== 평균순위 & 쇼핑 확장소재 수집 강화 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -126,8 +128,13 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+            # 기존 테이블에 컬럼 추가 시도
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
+            except Exception: pass
             break
         except Exception as e:
             time.sleep(3)
@@ -227,35 +234,45 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         for k in keys:
             if d.get(k): return str(d.get(k))
         return ""
-    title = _pick(ad_obj, ["name", "title", "headline", "adName"]) or _pick(ad_inner, ["headline", "title", "name"])
-    desc  = _pick(ad_obj, ["description", "desc", "adDescription"]) or _pick(ad_inner, ["description", "desc"])
+    # 쇼핑검색 및 확장소재까지 아우를 수 있도록 매핑 강화
+    title = _pick(ad_obj, ["name", "title", "headline", "adName"]) or _pick(ad_inner, ["headline", "title", "name", "shoppingAdName", "catalogName"])
+    desc  = _pick(ad_obj, ["description", "desc", "adDescription", "addPromoText", "extCreative"]) or _pick(ad_inner, ["description", "desc", "addPromoText", "extCreative", "promoText", "shoppingItem"])
     pc_url = _pick(ad_obj, ["pcLandingUrl", "pcFinalUrl", "landingUrl"]) or _pick(ad_inner, ["pcLandingUrl", "landingUrl"])
     m_url  = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl"]) or _pick(ad_inner, ["mobileLandingUrl"])
+    
     creative_text = f"{title} | {desc}"
     if pc_url: creative_text += f" | {pc_url}"
     return {"ad_title": title, "ad_desc": desc, "pc_landing_url": pc_url, "mobile_landing_url": m_url, "creative_text": creative_text[:500]}
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
-    out, d_str = [], d1.strftime("%Y-%m-%d")
-    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"], separators=(',', ':'))
+    out, d_str = d1.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d")
+    # 키워드 평균순위(avgRnk) 필드 추가
+    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
+    
+    res_list = []
     for i in range(0, len(ids), 50):
         chunk = ids[i:i+50]
         params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
-    return out
+        if status == 200 and isinstance(data, dict) and "data" in data: res_list.extend(data["data"])
+    return res_list
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
     cost = int(round(float(r.get("salesAmt", 0) or 0)))
     sales = int(float(r.get("convAmt", 0) or 0))
-    return {
+    avg_rnk = float(r.get("avgRnk", 0) or 0)
+    
+    out = {
         "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
         "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
         "cost": cost, "conv": float(r.get("ccnt", 0) or 0), "sales": sales,
         "roas": (sales / cost * 100) if cost > 0 else 0.0
     }
+    if id_key == "keyword_id":
+        out["avg_rnk"] = avg_rnk
+    return out
 
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
     payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
@@ -304,7 +321,7 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
                     g = valid.groupby(group_col).agg({9:'sum', 10:'sum', 11:'sum'}).reset_index()
                     for _, r in g.iterrows():
                         cost_vat = int(round(float(r[11]) * 1.1))
-                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": cost_vat}
+                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": cost_vat, "avg_rnk": 0.0}
 
     conv_records = {'camp': {}, 'kw': {}, 'ad': {}}
     if conv_df is not None and not conv_df.empty:
@@ -324,16 +341,22 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
         if not keys: return 0
         rows = []
         for k in keys:
-            ad = ad_records[cat].get(k, {"imp":0, "clk":0, "cost":0})
+            ad = ad_records[cat].get(k, {"imp":0, "clk":0, "cost":0, "avg_rnk":0.0})
             cv = conv_records[cat].get(k, {"conv":0.0, "sales":0})
             cost = ad["cost"]
             sales = cv["sales"]
             roas = (sales / cost * 100) if cost > 0 else 0.0
-            rows.append({
+            
+            row = {
                 "dt": target_date, "customer_id": str(customer_id), id_col_name: k, 
                 "imp": ad["imp"], "clk": ad["clk"], "cost": cost, 
                 "conv": cv["conv"], "sales": sales, "roas": roas
-            })
+            }
+            if id_col_name == "keyword_id":
+                row["avg_rnk"] = ad.get("avg_rnk", 0.0)
+                
+            rows.append(row)
+            
         replace_fact_range(engine, table_name, rows, customer_id, target_date)
         return len(rows)
 
