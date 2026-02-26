@@ -18,7 +18,6 @@ import altair as alt
 
 from styles import apply_global_css
 
-# Optional UI components
 try:
     import streamlit_shadcn_ui as ui
     HAS_SHADCN_UI = True
@@ -26,7 +25,6 @@ except Exception:
     ui = None
     HAS_SHADCN_UI = False
 
-# Optional AgGrid
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
     from st_aggrid.shared import GridUpdateMode, DataReturnMode
@@ -39,7 +37,6 @@ except Exception:
     DataReturnMode = None
     HAS_AGGRID = False
 
-# Optional ECharts
 try:
     from streamlit_echarts import st_echarts
     HAS_ECHARTS = True
@@ -47,7 +44,6 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
-# Import ONLY needed helpers explicitly from data.py to avoid circular/missing imports
 from data import (
     format_currency,
     format_number_commas,
@@ -93,7 +89,6 @@ def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool, cond_
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
         base_align = {"textAlign": "right"} if c in right_cols else {}
         
-        # 1,000 단위 콤마
         if c in right_cols and JsCode is not None:
             cd["valueFormatter"] = JsCode("""
             function(params) {
@@ -363,8 +358,9 @@ def render_period_compare_panel(engine, entity: str, d1: date, d2: date, cids: T
         st.markdown("#### 📊 증감율(%) 막대그래프")
         if HAS_ECHARTS and st_echarts is not None: render_echarts_delta_bars(delta_df, height=260)
 
-# [NEW] 엑셀 시트 4개로 완전 분리 저장
-def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame, kw_df: pd.DataFrame, st_df: pd.DataFrame = None) -> bytes:
+
+def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame, kw_df: pd.DataFrame) -> bytes:
+    """엑셀 다운로드: 3개 시트 (요약, 캠페인, 파워링크)"""
     output = io.BytesIO()
     try:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -379,8 +375,6 @@ def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame,
             if kw_df is not None and not kw_df.empty:
                 kw_df.to_excel(writer, index=False, sheet_name="파워링크_키워드_상세")
                 
-            if st_df is not None and not st_df.empty:
-                st_df.to_excel(writer, index=False, sheet_name="쇼핑검색어_상세")
     except Exception as e:
         return overview_df.to_csv(index=False).encode("utf-8-sig") if overview_df is not None else b""
         
