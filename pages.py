@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.2 (조회 기간 연동 비교 기준 자동 필터링)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.3 (소재 A/B 테스트 종합 지표 평가로 고도화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -202,7 +202,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
     
-    # [NEW] 조회 기간에 따라 비교 기준을 자동으로 제한/세팅
     pm = f.get("period_mode", "어제")
     if pm in ["오늘", "어제"]:
         cmp_opts = ["전일대비"]
@@ -660,6 +659,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 render_big_table(disp_shop, "manual_shop_grid", 600)
 
+# ==========================================
+# [FIXED] 소재 성과 비교 (A/B 테스트 종합 지표 평가로 고도화)
+# ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -688,6 +690,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         else: view[c] = 0
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
+    view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0).round(2) # 종합분석용 추가
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
@@ -699,7 +702,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info(f"해당 기간의 {ad_type_name} 데이터가 없습니다.")
             return
 
-        st.markdown(f"<div class='nv-sec-title'>👑 A/B 테스트 위너 ({ad_type_name} 성과 비교)</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='nv-sec-title'>📊 A/B 테스트 (종합 성과 비교)</div>", unsafe_allow_html=True)
+        st.caption("동일 광고그룹 내 노출수 500회 이상 소재 중 ROAS, 전환수, CTR 등을 종합적으로 평가하여 우수 카피를 추천합니다.")
+        
         valid_ads = df_tab[df_tab['노출'] >= 500]
         if '광고그룹' in valid_ads.columns:
             group_counts = valid_ads.groupby(['업체명', '캠페인', '광고그룹']).size()
@@ -707,18 +712,34 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             winners = []
             for g in ab_groups:
                 g_df = valid_ads[(valid_ads['업체명'] == g[0]) & (valid_ads['캠페인'] == g[1]) & (valid_ads['광고그룹'] == g[2])]
-                winner = g_df.sort_values('CTR(%)', ascending=False).iloc[0]
-                loser = g_df.sort_values('CTR(%)', ascending=False).iloc[-1]
-                if winner['CTR(%)'] - loser['CTR(%)'] >= 0.5:
+                
+                # [고도화] ROAS > 전환수 > CVR > CTR 순서로 종합 정렬하여 1등(최우수)과 꼴등(비교) 추출
+                sorted_g = g_df.sort_values(['ROAS(%)', '전환', 'CVR(%)', 'CTR(%)'], ascending=[False, False, False, False])
+                best = sorted_g.iloc[0]
+                worst = sorted_g.iloc[-1]
+                
+                diff_roas = best['ROAS(%)'] - worst['ROAS(%)']
+                diff_conv = best['전환'] - worst['전환']
+                diff_ctr = best['CTR(%)'] - worst['CTR(%)']
+                
+                # 하나라도 유의미한 격차가 있을 때만 보고
+                if diff_roas >= 50 or diff_conv >= 1 or diff_ctr >= 0.5:
+                    reasons = []
+                    if diff_roas > 0: reasons.append(f"ROAS +{diff_roas:.0f}%p")
+                    if diff_conv > 0: reasons.append(f"전환 +{diff_conv:.0f}건")
+                    if diff_ctr > 0: reasons.append(f"CTR +{diff_ctr:.2f}%p")
+                    
                     winners.append({
                         '업체명': g[0], '캠페인': g[1], '광고그룹': g[2],
-                        '우승 소재 👑': winner['소재내용'], '우승 CTR': f"{winner['CTR(%)']}%",
-                        '비교 소재': loser['소재내용'], '격차': f"+{(winner['CTR(%)'] - loser['CTR(%)']):.1f}%p"
+                        '우수 소재 🌟': best['소재내용'], 
+                        '우수 지표': f"ROAS {best['ROAS(%)']}% / 전환 {best['전환']}건 / CTR {best['CTR(%)']}%",
+                        '일반/저조 소재': worst['소재내용'], 
+                        '주요 격차': " | ".join(reasons) if reasons else "종합 지표 우위"
                     })
             if winners:
                 st_dataframe_safe(pd.DataFrame(winners), hide_index=True, use_container_width=True)
             else:
-                st.caption("현재 A/B 테스트 승패를 가를 만큼 유의미한(격차 0.5%p 이상) 비교 데이터가 없습니다.")
+                st.caption("현재 A/B 테스트 그룹 중 유의미한 성과 격차를 보이는 데이터가 없습니다.")
         else:
             st.caption("데이터에 광고그룹 정보가 없어 A/B 테스트를 실행할 수 없습니다.")
         
