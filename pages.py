@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.4 (메인 UI 개편 및 평균순위/확장소재 수집 강화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.5 (쇼핑검색 소재 UI 필터링 버그 완벽 수정)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -166,46 +166,6 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
                 st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
             else: 
                 st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
-
-def render_key_keywords(df_kw: pd.DataFrame):
-    """주요 키워드 선택 및 평균 순위 표시 위젯"""
-    if df_kw.empty: return
-    st.markdown("<div class='nv-sec-title'>⭐ 모니터링 주요 키워드 현황</div>", unsafe_allow_html=True)
-    
-    all_kws = sorted([str(x) for x in df_kw["키워드"].unique() if str(x).strip()])
-    selected_kws = st.multiselect(
-        "성과와 평균순위를 모니터링할 핵심 키워드를 선택하세요", 
-        all_kws, 
-        default=all_kws[:4] if len(all_kws) >= 4 else all_kws, 
-        key="star_kws"
-    )
-    
-    if not selected_kws:
-        st.info("키워드를 선택해 주세요.")
-        return
-        
-    target_df = df_kw[df_kw["키워드"].isin(selected_kws)]
-    
-    # 4열 그리드 형태로 KPI 카드 출력
-    cols = st.columns(4)
-    for idx, kw in enumerate(selected_kws):
-        row_df = target_df[target_df["키워드"] == kw]
-        if not row_df.empty:
-            row = row_df.iloc[0]
-            avg_rank = getattr(row, 'avg_rank', 0)
-            if pd.isna(avg_rank) or avg_rank == 0:
-                rank_str = "순위 미수집"
-            else:
-                rank_str = f"평균 {float(avg_rank):.1f}위"
-                
-            roas = getattr(row, 'ROAS(%)', 0)
-            with cols[idx % 4]:
-                ui_metric_or_stmetric(
-                    title=kw, 
-                    value=rank_str, 
-                    desc=f"ROAS {roas}%", 
-                    key=f"kw_star_{idx}"
-                )
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
@@ -475,7 +435,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     view = bundle.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
-        "campaign_name": "캠페인", "imp": "노출", "클릭": "클릭", "cost": "광고비",
+        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
         "conv": "전환", "sales": "전환매출"
     }).copy()
 
@@ -537,7 +497,7 @@ def process_manual_shopping_report(file_obj):
                 header_idx = i
                 break
                 
-        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 정렬 수 없습니다."
+        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 없습니다."
         
         df = df_raw.iloc[header_idx+1:].copy()
         df.columns = df_raw.iloc[header_idx].fillna("").astype(str).str.strip()
@@ -618,7 +578,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         if "avg_rank" in view.columns:
             view["평균순위"] = view["avg_rank"].apply(lambda x: f"{float(x):.1f}위" if float(x) > 0 else "미수집")
             base_cols.append("평균순위")
-            
+
         if shopping_first:
             cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
         else:
@@ -635,14 +595,26 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     with tab_pl:
         df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
-        
-        if not df_pl_raw.empty:
+        if not df_pl_raw.empty: 
             view_full, disp = _prepare_main_table(df_pl_raw.sort_values("cost", ascending=False).head(top_n), shopping_first=False)
             
-            # [추가됨] 주요 키워드 추출 위젯 렌더링
-            render_key_keywords(view_full)
+            if "평균순위" in view_full.columns:
+                all_kws = sorted([str(x) for x in view_full["키워드"].unique() if str(x).strip()])
+                selected_kws = st.multiselect("모니터링 핵심 키워드 선택", all_kws, default=all_kws[:4] if len(all_kws) >= 4 else all_kws, key="star_kws")
+                if selected_kws:
+                    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                    cols = st.columns(4)
+                    target_df = view_full[view_full["키워드"].isin(selected_kws)]
+                    for idx, kw in enumerate(selected_kws):
+                        row_df = target_df[target_df["키워드"] == kw]
+                        if not row_df.empty:
+                            row = row_df.iloc[0]
+                            avg_rank = getattr(row, 'avg_rank', 0)
+                            rank_str = "순위 미수집" if pd.isna(avg_rank) or avg_rank == 0 else f"평균 {float(avg_rank):.1f}위"
+                            roas = getattr(row, 'ROAS(%)', 0)
+                            with cols[idx % 4]:
+                                ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas}%", key=f"kw_star_{idx}")
             st.divider()
-            
             st.markdown("#### 📊 검색어별 상세 성과 표")
             render_big_table(disp, "pl_grid", 500)
         else:
@@ -712,6 +684,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 render_big_table(disp_shop, "manual_shop_grid", 600)
 
+# ==========================================
+# 🚨 [CRITICAL BUG FIX] 소재 탭의 쇼핑검색 필터링 오류 수정
+# ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -720,11 +695,21 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if bundle is None or bundle.empty: return
 
     df = _perf_common_merge_meta(bundle, meta)
+    
+    # 🚨 여기가 문제였습니다!
+    # df 안에는 "campaign_type"이라는 컬럼으로 데이터가 들어있는데,
+    # rename에서 "campaign_type_label"을 찾으려다 실패하여 "캠페인유형" 컬럼 자체가 생성되지 않았습니다.
+    # 그 결과 아래쪽 쇼핑검색 필터 로직이 통째로 증발(빈 DataFrame 반환)하는 치명적인 버그가 있었습니다.
     view = df.rename(columns={
-        "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", 
+        "account_name": "업체명", "manager": "담당자", 
+        "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",  # 이 부분을 수정했습니다.
         "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "소재내용", 
         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
+    
+    # 만약을 대비한 절대 실패하지 않는 강제 매핑
+    if "캠페인유형" not in view.columns and "campaign_type" in view.columns:
+        view["캠페인유형"] = view["campaign_type"]
 
     if "소재내용" in view.columns:
         view["_clean_ad"] = view["소재내용"].astype(str).str.replace("|", "").str.strip()
@@ -745,7 +730,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장 소재)"])
+    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장 소재 포함)"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
         if df_tab.empty:
@@ -819,9 +804,10 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_ad_tab(df_pl, "파워링크", "파워링크 소재")
         
     with tab_shop:
+        # 이제 캠페인유형 매핑이 정상 작동하므로 쇼핑검색이 정상적으로 필터링됩니다.
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
-        st.info("💡 **쇼핑검색 확장소재:** 쇼핑검색 광고에 추가로 등록한 '추가홍보문구' 등 텍스트가 존재하는 유효 확장소재만 분석합니다.")
-        _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
+        st.info("💡 **쇼핑검색 소재 분석:** 상품 정보 및 추가로 등록한 '확장소재(추가홍보문구 등)' 데이터를 종합하여 보여줍니다.")
+        _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 전체 소재(확장 포함)")
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
