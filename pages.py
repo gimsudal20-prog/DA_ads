@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.1 (매체 제어 버튼 제거 및 메인 UI 심플화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.2 (조회 기간 연동 비교 기준 자동 필터링)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -129,7 +129,6 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
-# [FIX] 액션(제어) 버튼 제거, 순수 분석 카드로 롤백
 def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
     if df_target is None or df_target.empty:
         st.info(f"분석할 {item_name} 데이터가 없습니다.")
@@ -201,9 +200,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type="primary"
             )
 
-    # [FIX] AI 텍스트 브리핑 제거 및 핵심 KPI UI 레이아웃 정돈
     st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-    cmp_mode = st.radio("비교 기준 선택", ["전일대비", "전주대비", "전월대비"], horizontal=True, index=1, key="ov_cmp_mode", label_visibility="collapsed")
+    
+    # [NEW] 조회 기간에 따라 비교 기준을 자동으로 제한/세팅
+    pm = f.get("period_mode", "어제")
+    if pm in ["오늘", "어제"]:
+        cmp_opts = ["전일대비"]
+    elif pm == "최근 7일":
+        cmp_opts = ["전주대비"]
+    elif pm in ["이번 달", "지난 달"]:
+        cmp_opts = ["전월대비"]
+    else:
+        cmp_opts = ["전일대비", "전주대비", "전월대비"]
+        
+    cmp_mode = st.radio("비교 기준 선택", cmp_opts, horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
 
     cur = cur_summary
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
