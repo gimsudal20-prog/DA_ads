@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v13.3 (소재 탭 매체별 분리 및 확장소재 전용 분석)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.1 (매체 제어 버튼 제거 및 메인 UI 심플화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -129,6 +129,7 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
+# [FIX] 액션(제어) 버튼 제거, 순수 분석 카드로 롤백
 def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
     if df_target is None or df_target.empty:
         st.info(f"분석할 {item_name} 데이터가 없습니다.")
@@ -148,9 +149,6 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
                 disp_h = hippos[cols_to_show].rename(columns={keyword_col: item_name, '광고비': '비용'})
                 disp_h['비용'] = disp_h['비용'].apply(format_currency)
                 st_dataframe_safe(disp_h.head(5), hide_index=True, use_container_width=True)
-                
-                if st.button(f"🔌 {len(hippos)}개 저효율 {item_name} 일괄 OFF", key=f"btn_off_{item_name}", type="primary"):
-                    st.toast(f"✅ 네이버 API 호출 성공: 선택된 {item_name} 상태를 즉시 OFF 처리했습니다. (시뮬레이션)")
             else: 
                 st.success(f"✅ 비용 누수가 발생하는 {item_name}가 없습니다.")
 
@@ -167,9 +165,6 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
                 disp_s = stars[cols_to_show].rename(columns={keyword_col: item_name})
                 disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
                 st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
-                
-                if st.button(f"🔼 {len(stars)}개 고효율 {item_name} 입찰가 +10% 상향", key=f"btn_up_{item_name}"):
-                    st.toast(f"🚀 네이버 API 호출 성공: 해당 {item_name}의 입찰가가 10% 일괄 상향되었습니다. (시뮬레이션)")
             else: 
                 st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
 
@@ -206,7 +201,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type="primary"
             )
 
-    cmp_mode = st.radio("비교 기준", ["전일대비", "전주대비", "전월대비"], horizontal=True, index=1, key="ov_cmp_mode")
+    # [FIX] AI 텍스트 브리핑 제거 및 핵심 KPI UI 레이아웃 정돈
+    st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
+    cmp_mode = st.radio("비교 기준 선택", ["전일대비", "전주대비", "전월대비"], horizontal=True, index=1, key="ov_cmp_mode", label_visibility="collapsed")
 
     cur = cur_summary
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
@@ -215,39 +212,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     def _delta_pct(key):
         try: return _pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
         except Exception: return None
-
-    cost_diff = _delta_pct('cost')
-    rev_diff = _delta_pct('sales')
-    roas_val = float(cur.get('roas', 0.0) or 0.0)
-    
-    cost_txt = f"전기 대비 {abs(cost_diff):.1f}% 증가" if cost_diff and cost_diff > 0 else (f"전기 대비 {abs(cost_diff):.1f}% 절감" if cost_diff and cost_diff < 0 else "전기와 동일한")
-    rev_txt = f"매출은 {abs(rev_diff):.1f}% 상승하여" if rev_diff and rev_diff > 0 else (f"매출은 {abs(rev_diff):.1f}% 감소하여" if rev_diff and rev_diff < 0 else "매출은 변동 없이")
-    
-    best_kw, worst_kw = "데이터 부족", "데이터 부족"
-    if not df_pl_kw.empty:
-        df_pl_kw_fmt = df_pl_kw.copy()
-        df_pl_kw_fmt["광고비"] = pd.to_numeric(df_pl_kw_fmt["cost"], errors="coerce").fillna(0)
-        df_pl_kw_fmt["전환"] = pd.to_numeric(df_pl_kw_fmt["conv"], errors="coerce").fillna(0)
-        df_pl_kw_fmt["ROAS(%)"] = pd.to_numeric(df_pl_kw_fmt["roas"], errors="coerce").fillna(0)
-        
-        stars = df_pl_kw_fmt[(df_pl_kw_fmt['광고비'] >= 3000) & (df_pl_kw_fmt['전환'] >= 1)].sort_values('ROAS(%)', ascending=False)
-        if not stars.empty: best_kw = stars.iloc[0]['keyword']
-        
-        hippos = df_pl_kw_fmt[(df_pl_kw_fmt['광고비'] >= 20000) & (df_pl_kw_fmt['전환'] == 0)].sort_values('광고비', ascending=False)
-        if not hippos.empty: worst_kw = hippos.iloc[0]['keyword']
-
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%); padding: 18px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #c7d2fe;">
-        <h4 style="margin:0 0 8px 0; color: #4338ca; display: flex; align-items: center; gap: 8px;">
-            🤖 AI Insight Briefing
-        </h4>
-        <p style="margin:0; font-size: 14.5px; color: #374151; line-height: 1.6; font-weight: 500;">
-            이번 분석 기간 동안 광고비는 <b>{cost_txt}</b>한 반면, <b>{rev_txt}</b> 최종적으로 <b>{roas_val:.0f}%</b>의 ROAS를 달성했습니다.<br>
-            현재 전체 효율을 가장 강하게 견인하고 있는 최고 효자 키워드는 <b>'{best_kw}'</b> 입니다.<br>
-            다만, <b>'{worst_kw}'</b> 키워드에서 비용 누수가 집중되고 있으므로 하단의 [일괄 OFF] 기능을 통해 즉각적인 조치가 필요합니다.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
 
     def _kpi_html(label, value, delta_text, delta_val):
         cls = "pos" if delta_val and float(delta_val) > 0 else ("neg" if delta_val and float(delta_val) < 0 else "neu")
@@ -263,12 +227,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
         ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
     ]
-    st.markdown("<div class='kpi-row'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
+    st.markdown("<div class='kpi-row' style='margin-top: 5px;'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트 (파워링크)</div>", unsafe_allow_html=True)
     
     if not df_pl_kw.empty:
+        df_pl_kw_fmt = df_pl_kw.copy()
+        df_pl_kw_fmt["광고비"] = pd.to_numeric(df_pl_kw_fmt["cost"], errors="coerce").fillna(0)
+        df_pl_kw_fmt["전환"] = pd.to_numeric(df_pl_kw_fmt["conv"], errors="coerce").fillna(0)
+        df_pl_kw_fmt["ROAS(%)"] = pd.to_numeric(df_pl_kw_fmt["roas"], errors="coerce").fillna(0)
         render_insight_cards(df_pl_kw_fmt, "키워드", "keyword")
     else:
         st.info("파워링크 데이터가 수집되지 않아 분석할 수 없습니다.")
@@ -696,7 +664,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
 
-    # 쓰레기 데이터 제거
     if "소재내용" in view.columns:
         view["_clean_ad"] = view["소재내용"].astype(str).str.replace("|", "").str.strip()
         view = view[view["_clean_ad"] != ""]
@@ -715,7 +682,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    # 탭 분리
     tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장 소재)"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
@@ -834,6 +800,7 @@ def main():
     with st.sidebar:
         st.markdown("### 메뉴")
         if not meta_ready: st.warning("동기화가 필요합니다.")
+        
         nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "설정/연결"] if meta_ready else ["설정/연결"]
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
