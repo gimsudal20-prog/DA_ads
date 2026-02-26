@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.9.5 (예산 폼 콜백 완전 분리 및 안정화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v11.0 (예산 폼 위젯 상태 충돌 완벽 해결)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -288,6 +288,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     render_big_table(display_df, key="budget_biz_table", height=450)
 
+    # ==========================================
+    # [FIXED] StreamlitAPIException을 우회하는 안정적인 콜백 구조 적용
+    # ==========================================
     st.divider()
     st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
 
@@ -308,7 +311,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
     budget_view["상태"] = tmp[0]
-    budget_view["status_text"] = tmp[1]
     budget_view["_rank"] = tmp[2].astype(int)
 
     budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
@@ -325,9 +327,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c_table:
         render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
 
-    # ==========================================
-    # [FIX] 에러가 발생하던 예산 입력 폼 로직 수정
-    # ==========================================
     with c_form:
         st.markdown("#### ✍️ 월 예산 설정/수정")
         st.caption("원하는 단위를 클릭하거나 직접 금액을 입력하세요.")
@@ -343,12 +342,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             cid = int(label_to_cid.get(sel, 0))
             sk = f"budget_input_{cid}"
             
-            # 초기 로드 시 DB에서 불러옴
+            # 1. 초기 로드
             if sk not in st.session_state:
                 cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
                 st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
             
-            # KeyError를 완벽 방지하는 명시적 파라미터 전달 콜백
+            # 2. 콜백 1: 텍스트 입력 변경 시 콤마 자동 생성
             def format_budget_on_change(key_name):
                 val = st.session_state.get(key_name, "0")
                 cleaned = re.sub(r"[^\d]", "", str(val))
@@ -356,21 +355,28 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.session_state[key_name] = f"{int(cleaned):,}"
                 else:
                     st.session_state[key_name] = "0"
+            
+            # 3. 콜백 2: 버튼 클릭 시 금액 증감 (렌더링 전에 값을 업데이트 해야 에러가 안 남)
+            def add_amount_callback(key_name, amount):
+                val = st.session_state.get(key_name, "0")
+                cleaned = int(re.sub(r"[^\d]", "", str(val)) or 0)
+                st.session_state[key_name] = f"{cleaned + amount:,}"
 
+            def reset_amount_callback(key_name):
+                st.session_state[key_name] = "0"
+
+            # 4. 텍스트 인풋 렌더링
             st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
             
+            # 현재 입력된 값의 숫자 버전 추출 (한글 표기를 위해)
             raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
             
-            # 버튼 클릭 시 실시간 업데이트 (st.form 내부가 아니어서 오류 안 남)
+            # 5. 버튼 렌더링 (콜백을 통해 안전하게 값 변경)
             b1, b2, b3, b4 = st.columns(4)
-            if b1.button("+10만", key=f"btn_10_{cid}", use_container_width=True): 
-                st.session_state[sk] = f"{raw_val + 100000:,}"; st.rerun()
-            if b2.button("+100만", key=f"btn_100_{cid}", use_container_width=True): 
-                st.session_state[sk] = f"{raw_val + 1000000:,}"; st.rerun()
-            if b3.button("+1000만", key=f"btn_1000_{cid}", use_container_width=True): 
-                st.session_state[sk] = f"{raw_val + 10000000:,}"; st.rerun()
-            if b4.button("초기화", key=f"btn_0_{cid}", use_container_width=True): 
-                st.session_state[sk] = "0"; st.rerun()
+            b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000), use_container_width=True)
+            b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000), use_container_width=True)
+            b3.button("+1000만", key=f"btn_1000_{cid}", on_click=add_amount_callback, args=(sk, 10000000), use_container_width=True)
+            b4.button("초기화", key=f"btn_0_{cid}", on_click=reset_amount_callback, args=(sk,), use_container_width=True)
                 
             def get_korean_money_str(amount: int) -> str:
                 if amount == 0: return "0원"
@@ -382,12 +388,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             st.info(f"💡 **입력금액:** {get_korean_money_str(raw_val)}")
 
-            # 실제 DB 저장
             if st.button("💾 예산 저장", type="primary", use_container_width=True):
                 update_monthly_budget(engine, cid, raw_val)
                 st.success("✅ 예산이 안전하게 저장되었습니다!")
                 if sk in st.session_state:
-                    del st.session_state[sk] # 캐시 찌꺼기 제거
+                    del st.session_state[sk]
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
