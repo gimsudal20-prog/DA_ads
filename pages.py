@@ -7,6 +7,8 @@ import os
 import re
 import math
 import time
+import csv    # [NEW] 스마트 파싱용
+import io     # [NEW] 스마트 파싱용
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +20,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v11.2 (캠페인 탭 필터 기준 변경: 유형 -> 캠페인명)")
+BUILD_TAG = os.getenv("APP_BUILD", "v12.1 (네이버 CSV 비정형 데이터 파싱 에러 완벽 해결)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -438,7 +440,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     render_insight_cards(view, "캠페인", "캠페인")
     st.divider()
 
-    # [FIX] '캠페인 유형' 필터 -> '캠페인 명' 필터로 변경
     c1, c2 = st.columns([1, 3])
     with c1:
         camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
@@ -457,14 +458,25 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     render_big_table(disp, key="camp_main_grid", height=560)
 
+
+# ==========================================
+# [FIX] 비정형 CSV(ragged rows) 완벽 처리를 위한 파서 수정
+# ==========================================
 def process_manual_shopping_report(file_obj):
     try:
         if file_obj.name.lower().endswith('.csv'):
+            # Pandas C 엔진 에러(Expected 1 fields in line 2)를 피하기 위해 csv 모듈 활용
+            raw_bytes = file_obj.read()
             try: 
-                df_raw = pd.read_csv(file_obj, encoding='euc-kr', header=None)
-            except: 
-                file_obj.seek(0)
-                df_raw = pd.read_csv(file_obj, encoding='utf-8', header=None)
+                text_data = raw_bytes.decode('euc-kr')
+            except UnicodeDecodeError: 
+                text_data = raw_bytes.decode('utf-8')
+                
+            sample_lines = text_data.split('\n')[:5]
+            sep = '\t' if sum(l.count('\t') for l in sample_lines) > sum(l.count(',') for l in sample_lines) else ','
+            
+            reader = csv.reader(io.StringIO(text_data), delimiter=sep)
+            df_raw = pd.DataFrame(list(reader))
         else:
             df_raw = pd.read_excel(file_obj, header=None)
             
