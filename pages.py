@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.9 (월 예산 입력 혁신 및 콤마 자동화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.9.1 (예산 잔액 합계 에러 픽스)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -269,13 +269,15 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
+
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
-    biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
+    biz_view[f"최근{TOPUP_AVG_DAYS}일 소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
     
-    total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
+    # [FIX] 숫자 합산을 위해 원본 컬럼(bizmoney_balance, current_month_cost) 그대로 사용 (이미 숫자임)
+    total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"], errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
     count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
 
@@ -284,12 +286,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
-    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     render_big_table(display_df, key="budget_biz_table", height=450)
 
-    # ==========================================
-    # [NEW] 월 예산 관리 UI 혁신 (콤마 및 단위 버튼)
-    # ==========================================
     st.divider()
     st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
 
@@ -341,12 +340,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             cid = int(label_to_cid.get(sel, 0))
             sk = f"budget_input_{cid}"
             
-            # 초기 로드 시 DB 예산 불러오기
             if sk not in st.session_state:
                 cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
                 st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
             
-            # 입력 시 콤마(,) 자동 생성 콜백
             def format_budget_on_change():
                 val = st.session_state[sk]
                 cleaned = re.sub(r"[^\d]", "", str(val))
@@ -359,7 +356,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             raw_val = int(re.sub(r"[^\d]", "", str(st.session_state[sk])) or 0)
             
-            # 편의성 버튼
             b1, b2, b3, b4 = st.columns(4)
             if b1.button("+10만", use_container_width=True): 
                 st.session_state[sk] = f"{raw_val + 100000:,}"; st.rerun()
@@ -370,7 +366,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             if b4.button("초기화", use_container_width=True): 
                 st.session_state[sk] = "0"; st.rerun()
                 
-            # 한글 단위 번역기
             def get_korean_money_str(amount: int) -> str:
                 if amount == 0: return "0원"
                 res, eok, man, rem = "", amount // 100000000, (amount % 100000000) // 10000, amount % 10000
@@ -384,11 +379,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             if st.button("💾 예산 저장", type="primary", use_container_width=True):
                 update_monthly_budget(engine, cid, raw_val)
                 st.success("✅ 예산이 안전하게 저장되었습니다!")
-                del st.session_state[sk] # 저장 후 캐시 리셋
+                del st.session_state[sk]
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
-
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -497,7 +491,7 @@ def page_settings(engine) -> None:
                 try:
                     cid_val = str(del_cid.strip())
                     sql_exec(engine, "DELETE FROM dim_account_meta WHERE customer_id = :cid", {"cid": int(cid_val)})
-                    for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
+                    for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_search_term_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
                         try: sql_exec(engine, f"DELETE FROM {table} WHERE customer_id::text = :cid", {"cid": cid_val})
                         except Exception: pass
                             
