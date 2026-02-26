@@ -14,10 +14,11 @@ import pandas as pd
 import streamlit as st
 
 from data import *
-from data import period_compare_range, pct_to_arrow
+# [FIX] 언더바(_)로 시작하는 내부 함수들을 명시적으로 임포트하여 NameError 방지
+from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.1 (검색어 자동추적 & 진단도구)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.2 (검색어 자동추적 & Import 에러 픽스)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
