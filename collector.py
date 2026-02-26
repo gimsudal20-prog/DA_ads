@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v10.8 - 평균순위 & 쇼핑검색 확장소재 추가)
-- 네이버 API 정책상 불가능한 '검색어' 자동 수집 로직을 제거하여 오류를 해결했습니다.
-- 광고비 부가세(VAT) 10% 포함 로직은 정상 유지됩니다.
-- 쇼핑검색 카탈로그, 추가홍보문구 등을 식별하도록 소재 추출 로직을 강화했습니다.
-- 키워드 평균순위(avg_rnk)를 수집하여 DB에 적재합니다.
+collector.py - 네이버 검색광고 수집기 (v11.0 - 리포트 분리 및 매핑 완벽 고도화)
+- 쇼핑검색 확장소재(추가홍보문구) 정상 수집
+- 키워드 평균순위(avg_rnk) 정상 수집
+- 캠페인/키워드/소재 리포트를 각각 개별 요청하여 ID 믹스 현상 원천 차단
+- 실시간(/stats) 및 과거 리포트 모두 부가세 10% 포함 일괄 적용
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v10.8_STABLE_EXTENSIONS] ===", flush=True)
-print("=== 평균순위 & 쇼핑 확장소재 수집 강화 ===", flush=True)
+print("=== [VERSION: v11.0_PRO_COLLECTOR] ===", flush=True)
+print("=== 평균순위 & 쇼핑확장소재 수집 엔진 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -130,7 +130,7 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-            # 기존 테이블에 컬럼 추가 시도
+            # 기존 테이블에 평균순위 컬럼 추가 시도
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
@@ -229,41 +229,56 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     return data if ok and isinstance(data, list) else []
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
-    ad_inner = ad_obj.get("ad") if isinstance(ad_obj.get("ad"), dict) else {}
-    def _pick(d, keys):
-        for k in keys:
-            if d.get(k): return str(d.get(k))
-        return ""
-    # 쇼핑검색 및 확장소재까지 아우를 수 있도록 매핑 강화
-    title = _pick(ad_obj, ["name", "title", "headline", "adName"]) or _pick(ad_inner, ["headline", "title", "name", "shoppingAdName", "catalogName"])
-    desc  = _pick(ad_obj, ["description", "desc", "adDescription", "addPromoText", "extCreative"]) or _pick(ad_inner, ["description", "desc", "addPromoText", "extCreative", "promoText", "shoppingItem"])
-    pc_url = _pick(ad_obj, ["pcLandingUrl", "pcFinalUrl", "landingUrl"]) or _pick(ad_inner, ["pcLandingUrl", "landingUrl"])
-    m_url  = _pick(ad_obj, ["mobileLandingUrl", "mobileFinalUrl"]) or _pick(ad_inner, ["mobileLandingUrl"])
+    """쇼핑검색 및 확장소재까지 아우를 수 있도록 추출 로직 고도화"""
+    ad_inner = ad_obj.get("ad", {})
     
-    creative_text = f"{title} | {desc}"
+    title = ""
+    desc = ""
+    
+    # 1. 파워링크 등 텍스트형 우선 매핑
+    title = ad_inner.get("headline") or ad_inner.get("title") or ""
+    desc = ad_inner.get("description") or ad_inner.get("desc") or ""
+    
+    # 2. 쇼핑검색 (상품형 및 추가홍보문구)
+    if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
+        title = title or ad_inner["shoppingProduct"].get("name", "")
+    if "addPromoText" in ad_inner:
+        desc = desc or ad_inner["addPromoText"]
+        
+    # 3. 기타 예외 (카탈로그, 파워콘텐츠 등)
+    if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
+    if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
+    
+    pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
+    m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
+    
+    creative_text = f"{title} | {desc}".strip(" |")
     if pc_url: creative_text += f" | {pc_url}"
-    return {"ad_title": title, "ad_desc": desc, "pc_landing_url": pc_url, "mobile_landing_url": m_url, "creative_text": creative_text[:500]}
+    
+    return {
+        "ad_title": str(title)[:200], 
+        "ad_desc": str(desc)[:200], 
+        "pc_landing_url": str(pc_url)[:500], 
+        "mobile_landing_url": str(m_url)[:500], 
+        "creative_text": str(creative_text)[:500]
+    }
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
-    out, d_str = d1.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d")
-    # 키워드 평균순위(avgRnk) 필드 추가
+    out, d_str = [], d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
-    
-    res_list = []
     for i in range(0, len(ids), 50):
         chunk = ids[i:i+50]
         params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data: res_list.extend(data["data"])
-    return res_list
+        if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
+    return out
 
 def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
-    cost = int(round(float(r.get("salesAmt", 0) or 0)))
+    """당일 실시간 데이터 파싱 (VAT 적용 및 평균순위 추가)"""
+    cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1)) # 부가세 10% 일괄 적용 수정
     sales = int(float(r.get("convAmt", 0) or 0))
-    avg_rnk = float(r.get("avgRnk", 0) or 0)
-    
     out = {
         "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
         "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
@@ -271,7 +286,7 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
         "roas": (sales / cost * 100) if cost > 0 else 0.0
     }
     if id_key == "keyword_id":
-        out["avg_rnk"] = avg_rnk
+        out["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
     return out
 
 def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
@@ -306,66 +321,99 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
     finally:
         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
-    ad_records = {'camp': {}, 'kw': {}, 'ad': {}}
+def fetch_and_aggregate(customer_id: str, report_tp: str, target_date: date, id_col_idx: int, is_conv: bool, has_rank: bool = False) -> dict:
+    """개별 리포트를 정확하게 다운로드 및 매핑"""
+    df = fetch_stat_report(customer_id, report_tp, target_date)
+    if df is None or df.empty: return {}
     
-    if ad_df is not None and not ad_df.empty:
-        if not str(ad_df.iloc[0, 0]).isdigit(): ad_df = ad_df.iloc[1:].reset_index(drop=True)
-        if len(ad_df.columns) >= 12:
-            ad_df[9] = pd.to_numeric(ad_df[9], errors='coerce').fillna(0)
-            ad_df[10] = pd.to_numeric(ad_df[10], errors='coerce').fillna(0)
-            ad_df[11] = pd.to_numeric(ad_df[11], errors='coerce').fillna(0)
-            for group_col, cat in [(2, 'camp'), (4, 'kw'), (5, 'ad')]:
-                valid = ad_df[ad_df[group_col].notna() & (ad_df[group_col].astype(str).str.strip() != '') & (ad_df[group_col].astype(str).str.strip() != '-')]
-                if not valid.empty:
-                    g = valid.groupby(group_col).agg({9:'sum', 10:'sum', 11:'sum'}).reset_index()
-                    for _, r in g.iterrows():
-                        cost_vat = int(round(float(r[11]) * 1.1))
-                        ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": cost_vat, "avg_rnk": 0.0}
-
-    conv_records = {'camp': {}, 'kw': {}, 'ad': {}}
-    if conv_df is not None and not conv_df.empty:
-        if not str(conv_df.iloc[0, 0]).isdigit(): conv_df = conv_df.iloc[1:].reset_index(drop=True)
-        if len(conv_df.columns) >= 13:
-            conv_df[11] = pd.to_numeric(conv_df[11], errors='coerce').fillna(0)
-            conv_df[12] = pd.to_numeric(conv_df[12], errors='coerce').fillna(0)
-            for group_col, cat in [(2, 'camp'), (4, 'kw'), (5, 'ad')]:
-                valid = conv_df[conv_df[group_col].notna() & (conv_df[group_col].astype(str).str.strip() != '') & (conv_df[group_col].astype(str).str.strip() != '-')]
-                if not valid.empty:
-                    g = valid.groupby(group_col).agg({11:'sum', 12:'sum'}).reset_index()
-                    for _, r in g.iterrows():
-                        conv_records[cat][str(r[group_col])] = {"conv": float(r[11]), "sales": int(float(r[12]))}
-
-    def _save(cat, table_name, id_col_name):
-        keys = set(ad_records[cat].keys()) | set(conv_records[cat].keys())
-        if not keys: return 0
-        rows = []
-        for k in keys:
-            ad = ad_records[cat].get(k, {"imp":0, "clk":0, "cost":0, "avg_rnk":0.0})
-            cv = conv_records[cat].get(k, {"conv":0.0, "sales":0})
-            cost = ad["cost"]
-            sales = cv["sales"]
-            roas = (sales / cost * 100) if cost > 0 else 0.0
+    # 첫번째 헤더 열 드랍 처리
+    if not str(df.iloc[0, 0]).isdigit(): 
+        df = df.iloc[1:].reset_index(drop=True)
+        
+    res = {}
+    for _, r in df.iterrows():
+        try:
+            obj_id = str(r[id_col_idx]).strip()
+            if not obj_id or obj_id == '-': continue
             
-            row = {
-                "dt": target_date, "customer_id": str(customer_id), id_col_name: k, 
-                "imp": ad["imp"], "clk": ad["clk"], "cost": cost, 
-                "conv": cv["conv"], "sales": sales, "roas": roas
-            }
-            if id_col_name == "keyword_id":
-                row["avg_rnk"] = ad.get("avg_rnk", 0.0)
+            if obj_id not in res:
+                res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+            
+            if is_conv:
+                c_idx = 6 if "CAMPAIGN" in report_tp else 9
+                s_idx = 7 if "CAMPAIGN" in report_tp else 10
+                res[obj_id]["conv"] += float(r[c_idx] if len(r) > c_idx and pd.notna(r[c_idx]) else 0)
+                res[obj_id]["sales"] += int(float(r[s_idx] if len(r) > s_idx and pd.notna(r[s_idx]) else 0))
+            else:
+                i_idx = 5 if "CAMPAIGN" in report_tp else 8
+                ck_idx = 6 if "CAMPAIGN" in report_tp else 9
+                cs_idx = 7 if "CAMPAIGN" in report_tp else 10
                 
-            rows.append(row)
-            
-        replace_fact_range(engine, table_name, rows, customer_id, target_date)
-        return len(rows)
+                imp = int(float(r[i_idx] if len(r) > i_idx and pd.notna(r[i_idx]) else 0))
+                res[obj_id]["imp"] += imp
+                res[obj_id]["clk"] += int(float(r[ck_idx] if len(r) > ck_idx and pd.notna(r[ck_idx]) else 0))
+                res[obj_id]["cost"] += int(round(float(r[cs_idx] if len(r) > cs_idx and pd.notna(r[cs_idx]) else 0) * 1.1)) # VAT 10%
+                
+                if has_rank and len(r) > 11:
+                    rnk = float(r[11] if pd.notna(r[11]) else 0)
+                    if rnk > 0:
+                        res[obj_id]["rank_sum"] += (rnk * imp)
+                        res[obj_id]["rank_cnt"] += imp
+        except Exception:
+            pass
+    return res
 
-    c_cnt = _save('camp', "fact_campaign_daily", "campaign_id")
-    k_cnt = _save('kw', "fact_keyword_daily", "keyword_id")
-    a_cnt = _save('ad', "fact_ad_daily", "ad_id")
+def merge_and_save(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, conv_res: dict) -> int:
+    keys = set(stat_res.keys()) | set(conv_res.keys())
+    if not keys: return 0
+    rows = []
+    for k in keys:
+        s = stat_res.get(k, {"imp":0, "clk":0, "cost":0, "rank_sum":0.0, "rank_cnt":0})
+        c = conv_res.get(k, {"conv":0.0, "sales":0})
+        
+        cost = s["cost"]
+        sales = c["sales"]
+        roas = (sales / cost * 100.0) if cost > 0 else 0.0
+        avg_rnk = (s["rank_sum"] / s["rank_cnt"]) if s["rank_cnt"] > 0 else 0.0
+        
+        row = {
+            "dt": target_date,
+            "customer_id": str(customer_id),
+            pk_name: k,
+            "imp": s["imp"],
+            "clk": s["clk"],
+            "cost": cost,
+            "conv": c["conv"],
+            "sales": sales,
+            "roas": roas
+        }
+        if pk_name == "keyword_id":
+            row["avg_rnk"] = round(avg_rnk, 2)
+            
+        rows.append(row)
+        
+    replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    return len(rows)
+
+def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date, account_name: str):
+    """과거 성과 데이터를 캠페인/키워드/소재 단위별로 각각 정확하게 다운로드 및 머지"""
+    # 1. Fetch
+    camp_stat = fetch_and_aggregate(customer_id, "CAMPAIGN", target_date, 2, False)
+    camp_conv = fetch_and_aggregate(customer_id, "CAMPAIGN_CONVERSION", target_date, 2, True)
     
-    total = c_cnt + k_cnt + a_cnt
-    if total > 0: log(f"   📊 [ {account_name} ] 데이터 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
+    kw_stat = fetch_and_aggregate(customer_id, "KEYWORD", target_date, 5, False, has_rank=True)
+    kw_conv = fetch_and_aggregate(customer_id, "KEYWORD_CONVERSION", target_date, 5, True)
+    
+    ad_stat = fetch_and_aggregate(customer_id, "AD", target_date, 5, False)
+    ad_conv = fetch_and_aggregate(customer_id, "AD_CONVERSION", target_date, 5, True)
+    
+    # 2. Save
+    c_cnt = merge_and_save(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, camp_conv)
+    k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
+    a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
+    
+    if (c_cnt + k_cnt + a_cnt) > 0:
+        log(f"   📊 [ {account_name} ] 리포트 적재 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -398,9 +446,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
         if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
     else:
-        ad_df = fetch_stat_report(customer_id, "AD", target_date)
-        conv_df = fetch_stat_report(customer_id, "AD_CONVERSION", target_date)
-        process_merged_reports(engine, ad_df, conv_df, customer_id, target_date, account_name)
+        # 고도화된 개별 리포트 매핑 적용
+        process_daily_reports_v2(engine, customer_id, target_date, account_name)
     log(f"✅ 완료: {account_name}")
 
 def main():
