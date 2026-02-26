@@ -320,6 +320,12 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
         return
     st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
 
+def render_chart(obj, *, height: int | None = None) -> None:
+    if obj is None: return
+    if obj.__class__.__module__.startswith("altair"): st.altair_chart(obj, use_container_width=True); return
+    try: st.write(obj)
+    except Exception: pass
+
 def render_period_compare_panel(engine, entity: str, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], key_prefix: str, expanded: bool = False) -> None:
     with st.expander("🔁 전일/전주/전월 비교", expanded=expanded):
         apply_global_css()
@@ -357,8 +363,8 @@ def render_period_compare_panel(engine, entity: str, d1: date, d2: date, cids: T
         st.markdown("#### 📊 증감율(%) 막대그래프")
         if HAS_ECHARTS and st_echarts is not None: render_echarts_delta_bars(delta_df, height=260)
 
-
-def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame, kw_df: pd.DataFrame) -> bytes:
+# [NEW] 엑셀 시트 4개로 완전 분리 저장
+def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame, kw_df: pd.DataFrame, st_df: pd.DataFrame = None) -> bytes:
     output = io.BytesIO()
     try:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -371,7 +377,10 @@ def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame,
                 camp_df.to_excel(writer, index=False, sheet_name="캠페인_상세")
                 
             if kw_df is not None and not kw_df.empty:
-                kw_df.to_excel(writer, index=False, sheet_name="키워드_상세")
+                kw_df.to_excel(writer, index=False, sheet_name="파워링크_키워드_상세")
+                
+            if st_df is not None and not st_df.empty:
+                st_df.to_excel(writer, index=False, sheet_name="쇼핑검색어_상세")
     except Exception as e:
         return overview_df.to_csv(index=False).encode("utf-8-sig") if overview_df is not None else b""
         
