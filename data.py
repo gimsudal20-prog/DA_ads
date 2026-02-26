@@ -598,43 +598,52 @@ def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], t
     return pd.DataFrame() if df is None else df
 
 # ==========================================
-# [NEW] 검색어 전용(Search Term) 쿼리
+# [NEW] 스마트 검색어 전용 쿼리 (에러 진단 기능 포함)
 # ==========================================
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_search_term_bundle(_engine, d1: date, d2: date, customer_ids: List[str], type_sel: Tuple[str, ...], topn_cost: int = 300) -> pd.DataFrame:
-    """쇼핑검색 등 검색어 리포트(fact_search_term_daily)를 전용으로 호출합니다."""
     tables = _get_table_names_cached(_engine)
-    st_table = next((t for t in ["fact_search_term_daily", "fact_searchterm_daily", "fact_search_word_daily", "fact_searchword_daily"] if t in tables), None)
+    st_table = None
     
+    # 1. 뻔한 이름 먼저 찾기
+    cands = ["fact_search_term_daily", "fact_searchterm_daily", "fact_search_word_daily", "fact_searchword_daily", "search_term_report", "fact_shopping_search_daily"]
+    for cand in cands:
+        if cand in tables:
+            st_table = cand
+            break
+            
+    # 2. 없으면 search, term, word 들어간 아무 테이블이나 찾기
     if not st_table:
-        return pd.DataFrame() # 테이블이 없으면 빈 DF 반환 (Fallback trigger)
-        
+        for t in tables:
+            if 'search' in t and ('term' in t or 'word' in t or 'query' in t):
+                st_table = t
+                break
+                
+    if not st_table:
+        return pd.DataFrame({"_debug_msg": ["NO_TABLE"]})
+
     st_cols = get_table_columns(_engine, st_table)
     sales_sum = "SUM(COALESCE(b.sales, 0)) AS sales" if "sales" in st_cols else "0::numeric AS sales"
-    
-    # 검색어 컬럼명 찾기
-    term_col = next((c for c in ["search_term", "search_word", "query", "searchword", "keyword"] if c in st_cols), "search_term")
-    
+
+    # 검색어 컬럼 유추
+    term_col = next((c for c in ["search_term", "search_word", "query", "searchword", "keyword", "term"] if c in st_cols), None)
+    if not term_col:
+        return pd.DataFrame({"_debug_msg": [f"NO_TERM_COL_IN_{st_table}"]})
+
     cid_clause = f"AND b.customer_id::text IN ({_sql_in_str_list(customer_ids)})" if customer_ids else ""
-    
+
     has_dim_ag, has_dim_cp = table_exists(_engine, "dim_adgroup"), table_exists(_engine, "dim_campaign")
     dim_ag_cols = get_table_columns(_engine, "dim_adgroup") if has_dim_ag else set()
     dim_cp_cols = get_table_columns(_engine, "dim_campaign") if has_dim_cp else set()
-    
-    ag_name_col = "adgroup_name" if "adgroup_name" in dim_ag_cols else ("name" if "name" in dim_ag_cols else None)
-    cp_name_col = "campaign_name" if "campaign_name" in dim_cp_cols else ("name" if "name" in dim_cp_cols else None)
-    cp_tp_col = "campaign_tp" if "campaign_tp" in dim_cp_cols else ("campaign_type" if "campaign_type" in dim_cp_cols else None)
 
-    join_ag = f"LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND b.adgroup_id::text = g.adgroup_id::text" if has_dim_ag and 'adgroup_id' in st_cols else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
-    
-    cp_join_key = f"COALESCE(NULLIF(b.campaign_id::text, ''), g.campaign_id::text)" if 'campaign_id' in st_cols else "g.campaign_id::text"
-    join_cp = f"LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND {cp_join_key} = c.campaign_id::text" if has_dim_cp else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
-    
-    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
-    tp_in = _sql_in_text_list([str(x).lower() for x in tp_keys])
-    type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) IN ({tp_in})" if tp_keys and has_dim_cp and cp_tp_col else ""
-    
-    # 기본은 조인된 캠페인 타입, 못 찾으면 무조건 '쇼핑검색'으로 분류
+    ag_name_col = next((c for c in ["adgroup_name", "name"] if c in dim_ag_cols), None)
+    cp_name_col = next((c for c in ["campaign_name", "name"] if c in dim_cp_cols), None)
+    cp_tp_col = next((c for c in ["campaign_tp", "campaign_type"] if c in dim_cp_cols), None)
+
+    join_ag = f"LEFT JOIN dim_adgroup g ON b.customer_id::text = g.customer_id::text AND b.adgroup_id::text = g.adgroup_id::text" if has_dim_ag and 'adgroup_id' in st_cols and 'adgroup_id' in dim_ag_cols else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS adgroup_name) g ON 1=0"
+    cp_join_key = "b.campaign_id::text" if 'campaign_id' in st_cols else "g.campaign_id::text"
+    join_cp = f"LEFT JOIN dim_campaign c ON b.customer_id::text = c.customer_id::text AND COALESCE({cp_join_key}, '') = c.campaign_id::text" if has_dim_cp else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+
     case_expr = "CASE " + " ".join([f"WHEN LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) = '{k}' THEN '{v}'" for k, v in _CAMPAIGN_TP_LABEL.items()]) + " ELSE '쇼핑검색' END" if has_dim_cp and cp_tp_col else "'쇼핑검색'"
 
     sql = f"""
@@ -654,24 +663,24 @@ def query_search_term_bundle(_engine, d1: date, d2: date, customer_ids: List[str
     )
     SELECT b.customer_id, b.keyword,
            b.imp, b.clk, b.cost, b.conv, b.sales,
-           COALESCE(NULLIF(TRIM(g.{ag_name_col}), ''), '') AS adgroup_name,
-           COALESCE(NULLIF(TRIM(c.{cp_name_col}), ''), '') AS campaign_name,
-           COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '') AS campaign_tp,
+           {f"COALESCE(NULLIF(TRIM(g.{ag_name_col}), ''), '')" if ag_name_col else "''"} AS adgroup_name,
+           {f"COALESCE(NULLIF(TRIM(c.{cp_name_col}), ''), '')" if cp_name_col else "''"} AS campaign_name,
+           {f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')" if cp_tp_col else "''"} AS campaign_tp,
            {case_expr} AS campaign_type_label
     FROM base b
     {join_ag}
     {join_cp}
-    WHERE 1=1 {type_filter}
     ORDER BY b.cost DESC NULLS LAST
     LIMIT {int(topn_cost)}
     """
-    df = sql_read(_engine, sql, params={"d1": str(d1), "d2": str(d2)})
-    
-    if df is not None and not df.empty:
-        # 안전장치: 검색어 테이블에서 왔으니 캠페인 속성 못 가져온 애들은 '쇼핑검색'으로 강제 라벨링
-        df.loc[df["campaign_type_label"] == "기타", "campaign_type_label"] = "쇼핑검색"
-        
-    return pd.DataFrame() if df is None else df
+    try:
+        df = sql_read(_engine, sql, params={"d1": str(d1), "d2": str(d2)})
+        if df is not None and not df.empty:
+            df.loc[df["campaign_type_label"] == "기타", "campaign_type_label"] = "쇼핑검색"
+        return df if df is not None else pd.DataFrame({"_debug_msg": ["EMPTY_DF"]})
+    except Exception as e:
+        return pd.DataFrame({"_debug_msg": [f"SQL_ERROR: {str(e)}"]})
+
 
 def add_rates(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty: return df
