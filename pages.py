@@ -9,6 +9,7 @@ import math
 import time
 import csv
 import io
+import urllib.parse # [NEW] 한글 키워드 인코딩용
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -22,7 +23,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v13.0 (실시간 파이썬 네이티브 순위검색기 내장)")
+BUILD_TAG = os.getenv("APP_BUILD", "v13.1 (순위검색기 파서 정밀화 및 인코딩 픽스)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -115,6 +116,20 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     meta_copy = meta.copy()
     meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
     return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
+
+def _render_empty_state_no_data(key: str = "empty") -> None:
+    st.markdown("### 🫥 데이터가 없습니다")
+    st.caption("오늘 데이터는 수집 지연이 있을 수 있어요. 아래 버튼으로 기간을 **최근 7일(오늘 제외)**로 바꿔 다시 조회해보세요.")
+    c1, c2 = st.columns([1, 3])
+    if c1.button("📅 최근 7일로", key=f"{key}_set7", type="primary"):
+        try:
+            if "filters_v8" in st.session_state: st.session_state["filters_v8"]["period_mode"] = "최근 7일"
+            st.cache_data.clear()
+        except Exception: pass
+        st.rerun()
+    with c2:
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
 def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
     if df_target is None or df_target.empty:
@@ -690,53 +705,72 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     render_big_table(disp, "ad_big_table", 500)
 
 # ==========================================
-# [NEW] 파이썬 네이티브 순위 검색기 (BeautifulSoup 활용)
+# [FIXED] 파이썬 네이티브 순위 검색기 (봇 차단 감지 및 디버깅 강화)
 # ==========================================
 def fetch_naver_rank(keyword: str, target: str, device: str, search_type: str) -> dict:
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' if device == 'PC' else 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1'
-    }
     target_clean = str(target).lower().replace(' ', '')
+    # [FIX] 한글 키워드를 브라우저처럼 완벽하게 URL 인코딩
+    kw_encoded = urllib.parse.quote(keyword)
+    
+    # [FIX] 크롬 브라우저와 완벽하게 일치하는 HTTP 헤더 설정
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' if device == 'PC' else 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://search.naver.com/'
+    }
     
     url = ""
     item_selector = ""
     
     if search_type == "파워링크":
         if device == "PC":
-            url = f"https://ad.search.naver.com/search.naver?where=ad&query={keyword}"
+            url = f"https://ad.search.naver.com/search.naver?where=ad&query={kw_encoded}"
             item_selector = ".lst_type > li"
         else:
-            url = f"https://m.ad.search.naver.com/search.naver?where=m_expd&query={keyword}"
+            url = f"https://m.ad.search.naver.com/search.naver?where=m_expd&query={kw_encoded}"
             item_selector = ".lst_type > li"
     elif search_type == "쇼핑검색":
         if device == "PC":
-            url = f"https://search.shopping.naver.com/search/all?query={keyword}"
+            url = f"https://search.shopping.naver.com/search/all?query={kw_encoded}"
             item_selector = "[class*='product_item__'], [class*='adProduct_item__']"
         else:
-            url = f"https://msearch.shopping.naver.com/search/all?query={keyword}"
+            url = f"https://msearch.shopping.naver.com/search/all?query={kw_encoded}"
             item_selector = "[class*='product_list_item__'], [class*='product_item__']"
 
     try:
-        html = requests.get(url, headers=headers, timeout=5).text
-        soup = BeautifulSoup(html, 'html.parser')
+        res = requests.get(url, headers=headers, timeout=10)
+        res.raise_for_status() # 403, 500 에러 감지
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
         items = soup.select(item_selector)
         
+        # [FIX] 봇 차단(Captcha) 등으로 인해 아이템을 하나도 못 찾은 경우 명확하게 에러 표출
+        if not items:
+            return {"키워드": keyword, "순위": "-", "소재(제목)": f"검색 결과 0건 (클라우드 IP 차단 의심)", "상태": "⚠️ 확인필요"}
+            
         for idx, item in enumerate(items, 1):
-            text_content = item.get_text().lower().replace(' ', '')
-            links = "".join([a.get('href', '').lower() for a in item.find_all('a')])
+            # [FIX] JS 로직처럼 URL 영역을 명확히 타겟팅
+            url_node = item.select_one('a.url, a.source, span.url, .txt_url, .lnk_url')
+            text_to_check = url_node.get_text() if url_node else item.get_text()
+            text_content = text_to_check.lower().replace(' ', '')
+            
+            # 앵커 태그 안의 실제 링크도 체크
+            links = "".join([urllib.parse.unquote(a.get('href', '')).lower() for a in item.find_all('a')])
             
             if target_clean in text_content or target_clean in links:
                 title_node = item.select_one(".lnk_tit, .tit, [class*='product_title__'], [class*='adProduct_title__']")
-                title = title_node.get_text(strip=True) if title_node else "제목을 가져올 수 없습니다."
+                title = title_node.get_text(strip=True) if title_node else "제목 추출 완료"
                 return {"키워드": keyword, "순위": f"{idx}위", "소재(제목)": title, "상태": "✅ 발견"}
                 
-        return {"키워드": keyword, "순위": "순위권 외", "소재(제목)": "-", "상태": "❌ 미발견"}
+        return {"키워드": keyword, "순위": "순위권 외", "소재(제목)": f"총 {len(items)}개 상품 중 없음", "상태": "❌ 미발견"}
+        
     except Exception as e:
-        return {"키워드": keyword, "순위": "-", "소재(제목)": f"에러: {str(e)}", "상태": "⚠️ 오류"}
+        return {"키워드": keyword, "순위": "-", "소재(제목)": f"네트워크 에러 발생", "상태": "⚠️ 통신오류"}
 
 def page_rank_tracker() -> None:
     st.markdown("## 🔍 실시간 순위 검색기")
-    st.caption("파워링크 및 쇼핑검색의 현재 노출 순위를 실시간으로 긁어옵니다.")
+    st.caption("파워링크 및 쇼핑검색의 현재 노출 순위를 실시간으로 긁어옵니다. (파이썬 크롤러 작동)")
     
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
@@ -764,7 +798,7 @@ def page_rank_tracker() -> None:
                     res = fetch_naver_rank(kw, target_domain, device, search_type)
                     results.append(res)
                     progress_bar.progress((i + 1) / len(keywords))
-                    time.sleep(0.5) # 네이버 차단 방지 (0.5초 딜레이)
+                    time.sleep(1) # IP 차단을 피하기 위해 1초 대기
                 
                 status_text.text("✅ 조회가 완료되었습니다!")
                 
@@ -828,7 +862,6 @@ def main():
     with st.sidebar:
         st.markdown("### 메뉴")
         if not meta_ready: st.warning("동기화가 필요합니다.")
-        # [NEW] 순위검색(실시간) 메뉴 추가
         nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "순위검색(실시간)", "설정/연결"] if meta_ready else ["설정/연결"]
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
