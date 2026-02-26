@@ -18,6 +18,7 @@ import altair as alt
 
 from styles import apply_global_css
 
+# Optional UI components
 try:
     import streamlit_shadcn_ui as ui
     HAS_SHADCN_UI = True
@@ -25,6 +26,7 @@ except Exception:
     ui = None
     HAS_SHADCN_UI = False
 
+# Optional AgGrid
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
     from st_aggrid.shared import GridUpdateMode, DataReturnMode
@@ -37,6 +39,7 @@ except Exception:
     DataReturnMode = None
     HAS_AGGRID = False
 
+# Optional ECharts
 try:
     from streamlit_echarts import st_echarts
     HAS_ECHARTS = True
@@ -89,6 +92,7 @@ def _aggrid_coldefs(cols: List[str], right_cols: set, enable_filter: bool, cond_
         cd = {"headerName": c, "field": c, "sortable": True, "filter": bool(enable_filter), "resizable": True}
         base_align = {"textAlign": "right"} if c in right_cols else {}
         
+        # 1,000 단위 콤마
         if c in right_cols and JsCode is not None:
             cd["valueFormatter"] = JsCode("""
             function(params) {
@@ -314,6 +318,45 @@ def render_big_table(df: pd.DataFrame, key: str, height: int = 560) -> None:
         AgGrid(df, gridOptions=grid, height=height, fit_columns_on_grid_load=False, theme="alpine", allow_unsafe_jscode=True, update_mode=_aggrid_mode("no_update"), data_return_mode=_aggrid_mode("as_input"), key=key)
         return
     st_dataframe_safe(df, use_container_width=True, hide_index=True, height=height)
+
+# [NEW / RESTORED] 예산/잔액 탭의 하단 바(Bar) 테이블 렌더링 함수
+def render_budget_month_table_with_bars(table_df: pd.DataFrame, key: str, height: int = 520) -> None:
+    if table_df is None or table_df.empty:
+        st.info("표시할 데이터가 없습니다.")
+        return
+    df = table_df.copy()
+
+    def _bar(pct, status) -> str:
+        try: pv = float(pct)
+        except Exception: pv = 0.0
+        pv = 0.0 if math.isnan(pv) else pv
+        width = max(0.0, min(pv, 120.0))
+        stt = str(status or "")
+        if stt.startswith("🔴"): fill = "var(--nv-red)"
+        elif stt.startswith("🟡"): fill = "#F59E0B"
+        elif stt.startswith("🟢"): fill = "var(--nv-green)"
+        else: fill = "rgba(0,0,0,.25)"
+        return (
+            f"<div class='nv-pbar'>"
+            f"  <div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{width:.2f}%;background:{fill};'></div></div>"
+            f"  <div class='nv-pbar-txt'>{pv:.1f}%</div>"
+            f"</div>"
+        )
+
+    if "집행률(%)" in df.columns:
+        df["집행률"] = [_bar(p, s) for p, s in zip(df["집행률(%)"].tolist(), df.get("상태", "").tolist())]
+        df = df.drop(columns=["집행률(%)"])
+        cols = list(df.columns)
+        if "상태" in cols and "집행률" in cols:
+            cols.remove("집행률")
+            cols.insert(cols.index("상태"), "집행률")
+            df = df[cols]
+
+    html = df.to_html(index=False, escape=False, classes="nv-table")
+    html = re.sub(r"<td>([\d,]+원)</td>", r"<td class='num'>\1</td>", html)
+    html = re.sub(r"<td>([\d,]+)</td>", r"<td class='num'>\1</td>", html)
+    st.markdown(f"<div class='nv-table-wrap' style='max-height:{height}px'>{html}</div>", unsafe_allow_html=True)
+
 
 def render_chart(obj, *, height: int | None = None) -> None:
     if obj is None: return
