@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v11.1 (테이블 렌더링 최적화 및 정렬/소수점 수정)")
+BUILD_TAG = os.getenv("APP_BUILD", "v12.0 (소재/캠페인 필터 및 쇼핑검색 분석기 통합)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -112,20 +112,49 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
     return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
-def _render_empty_state_no_data(key: str = "empty") -> None:
-    st.markdown("### 🫥 데이터가 없습니다")
-    st.caption("오늘 데이터는 수집 지연이 있을 수 있어요. 아래 버튼으로 기간을 **최근 7일(오늘 제외)**로 바꿔 다시 조회해보세요.")
-    c1, c2 = st.columns([1, 3])
-    if c1.button("📅 최근 7일로", key=f"{key}_set7", type="primary"):
-        try:
-            if "filters_v8" in st.session_state: st.session_state["filters_v8"]["period_mode"] = "최근 7일"
-            st.cache_data.clear()
-        except Exception: pass
-        st.rerun()
-    with c2:
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
+# ==========================================
+# [NEW] 범용 AI 최적화 인사이트 카드 렌더러
+# ==========================================
+def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
+    if df_target is None or df_target.empty:
+        st.info(f"분석할 {item_name} 데이터가 없습니다.")
+        return
 
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.container(border=True):
+            st.markdown(f"<h4 style='margin-bottom: 4px; margin-top: 0;'>🚨 저효율 {item_name} (개선 필요)</h4>", unsafe_allow_html=True)
+            st.caption(f"비용 3만 원 이상 소진 중이나 전환이 0건인 항목 (제외/OFF 권장)")
+            
+            hippos = df_target[(df_target['광고비'] >= 30000) & (df_target['전환'] == 0)].sort_values('광고비', ascending=False)
+            if not hippos.empty:
+                cols_to_show = [keyword_col, '광고비']
+                if '업체명' in hippos.columns: cols_to_show.insert(0, '업체명')
+                
+                disp_h = hippos[cols_to_show].rename(columns={keyword_col: item_name, '광고비': '비용'})
+                disp_h['비용'] = disp_h['비용'].apply(format_currency)
+                st_dataframe_safe(disp_h.head(5), hide_index=True, use_container_width=True)
+            else: 
+                st.success(f"✅ 비용 누수가 발생하는 {item_name}가 없습니다.")
+
+    with c2:
+        with st.container(border=True):
+            st.markdown(f"<h4 style='margin-bottom: 4px; margin-top: 0;'>⭐ 고효율 {item_name} (기회 발굴)</h4>", unsafe_allow_html=True)
+            st.caption(f"비용 3천원~5만 원 소진, ROAS 500% 이상 (입찰가 상향/확장 권장)")
+            
+            stars = df_target[(df_target['광고비'] >= 3000) & (df_target['광고비'] <= 50000) & (df_target['전환'] >= 1) & (df_target['ROAS(%)'] >= 500)].sort_values('ROAS(%)', ascending=False)
+            if not stars.empty:
+                cols_to_show = [keyword_col, 'ROAS(%)']
+                if '업체명' in stars.columns: cols_to_show.insert(0, '업체명')
+                
+                disp_s = stars[cols_to_show].rename(columns={keyword_col: item_name})
+                disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
+                st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
+            else: 
+                st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
+
+
+# --- 페이지 로직 ---
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -186,33 +215,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트 (파워링크)</div>", unsafe_allow_html=True)
     
+    # 렌더러 함수 재활용
     if not df_pl_kw.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            with st.container(border=True):
-                st.markdown("<h4 style='margin-bottom: 4px; margin-top: 0;'>🚨 저효율 키워드 (개선 필요)</h4>", unsafe_allow_html=True)
-                st.caption("비용 3만 원 이상 소진 중이나 전환이 0건인 파워링크 키워드 (제외 권장)")
-                hippos = df_pl_kw[(df_pl_kw['cost'] >= 30000) & (df_pl_kw['conv'] == 0)].sort_values('cost', ascending=False)
-                if not hippos.empty:
-                    disp_h = hippos[['account_name', 'keyword', 'cost']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'cost': '비용'})
-                    disp_h['비용'] = disp_h['비용'].apply(format_currency)
-                    st_dataframe_safe(disp_h.head(5), hide_index=True, use_container_width=True)
-                else: 
-                    st.success("✅ 해당되는 저효율 키워드가 없습니다.")
-
-        with c2:
-            with st.container(border=True):
-                st.markdown("<h4 style='margin-bottom: 4px; margin-top: 0;'>⭐ 고효율 키워드 (기회 발굴)</h4>", unsafe_allow_html=True)
-                st.caption("비용 3천원~5만 원 소진, ROAS 500% 이상 우수 파워링크 키워드 (입찰가 상향 권장)")
-                stars = df_pl_kw[(df_pl_kw['cost'] >= 3000) & (df_pl_kw['cost'] <= 50000) & (df_pl_kw['conv'] >= 1) & (df_pl_kw['roas'] >= 500)].sort_values('roas', ascending=False)
-                if not stars.empty:
-                    disp_s = stars[['account_name', 'keyword', 'roas']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'roas': 'ROAS(%)'})
-                    disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
-                    st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
-                else: 
-                    st.info("해당되는 고효율 키워드가 없습니다.")
+        df_pl_kw_fmt = df_pl_kw.copy()
+        df_pl_kw_fmt["광고비"] = pd.to_numeric(df_pl_kw_fmt["cost"], errors="coerce").fillna(0)
+        df_pl_kw_fmt["전환"] = pd.to_numeric(df_pl_kw_fmt["conv"], errors="coerce").fillna(0)
+        df_pl_kw_fmt["ROAS(%)"] = pd.to_numeric(df_pl_kw_fmt["roas"], errors="coerce").fillna(0)
+        render_insight_cards(df_pl_kw_fmt, "키워드", "keyword")
     else:
-        st.info("파워링크 키워드 데이터가 수집되지 않아 분석할 수 없습니다.")
+        st.info("파워링크 데이터가 수집되지 않아 분석할 수 없습니다.")
         
     st.divider()
 
@@ -269,7 +280,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
-
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
     biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
@@ -388,7 +398,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 time.sleep(0.5)
                 st.rerun()
 
-# [NEW] 테이블 렌더링 최적화 로직 적용 (시스템 ID 제거, 완벽한 숫자 정렬 지원)
+# ==========================================
+# [FIXED & ENHANCED] 캠페인 탭 (필터 & 인사이트 추가)
+# ==========================================
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🚀 성과 (캠페인)")
@@ -416,74 +428,34 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
+    # 상단 최적화 카드 렌더링
+    st.markdown("<div class='nv-sec-title'>💡 캠페인 최적화 포인트</div>", unsafe_allow_html=True)
+    render_insight_cards(view, "캠페인", "캠페인")
+    st.divider()
+
+    # 캠페인 유형 필터
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        camp_types = ["전체"] + sorted([str(x) for x in view["캠페인유형"].unique() if str(x).strip()])
+        sel_type = st.selectbox("🎯 캠페인 유형 필터", camp_types, key="camp_type_filter")
+
+    if sel_type != "전체":
+        view = view[view["캠페인유형"] == sel_type]
+
     cols = ["업체명", "담당자", "캠페인유형", "캠페인", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
     disp = view[[c for c in cols if c in view.columns]].copy()
     disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
     for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
         if c in disp.columns: disp[c] = disp[c].astype(int)
-    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
 
     render_big_table(disp, key="camp_main_grid", height=560)
 
-def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
-    if not f.get("ready", False): return
-    st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
-    cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
-    
-    bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
 
-    def _prepare_main_table(df_in: pd.DataFrame, shopping_first: bool) -> pd.DataFrame:
-        if df_in is None or df_in.empty: return pd.DataFrame()
-        view = _perf_common_merge_meta(df_in, meta)
-        
-        view = view.rename(columns={
-            "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
-            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드",
-            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
-        }).copy()
-
-        for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
-            if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
-            else: view[c] = 0
-
-        view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
-        view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
-        view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-        view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
-
-        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
-        if shopping_first:
-            cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
-        else:
-            cols = base_cols + ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
-            
-        disp = view[[c for c in cols if c in view.columns]].copy()
-        
-        for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
-            if c in disp.columns: disp[c] = disp[c].astype(int)
-        if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
-        
-        return disp
-
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 안내"])
-    
-    with tab_pl:
-        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
-        if not df_pl.empty: 
-            render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), shopping_first=False), "pl_grid", 500)
-        else:
-            st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
-            
-    with tab_shop:
-        st.error("🚨 네이버 공식 API 정책상 '쇼핑검색의 실제 검색어'는 자동 수집을 지원하지 않습니다.")
-        st.info("💡 **대안:** 쇼핑검색의 주요 성과는 좌측 메뉴의 **[🧩 소재]** 탭에서 '상품(소재)별'로 확인하실 수 있습니다.")
-        
-        df_shop_fb = bundle[bundle["campaign_type_label"] == "쇼핑검색"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
-        if not df_shop_fb.empty: 
-            st.caption("※ 아래는 키워드 테이블에 포함되어 있던 기본 쇼핑검색 데이터입니다.")
-            render_big_table(_prepare_main_table(df_shop_fb.sort_values("cost", ascending=False).head(top_n), shopping_first=True), "shop_grid_fb", 500)
-
+# ==========================================
+# [FIXED & ENHANCED] 소재 탭 (필터 & 인사이트 추가)
+# ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -507,15 +479,219 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
+    # 상단 최적화 카드 렌더링
+    st.markdown("<div class='nv-sec-title'>💡 소재 최적화 포인트</div>", unsafe_allow_html=True)
+    render_insight_cards(view, "소재", "소재내용")
+    st.divider()
+
+    # 특정 캠페인만 발라보는 필터 추가
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
+        sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key="ad_camp_filter")
+        
+    if sel_camp != "전체":
+        view = view[view["캠페인"] == sel_camp]
+
     cols = ["업체명", "담당자", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
     disp = view[[c for c in cols if c in view.columns]].copy()
     disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
     for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
         if c in disp.columns: disp[c] = disp[c].astype(int)
-    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
 
     render_big_table(disp, "ad_big_table", 500)
+
+
+# ==========================================
+# [NEW] 쇼핑검색 수동 업로드 파싱 로직
+# ==========================================
+def process_manual_shopping_report(file_obj):
+    try:
+        if file_obj.name.lower().endswith('.csv'):
+            try: 
+                df_raw = pd.read_csv(file_obj, encoding='euc-kr', header=None)
+            except: 
+                file_obj.seek(0)
+                df_raw = pd.read_csv(file_obj, encoding='utf-8', header=None)
+        else:
+            df_raw = pd.read_excel(file_obj, header=None)
+            
+        header_idx = -1
+        for i in range(min(20, len(df_raw))):
+            row_str = "".join(df_raw.iloc[i].fillna("").astype(str))
+            if "검색어" in row_str or "키워드" in row_str or "Keyword" in row_str or "소재명" in row_str:
+                header_idx = i
+                break
+                
+        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 없습니다."
+        
+        df = df_raw.iloc[header_idx+1:].copy()
+        df.columns = df_raw.iloc[header_idx].fillna("").astype(str).str.strip()
+        
+        def get_col(candidates):
+            for c in candidates:
+                for col in df.columns:
+                    if c.lower() in col.lower(): return col
+            return None
+            
+        kw_col = get_col(['검색어', '키워드', 'Keyword', '소재명'])
+        cost_col = get_col(['총비용', '비용', 'Cost', '지출'])
+        rev_col = get_col(['전환매출', '매출', 'Revenue', '구매액', '주문금액'])
+        conv_col = get_col(['전환수', 'Conversions', '전환'])
+        clk_col = get_col(['클릭수', 'Clicks', '클릭'])
+        imp_col = get_col(['노출수', 'Impressions', '노출'])
+        camp_col = get_col(['캠페인', 'Campaign'])
+        ag_col = get_col(['광고그룹', '그룹', 'Ad Group'])
+        
+        if not kw_col or not cost_col:
+            return None, f"[{file_obj.name}] 필수 열(검색어, 총비용) 매칭 실패."
+            
+        for c in [cost_col, rev_col, conv_col, clk_col, imp_col]:
+            if c and c in df.columns:
+                df[c] = pd.to_numeric(df[c].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
+                
+        agg_dict = {cost_col: 'sum'}
+        if rev_col: agg_dict[rev_col] = 'sum'
+        if conv_col: agg_dict[conv_col] = 'sum'
+        if clk_col: agg_dict[clk_col] = 'sum'
+        if imp_col: agg_dict[imp_col] = 'sum'
+        
+        group_cols = [kw_col]
+        if camp_col: group_cols.append(camp_col)
+        if ag_col: group_cols.append(ag_col)
+        
+        agg_df = df.groupby(group_cols, as_index=False).agg(agg_dict)
+        
+        rename_dict = {kw_col: '검색어', cost_col: '광고비'}
+        if rev_col: rename_dict[rev_col] = '전환매출'
+        if conv_col: rename_dict[conv_col] = '전환'
+        if clk_col: rename_dict[clk_col] = '클릭'
+        if imp_col: rename_dict[imp_col] = '노출'
+        if camp_col: rename_dict[camp_col] = '캠페인'
+        if ag_col: rename_dict[ag_col] = '광고그룹'
+        
+        return agg_df.rename(columns=rename_dict), None
+    except Exception as e:
+        return None, f"[{file_obj.name}] 처리 오류: {str(e)}"
+
+# ==========================================
+# [FIXED & ENHANCED] 키워드 탭 (쇼핑검색 수동분석기 완벽 이식)
+# ==========================================
+def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
+    if not f.get("ready", False): return
+    st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
+    cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
+    
+    bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
+
+    def _prepare_main_table(df_in: pd.DataFrame, shopping_first: bool) -> pd.DataFrame:
+        if df_in is None or df_in.empty: return pd.DataFrame()
+        view = _perf_common_merge_meta(df_in, meta)
+        view = view.rename(columns={
+            "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
+            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", 
+            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+        }).copy()
+        
+        for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
+            if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+            else: view[c] = 0
+            
+        view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
+        view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
+        view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
+        view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+
+        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+        if shopping_first:
+            cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
+        else:
+            cols = base_cols + ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+            
+        disp = view[[c for c in cols if c in view.columns]].copy()
+        for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+            if c in disp.columns: disp[c] = disp[c].astype(int)
+        if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
+        
+        return disp
+
+    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (수동 분석기)"])
+    
+    with tab_pl:
+        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
+        if not df_pl.empty: 
+            render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), shopping_first=False), "pl_grid", 500)
+        else:
+            st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
+            
+    with tab_shop:
+        st.markdown("### 🛒 쇼핑검색어 수동 분석기 Pro")
+        st.info("💡 **네이버 API 정책 한계 완벽 대응:** 네이버 광고시스템에서 다운로드한 **'쇼핑검색어 리포트(csv, xlsx)'** 파일을 아래에 드래그 앤 드롭하시면, 여러 파일을 한 번에 병합하여 즉시 고도화된 타겟 분석을 제공합니다.")
+        
+        uploaded_files = st.file_uploader("보고서 다중 업로드 가능 (.csv, .xlsx)", type=["csv", "xlsx", "xls"], accept_multiple_files=True)
+        
+        if uploaded_files:
+            all_res = []
+            for file in uploaded_files:
+                res, err = process_manual_shopping_report(file)
+                if err:
+                    st.error(err)
+                elif res is not None:
+                    all_res.append(res)
+                    
+            if all_res:
+                final_df = pd.concat(all_res, ignore_index=True)
+                
+                # 병합 집계
+                agg_dict = {'광고비': 'sum'}
+                for c in ['전환매출', '전환', '클릭', '노출']:
+                    if c in final_df.columns: agg_dict[c] = 'sum'
+                    
+                group_cols = ['검색어']
+                if '캠페인' in final_df.columns: group_cols.append('캠페인')
+                if '광고그룹' in final_df.columns: group_cols.append('광고그룹')
+                
+                final_agg = final_df.groupby(group_cols, as_index=False).agg(agg_dict)
+                for c in ['전환매출', '전환', '클릭', '노출']:
+                    if c not in final_agg.columns: final_agg[c] = 0
+                
+                final_agg["CTR(%)"] = np.where(final_agg["노출"] > 0, (final_agg["클릭"] / final_agg["노출"]) * 100, 0.0).round(2)
+                final_agg["CPC(원)"] = np.where(final_agg["클릭"] > 0, final_agg["광고비"] / final_agg["클릭"], 0.0).round(0)
+                final_agg["CPA(원)"] = np.where(final_agg["전환"] > 0, final_agg["광고비"] / final_agg["전환"], 0.0).round(0)
+                final_agg["ROAS(%)"] = np.where(final_agg["광고비"] > 0, (final_agg["전환매출"] / final_agg["광고비"]) * 100, 0.0).round(0)
+                
+                final_agg['업체명'] = '수동 업로드 (통합)'
+                
+                tot_cost = final_agg['광고비'].sum()
+                tot_rev = final_agg['전환매출'].sum()
+                tot_roas = (tot_rev / tot_cost * 100) if tot_cost > 0 else 0
+                
+                st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("총 광고비 소진", format_currency(tot_cost))
+                c2.metric("총 전환매출 발생", format_currency(tot_rev))
+                c3.metric("평균 ROAS", f"{tot_roas:.0f}%")
+                c4.metric("분석된 유효 검색어 수", f"{len(final_agg):,}개")
+                
+                st.divider()
+                st.markdown("<div class='nv-sec-title'>💡 쇼핑검색어 최적화 포인트</div>", unsafe_allow_html=True)
+                render_insight_cards(final_agg, "검색어", "검색어")
+                st.divider()
+                
+                st.markdown("#### 📊 검색어별 상세 성과 표")
+                disp_shop = final_agg.sort_values('광고비', ascending=False)
+                for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+                    if c in disp_shop.columns: disp_shop[c] = disp_shop[c].astype(int)
+                if "CTR(%)" in disp_shop.columns: disp_shop["CTR(%)"] = disp_shop["CTR(%)"].astype(float).round(2)
+                
+                # 순서 깔끔하게 정렬
+                target_cols = ['캠페인', '광고그룹', '검색어', '전환매출', 'ROAS(%)', '광고비', '전환', 'CPA(원)', '클릭', 'CTR(%)', 'CPC(원)', '노출']
+                disp_shop = disp_shop[[c for c in target_cols if c in disp_shop.columns]]
+                
+                render_big_table(disp_shop, "manual_shop_grid", 600)
+
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
