@@ -17,7 +17,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.5 (최적화 탭 완전분리 & 엑셀 시트분리)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.6 (매체별 검색어 완벽 분리 & ROAS 노이즈 제거)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -142,21 +142,22 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50)
             camp_df = _perf_common_merge_meta(add_rates(camp_bndl), meta) if not camp_bndl.empty else pd.DataFrame()
             
-            # 1. 파워링크 키워드 묶음
             kw_bndl = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=500)
             kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
             
-            # 2. 진짜 쇼핑검색어 묶음
-            st_bndl = query_search_term_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=500)
+            shop_bundle = query_search_term_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=500)
             st_df = pd.DataFrame()
-            if st_bndl is not None and not st_bndl.empty and "_debug_msg" not in st_bndl.columns:
-                st_df = _perf_common_merge_meta(add_rates(st_bndl), meta)
+            if shop_bundle is not None and not shop_bundle.empty and "_debug_msg" not in shop_bundle.columns:
+                st_df = _perf_common_merge_meta(add_rates(shop_bundle), meta)
+
+            # 분리
+            df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
+            df_shop_st = st_df[st_df['campaign_type_label'] == '쇼핑검색'] if not st_df.empty and 'campaign_type_label' in st_df.columns else pd.DataFrame()
+            df_pl_st = st_df[st_df['campaign_type_label'] == '파워링크'] if not st_df.empty and 'campaign_type_label' in st_df.columns else pd.DataFrame()
 
             try:
-                # 엑셀 시트 4개로 완전 분리해서 전달
-                excel_data = generate_full_report_excel(df_summary, camp_df, kw_df, st_df)
+                excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw, df_shop_st)
             except TypeError:
-                # 폴백
                 excel_data = generate_full_report_excel(df_summary, camp_df, pd.concat([kw_df, st_df], ignore_index=True))
             
             st.download_button(
@@ -193,12 +194,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='kpi-row'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    # ==========================================
-    # [NEW] 주요 최적화 포인트 (파워링크 / 쇼핑검색 탭 분리)
-    # ==========================================
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트</div>", unsafe_allow_html=True)
     
-    tab_opt_pl, tab_opt_shop = st.tabs(["🎯 파워링크 (키워드)", "🛒 쇼핑검색 (검색어)"])
+    # [NEW] AI 분석 탭 3개로 완벽 분리
+    tab_opt_pl_kw, tab_opt_shop_st, tab_opt_pl_st = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (실제검색어)", "🎯 파워링크 (확장검색어)"])
 
     def _render_opt_cards(df_target: pd.DataFrame, item_name: str):
         if df_target is None or df_target.empty:
@@ -221,21 +220,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         with c2:
             with st.container(border=True):
                 st.markdown(f"<h4 style='margin-bottom: 4px; margin-top: 0;'>⭐ 고효율 {item_name} (기회 발굴)</h4>", unsafe_allow_html=True)
-                st.caption(f"비용 5만 원 미만 소진, ROAS 500% 이상 (입찰가 상향 권장)")
-                stars = df_target[(df_target['cost'] <= 50000) & (df_target['conv'] >= 1) & (df_target['roas'] >= 500)].sort_values('roas', ascending=False)
+                # [FIX] 노이즈 제거: 광고비 최소 3,000원 이상 조건 추가 (11원 소진 시 수만% ROAS 뜨는 현상 방지)
+                st.caption(f"비용 3천원~5만 원 소진, ROAS 500% 이상 (입찰가 상향 권장)")
+                stars = df_target[(df_target['cost'] >= 3000) & (df_target['cost'] <= 50000) & (df_target['conv'] >= 1) & (df_target['roas'] >= 500)].sort_values('roas', ascending=False)
                 if not stars.empty:
                     disp_s = stars[['account_name', 'keyword', 'roas']].rename(columns={'account_name': '업체명', 'keyword': item_name, 'roas': 'ROAS(%)'})
                     disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
                     st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
                 else: 
-                    st.info(f"해당되는 고효율 {item_name}가 없습니다.")
+                    st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
 
-    with tab_opt_pl:
-        pl_df = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else kw_df
-        _render_opt_cards(pl_df, "키워드")
-        
-    with tab_opt_shop:
-        _render_opt_cards(st_df, "검색어")
+    with tab_opt_pl_kw: _render_opt_cards(df_pl_kw, "키워드")
+    with tab_opt_shop_st: _render_opt_cards(df_shop_st, "검색어")
+    with tab_opt_pl_st: _render_opt_cards(df_pl_st, "검색어")
 
     st.divider()
 
@@ -414,31 +411,48 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA", "클릭", "CTR(%)", "CPC", "노출"] if shopping_first else base_cols + ["노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
         return view[[c for c in cols if c in view.columns]].copy()
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크", "🛒 쇼핑검색 (검색어)"])
+    # [NEW] 탭 완벽 분리
+    tab_pl, tab_shop, tab_pl_st = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (실제검색어)", "🎯 파워링크 (확장검색어)"])
     
     with tab_pl:
-        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else bundle
-        if df_pl is not None and not df_pl.empty: 
+        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
+        if not df_pl.empty: 
             render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), shopping_first=False), "pl_grid", 500)
         else:
-            st.info("파워링크 데이터가 없습니다.")
+            st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
             
+    # 검색어 공통 조회
+    shop_bundle = query_search_term_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
+    has_valid_st = shop_bundle is not None and not shop_bundle.empty and "_debug_msg" not in shop_bundle.columns
+
     with tab_shop:
         st.info("💡 **쇼핑검색 인사이트:** 사용자가 실제 검색한 **'검색어(Search Term)'**입니다. 불필요한 검색어는 비용 낭비를 막기 위해 제외 키워드로 설정하세요.")
-        
-        shop_bundle = query_search_term_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
-        
-        if shop_bundle is not None and "_debug_msg" in shop_bundle.columns:
+        if has_valid_st:
+            df_shop_st = shop_bundle[shop_bundle["campaign_type_label"] == "쇼핑검색"]
+            if not df_shop_st.empty:
+                render_big_table(_prepare_main_table(df_shop_st.sort_values("cost", ascending=False).head(top_n), shopping_first=True), "shop_grid", 500)
+            else:
+                st.info("해당 기간의 쇼핑검색어 데이터가 없습니다.")
+        elif shop_bundle is not None and "_debug_msg" in shop_bundle.columns:
+            # Fallback for older data
             df_shop_fb = bundle[bundle["campaign_type_label"] == "쇼핑검색"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
-            if df_shop_fb is not None and not df_shop_fb.empty: 
+            if not df_shop_fb.empty: 
                 render_big_table(_prepare_main_table(df_shop_fb.sort_values("cost", ascending=False).head(top_n), shopping_first=True), "shop_grid_fb", 500)
             else:
                 st.info("조회된 쇼핑검색 데이터가 없습니다.")
-                
-        elif shop_bundle is not None and not shop_bundle.empty:
-            render_big_table(_prepare_main_table(shop_bundle.sort_values("cost", ascending=False).head(top_n), shopping_first=True), "shop_grid", 500)
         else:
             st.info("조회된 쇼핑검색(검색어) 데이터가 없습니다.")
+
+    with tab_pl_st:
+        st.info("💡 **파워링크 확장검색 인사이트:** 파워링크 등록 키워드 외에 네이버 시스템이 유사하게 판단하여 확장 노출시킨 실제 검색어입니다.")
+        if has_valid_st:
+            df_pl_st = shop_bundle[shop_bundle["campaign_type_label"] == "파워링크"]
+            if not df_pl_st.empty:
+                render_big_table(_prepare_main_table(df_pl_st.sort_values("cost", ascending=False).head(top_n), shopping_first=False), "pl_st_grid", 500)
+            else:
+                st.info("해당 기간에 조회된 파워링크 확장 검색어 데이터가 없습니다.")
+        else:
+            st.info("파워링크 확장 검색어 데이터를 불러올 수 없습니다.")
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
