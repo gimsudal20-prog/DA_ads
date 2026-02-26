@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v11.0 (베타 버전)")
+BUILD_TAG = os.getenv("APP_BUILD", "v11.1 (테이블 렌더링 최적화 및 정렬/소수점 수정)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -271,7 +271,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
 
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
-    biz_view[f"최근{TOPUP_AVG_DAYS}일 소진"] = biz_view["avg_cost"].map(format_currency)
+    biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
@@ -285,12 +285,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
-    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     render_big_table(display_df, key="budget_biz_table", height=450)
 
-    # ==========================================
-    # [FIXED] StreamlitAPIException을 우회하는 안정적인 콜백 구조 적용
-    # ==========================================
     st.divider()
     st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
 
@@ -342,12 +339,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             cid = int(label_to_cid.get(sel, 0))
             sk = f"budget_input_{cid}"
             
-            # 1. 초기 로드
             if sk not in st.session_state:
                 cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
                 st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
             
-            # 2. 콜백 1: 텍스트 입력 변경 시 콤마 자동 생성
             def format_budget_on_change(key_name):
                 val = st.session_state.get(key_name, "0")
                 cleaned = re.sub(r"[^\d]", "", str(val))
@@ -356,7 +351,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 else:
                     st.session_state[key_name] = "0"
             
-            # 3. 콜백 2: 버튼 클릭 시 금액 증감 (렌더링 전에 값을 업데이트 해야 에러가 안 남)
             def add_amount_callback(key_name, amount):
                 val = st.session_state.get(key_name, "0")
                 cleaned = int(re.sub(r"[^\d]", "", str(val)) or 0)
@@ -365,13 +359,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             def reset_amount_callback(key_name):
                 st.session_state[key_name] = "0"
 
-            # 4. 텍스트 인풋 렌더링
             st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
             
-            # 현재 입력된 값의 숫자 버전 추출 (한글 표기를 위해)
             raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
             
-            # 5. 버튼 렌더링 (콜백을 통해 안전하게 값 변경)
             b1, b2, b3, b4 = st.columns(4)
             b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000), use_container_width=True)
             b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000), use_container_width=True)
@@ -397,6 +388,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 time.sleep(0.5)
                 st.rerun()
 
+# [NEW] 테이블 렌더링 최적화 로직 적용 (시스템 ID 제거, 완벽한 숫자 정렬 지원)
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🚀 성과 (캠페인)")
@@ -405,15 +397,34 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if bundle is None or bundle.empty: return
 
     bundle = _perf_common_merge_meta(bundle, meta)
-    bundle = add_rates(bundle)
 
-    df = bundle.sort_values("cost", ascending=False).head(top_n).rename(columns={"account_name": "업체명", "campaign_type": "캠페인유형", "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "매출"})
-    df = finalize_display_cols(df)
-    
-    for c in ["광고비", "매출", "CPC(원)", "CPA(원)", "노출", "클릭", "전환"]:
-        if c in df.columns: df[c] = pd.to_numeric(df[c].astype(str).str.replace(r'[^0-9\.-]', '', regex=True), errors='coerce')
+    view = bundle.rename(columns={
+        "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
+        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
+        "conv": "전환", "sales": "전환매출"
+    }).copy()
 
-    render_big_table(df, key="camp_main_grid", height=560)
+    if "캠페인유형" not in view.columns and "campaign_type" in view.columns:
+        view = view.rename(columns={"campaign_type": "캠페인유형"})
+
+    for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
+        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+        else: view[c] = 0
+
+    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
+    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
+    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
+    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+
+    cols = ["업체명", "담당자", "캠페인유형", "캠페인", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+    disp = view[[c for c in cols if c in view.columns]].copy()
+    disp = disp.sort_values("광고비", ascending=False).head(top_n)
+
+    for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+        if c in disp.columns: disp[c] = disp[c].astype(int)
+    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+
+    render_big_table(disp, key="camp_main_grid", height=560)
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
@@ -424,16 +435,36 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     def _prepare_main_table(df_in: pd.DataFrame, shopping_first: bool) -> pd.DataFrame:
         if df_in is None or df_in.empty: return pd.DataFrame()
-        df = _perf_common_merge_meta(add_rates(df_in), meta)
-        view = df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "ctr": "CTR(%)", "cpc": "CPC", "cost": "광고비", "conv": "전환", "cpa": "CPA", "sales": "전환매출", "roas": "ROAS(%)"})
-        for c in ["광고비", "CPC", "CPA", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c, 0), errors="coerce").fillna(0)
-        view["ROAS(%)"] = view["ROAS(%)"].map(format_roas)
-        view["CTR(%)"] = pd.to_numeric(view.get("CTR(%)", 0), errors="coerce").fillna(0).astype(float)
-        view = finalize_ctr_col(view, "CTR(%)")
+        view = _perf_common_merge_meta(df_in, meta)
+        
+        view = view.rename(columns={
+            "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
+            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드",
+            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+        }).copy()
 
-        base_cols = ["업체명", "캠페인유형", "캠페인", "광고그룹", "키워드"]
-        cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA", "클릭", "CTR(%)", "CPC", "노출"] if shopping_first else base_cols + ["노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
-        return view[[c for c in cols if c in view.columns]].copy()
+        for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
+            if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+            else: view[c] = 0
+
+        view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
+        view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
+        view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
+        view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+
+        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+        if shopping_first:
+            cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
+        else:
+            cols = base_cols + ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+            
+        disp = view[[c for c in cols if c in view.columns]].copy()
+        
+        for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+            if c in disp.columns: disp[c] = disp[c].astype(int)
+        if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+        
+        return disp
 
     tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 안내"])
     
@@ -460,17 +491,31 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
     if bundle is None or bundle.empty: return
 
-    df = _perf_common_merge_meta(add_rates(bundle), meta)
-    main_df = df.sort_values("cost", ascending=False).head(top_n).copy()
-    disp = main_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인", "ad_name": "소재내용", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "ctr": "CTR(%)", "cpc": "CPC", "cpa": "CPA", "sales": "전환매출", "roas": "ROAS(%)"})
-    
-    for c in ["노출", "클릭", "전환", "광고비", "CPC", "CPA", "전환매출"]: disp[c] = pd.to_numeric(disp.get(c, 0), errors="coerce").fillna(0)
-    disp["ROAS(%)"] = disp["ROAS(%)"].map(format_roas)
-    disp["CTR(%)"] = pd.to_numeric(disp.get("CTR(%)", 0), errors="coerce").fillna(0).astype(float)
-    disp = finalize_ctr_col(disp, "CTR(%)")
+    df = _perf_common_merge_meta(bundle, meta)
+    view = df.rename(columns={
+        "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", 
+        "campaign_name": "캠페인", "ad_name": "소재내용", 
+        "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+    }).copy()
 
-    cols = ["업체명", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "전환매출", "ROAS(%)"]
-    render_big_table(disp[[c for c in cols if c in disp.columns]], "ad_big_table", 500)
+    for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
+        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+        else: view[c] = 0
+
+    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
+    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
+    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
+    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+
+    cols = ["업체명", "담당자", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+    disp = view[[c for c in cols if c in view.columns]].copy()
+    disp = disp.sort_values("광고비", ascending=False).head(top_n)
+
+    for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+        if c in disp.columns: disp[c] = disp[c].astype(int)
+    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float)
+
+    render_big_table(disp, "ad_big_table", 500)
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
