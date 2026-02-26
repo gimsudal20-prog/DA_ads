@@ -233,24 +233,18 @@ def format_roas(val) -> str:
         return f"{float(val):.0f}%"
     except Exception: return "-"
 
-# ----------------------------------------------------
-# [RESTORED] 예산 문자열 파싱 및 DB 업데이트 함수 복구
-# ----------------------------------------------------
 def parse_currency(val_str) -> int:
-    """문자열 '500,000' -> 숫자 500000 으로 변환"""
     if pd.isna(val_str): return 0
     s = re.sub(r"[^\d]", "", str(val_str))
     return int(s) if s else 0
 
 def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None:
-    """월 예산을 DB에 저장"""
     if not table_exists(engine, "dim_account_meta"): return
     sql_exec(
         engine,
         "UPDATE dim_account_meta SET monthly_budget = :b, updated_at = now() WHERE customer_id = :cid",
         {"b": int(monthly_budget), "cid": int(customer_id)},
     )
-# ----------------------------------------------------
 
 def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
     if df is None or df.empty or col not in df.columns: return df
@@ -564,6 +558,9 @@ def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], t
     fk_cols = get_table_columns(_engine, "fact_keyword_daily")
     sales_sum = "SUM(COALESCE(fk.sales, 0)) AS sales" if "sales" in fk_cols else "0::numeric AS sales"
     
+    # 평균순위(avg_rnk) 맵핑
+    avg_rnk_expr = "AVG(NULLIF(fk.avg_rnk, 0)) AS avg_rank," if "avg_rnk" in fk_cols else "0::float AS avg_rank,"
+
     kw_text_col = next((cand for cand in ("keyword", "keyword_name", "kw", "query", "keyword_text") if cand in fk_cols), None)
     kw_text_select = f"MIN(NULLIF(TRIM(fk.{kw_text_col}), '')) AS keyword_text" if kw_text_col else "NULL::text AS keyword_text"
 
@@ -601,7 +598,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], t
       SELECT fk.customer_id::text AS customer_id, fk.keyword_id::text AS keyword_id,
         {'MIN(fk.adgroup_id::text) AS adgroup_id,' if 'adgroup_id' in fk_cols else 'NULL::text AS adgroup_id,'}
         {'MIN(fk.campaign_id::text) AS campaign_id,' if 'campaign_id' in fk_cols else 'NULL::text AS campaign_id,'}
-        {kw_text_select}, SUM(COALESCE(fk.imp, 0)) AS imp, SUM(COALESCE(fk.clk, 0)) AS clk, SUM(COALESCE(fk.cost, 0)) AS cost, SUM(COALESCE(fk.conv, 0)) AS conv, {sales_sum}
+        {kw_text_select}, {avg_rnk_expr} SUM(COALESCE(fk.imp, 0)) AS imp, SUM(COALESCE(fk.clk, 0)) AS clk, SUM(COALESCE(fk.cost, 0)) AS cost, SUM(COALESCE(fk.conv, 0)) AS conv, {sales_sum}
       FROM fact_keyword_daily fk WHERE fk.dt BETWEEN :d1 AND :d2 {cid_clause} GROUP BY fk.customer_id::text, fk.keyword_id::text
     ),
     top_cost0 AS (SELECT customer_id, keyword_id FROM base WHERE cost IS NOT NULL ORDER BY cost DESC LIMIT {int(topn_cost)}),
@@ -610,7 +607,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], t
     picked_ids AS (SELECT customer_id, keyword_id FROM top_cost0 UNION SELECT customer_id, keyword_id FROM top_clk0 UNION SELECT customer_id, keyword_id FROM top_conv0),
     picked AS (SELECT i.customer_id, i.keyword_id, ROW_NUMBER() OVER (ORDER BY b.cost DESC NULLS LAST) AS rn_cost, ROW_NUMBER() OVER (ORDER BY b.clk DESC NULLS LAST) AS rn_clk, ROW_NUMBER() OVER (ORDER BY b.conv DESC NULLS LAST) AS rn_conv FROM picked_ids i JOIN base b ON i.customer_id = b.customer_id AND i.keyword_id = b.keyword_id),
     scope AS (SELECT b.customer_id, b.keyword_id, {keyword_expr} AS keyword, {adgroup_name_expr} AS adgroup_name, {campaign_name_expr} AS campaign_name, {campaign_tp_expr} AS campaign_tp, {case_expr} AS campaign_type_label FROM base b {join_dim_keyword} {join_dim_adgroup} {join_dim_campaign})
-    SELECT b.customer_id, b.keyword_id, scope.keyword, scope.adgroup_name, scope.campaign_name, scope.campaign_tp, scope.campaign_type_label, b.imp, b.clk, b.cost, b.conv, b.sales, p.rn_cost, p.rn_clk, p.rn_conv
+    SELECT b.customer_id, b.keyword_id, b.avg_rank, scope.keyword, scope.adgroup_name, scope.campaign_name, scope.campaign_tp, scope.campaign_type_label, b.imp, b.clk, b.cost, b.conv, b.sales, p.rn_cost, p.rn_clk, p.rn_conv
     FROM picked p JOIN base b ON p.customer_id = b.customer_id AND p.keyword_id = b.keyword_id LEFT JOIN scope ON b.customer_id = scope.customer_id AND b.keyword_id = scope.keyword_id WHERE 1=1 {type_filter_clause} ORDER BY b.cost DESC NULLS LAST
     """
     df = sql_read(_engine, sql, params={"d1": d1, "d2": d2})
