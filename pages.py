@@ -17,7 +17,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v9.7 (에러수정 및 수동소각 기능)")
+BUILD_TAG = os.getenv("APP_BUILD", "v9.8 (와이드 레이아웃 & 예산 폼 복구)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -125,7 +125,6 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
-# --- 페이지 로직 ---
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -224,6 +223,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     except Exception as e:
         st.info(f"추세 데이터를 불러오는 중 오류가 발생했습니다: {e}")
 
+
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
     
@@ -278,6 +278,74 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     display_df = biz_view[["account_name", "manager", "비즈머니 잔액", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     ui_table_or_dataframe(display_df, key="budget_biz_table", height=520)
+
+    # ==========================================
+    # [RESTORED] 월 예산 관리 및 수정 폼
+    # ==========================================
+    st.divider()
+    st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
+
+    budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
+    budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
+    budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
+
+    budget_view["usage_rate"] = 0.0
+    m2 = budget_view["monthly_budget_val"] > 0
+    budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
+    budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
+
+    def _status(rate: float, budget: int):
+        if budget == 0: return ("⚪ 미설정", 3)
+        if rate >= 1.0: return ("🔴 초과", 0)
+        if rate >= 0.9: return ("🟡 주의", 1)
+        return ("🟢 적정", 2)
+
+    tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
+    budget_view["상태"] = tmp[0]
+    budget_view["_rank"] = tmp[1].astype(int)
+
+    budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+
+    budget_view_disp = budget_view.copy()
+    budget_view_disp["월 예산(원)"] = budget_view_disp["monthly_budget_val"].map(format_number_commas)
+    budget_view_disp[f"{end_dt.month}월 사용액"] = budget_view_disp["current_month_cost_val"].map(format_number_commas)
+    budget_view_disp["집행률(%)"] = budget_view_disp["usage_pct"].map(lambda x: round(float(x), 1) if pd.notna(x) else 0.0)
+
+    disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
+    table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
+
+    c_table, c_form = st.columns([3, 1])
+    with c_table:
+        render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
+
+    with c_form:
+        st.markdown("#### ✍️ 월 예산 설정/수정")
+        st.caption("예산을 입력하면 좌측 집행률 표에 즉시 반영됩니다.")
+        
+        opts = budget_view_disp[["customer_id", "account_name"]].copy()
+        opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
+        labels = opts["label"].tolist()
+        label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
+
+        with st.form("budget_update_form", clear_on_submit=False):
+            sel = st.selectbox("업체 선택", labels, index=0 if labels else None, disabled=(len(labels) == 0))
+            cur_budget = 0
+            if labels:
+                cid = int(label_to_cid.get(sel, 0))
+                cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
+            
+            new_budget = st.text_input("새 월 예산 (예: 500,000)", value=format_number_commas(cur_budget) if labels else "0")
+            submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
+
+        if submitted and labels:
+            cid = int(label_to_cid.get(sel, 0))
+            nb = parse_currency(new_budget)
+            update_monthly_budget(engine, cid, nb)
+            st.success("예산 수정 완료! (새로고침 됩니다)")
+            st.cache_data.clear()
+            time.sleep(0.5)
+            st.rerun()
+
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
