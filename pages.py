@@ -17,14 +17,13 @@ from data import *
 from data import period_compare_range, pct_to_arrow
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v9.5 (요일/KPI/보고서 자동화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v9.7 (에러수정 및 수동소각 기능)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
 def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
     if meta is None or meta.empty: return []
-    if (not manager_sel) and (not account_sel): return []
     df = meta.copy()
     if manager_sel and "manager" in df.columns:
         sel = [str(x).strip() for x in manager_sel if str(x).strip()]
@@ -130,7 +129,6 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
-    # [NEW] 3. 상단 헤더 및 자동 엑셀 추출 버튼
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("<div class='nv-sec-title'>요약 및 인사이트</div>", unsafe_allow_html=True)
@@ -139,7 +137,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
         
         with st.spinner("보고서 생성 중..."):
-            # 엑셀에 담을 데이터 준비 (백그라운드 조회)
             cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
             df_summary = pd.DataFrame([cur_summary])
             
@@ -185,9 +182,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='kpi-row'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    # ==========================================
-    # [NEW] 1. 돈 먹는 하마 (AI 액션 제안)
-    # ==========================================
     st.markdown("### 🚨 최적화 자동 분석 (Action Item)")
     
     if kw_df is not None and not kw_df.empty:
@@ -213,9 +207,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             else: st.write("발굴된 고효율 키워드가 없습니다.")
     st.divider()
 
-    # ==========================================
-    # [NEW] 2. 요일별 분석 차트
-    # ==========================================
     try:
         ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         if ts is not None and not ts.empty:
@@ -236,7 +227,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
     
-    # [NEW] 2. 타겟 KPI (목표 ROAS) 진척도 관리 설정
     target_roas = st.slider("🎯 전사 목표 ROAS (%) 설정", min_value=100, max_value=1000, value=300, step=50, help="이 목표치에 따라 아래 표의 기상도가 동적으로 변합니다.")
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
@@ -254,7 +244,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     biz_view = bundle.copy()
     
-    # 예산 충전 로직
     m = biz_view["avg_cost"].astype(float) > 0
     biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
     biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
@@ -262,18 +251,16 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view["잔액상태"] = "🟢 여유"
     biz_view.loc[biz_view["bizmoney_balance"].astype(float) < biz_view["threshold"].astype(float), "잔액상태"] = "🔴 충전요망"
 
-    # [NEW] 당월 ROAS 및 기상도 계산
     biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
     
     def get_weather(roas, target):
         if roas >= target: return "☀️ 맑음"
-        elif roas >= target * 0.8: return "☁️ 흐림" # 80% 이상
+        elif roas >= target * 0.8: return "☁️ 흐림" 
         else: return "☔ 비상"
         
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
 
-    # 포맷팅
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
     biz_view[f"최근{TOPUP_AVG_DAYS}일 소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
@@ -361,6 +348,7 @@ def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
     try: db_ping(engine); st.success("DB 연결 성공 ✅")
     except Exception as e: st.error(f"DB 연결 실패: {e}"); return
+    
     st.markdown("### 📌 accounts.xlsx → DB 동기화")
     up = st.file_uploader("accounts.xlsx 업로드(선택)", type=["xlsx"])
     colA, colB, colC = st.columns([1.2, 1.0, 2.2], gap="small")
@@ -373,6 +361,33 @@ def page_settings(engine) -> None:
             res = seed_from_accounts_xlsx(engine, df=df_src)
             st.success(f"✅ 동기화 완료: {res.get('meta', 0)}건"); st.cache_data.clear(); st.rerun()
         except Exception as e: st.error(f"실패: {e}")
+
+    st.divider()
+
+    st.markdown("### 🗑️ 강제 삭제 도구 (수동 DB 소각)")
+    st.caption("동기화 후에도 계속 뜨는 악성 '유령 계정'이 있다면 커스텀 ID(숫자)를 입력해 과거 데이터까지 DB에서 완전히 소각하세요.")
+    
+    col_del1, col_del2 = st.columns([2, 1])
+    with col_del1:
+        del_cid = st.text_input("삭제할 커스텀 ID 입력", placeholder="예: 12345678", label_visibility="collapsed")
+    with col_del2:
+        if st.button("🗑️ 완전 삭제", type="primary", use_container_width=True):
+            if del_cid.strip() and del_cid.strip().isdigit():
+                try:
+                    cid_val = str(del_cid.strip())
+                    sql_exec(engine, "DELETE FROM dim_account_meta WHERE customer_id = :cid", {"cid": int(cid_val)})
+                    for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
+                        try: sql_exec(engine, f"DELETE FROM {table} WHERE customer_id::text = :cid", {"cid": cid_val})
+                        except Exception: pass
+                            
+                    st.success(f"✅ ID '{del_cid}' 업체의 모든 데이터가 영구 소각되었습니다.")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 중 오류 발생: {e}")
+            else:
+                st.warning("유효한 숫자 형태의 커스텀 ID를 입력해주세요.")
 
 def main():
     try: engine = get_engine(); latest = get_latest_dates(engine)
