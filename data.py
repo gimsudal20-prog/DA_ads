@@ -274,41 +274,6 @@ def finalize_display_cols(df: pd.DataFrame) -> pd.DataFrame:
     if "ROAS" in out.columns: out["ROAS"] = pd.to_numeric(out["ROAS"], errors="coerce").apply(format_roas)
     return out
 
-def build_campaign_summary_rows_from_numeric(df_numeric: pd.DataFrame, campaign_type_col: str = "campaign_type", campaign_name_col: str = "campaign_name") -> pd.DataFrame:
-    if df_numeric is None or df_numeric.empty: return pd.DataFrame()
-    x = df_numeric.copy()
-    if campaign_type_col not in x.columns: return pd.DataFrame()
-
-    for c in ["imp", "clk", "cost", "conv", "sales"]:
-        if c not in x.columns: x[c] = 0
-        x[c] = pd.to_numeric(x[c], errors="coerce").fillna(0)
-
-    x[campaign_type_col] = x[campaign_type_col].fillna("").astype(str).str.strip()
-    x = x[x[campaign_type_col] != ""].copy()
-    if x.empty: return pd.DataFrame()
-
-    if "campaign_id" in x.columns and "customer_id" in x.columns: x["_camp_key"] = x["customer_id"].astype(str) + ":" + x["campaign_id"].astype(str)
-    else: x["_camp_key"] = x.get(campaign_name_col, "").astype(str)
-
-    def _make_row(label_type: str, g: pd.DataFrame) -> dict:
-        n = int(g["_camp_key"].nunique())
-        imp, clk, cost, conv, sales = float(g["imp"].sum()), float(g["clk"].sum()), float(g["cost"].sum()), float(g["conv"].sum()), float(g["sales"].sum()) if "sales" in g.columns else 0.0
-        return {"업체명": "", "담당자": "", "광고유형": label_type, "캠페인": f"캠페인 {n}개 결과", "노출": int(imp), "클릭": int(clk), "CTR(%)": float((clk / imp * 100.0) if imp > 0 else 0.0), "CPC": format_currency((cost / clk) if clk > 0 else 0.0), "광고비": format_currency(cost), "전환": int(conv), "CPA": format_currency((cost / conv) if conv > 0 else 0.0), "전환매출": format_currency(sales), "ROAS(%)": format_roas((sales / cost * 100.0) if cost > 0 else 0.0)}
-
-    rows = [_make_row("종합", x)]
-    for tp, g in x.groupby(campaign_type_col, dropna=False):
-        rows.append(_make_row(str(tp).strip() or "기타", g))
-
-    out = pd.DataFrame(rows)
-    out["CTR(%)"] = pd.to_numeric(out["CTR(%)"], errors="coerce").fillna(0).astype(float)
-    out = finalize_ctr_col(out, "CTR(%)")
-    return out[["업체명", "담당자", "광고유형", "캠페인", "노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]].copy()
-
-def parse_currency(val_str) -> int:
-    if pd.isna(val_str): return 0
-    s = re.sub(r"[^\d]", "", str(val_str))
-    return int(s) if s else 0
-
 def campaign_tp_to_label(tp: str) -> str:
     t = (tp or "").strip()
     return _CAMPAIGN_TP_LABEL.get(t.lower(), t) if t else ""
@@ -406,7 +371,7 @@ def get_meta(_engine) -> pd.DataFrame:
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def query_latest_dates(_engine) -> Dict[str, str]:
-    tables = ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]
+    tables = ["fact_campaign_daily", "fact_keyword_daily", "fact_search_term_daily", "fact_ad_daily", "fact_bizmoney_daily"]
     out: Dict[str, str] = {}
     for t in tables:
         try:
@@ -422,7 +387,7 @@ def get_latest_dates(_engine) -> dict:
     parts = []
     def _add(label: str, table: str):
         if table_exists(_engine, table): parts.append(f"SELECT '{label}' AS k, MAX(dt) AS dt FROM {table}")
-    _add("campaign", "fact_campaign_daily"); _add("keyword", "fact_keyword_daily"); _add("ad", "fact_ad_daily"); _add("bizmoney", "fact_bizmoney_daily")
+    _add("campaign", "fact_campaign_daily"); _add("keyword", "fact_keyword_daily"); _add("search_term", "fact_search_term_daily"); _add("ad", "fact_ad_daily"); _add("bizmoney", "fact_bizmoney_daily")
     if not parts: return {"campaign": None, "keyword": None, "ad": None, "bizmoney": None}
     df = sql_read(_engine, " UNION ALL ".join(parts), {})
     out = {"campaign": None, "keyword": None, "ad": None, "bizmoney": None}
@@ -630,6 +595,82 @@ def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], t
     FROM picked p JOIN base b ON p.customer_id = b.customer_id AND p.keyword_id = b.keyword_id LEFT JOIN scope ON b.customer_id = scope.customer_id AND b.keyword_id = scope.keyword_id WHERE 1=1 {type_filter_clause} ORDER BY b.cost DESC NULLS LAST
     """
     df = sql_read(_engine, sql, params={"d1": d1, "d2": d2})
+    return pd.DataFrame() if df is None else df
+
+# ==========================================
+# [NEW] 검색어 전용(Search Term) 쿼리
+# ==========================================
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
+def query_search_term_bundle(_engine, d1: date, d2: date, customer_ids: List[str], type_sel: Tuple[str, ...], topn_cost: int = 300) -> pd.DataFrame:
+    """쇼핑검색 등 검색어 리포트(fact_search_term_daily)를 전용으로 호출합니다."""
+    tables = _get_table_names_cached(_engine)
+    st_table = next((t for t in ["fact_search_term_daily", "fact_searchterm_daily", "fact_search_word_daily", "fact_searchword_daily"] if t in tables), None)
+    
+    if not st_table:
+        return pd.DataFrame() # 테이블이 없으면 빈 DF 반환 (Fallback trigger)
+        
+    st_cols = get_table_columns(_engine, st_table)
+    sales_sum = "SUM(COALESCE(b.sales, 0)) AS sales" if "sales" in st_cols else "0::numeric AS sales"
+    
+    # 검색어 컬럼명 찾기
+    term_col = next((c for c in ["search_term", "search_word", "query", "searchword", "keyword"] if c in st_cols), "search_term")
+    
+    cid_clause = f"AND b.customer_id::text IN ({_sql_in_str_list(customer_ids)})" if customer_ids else ""
+    
+    has_dim_ag, has_dim_cp = table_exists(_engine, "dim_adgroup"), table_exists(_engine, "dim_campaign")
+    dim_ag_cols = get_table_columns(_engine, "dim_adgroup") if has_dim_ag else set()
+    dim_cp_cols = get_table_columns(_engine, "dim_campaign") if has_dim_cp else set()
+    
+    ag_name_col = "adgroup_name" if "adgroup_name" in dim_ag_cols else ("name" if "name" in dim_ag_cols else None)
+    cp_name_col = "campaign_name" if "campaign_name" in dim_cp_cols else ("name" if "name" in dim_cp_cols else None)
+    cp_tp_col = "campaign_tp" if "campaign_tp" in dim_cp_cols else ("campaign_type" if "campaign_type" in dim_cp_cols else None)
+
+    join_ag = f"LEFT JOIN dim_adgroup g ON b.customer_id = g.customer_id::text AND b.adgroup_id::text = g.adgroup_id::text" if has_dim_ag and 'adgroup_id' in st_cols else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_id, NULL::text AS campaign_id, NULL::text AS adgroup_name) g ON 1=0"
+    
+    cp_join_key = f"COALESCE(NULLIF(b.campaign_id::text, ''), g.campaign_id::text)" if 'campaign_id' in st_cols else "g.campaign_id::text"
+    join_cp = f"LEFT JOIN dim_campaign c ON b.customer_id = c.customer_id::text AND {cp_join_key} = c.campaign_id::text" if has_dim_cp else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
+    
+    tp_keys = label_to_tp_keys(type_sel) if type_sel else []
+    tp_in = _sql_in_text_list([str(x).lower() for x in tp_keys])
+    type_filter = f"AND LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) IN ({tp_in})" if tp_keys and has_dim_cp and cp_tp_col else ""
+    
+    # 기본은 조인된 캠페인 타입, 못 찾으면 무조건 '쇼핑검색'으로 분류
+    case_expr = "CASE " + " ".join([f"WHEN LOWER(COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '')) = '{k}' THEN '{v}'" for k, v in _CAMPAIGN_TP_LABEL.items()]) + " ELSE '쇼핑검색' END" if has_dim_cp and cp_tp_col else "'쇼핑검색'"
+
+    sql = f"""
+    WITH base AS (
+        SELECT b.customer_id::text AS customer_id,
+               b.{term_col}::text AS keyword,
+               {'MIN(b.adgroup_id::text) AS adgroup_id,' if 'adgroup_id' in st_cols else 'NULL::text AS adgroup_id,'}
+               {'MIN(b.campaign_id::text) AS campaign_id,' if 'campaign_id' in st_cols else 'NULL::text AS campaign_id,'}
+               SUM(COALESCE(b.imp, 0)) AS imp,
+               SUM(COALESCE(b.clk, 0)) AS clk,
+               SUM(COALESCE(b.cost, 0)) AS cost,
+               SUM(COALESCE(b.conv, 0)) AS conv,
+               {sales_sum}
+        FROM {st_table} b
+        WHERE b.dt BETWEEN :d1 AND :d2 {cid_clause}
+        GROUP BY b.customer_id::text, b.{term_col}::text
+    )
+    SELECT b.customer_id, b.keyword,
+           b.imp, b.clk, b.cost, b.conv, b.sales,
+           COALESCE(NULLIF(TRIM(g.{ag_name_col}), ''), '') AS adgroup_name,
+           COALESCE(NULLIF(TRIM(c.{cp_name_col}), ''), '') AS campaign_name,
+           COALESCE(NULLIF(TRIM(c.{cp_tp_col}), ''), '') AS campaign_tp,
+           {case_expr} AS campaign_type_label
+    FROM base b
+    {join_ag}
+    {join_cp}
+    WHERE 1=1 {type_filter}
+    ORDER BY b.cost DESC NULLS LAST
+    LIMIT {int(topn_cost)}
+    """
+    df = sql_read(_engine, sql, params={"d1": str(d1), "d2": str(d2)})
+    
+    if df is not None and not df.empty:
+        # 안전장치: 검색어 테이블에서 왔으니 캠페인 속성 못 가져온 애들은 '쇼핑검색'으로 강제 라벨링
+        df.loc[df["campaign_type_label"] == "기타", "campaign_type_label"] = "쇼핑검색"
+        
     return pd.DataFrame() if df is None else df
 
 def add_rates(df: pd.DataFrame) -> pd.DataFrame:
