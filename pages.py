@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.3 (소재 A/B 테스트 종합 지표 평가로 고도화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.4 (메인 UI 개편 및 평균순위/확장소재 수집 강화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -166,6 +166,46 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
                 st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
             else: 
                 st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
+
+def render_key_keywords(df_kw: pd.DataFrame):
+    """주요 키워드 선택 및 평균 순위 표시 위젯"""
+    if df_kw.empty: return
+    st.markdown("<div class='nv-sec-title'>⭐ 모니터링 주요 키워드 현황</div>", unsafe_allow_html=True)
+    
+    all_kws = sorted([str(x) for x in df_kw["키워드"].unique() if str(x).strip()])
+    selected_kws = st.multiselect(
+        "성과와 평균순위를 모니터링할 핵심 키워드를 선택하세요", 
+        all_kws, 
+        default=all_kws[:4] if len(all_kws) >= 4 else all_kws, 
+        key="star_kws"
+    )
+    
+    if not selected_kws:
+        st.info("키워드를 선택해 주세요.")
+        return
+        
+    target_df = df_kw[df_kw["키워드"].isin(selected_kws)]
+    
+    # 4열 그리드 형태로 KPI 카드 출력
+    cols = st.columns(4)
+    for idx, kw in enumerate(selected_kws):
+        row_df = target_df[target_df["키워드"] == kw]
+        if not row_df.empty:
+            row = row_df.iloc[0]
+            avg_rank = getattr(row, 'avg_rank', 0)
+            if pd.isna(avg_rank) or avg_rank == 0:
+                rank_str = "순위 미수집"
+            else:
+                rank_str = f"평균 {float(avg_rank):.1f}위"
+                
+            roas = getattr(row, 'ROAS(%)', 0)
+            with cols[idx % 4]:
+                ui_metric_or_stmetric(
+                    title=kw, 
+                    value=rank_str, 
+                    desc=f"ROAS {roas}%", 
+                    key=f"kw_star_{idx}"
+                )
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
@@ -435,7 +475,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     view = bundle.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
-        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
+        "campaign_name": "캠페인", "imp": "노출", "클릭": "클릭", "cost": "광고비",
         "conv": "전환", "sales": "전환매출"
     }).copy()
 
@@ -497,7 +537,7 @@ def process_manual_shopping_report(file_obj):
                 header_idx = i
                 break
                 
-        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 없습니다."
+        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 정렬 수 없습니다."
         
         df = df_raw.iloc[header_idx+1:].copy()
         df.columns = df_raw.iloc[header_idx].fillna("").astype(str).str.strip()
@@ -574,6 +614,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
         base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+        
+        if "avg_rank" in view.columns:
+            view["평균순위"] = view["avg_rank"].apply(lambda x: f"{float(x):.1f}위" if float(x) > 0 else "미수집")
+            base_cols.append("평균순위")
+            
         if shopping_first:
             cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
         else:
@@ -584,14 +629,22 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             if c in disp.columns: disp[c] = disp[c].astype(int)
         if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
         
-        return disp
+        return view, disp
 
     tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (수동 분석기)"])
     
     with tab_pl:
-        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
-        if not df_pl.empty: 
-            render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), shopping_first=False), "pl_grid", 500)
+        df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
+        
+        if not df_pl_raw.empty:
+            view_full, disp = _prepare_main_table(df_pl_raw.sort_values("cost", ascending=False).head(top_n), shopping_first=False)
+            
+            # [추가됨] 주요 키워드 추출 위젯 렌더링
+            render_key_keywords(view_full)
+            st.divider()
+            
+            st.markdown("#### 📊 검색어별 상세 성과 표")
+            render_big_table(disp, "pl_grid", 500)
         else:
             st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
             
@@ -659,9 +712,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 render_big_table(disp_shop, "manual_shop_grid", 600)
 
-# ==========================================
-# [FIXED] 소재 성과 비교 (A/B 테스트 종합 지표 평가로 고도화)
-# ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -690,7 +740,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         else: view[c] = 0
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
-    view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0).round(2) # 종합분석용 추가
+    view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0).round(2)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
@@ -713,7 +763,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             for g in ab_groups:
                 g_df = valid_ads[(valid_ads['업체명'] == g[0]) & (valid_ads['캠페인'] == g[1]) & (valid_ads['광고그룹'] == g[2])]
                 
-                # [고도화] ROAS > 전환수 > CVR > CTR 순서로 종합 정렬하여 1등(최우수)과 꼴등(비교) 추출
                 sorted_g = g_df.sort_values(['ROAS(%)', '전환', 'CVR(%)', 'CTR(%)'], ascending=[False, False, False, False])
                 best = sorted_g.iloc[0]
                 worst = sorted_g.iloc[-1]
@@ -722,7 +771,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 diff_conv = best['전환'] - worst['전환']
                 diff_ctr = best['CTR(%)'] - worst['CTR(%)']
                 
-                # 하나라도 유의미한 격차가 있을 때만 보고
                 if diff_roas >= 50 or diff_conv >= 1 or diff_ctr >= 0.5:
                     reasons = []
                     if diff_roas > 0: reasons.append(f"ROAS +{diff_roas:.0f}%p")
