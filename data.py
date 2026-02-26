@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""data.py - DB access + cached queries + shared formatting helpers.
-
-This file intentionally contains:
-- DB engine + SQL helpers
-- Cached query functions (campaign/keyword/ad/budget)
-- Shared format helpers (used by UI/pages)
-"""
+"""data.py - DB access + cached queries + shared formatting helpers."""
 
 from __future__ import annotations
 
@@ -409,6 +403,19 @@ def get_meta(_engine) -> pd.DataFrame:
     df["manager"] = df.get("manager", "").fillna("").astype(str).str.strip()
     df["account_name"] = df.get("account_name", "").fillna("").astype(str).str.strip()
     return df
+
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
+def query_latest_dates(_engine) -> Dict[str, str]:
+    tables = ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]
+    out: Dict[str, str] = {}
+    for t in tables:
+        try:
+            df = sql_read(_engine, f"SELECT MAX(dt) AS mx FROM {t}")
+            mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
+            out[str(t)] = str(mx)[:10] if mx is not None else "-"
+        except Exception:
+            continue
+    return out
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
