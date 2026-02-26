@@ -9,21 +9,19 @@ import math
 import time
 import csv
 import io
-import urllib.parse # [NEW] 한글 키워드 인코딩용
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
+import streamlit.components.v1 as components
 
 from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v13.1 (순위검색기 파서 정밀화 및 인코딩 픽스)")
+BUILD_TAG = os.getenv("APP_BUILD", "v13.2 (순위검색 기능 제거 및 메인 KPI 노출/클릭 추가)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -216,10 +214,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls = "pos" if delta_val and float(delta_val) > 0 else ("neg" if delta_val and float(delta_val) < 0 else "neu")
         return f"<div class='kpi'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls}'>{delta_text}</div></div>"
 
+    # [FIX] 노출수, 클릭수 메인 KPI에 추가
     items = [
+        ("노출수", format_number_commas(cur.get("imp", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp")),
+        ("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk")),
         ("광고비", format_currency(cur.get("cost", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost")),
         ("전환매출", format_currency(cur.get("sales", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales")),
-        ("전환", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv")),
+        ("전환수", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv")),
         ("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas")),
         ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
         ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
@@ -704,108 +705,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     render_big_table(disp, "ad_big_table", 500)
 
-# ==========================================
-# [FIXED] 파이썬 네이티브 순위 검색기 (봇 차단 감지 및 디버깅 강화)
-# ==========================================
-def fetch_naver_rank(keyword: str, target: str, device: str, search_type: str) -> dict:
-    target_clean = str(target).lower().replace(' ', '')
-    # [FIX] 한글 키워드를 브라우저처럼 완벽하게 URL 인코딩
-    kw_encoded = urllib.parse.quote(keyword)
-    
-    # [FIX] 크롬 브라우저와 완벽하게 일치하는 HTTP 헤더 설정
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' if device == 'PC' else 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://search.naver.com/'
-    }
-    
-    url = ""
-    item_selector = ""
-    
-    if search_type == "파워링크":
-        if device == "PC":
-            url = f"https://ad.search.naver.com/search.naver?where=ad&query={kw_encoded}"
-            item_selector = ".lst_type > li"
-        else:
-            url = f"https://m.ad.search.naver.com/search.naver?where=m_expd&query={kw_encoded}"
-            item_selector = ".lst_type > li"
-    elif search_type == "쇼핑검색":
-        if device == "PC":
-            url = f"https://search.shopping.naver.com/search/all?query={kw_encoded}"
-            item_selector = "[class*='product_item__'], [class*='adProduct_item__']"
-        else:
-            url = f"https://msearch.shopping.naver.com/search/all?query={kw_encoded}"
-            item_selector = "[class*='product_list_item__'], [class*='product_item__']"
-
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status() # 403, 500 에러 감지
-        
-        soup = BeautifulSoup(res.text, 'html.parser')
-        items = soup.select(item_selector)
-        
-        # [FIX] 봇 차단(Captcha) 등으로 인해 아이템을 하나도 못 찾은 경우 명확하게 에러 표출
-        if not items:
-            return {"키워드": keyword, "순위": "-", "소재(제목)": f"검색 결과 0건 (클라우드 IP 차단 의심)", "상태": "⚠️ 확인필요"}
-            
-        for idx, item in enumerate(items, 1):
-            # [FIX] JS 로직처럼 URL 영역을 명확히 타겟팅
-            url_node = item.select_one('a.url, a.source, span.url, .txt_url, .lnk_url')
-            text_to_check = url_node.get_text() if url_node else item.get_text()
-            text_content = text_to_check.lower().replace(' ', '')
-            
-            # 앵커 태그 안의 실제 링크도 체크
-            links = "".join([urllib.parse.unquote(a.get('href', '')).lower() for a in item.find_all('a')])
-            
-            if target_clean in text_content or target_clean in links:
-                title_node = item.select_one(".lnk_tit, .tit, [class*='product_title__'], [class*='adProduct_title__']")
-                title = title_node.get_text(strip=True) if title_node else "제목 추출 완료"
-                return {"키워드": keyword, "순위": f"{idx}위", "소재(제목)": title, "상태": "✅ 발견"}
-                
-        return {"키워드": keyword, "순위": "순위권 외", "소재(제목)": f"총 {len(items)}개 상품 중 없음", "상태": "❌ 미발견"}
-        
-    except Exception as e:
-        return {"키워드": keyword, "순위": "-", "소재(제목)": f"네트워크 에러 발생", "상태": "⚠️ 통신오류"}
-
-def page_rank_tracker() -> None:
-    st.markdown("## 🔍 실시간 순위 검색기")
-    st.caption("파워링크 및 쇼핑검색의 현재 노출 순위를 실시간으로 긁어옵니다. (파이썬 크롤러 작동)")
-    
-    with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
-        device = c1.radio("📱 디바이스", ["Mobile", "PC"], horizontal=True)
-        search_type = c2.radio("🎯 검색 영역", ["파워링크", "쇼핑검색"], horizontal=True)
-        
-        target_domain = st.text_input("🔗 타겟 식별자 (URL 도메인 또는 업체명 입력)", placeholder="예: naver.com 또는 개발의신")
-        
-        keywords_text = st.text_area("📝 검색할 키워드 목록 (엔터로 구분하여 입력)", placeholder="광고 대행사\n마케팅 회사\n...", height=150)
-        
-        if st.button("🚀 순위 검색 시작", type="primary", use_container_width=True):
-            keywords = [k.strip() for k in keywords_text.split('\n') if k.strip()]
-            
-            if not target_domain:
-                st.warning("타겟 식별자(URL이나 업체명)를 입력해주세요.")
-            elif not keywords:
-                st.warning("검색할 키워드를 1개 이상 입력해주세요.")
-            else:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                results = []
-                
-                for i, kw in enumerate(keywords):
-                    status_text.text(f"진행 중... [{i+1}/{len(keywords)}] : '{kw}' 조회 중")
-                    res = fetch_naver_rank(kw, target_domain, device, search_type)
-                    results.append(res)
-                    progress_bar.progress((i + 1) / len(keywords))
-                    time.sleep(1) # IP 차단을 피하기 위해 1초 대기
-                
-                status_text.text("✅ 조회가 완료되었습니다!")
-                
-                df_res = pd.DataFrame(results)
-                st.dataframe(df_res, use_container_width=True, hide_index=True)
-
-
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
     try: db_ping(engine); st.success("DB 연결 성공 ✅")
@@ -862,12 +761,14 @@ def main():
     with st.sidebar:
         st.markdown("### 메뉴")
         if not meta_ready: st.warning("동기화가 필요합니다.")
-        nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "순위검색(실시간)", "설정/연결"] if meta_ready else ["설정/연결"]
+        
+        # [FIX] 순위검색(실시간) 메뉴 완전히 제거
+        nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "설정/연결"] if meta_ready else ["설정/연결"]
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
     f = None
-    if nav not in ["설정/연결", "순위검색(실시간)"]:
+    if nav != "설정/연결":
         if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
@@ -876,7 +777,6 @@ def main():
     elif nav == "캠페인": page_perf_campaign(meta, engine, f)
     elif nav == "키워드": page_perf_keyword(meta, engine, f)
     elif nav == "소재": page_perf_ad(meta, engine, f)
-    elif nav == "순위검색(실시간)": page_rank_tracker()
     else: page_settings(engine)
 
 if __name__ == "__main__":
