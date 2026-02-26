@@ -15,13 +15,14 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+import requests
+from bs4 import BeautifulSoup
 
 from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v12.4 (사이드바 순위검색기 외부링크 추가)")
+BUILD_TAG = os.getenv("APP_BUILD", "v13.0 (실시간 파이썬 네이티브 순위검색기 내장)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -114,20 +115,6 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     meta_copy = meta.copy()
     meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
     return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
-
-def _render_empty_state_no_data(key: str = "empty") -> None:
-    st.markdown("### 🫥 데이터가 없습니다")
-    st.caption("오늘 데이터는 수집 지연이 있을 수 있어요. 아래 버튼으로 기간을 **최근 7일(오늘 제외)**로 바꿔 다시 조회해보세요.")
-    c1, c2 = st.columns([1, 3])
-    if c1.button("📅 최근 7일로", key=f"{key}_set7", type="primary"):
-        try:
-            if "filters_v8" in st.session_state: st.session_state["filters_v8"]["period_mode"] = "최근 7일"
-            st.cache_data.clear()
-        except Exception: pass
-        st.rerun()
-    with c2:
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
 def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
     if df_target is None or df_target.empty:
@@ -702,6 +689,89 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     render_big_table(disp, "ad_big_table", 500)
 
+# ==========================================
+# [NEW] 파이썬 네이티브 순위 검색기 (BeautifulSoup 활용)
+# ==========================================
+def fetch_naver_rank(keyword: str, target: str, device: str, search_type: str) -> dict:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' if device == 'PC' else 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1'
+    }
+    target_clean = str(target).lower().replace(' ', '')
+    
+    url = ""
+    item_selector = ""
+    
+    if search_type == "파워링크":
+        if device == "PC":
+            url = f"https://ad.search.naver.com/search.naver?where=ad&query={keyword}"
+            item_selector = ".lst_type > li"
+        else:
+            url = f"https://m.ad.search.naver.com/search.naver?where=m_expd&query={keyword}"
+            item_selector = ".lst_type > li"
+    elif search_type == "쇼핑검색":
+        if device == "PC":
+            url = f"https://search.shopping.naver.com/search/all?query={keyword}"
+            item_selector = "[class*='product_item__'], [class*='adProduct_item__']"
+        else:
+            url = f"https://msearch.shopping.naver.com/search/all?query={keyword}"
+            item_selector = "[class*='product_list_item__'], [class*='product_item__']"
+
+    try:
+        html = requests.get(url, headers=headers, timeout=5).text
+        soup = BeautifulSoup(html, 'html.parser')
+        items = soup.select(item_selector)
+        
+        for idx, item in enumerate(items, 1):
+            text_content = item.get_text().lower().replace(' ', '')
+            links = "".join([a.get('href', '').lower() for a in item.find_all('a')])
+            
+            if target_clean in text_content or target_clean in links:
+                title_node = item.select_one(".lnk_tit, .tit, [class*='product_title__'], [class*='adProduct_title__']")
+                title = title_node.get_text(strip=True) if title_node else "제목을 가져올 수 없습니다."
+                return {"키워드": keyword, "순위": f"{idx}위", "소재(제목)": title, "상태": "✅ 발견"}
+                
+        return {"키워드": keyword, "순위": "순위권 외", "소재(제목)": "-", "상태": "❌ 미발견"}
+    except Exception as e:
+        return {"키워드": keyword, "순위": "-", "소재(제목)": f"에러: {str(e)}", "상태": "⚠️ 오류"}
+
+def page_rank_tracker() -> None:
+    st.markdown("## 🔍 실시간 순위 검색기")
+    st.caption("파워링크 및 쇼핑검색의 현재 노출 순위를 실시간으로 긁어옵니다.")
+    
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        device = c1.radio("📱 디바이스", ["Mobile", "PC"], horizontal=True)
+        search_type = c2.radio("🎯 검색 영역", ["파워링크", "쇼핑검색"], horizontal=True)
+        
+        target_domain = st.text_input("🔗 타겟 식별자 (URL 도메인 또는 업체명 입력)", placeholder="예: naver.com 또는 개발의신")
+        
+        keywords_text = st.text_area("📝 검색할 키워드 목록 (엔터로 구분하여 입력)", placeholder="광고 대행사\n마케팅 회사\n...", height=150)
+        
+        if st.button("🚀 순위 검색 시작", type="primary", use_container_width=True):
+            keywords = [k.strip() for k in keywords_text.split('\n') if k.strip()]
+            
+            if not target_domain:
+                st.warning("타겟 식별자(URL이나 업체명)를 입력해주세요.")
+            elif not keywords:
+                st.warning("검색할 키워드를 1개 이상 입력해주세요.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results = []
+                
+                for i, kw in enumerate(keywords):
+                    status_text.text(f"진행 중... [{i+1}/{len(keywords)}] : '{kw}' 조회 중")
+                    res = fetch_naver_rank(kw, target_domain, device, search_type)
+                    results.append(res)
+                    progress_bar.progress((i + 1) / len(keywords))
+                    time.sleep(0.5) # 네이버 차단 방지 (0.5초 딜레이)
+                
+                status_text.text("✅ 조회가 완료되었습니다!")
+                
+                df_res = pd.DataFrame(results)
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
     try: db_ping(engine); st.success("DB 연결 성공 ✅")
@@ -758,46 +828,13 @@ def main():
     with st.sidebar:
         st.markdown("### 메뉴")
         if not meta_ready: st.warning("동기화가 필요합니다.")
-        nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "설정/연결"] if meta_ready else ["설정/연결"]
+        # [NEW] 순위검색(실시간) 메뉴 추가
+        nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "순위검색(실시간)", "설정/연결"] if meta_ready else ["설정/연결"]
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
-
-        # ------------------------------------------------
-        # [NEW] 확장프로그램 순위검색기 새창 링크 (간격 포함)
-        # ------------------------------------------------
-        if meta_ready:
-            st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-            st.markdown("### 🛠️ 확장 툴")
-            st.markdown(
-                """
-                <a href="/app/static/dashboard.html" target="_blank" style="
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 8px;
-                    padding: 10px;
-                    background-color: #03c75a;
-                    color: white;
-                    text-align: center;
-                    border-radius: 8px;
-                    text-decoration: none;
-                    font-weight: 800;
-                    font-size: 14px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                    transition: all 0.2s;
-                " onmouseover="this.style.backgroundColor='#02b350'; this.style.transform='translateY(-1px)';" onmouseout="this.style.backgroundColor='#03c75a'; this.style.transform='translateY(0)';">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"></path><polyline points="21 3 14 3 14 10"></polyline><line x1="21" y1="3" x2="10" y2="14"></line></svg>
-                    실시간 순위 검색기
-                </a>
-                <div style="font-size:11px; color:#888; margin-top:6px; text-align:center;">
-                    클릭 시 새 창에서 실행됩니다.
-                </div>
-                """, 
-                unsafe_allow_html=True
-            )
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
     f = None
-    if nav != "설정/연결":
+    if nav not in ["설정/연결", "순위검색(실시간)"]:
         if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
@@ -806,6 +843,7 @@ def main():
     elif nav == "캠페인": page_perf_campaign(meta, engine, f)
     elif nav == "키워드": page_perf_keyword(meta, engine, f)
     elif nav == "소재": page_perf_ad(meta, engine, f)
+    elif nav == "순위검색(실시간)": page_rank_tracker()
     else: page_settings(engine)
 
 if __name__ == "__main__":
