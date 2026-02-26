@@ -21,8 +21,8 @@ GLOBAL_UI_CSS = """
   --nv-up:#EF4444; /* up(증가)=빨강(국내표준) */
   --nv-blue:#2563EB;
   --nv-red:#EF4444;
-  --nv-shadow:0 2px 10px rgba(0,0,0,.06);
-  --nv-radius:10px;
+  --nv-shadow:0 4px 12px rgba(0,0,0,.03);
+  --nv-radius:12px;
 }
 
 /* Kill Streamlit chrome */
@@ -84,7 +84,7 @@ section[data-testid="stSidebar"] .block-container{
   }
 }
 
-/* 🚀 [NEW] 화면 전체를 와이드하게 쓰도록 수정 (간격 문제 해결) */
+/* 🚀 화면 전체를 와이드하게 쓰도록 수정 */
 .main .block-container{
   max-width: 100% !important;
   padding-left: 2.5rem !important;
@@ -138,21 +138,30 @@ section[data-testid="stSidebar"] .block-container{
 .nv-sec-title{
   font-size: 16px;
   font-weight: 900;
-  margin: 8px 0 8px 0;
+  margin: 16px 0 12px 0;
   letter-spacing: -0.2px;
 }
 div[data-baseweb="select"] > div{ min-height: 38px !important; }
 input[type="text"], textarea{ min-height: 38px !important; }
 
-/* KPI row */
-.kpi-row{ display:grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
-.kpi{ background: var(--nv-panel); border: 1px solid var(--nv-line); border-radius: 10px; padding: 10px 12px; }
-.kpi .k{font-size:12px;color:var(--nv-muted);font-weight:700;}
+/* 🚀 KPI row 디자인 대폭 개선 */
+.kpi-row{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.kpi{ 
+  background: var(--nv-panel); 
+  border: 1px solid rgba(0,0,0,0.05); 
+  border-radius: 12px; 
+  padding: 18px 20px; 
+  box-shadow: 0 4px 12px rgba(0,0,0,0.03); 
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.kpi:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.06); }
+.kpi .k{font-size:14px;color:#64748B;font-weight:700;}
 .kpi .k .kpi-tip{margin-left:6px; font-size:12px; opacity:.55; cursor:help;}
-.kpi .v{margin-top:4px;font-size:18px;font-weight:900;letter-spacing:-.2px;}
-.kpi .d{margin-top:6px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:6px;}
-.kpi .d.pos{color:var(--nv-red);}
-.kpi .d.neg{color:var(--nv-blue);}
+.kpi .v{margin-top:8px;font-size:26px;font-weight:900;letter-spacing:-0.5px;color:#0F172A;}
+.kpi .d{margin-top:10px;font-size:13px;font-weight:800;display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;}
+.kpi .d.pos{background:rgba(239, 68, 68, 0.1); color:var(--nv-red);}
+.kpi .d.neg{background:rgba(37, 99, 235, 0.1); color:var(--nv-blue);}
+.kpi .d.neu{background:rgba(100, 116, 139, 0.1); color:#64748B;}
 .kpi .chip{ font-size:11px; padding:2px 6px; border-radius:999px; border:1px solid var(--nv-line); color:var(--nv-muted); }
 
 /* Delta chips */
