@@ -13,13 +13,13 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components  # [NEW] HTML 파일 이식을 위한 컴포넌트 임포트
+import streamlit.components.v1 as components
 
 from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v12.2 (사용자 커스텀 키워드 분석기 HTML 완벽 이식)")
+BUILD_TAG = os.getenv("APP_BUILD", "v12.3 (소재 탭 쇼핑검색/허수 데이터 필터링)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -457,9 +457,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     render_big_table(disp, key="camp_main_grid", height=560)
 
-# ==========================================
-# [NEW] 키워드 분석기 HTML 완전 이식
-# ==========================================
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
@@ -510,23 +508,23 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     with tab_shop:
         st.info("💡 네이버 광고시스템에서 다운로드한 **'쇼핑검색어 리포트(csv, xlsx)'** 파일을 아래 분석기 화면에 직접 드래그 앤 드롭 하세요.")
         
-        # HTML 파일 경로 찾기 (pages.py와 동일한 위치에 있다고 가정)
         html_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "키워드 분석기.html")
         
         if os.path.exists(html_file_path):
             with open(html_file_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
-            # 컴포넌트를 사용하여 HTML 통째로 화면에 이식 (높이 1000 픽셀 부여)
             components.html(html_content, height=1000, scrolling=True)
         else:
-            st.error("🚨 `키워드 분석기.html` 파일을 찾을 수 없습니다. 파이썬 파일(`pages.py`)과 완전히 동일한 폴더에 해당 HTML 파일을 업로드해 주세요.")
+            st.error("🚨 `키워드 분석기.html` 파일을 찾을 수 없습니다. 파이썬 파일(`pages.py`)과 동일한 폴더에 해당 HTML 파일을 업로드해 주세요.")
             
-            # (Fallback) HTML 파일이 없을 경우 기존에 수집된 일반 데이터 표시
             df_shop_fb = bundle[bundle["campaign_type_label"] == "쇼핑검색"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
             if not df_shop_fb.empty: 
                 st.caption("※ 아래는 키워드 테이블에 포함되어 있던 기본 쇼핑검색 데이터입니다.")
                 render_big_table(_prepare_main_table(df_shop_fb.sort_values("cost", ascending=False).head(top_n), shopping_first=True), "shop_grid_fb", 500)
 
+# ==========================================
+# [FIX] 소재 탭 - 쇼핑검색어 / 빈 껍데기 기호 완벽 제거
+# ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -540,6 +538,20 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         "campaign_name": "캠페인", "ad_name": "소재내용", 
         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
+
+    # 1. 쇼핑검색 캠페인 아예 제외 (소재 카피 최적화 대상 아님)
+    if "캠페인유형" in view.columns:
+        view = view[view["캠페인유형"] != "쇼핑검색"]
+
+    # 2. ' | ' 나 ' ' 등 텍스트 내용이 아예 없는 쓰레기 데이터 제외
+    if "소재내용" in view.columns:
+        view["_clean_ad"] = view["소재내용"].astype(str).str.replace("|", "").str.strip()
+        view = view[view["_clean_ad"] != ""]
+        view = view.drop(columns=["_clean_ad"])
+
+    if view.empty:
+        st.info("해당 기간에 분석할 유효한 광고 소재(카피) 데이터가 없습니다.")
+        return
 
     for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
         if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
@@ -571,6 +583,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
 
     render_big_table(disp, "ad_big_table", 500)
+
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
