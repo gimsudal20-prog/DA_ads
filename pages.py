@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.5 (쇼핑검색 소재 UI 필터링 버그 완벽 수정)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.6 (쇼핑검색 데이터 컷오프 증발 버그 전면 해결)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -115,20 +115,6 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
     return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
-def _render_empty_state_no_data(key: str = "empty") -> None:
-    st.markdown("### 🫥 데이터가 없습니다")
-    st.caption("오늘 데이터는 수집 지연이 있을 수 있어요. 아래 버튼으로 기간을 **최근 7일(오늘 제외)**로 바꿔 다시 조회해보세요.")
-    c1, c2 = st.columns([1, 3])
-    if c1.button("📅 최근 7일로", key=f"{key}_set7", type="primary"):
-        try:
-            if "filters_v8" in st.session_state: st.session_state["filters_v8"]["period_mode"] = "최근 7일"
-            st.cache_data.clear()
-        except Exception: pass
-        st.rerun()
-    with c2:
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
-
 def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: str):
     if df_target is None or df_target.empty:
         st.info(f"분석할 {item_name} 데이터가 없습니다.")
@@ -139,12 +125,10 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
         with st.container(border=True):
             st.markdown(f"<h4 style='margin-bottom: 4px; margin-top: 0;'>🚨 저효율 {item_name} (개선 필요)</h4>", unsafe_allow_html=True)
             st.caption(f"비용 3만 원 이상 소진 중이나 전환이 0건인 항목 (제외/OFF 권장)")
-            
             hippos = df_target[(df_target['광고비'] >= 30000) & (df_target['전환'] == 0)].sort_values('광고비', ascending=False)
             if not hippos.empty:
                 cols_to_show = [keyword_col, '광고비']
                 if '업체명' in hippos.columns: cols_to_show.insert(0, '업체명')
-                
                 disp_h = hippos[cols_to_show].rename(columns={keyword_col: item_name, '광고비': '비용'})
                 disp_h['비용'] = disp_h['비용'].apply(format_currency)
                 st_dataframe_safe(disp_h.head(5), hide_index=True, use_container_width=True)
@@ -155,12 +139,10 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
         with st.container(border=True):
             st.markdown(f"<h4 style='margin-bottom: 4px; margin-top: 0;'>⭐ 고효율 {item_name} (기회 발굴)</h4>", unsafe_allow_html=True)
             st.caption(f"비용 3천원~5만 원 소진, ROAS 500% 이상 (입찰가 상향/확장 권장)")
-            
             stars = df_target[(df_target['광고비'] >= 3000) & (df_target['광고비'] <= 50000) & (df_target['전환'] >= 1) & (df_target['ROAS(%)'] >= 500)].sort_values('ROAS(%)', ascending=False)
             if not stars.empty:
                 cols_to_show = [keyword_col, 'ROAS(%)']
                 if '업체명' in stars.columns: cols_to_show.insert(0, '업체명')
-                
                 disp_s = stars[cols_to_show].rename(columns={keyword_col: item_name})
                 disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
                 st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
@@ -169,51 +151,32 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
-    
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("<div class='nv-sec-title'>요약 및 인사이트</div>", unsafe_allow_html=True)
         st.caption(f"기간: {f['start']} ~ {f['end']}")
     with col2:
         cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
-        
         with st.spinner("보고서 생성 중..."):
             cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
             df_summary = pd.DataFrame([cur_summary])
-            
             camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50)
             camp_df = _perf_common_merge_meta(add_rates(camp_bndl), meta) if not camp_bndl.empty else pd.DataFrame()
-            
             kw_bndl = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=200)
             kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
-
             df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
 
             excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw)
-            
-            st.download_button(
-                label="📥 보고서(Excel) 다운로드",
-                data=excel_data,
-                file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary"
-            )
+            st.download_button(label="📥 보고서(Excel) 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
 
     st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-    
     pm = f.get("period_mode", "어제")
-    if pm in ["오늘", "어제"]:
-        cmp_opts = ["전일대비"]
-    elif pm == "최근 7일":
-        cmp_opts = ["전주대비"]
-    elif pm in ["이번 달", "지난 달"]:
-        cmp_opts = ["전월대비"]
-    else:
-        cmp_opts = ["전일대비", "전주대비", "전월대비"]
+    if pm in ["오늘", "어제"]: cmp_opts = ["전일대비"]
+    elif pm == "최근 7일": cmp_opts = ["전주대비"]
+    elif pm in ["이번 달", "지난 달"]: cmp_opts = ["전월대비"]
+    else: cmp_opts = ["전일대비", "전주대비", "전월대비"]
         
     cmp_mode = st.radio("비교 기준 선택", cmp_opts, horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
-
     cur = cur_summary
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
     base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
@@ -240,7 +203,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.divider()
 
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트 (파워링크)</div>", unsafe_allow_html=True)
-    
     if not df_pl_kw.empty:
         df_pl_kw_fmt = df_pl_kw.copy()
         df_pl_kw_fmt["광고비"] = pd.to_numeric(df_pl_kw_fmt["cost"], errors="coerce").fillna(0)
@@ -257,21 +219,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if ts is not None and not ts.empty:
             st.markdown("### 📅 트렌드 및 요일별 효율 분석")
             tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 분석"])
-            
             with tab_trend:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("전체 트렌드", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
-                
             with tab_dow:
                 st.caption("💡 주말(토/일)과 평일의 효율(ROAS) 차이를 확인하고 요일별 입찰 가중치를 조절하세요.")
                 if HAS_ECHARTS: render_echarts_dow_bar(ts, height=320)
-                
     except Exception as e:
         st.info(f"추세 데이터를 불러오는 중 오류가 발생했습니다: {e}")
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
-    
     target_roas = st.slider("🎯 전사 목표 ROAS (%) 설정", min_value=100, max_value=1000, value=300, step=50, help="이 목표치에 따라 아래 표의 기상도가 동적으로 변합니다.")
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
@@ -288,7 +246,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     biz_view = bundle.copy()
-    
     m = biz_view["avg_cost"].astype(float) > 0
     biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
     biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
@@ -305,13 +262,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
-
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
     biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
-    
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
     count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
@@ -363,14 +318,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c_form:
         st.markdown("#### ✍️ 월 예산 설정/수정")
         st.caption("원하는 단위를 클릭하거나 직접 금액을 입력하세요.")
-        
         opts = budget_view_disp[["customer_id", "account_name"]].copy()
         opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
         labels = opts["label"].tolist()
         label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
 
         sel = st.selectbox("업체 선택", labels, index=0 if labels else None, disabled=(len(labels) == 0))
-        
         if labels:
             cid = int(label_to_cid.get(sel, 0))
             sk = f"budget_input_{cid}"
@@ -382,10 +335,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             def format_budget_on_change(key_name):
                 val = st.session_state.get(key_name, "0")
                 cleaned = re.sub(r"[^\d]", "", str(val))
-                if cleaned:
-                    st.session_state[key_name] = f"{int(cleaned):,}"
-                else:
-                    st.session_state[key_name] = "0"
+                if cleaned: st.session_state[key_name] = f"{int(cleaned):,}"
+                else: st.session_state[key_name] = "0"
             
             def add_amount_callback(key_name, amount):
                 val = st.session_state.get(key_name, "0")
@@ -396,7 +347,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.session_state[key_name] = "0"
 
             st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
-            
             raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
             
             b1, b2, b3, b4 = st.columns(4)
@@ -418,8 +368,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             if st.button("💾 예산 저장", type="primary", use_container_width=True):
                 update_monthly_budget(engine, cid, raw_val)
                 st.success("✅ 예산이 안전하게 저장되었습니다!")
-                if sk in st.session_state:
-                    del st.session_state[sk]
+                if sk in st.session_state: del st.session_state[sk]
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
@@ -428,11 +377,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🚀 성과 (캠페인)")
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_campaign", 200))
-    bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n, 200), top_k=10)
+    bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n, 5000), top_k=10)
     if bundle is None or bundle.empty: return
 
     bundle = _perf_common_merge_meta(bundle, meta)
-
     view = bundle.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
         "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
@@ -460,8 +408,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
         sel_camp = st.selectbox("🎯 캠페인 필터", camps, key="camp_name_filter")
 
-    if sel_camp != "전체":
-        view = view[view["캠페인"] == sel_camp]
+    if sel_camp != "전체": view = view[view["캠페인"] == sel_camp]
 
     cols = ["업체명", "담당자", "캠페인유형", "캠페인", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
     disp = view[[c for c in cols if c in view.columns]].copy()
@@ -477,14 +424,11 @@ def process_manual_shopping_report(file_obj):
     try:
         if file_obj.name.lower().endswith('.csv'):
             raw_bytes = file_obj.read()
-            try: 
-                text_data = raw_bytes.decode('euc-kr')
-            except UnicodeDecodeError: 
-                text_data = raw_bytes.decode('utf-8')
+            try: text_data = raw_bytes.decode('euc-kr')
+            except UnicodeDecodeError: text_data = raw_bytes.decode('utf-8')
                 
             sample_lines = text_data.split('\n')[:5]
             sep = '\t' if sum(l.count('\t') for l in sample_lines) > sum(l.count(',') for l in sample_lines) else ','
-            
             reader = csv.reader(io.StringIO(text_data), delimiter=sep)
             df_raw = pd.DataFrame(list(reader))
         else:
@@ -517,8 +461,7 @@ def process_manual_shopping_report(file_obj):
         camp_col = get_col(['캠페인', 'Campaign'])
         ag_col = get_col(['광고그룹', '그룹', 'Ad Group'])
         
-        if not kw_col or not cost_col:
-            return None, f"[{file_obj.name}] 필수 열(검색어, 총비용) 매칭 실패."
+        if not kw_col or not cost_col: return None, f"[{file_obj.name}] 필수 열(검색어, 총비용) 매칭 실패."
             
         for c in [cost_col, rev_col, conv_col, clk_col, imp_col]:
             if c and c in df.columns:
@@ -553,7 +496,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
     
-    bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
+    # 💡 컷오프(증발) 방지를 위해 10,000개를 우선 DB에서 전부 가져옵니다.
+    bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
     def _prepare_main_table(df_in: pd.DataFrame, shopping_first: bool) -> pd.DataFrame:
         if df_in is None or df_in.empty: return pd.DataFrame()
@@ -596,6 +540,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     with tab_pl:
         df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
         if not df_pl_raw.empty: 
+            # 여기서 파워링크에 해당하는 데이터만 걸러낸 후, 화면 출력 설정값(top_n) 만큼 다시 잘라서 보여줍니다.
             view_full, disp = _prepare_main_table(df_pl_raw.sort_values("cost", ascending=False).head(top_n), shopping_first=False)
             
             if "평균순위" in view_full.columns:
@@ -630,10 +575,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             all_res = []
             for file in uploaded_files:
                 res, err = process_manual_shopping_report(file)
-                if err:
-                    st.error(err)
-                elif res is not None:
-                    all_res.append(res)
+                if err: st.error(err)
+                elif res is not None: all_res.append(res)
                     
             if all_res:
                 final_df = pd.concat(all_res, ignore_index=True)
@@ -685,29 +628,26 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 render_big_table(disp_shop, "manual_shop_grid", 600)
 
 # ==========================================
-# 🚨 [CRITICAL BUG FIX] 소재 탭의 쇼핑검색 필터링 오류 수정
+# 🚨 [CRITICAL FIX] 데이터 증발 버그 전면 해결!
 # ==========================================
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_ad", 200))
-    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=top_n, top_k=5)
+    
+    # 💡 파워링크에 밀려 쇼핑검색이 짤려 나가지 않도록 DB에서 무조건 10,000개를 우선적으로 퍼올립니다.
+    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
     if bundle is None or bundle.empty: return
 
     df = _perf_common_merge_meta(bundle, meta)
     
-    # 🚨 여기가 문제였습니다!
-    # df 안에는 "campaign_type"이라는 컬럼으로 데이터가 들어있는데,
-    # rename에서 "campaign_type_label"을 찾으려다 실패하여 "캠페인유형" 컬럼 자체가 생성되지 않았습니다.
-    # 그 결과 아래쪽 쇼핑검색 필터 로직이 통째로 증발(빈 DataFrame 반환)하는 치명적인 버그가 있었습니다.
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자", 
-        "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",  # 이 부분을 수정했습니다.
+        "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
         "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "소재내용", 
         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
     
-    # 만약을 대비한 절대 실패하지 않는 강제 매핑
     if "캠페인유형" not in view.columns and "campaign_type" in view.columns:
         view["캠페인유형"] = view["campaign_type"]
 
@@ -747,15 +687,10 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             winners = []
             for g in ab_groups:
                 g_df = valid_ads[(valid_ads['업체명'] == g[0]) & (valid_ads['캠페인'] == g[1]) & (valid_ads['광고그룹'] == g[2])]
-                
                 sorted_g = g_df.sort_values(['ROAS(%)', '전환', 'CVR(%)', 'CTR(%)'], ascending=[False, False, False, False])
-                best = sorted_g.iloc[0]
-                worst = sorted_g.iloc[-1]
+                best, worst = sorted_g.iloc[0], sorted_g.iloc[-1]
                 
-                diff_roas = best['ROAS(%)'] - worst['ROAS(%)']
-                diff_conv = best['전환'] - worst['전환']
-                diff_ctr = best['CTR(%)'] - worst['CTR(%)']
-                
+                diff_roas, diff_conv, diff_ctr = best['ROAS(%)'] - worst['ROAS(%)'], best['전환'] - worst['전환'], best['CTR(%)'] - worst['CTR(%)']
                 if diff_roas >= 50 or diff_conv >= 1 or diff_ctr >= 0.5:
                     reasons = []
                     if diff_roas > 0: reasons.append(f"ROAS +{diff_roas:.0f}%p")
@@ -769,12 +704,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                         '일반/저조 소재': worst['소재내용'], 
                         '주요 격차': " | ".join(reasons) if reasons else "종합 지표 우위"
                     })
-            if winners:
-                st_dataframe_safe(pd.DataFrame(winners), hide_index=True, use_container_width=True)
-            else:
-                st.caption("현재 A/B 테스트 그룹 중 유의미한 성과 격차를 보이는 데이터가 없습니다.")
-        else:
-            st.caption("데이터에 광고그룹 정보가 없어 A/B 테스트를 실행할 수 없습니다.")
+            if winners: st_dataframe_safe(pd.DataFrame(winners), hide_index=True, use_container_width=True)
+            else: st.caption("현재 A/B 테스트 그룹 중 유의미한 성과 격차를 보이는 데이터가 없습니다.")
+        else: st.caption("데이터에 광고그룹 정보가 없어 A/B 테스트를 실행할 수 없습니다.")
         
         st.divider()
         st.markdown(f"<div class='nv-sec-title'>💡 {ad_type_name} 최적화 포인트</div>", unsafe_allow_html=True)
@@ -786,11 +718,12 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
             sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key=f"ad_camp_filter_{ad_type_name}")
             
-        if sel_camp != "전체":
-            df_tab = df_tab[df_tab["캠페인"] == sel_camp]
+        if sel_camp != "전체": df_tab = df_tab[df_tab["캠페인"] == sel_camp]
 
         cols = ["업체명", "담당자", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
+        
+        # 💡 각 탭별로 분리한 뒤에 여기서 화면 노출 제한 개수(top_n) 만큼만 최종적으로 잘라냅니다.
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
         for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
@@ -804,8 +737,14 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_ad_tab(df_pl, "파워링크", "파워링크 소재")
         
     with tab_shop:
-        # 이제 캠페인유형 매핑이 정상 작동하므로 쇼핑검색이 정상적으로 필터링됩니다.
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
+        
+        # 💡 시각적 안심 배지 추가
+        if not df_shop.empty:
+            ext_count = len(df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)])
+            if ext_count > 0:
+                st.success(f"🎉 성공! 수집된 쇼핑검색 확장소재(추가홍보문구 등)가 **{ext_count}건** 발견되어 병합되었습니다.")
+
         st.info("💡 **쇼핑검색 소재 분석:** 상품 정보 및 추가로 등록한 '확장소재(추가홍보문구 등)' 데이터를 종합하여 보여줍니다.")
         _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 전체 소재(확장 포함)")
 
