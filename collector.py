@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v10.5 - 검색어(Search Term) 완벽 수집 패치)
-- 원인: 네이버 API는 검색어를 'SEARCH_TERM'이 아닌 'SHOPPINGKEYWORD_DETAIL'과 'EXPKEYWORD'로 구분함
-- 해결: 해당 코드로 API를 재요청하고, 성과(비용)와 전환(매출) 리포트를 하나로 병합하여 적재
-- 스마트 파서: 컬럼 순서가 바뀌어도 끝에서부터 숫자를 읽어 정확한 지표를 추출
+collector.py - 네이버 검색광고 수집기 (v10.7 - 안정화 롤백)
+- 네이버 API 정책상 불가능한 '검색어' 자동 수집 로직을 제거하여 오류를 해결했습니다.
+- 광고비 부가세(VAT) 10% 포함 로직은 정상 유지됩니다.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import hashlib
 import argparse
 import sys
 import io
-import uuid
 import concurrent.futures
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
@@ -31,9 +29,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
-# -------------------------
-# 1. 환경변수 및 설정
-# -------------------------
 load_dotenv(override=True)
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
@@ -57,8 +52,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v10.5_SEARCH_TERM_FIX] ===", flush=True)
-print("=== 쇼핑검색어 / 파워링크 검색어 완벽 수집 ===", flush=True)
+print("=== [VERSION: v10.7_STABLE_ROLLBACK] ===", flush=True)
+print("=== 안정화 버전 (부가세 10% 포함) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -130,14 +125,9 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, PRIMARY KEY(customer_id, ad_id))"""))
-                
-                # 기존 팩트 테이블
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-                
-                # 검색어 전용 팩트 테이블
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_search_term_daily (dt DATE, customer_id TEXT, adgroup_id TEXT, campaign_id TEXT, search_term TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION DEFAULT 0, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, adgroup_id, search_term))"""))
             break
         except Exception as e:
             time.sleep(3)
@@ -178,22 +168,8 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
-    
-    if "campaign" in table: pk_cols = ['campaign_id']
-    elif "keyword" in table: pk_cols = ['keyword_id']
-    elif "search_term" in table: pk_cols = ['adgroup_id', 'search_term']
-    else: pk_cols = ['ad_id']
-    
-    subset = ['dt', 'customer_id'] + pk_cols
-    df = pd.DataFrame(rows)
-    
-    # 검색어의 경우 PC/Mobile 행이 분리되어 올 수 있으므로 한 번 더 확실하게 그룹핑
-    if "search_term" in table:
-        df = df.groupby(subset, as_index=False).agg({'campaign_id': 'first', 'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum', 'roas': 'mean'})
-    else:
-        df = df.drop_duplicates(subset=subset, keep='last')
-        
-    df = df.sort_values(by=subset).astype(object).where(pd.notnull, None)
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
     
     for attempt in range(3):
         try:
@@ -201,7 +177,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
-            if attempt == 2: log(f"❌ Delete Error in {table}: {e}")
+            if attempt == 2: log(f"❌ Delete Error: {e}")
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
@@ -219,7 +195,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             if raw_conn:
                 try: raw_conn.rollback()
                 except: pass
-            if attempt == 2: log(f"❌ Insert Error in {table}: {e}")
+            if attempt == 2: log(f"❌ Insert Error: {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -366,112 +342,7 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
     a_cnt = _save('ad', "fact_ad_daily", "ad_id")
     
     total = c_cnt + k_cnt + a_cnt
-    if total > 0: log(f"   📊 [ {account_name} ] 일반 광고 데이터 적재 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
-
-
-# ----------------------------------------------------
-# [NEW] 스마트 검색어(Search Term) 병합 파서
-# ----------------------------------------------------
-def extract_st_data(df: pd.DataFrame, is_conv: bool) -> dict:
-    if df is None or df.empty: return {}
-    if not str(df.iloc[0, 0]).isdigit(): df = df.iloc[1:].reset_index(drop=True)
-    if df.empty: return {}
-    
-    n_cols = len(df.columns)
-    camp_idx, ag_idx, term_idx = -1, -1, -1
-    
-    sample = df.iloc[0].fillna("").astype(str).tolist()
-    # 지표(imp, clk, cost 등)는 항상 맨 끝에 있으므로 제외하고 텍스트 탐색
-    for i in range(n_cols - 3): 
-        v = sample[i].strip()
-        if v.startswith("cmp-"): camp_idx = i
-        elif v.startswith("grp-"): ag_idx = i
-        elif v and not v.startswith("nad-") and not v.startswith("nct-") and not v.startswith("nkw-") and not v.isdigit():
-            if "-" in v and len(v) == 10: continue # 날짜 형식 패스
-            if v.upper() in ["PC", "MOBILE", "M", "T"]: continue # 디바이스 패스
-            if term_idx == -1: term_idx = i # 가장 먼저 발견된 일반 문자열을 검색어로 간주
-
-    if camp_idx == -1: camp_idx = 2
-    if ag_idx == -1: ag_idx = 3
-    if term_idx == -1: term_idx = 5
-    
-    res = {}
-    if is_conv:
-        conv_idx, sales_idx = n_cols - 2, n_cols - 1
-        for _, r in df.iterrows():
-            try:
-                term = str(r[term_idx]).strip()
-                if not term or term == '-': continue
-                cid = str(r[camp_idx]).strip() if camp_idx != -1 else ""
-                aid = str(r[ag_idx]).strip() if ag_idx != -1 else ""
-                key = f"{cid}_{aid}_{term}"
-                
-                conv = float(r[conv_idx]) if pd.notna(r[conv_idx]) else 0.0
-                sales = float(r[sales_idx]) if pd.notna(r[sales_idx]) else 0.0
-                
-                if key not in res: res[key] = {"cid": cid, "aid": aid, "term": term, "conv": 0.0, "sales": 0.0}
-                res[key]["conv"] += conv
-                res[key]["sales"] += sales
-            except: pass
-    else:
-        imp_idx, clk_idx, cost_idx = n_cols - 3, n_cols - 2, n_cols - 1
-        for _, r in df.iterrows():
-            try:
-                term = str(r[term_idx]).strip()
-                if not term or term == '-': continue
-                cid = str(r[camp_idx]).strip() if camp_idx != -1 else ""
-                aid = str(r[ag_idx]).strip() if ag_idx != -1 else ""
-                key = f"{cid}_{aid}_{term}"
-                
-                imp = int(float(r[imp_idx])) if pd.notna(r[imp_idx]) else 0
-                clk = int(float(r[clk_idx])) if pd.notna(r[clk_idx]) else 0
-                cost = int(round(float(r[cost_idx]) * 1.1)) if pd.notna(r[cost_idx]) else 0
-                
-                if key not in res: res[key] = {"cid": cid, "aid": aid, "term": term, "imp": 0, "clk": 0, "cost": 0}
-                res[key]["imp"] += imp
-                res[key]["clk"] += clk
-                res[key]["cost"] += cost
-            except: pass
-            
-    return res
-
-def process_search_term_merged(engine: Engine, perf_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str, rep_type: str):
-    perf_data = extract_st_data(perf_df, is_conv=False)
-    conv_data = extract_st_data(conv_df, is_conv=True)
-    
-    keys = set(perf_data.keys()) | set(conv_data.keys())
-    if not keys: return
-    
-    rows = []
-    for k in keys:
-        p = perf_data.get(k, {"cid": "", "aid": "", "term": "", "imp": 0, "clk": 0, "cost": 0})
-        c = conv_data.get(k, {"conv": 0.0, "sales": 0.0})
-        
-        cid = p.get("cid") or c.get("cid", "")
-        aid = p.get("aid") or c.get("aid", "")
-        term = p.get("term") or c.get("term", "")
-        
-        cost = p.get("cost", 0)
-        sales = c.get("sales", 0.0)
-        roas = (sales / cost * 100) if cost > 0 else 0.0
-        
-        rows.append({
-            "dt": target_date,
-            "customer_id": str(customer_id),
-            "adgroup_id": aid,
-            "campaign_id": cid,
-            "search_term": term,
-            "imp": p.get("imp", 0),
-            "clk": p.get("clk", 0),
-            "cost": cost,
-            "conv": c.get("conv", 0.0),
-            "sales": sales,
-            "roas": roas
-        })
-        
-    replace_fact_range(engine, "fact_search_term_daily", rows, customer_id, target_date)
-    log(f"   🔎 [ {account_name} ] {rep_type} 검색어 리포트 수집 완료 ({len(rows)}건)")
-
+    if total > 0: log(f"   📊 [ {account_name} ] 데이터 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -507,18 +378,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         ad_df = fetch_stat_report(customer_id, "AD", target_date)
         conv_df = fetch_stat_report(customer_id, "AD_CONVERSION", target_date)
         process_merged_reports(engine, ad_df, conv_df, customer_id, target_date, account_name)
-        
-        # [NEW] 쇼핑검색어 리포트 요청 및 적재 (성과 + 전환)
-        shop_perf = fetch_stat_report(customer_id, "SHOPPINGKEYWORD_DETAIL", target_date)
-        shop_conv = fetch_stat_report(customer_id, "SHOPPINGKEYWORD_CONVERSION_DETAIL", target_date)
-        if (shop_perf is not None and not shop_perf.empty) or (shop_conv is not None and not shop_conv.empty):
-            process_search_term_merged(engine, shop_perf, shop_conv, customer_id, target_date, account_name, "쇼핑검색")
-
-        # [NEW] 파워링크 검색어 리포트 요청 및 적재 (EXPKEYWORD는 전환이 없음)
-        pl_perf = fetch_stat_report(customer_id, "EXPKEYWORD", target_date)
-        if pl_perf is not None and not pl_perf.empty:
-            process_search_term_merged(engine, pl_perf, pd.DataFrame(), customer_id, target_date, account_name, "파워링크")
-
     log(f"✅ 완료: {account_name}")
 
 def main():
@@ -565,15 +424,7 @@ def main():
             try:
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, account_name FROM accounts WHERE customer_id IS NOT NULL"))]
-            except:
-                try:
-                    with engine.connect() as conn:
-                        accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT id, name FROM accounts WHERE id IS NOT NULL"))]
-                except:
-                    try:
-                        with engine.connect() as conn:
-                            accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, account_name FROM dim_account_meta WHERE customer_id IS NOT NULL"))]
-                    except: pass
+            except: pass
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
