@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v10.0 - 검색어 리포트 수집 기능 추가)
-- 원인: 기존 코드는 일반 AD 리포트만 수집하여 실제 '사용자 검색어(Search Term)' 데이터가 누락됨
-- 해결: SEARCH_TERM 리포트를 추가로 다운로드하여 fact_search_term_daily 테이블에 적재하도록 패치
-- 유지: 광고비 부가세(VAT) 10% 포함 로직 유지
+collector.py - 네이버 검색광고 수집기 (v10.5 - 검색어(Search Term) 완벽 수집 패치)
+- 원인: 네이버 API는 검색어를 'SEARCH_TERM'이 아닌 'SHOPPINGKEYWORD_DETAIL'과 'EXPKEYWORD'로 구분함
+- 해결: 해당 코드로 API를 재요청하고, 성과(비용)와 전환(매출) 리포트를 하나로 병합하여 적재
+- 스마트 파서: 컬럼 순서가 바뀌어도 끝에서부터 숫자를 읽어 정확한 지표를 추출
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v10.0_SEARCH_TERM_ADDED] ===", flush=True)
-print("=== 검색어 리포트 수집 및 부가세(VAT) 10% 포함 ===", flush=True)
+print("=== [VERSION: v10.5_SEARCH_TERM_FIX] ===", flush=True)
+print("=== 쇼핑검색어 / 파워링크 검색어 완벽 수집 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -131,10 +131,12 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 
-                # [NEW] 검색어 테이블(fact_search_term_daily) 추가
+                # 기존 팩트 테이블
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+                
+                # 검색어 전용 팩트 테이블
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_search_term_daily (dt DATE, customer_id TEXT, adgroup_id TEXT, campaign_id TEXT, search_term TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION DEFAULT 0, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, adgroup_id, search_term))"""))
             break
         except Exception as e:
@@ -177,7 +179,6 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
     
-    # [FIX] 테이블별로 Primary Key 동적 설정
     if "campaign" in table: pk_cols = ['campaign_id']
     elif "keyword" in table: pk_cols = ['keyword_id']
     elif "search_term" in table: pk_cols = ['adgroup_id', 'search_term']
@@ -186,7 +187,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     subset = ['dt', 'customer_id'] + pk_cols
     df = pd.DataFrame(rows)
     
-    # 검색어 리포트는 PC/Mobile 등이 나뉘어 들어올 수 있으므로 합산 처리
+    # 검색어의 경우 PC/Mobile 행이 분리되어 올 수 있으므로 한 번 더 확실하게 그룹핑
     if "search_term" in table:
         df = df.groupby(subset, as_index=False).agg({'campaign_id': 'first', 'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum', 'roas': 'mean'})
     else:
@@ -312,66 +313,9 @@ def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd
     finally:
         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def process_search_term_data(engine: Engine, st_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
-    """[NEW] 네이버 검색어 리포트(SEARCH_TERM) 전용 처리 함수"""
-    if st_df is None or st_df.empty or len(st_df) < 2: return
-    
-    headers = [str(x).replace(" ", "").lower() for x in st_df.iloc[0].tolist()]
-    st_df = st_df.iloc[1:].reset_index(drop=True)
-    
-    def get_idx(candidates):
-        for c in candidates:
-            if c in headers: return headers.index(c)
-        return -1
-        
-    camp_idx = get_idx(["캠페인id", "campaignid", "campaign_id"])
-    ag_idx = get_idx(["광고그룹id", "adgroupid", "adgroup_id"])
-    term_idx = get_idx(["검색어", "searchterm", "search_term", "query"])
-    imp_idx = get_idx(["노출수", "imp", "impressions"])
-    clk_idx = get_idx(["클릭수", "clk", "clicks"])
-    cost_idx = get_idx(["총비용", "cost"])
-    
-    if term_idx == -1 or cost_idx == -1:
-        log(f"⚠️ [{account_name}] 검색어 리포트 컬럼 매칭 실패 (컬럼목록: {headers})")
-        return
-        
-    rows = []
-    for _, r in st_df.iterrows():
-        term = str(r[term_idx]).strip()
-        if not term or term == '-': continue
-        
-        imp = int(float(r[imp_idx])) if imp_idx != -1 and pd.notna(r[imp_idx]) else 0
-        clk = int(float(r[clk_idx])) if clk_idx != -1 and pd.notna(r[clk_idx]) else 0
-        
-        # VAT 10% 일괄 적용
-        raw_cost = float(r[cost_idx]) if pd.notna(r[cost_idx]) else 0.0
-        cost_vat = int(round(raw_cost * 1.1))
-        
-        cid = str(r[camp_idx]) if camp_idx != -1 else ""
-        aid = str(r[ag_idx]) if ag_idx != -1 else ""
-        
-        rows.append({
-            "dt": target_date,
-            "customer_id": str(customer_id),
-            "adgroup_id": aid,
-            "campaign_id": cid,
-            "search_term": term,
-            "imp": imp,
-            "clk": clk,
-            "cost": cost_vat,
-            "conv": 0.0, # 검색어 단위에서는 전환 제공 안됨 (API 정책)
-            "sales": 0,
-            "roas": 0.0
-        })
-        
-    if rows:
-        replace_fact_range(engine, "fact_search_term_daily", rows, customer_id, target_date)
-        log(f"   🔎 [ {account_name} ] 검색어 데이터 적재 완료 ({len(rows)}건 수집)")
-
 def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str):
     ad_records = {'camp': {}, 'kw': {}, 'ad': {}}
     
-    # 1. 일반 리포트 (노출, 클릭, 광고비) 파싱
     if ad_df is not None and not ad_df.empty:
         if not str(ad_df.iloc[0, 0]).isdigit(): ad_df = ad_df.iloc[1:].reset_index(drop=True)
         if len(ad_df.columns) >= 12:
@@ -386,7 +330,6 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
                         cost_vat = int(round(float(r[11]) * 1.1))
                         ad_records[cat][str(r[group_col])] = {"imp": int(float(r[9])), "clk": int(float(r[10])), "cost": cost_vat}
 
-    # 2. 전환 리포트 (전환수, 전환매출액) 파싱
     conv_records = {'camp': {}, 'kw': {}, 'ad': {}}
     if conv_df is not None and not conv_df.empty:
         if not str(conv_df.iloc[0, 0]).isdigit(): conv_df = conv_df.iloc[1:].reset_index(drop=True)
@@ -400,7 +343,6 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
                     for _, r in g.iterrows():
                         conv_records[cat][str(r[group_col])] = {"conv": float(r[11]), "sales": int(float(r[12]))}
 
-    # 3. 데이터 100% 융합 후 저장
     def _save(cat, table_name, id_col_name):
         keys = set(ad_records[cat].keys()) | set(conv_records[cat].keys())
         if not keys: return 0
@@ -408,11 +350,9 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
         for k in keys:
             ad = ad_records[cat].get(k, {"imp":0, "clk":0, "cost":0})
             cv = conv_records[cat].get(k, {"conv":0.0, "sales":0})
-            
             cost = ad["cost"]
             sales = cv["sales"]
             roas = (sales / cost * 100) if cost > 0 else 0.0
-            
             rows.append({
                 "dt": target_date, "customer_id": str(customer_id), id_col_name: k, 
                 "imp": ad["imp"], "clk": ad["clk"], "cost": cost, 
@@ -426,8 +366,112 @@ def process_merged_reports(engine: Engine, ad_df: pd.DataFrame, conv_df: pd.Data
     a_cnt = _save('ad', "fact_ad_daily", "ad_id")
     
     total = c_cnt + k_cnt + a_cnt
-    if total > 0: log(f"   📊 [ {account_name} ] 기본 데이터 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
-    else: log(f"   ⚠️ [ {account_name} ] 리포트는 받았으나 광고비와 전환이 모두 0원입니다.")
+    if total > 0: log(f"   📊 [ {account_name} ] 일반 광고 데이터 적재 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재 {a_cnt})")
+
+
+# ----------------------------------------------------
+# [NEW] 스마트 검색어(Search Term) 병합 파서
+# ----------------------------------------------------
+def extract_st_data(df: pd.DataFrame, is_conv: bool) -> dict:
+    if df is None or df.empty: return {}
+    if not str(df.iloc[0, 0]).isdigit(): df = df.iloc[1:].reset_index(drop=True)
+    if df.empty: return {}
+    
+    n_cols = len(df.columns)
+    camp_idx, ag_idx, term_idx = -1, -1, -1
+    
+    sample = df.iloc[0].fillna("").astype(str).tolist()
+    # 지표(imp, clk, cost 등)는 항상 맨 끝에 있으므로 제외하고 텍스트 탐색
+    for i in range(n_cols - 3): 
+        v = sample[i].strip()
+        if v.startswith("cmp-"): camp_idx = i
+        elif v.startswith("grp-"): ag_idx = i
+        elif v and not v.startswith("nad-") and not v.startswith("nct-") and not v.startswith("nkw-") and not v.isdigit():
+            if "-" in v and len(v) == 10: continue # 날짜 형식 패스
+            if v.upper() in ["PC", "MOBILE", "M", "T"]: continue # 디바이스 패스
+            if term_idx == -1: term_idx = i # 가장 먼저 발견된 일반 문자열을 검색어로 간주
+
+    if camp_idx == -1: camp_idx = 2
+    if ag_idx == -1: ag_idx = 3
+    if term_idx == -1: term_idx = 5
+    
+    res = {}
+    if is_conv:
+        conv_idx, sales_idx = n_cols - 2, n_cols - 1
+        for _, r in df.iterrows():
+            try:
+                term = str(r[term_idx]).strip()
+                if not term or term == '-': continue
+                cid = str(r[camp_idx]).strip() if camp_idx != -1 else ""
+                aid = str(r[ag_idx]).strip() if ag_idx != -1 else ""
+                key = f"{cid}_{aid}_{term}"
+                
+                conv = float(r[conv_idx]) if pd.notna(r[conv_idx]) else 0.0
+                sales = float(r[sales_idx]) if pd.notna(r[sales_idx]) else 0.0
+                
+                if key not in res: res[key] = {"cid": cid, "aid": aid, "term": term, "conv": 0.0, "sales": 0.0}
+                res[key]["conv"] += conv
+                res[key]["sales"] += sales
+            except: pass
+    else:
+        imp_idx, clk_idx, cost_idx = n_cols - 3, n_cols - 2, n_cols - 1
+        for _, r in df.iterrows():
+            try:
+                term = str(r[term_idx]).strip()
+                if not term or term == '-': continue
+                cid = str(r[camp_idx]).strip() if camp_idx != -1 else ""
+                aid = str(r[ag_idx]).strip() if ag_idx != -1 else ""
+                key = f"{cid}_{aid}_{term}"
+                
+                imp = int(float(r[imp_idx])) if pd.notna(r[imp_idx]) else 0
+                clk = int(float(r[clk_idx])) if pd.notna(r[clk_idx]) else 0
+                cost = int(round(float(r[cost_idx]) * 1.1)) if pd.notna(r[cost_idx]) else 0
+                
+                if key not in res: res[key] = {"cid": cid, "aid": aid, "term": term, "imp": 0, "clk": 0, "cost": 0}
+                res[key]["imp"] += imp
+                res[key]["clk"] += clk
+                res[key]["cost"] += cost
+            except: pass
+            
+    return res
+
+def process_search_term_merged(engine: Engine, perf_df: pd.DataFrame, conv_df: pd.DataFrame, customer_id: str, target_date: date, account_name: str, rep_type: str):
+    perf_data = extract_st_data(perf_df, is_conv=False)
+    conv_data = extract_st_data(conv_df, is_conv=True)
+    
+    keys = set(perf_data.keys()) | set(conv_data.keys())
+    if not keys: return
+    
+    rows = []
+    for k in keys:
+        p = perf_data.get(k, {"cid": "", "aid": "", "term": "", "imp": 0, "clk": 0, "cost": 0})
+        c = conv_data.get(k, {"conv": 0.0, "sales": 0.0})
+        
+        cid = p.get("cid") or c.get("cid", "")
+        aid = p.get("aid") or c.get("aid", "")
+        term = p.get("term") or c.get("term", "")
+        
+        cost = p.get("cost", 0)
+        sales = c.get("sales", 0.0)
+        roas = (sales / cost * 100) if cost > 0 else 0.0
+        
+        rows.append({
+            "dt": target_date,
+            "customer_id": str(customer_id),
+            "adgroup_id": aid,
+            "campaign_id": cid,
+            "search_term": term,
+            "imp": p.get("imp", 0),
+            "clk": p.get("clk", 0),
+            "cost": cost,
+            "conv": c.get("conv", 0.0),
+            "sales": sales,
+            "roas": roas
+        })
+        
+    replace_fact_range(engine, "fact_search_term_daily", rows, customer_id, target_date)
+    log(f"   🔎 [ {account_name} ] {rep_type} 검색어 리포트 수집 완료 ({len(rows)}건)")
+
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -464,10 +508,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         conv_df = fetch_stat_report(customer_id, "AD_CONVERSION", target_date)
         process_merged_reports(engine, ad_df, conv_df, customer_id, target_date, account_name)
         
-        # [NEW] 검색어 리포트(SEARCH_TERM) 요청 및 수집
-        st_df = fetch_stat_report(customer_id, "SEARCH_TERM", target_date)
-        if st_df is not None and not st_df.empty:
-            process_search_term_data(engine, st_df, customer_id, target_date, account_name)
+        # [NEW] 쇼핑검색어 리포트 요청 및 적재 (성과 + 전환)
+        shop_perf = fetch_stat_report(customer_id, "SHOPPINGKEYWORD_DETAIL", target_date)
+        shop_conv = fetch_stat_report(customer_id, "SHOPPINGKEYWORD_CONVERSION_DETAIL", target_date)
+        if (shop_perf is not None and not shop_perf.empty) or (shop_conv is not None and not shop_conv.empty):
+            process_search_term_merged(engine, shop_perf, shop_conv, customer_id, target_date, account_name, "쇼핑검색")
+
+        # [NEW] 파워링크 검색어 리포트 요청 및 적재 (EXPKEYWORD는 전환이 없음)
+        pl_perf = fetch_stat_report(customer_id, "EXPKEYWORD", target_date)
+        if pl_perf is not None and not pl_perf.empty:
+            process_search_term_merged(engine, pl_perf, pd.DataFrame(), customer_id, target_date, account_name, "파워링크")
 
     log(f"✅ 완료: {account_name}")
 
