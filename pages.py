@@ -17,7 +17,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v9.8 (UX/워딩 심플화 및 카드 UI)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.1 (검색어 자동추적 & 진단도구)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -125,7 +125,6 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
-# --- 페이지 로직 ---
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -182,9 +181,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='kpi-row'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    # ==========================================
-    # [UX 개선] 주요 최적화 포인트 (심플 워딩 & 카드 UI)
-    # ==========================================
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트</div>", unsafe_allow_html=True)
     
     if kw_df is not None and not kw_df.empty:
@@ -283,9 +279,73 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
-    # [UX 개선] 기본 DataFrame을 render_big_table (AgGrid)로 교체하여 정렬/UI 개선
     display_df = biz_view[["account_name", "manager", "비즈머니 잔액", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     render_big_table(display_df, key="budget_biz_table", height=450)
+
+    st.divider()
+    st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
+
+    budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
+    budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
+    budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
+
+    budget_view["usage_rate"] = 0.0
+    m2 = budget_view["monthly_budget_val"] > 0
+    budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
+    budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
+
+    def _status(rate: float, budget: int):
+        if budget == 0: return ("⚪ 미설정", "미설정", 3)
+        if rate >= 1.0: return ("🔴 초과", "초과", 0)
+        if rate >= 0.9: return ("🟡 주의", "주의", 1)
+        return ("🟢 적정", "적정", 2)
+
+    tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
+    budget_view["상태"] = tmp[0]
+    budget_view["status_text"] = tmp[1]
+    budget_view["_rank"] = tmp[2].astype(int)
+
+    budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+
+    budget_view_disp = budget_view.copy()
+    budget_view_disp["월 예산(원)"] = budget_view_disp["monthly_budget_val"].map(format_number_commas)
+    budget_view_disp[f"{end_dt.month}월 사용액"] = budget_view_disp["current_month_cost_val"].map(format_number_commas)
+    budget_view_disp["집행률(%)"] = budget_view_disp["usage_pct"].map(lambda x: round(float(x), 1) if pd.notna(x) else 0.0)
+
+    disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
+    table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
+
+    c_table, c_form = st.columns([3, 1])
+    with c_table:
+        render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
+
+    with c_form:
+        st.markdown("#### ✍️ 월 예산 설정/수정")
+        st.caption("예산을 입력하면 좌측 표에 즉시 반영됩니다.")
+        
+        opts = budget_view_disp[["customer_id", "account_name"]].copy()
+        opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
+        labels = opts["label"].tolist()
+        label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
+
+        with st.form("budget_update_form", clear_on_submit=False):
+            sel = st.selectbox("업체 선택", labels, index=0 if labels else None, disabled=(len(labels) == 0))
+            cur_budget = 0
+            if labels:
+                cid = int(label_to_cid.get(sel, 0))
+                cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
+            
+            new_budget = st.text_input("새 월 예산 (예: 500,000)", value=format_number_commas(cur_budget) if labels else "0")
+            submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
+
+        if submitted and labels:
+            cid = int(label_to_cid.get(sel, 0))
+            nb = parse_currency(new_budget)
+            update_monthly_budget(engine, cid, nb)
+            st.success("예산 수정 완료! (새로고침 됩니다)")
+            st.cache_data.clear()
+            time.sleep(0.5)
+            st.rerun()
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -309,11 +369,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
+    
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
-    if bundle is None or bundle.empty: return
 
     def _prepare_main_table(df_in: pd.DataFrame, shopping_first: bool) -> pd.DataFrame:
-        if df_in.empty: return pd.DataFrame()
+        if df_in is None or df_in.empty: return pd.DataFrame()
         df = _perf_common_merge_meta(add_rates(df_in), meta)
         view = df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "ctr": "CTR(%)", "cpc": "CPC", "cost": "광고비", "conv": "전환", "cpa": "CPA", "sales": "전환매출", "roas": "ROAS(%)"})
         for c in ["광고비", "CPC", "CPA", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c, 0), errors="coerce").fillna(0)
@@ -325,13 +385,45 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA", "클릭", "CTR(%)", "CPC", "노출"] if shopping_first else base_cols + ["노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
         return view[[c for c in cols if c in view.columns]].copy()
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크", "🛒 쇼핑검색"])
+    tab_pl, tab_shop = st.tabs(["🎯 파워링크", "🛒 쇼핑검색 (검색어)"])
+    
     with tab_pl:
-        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if "campaign_type_label" in bundle.columns else bundle
-        if not df_pl.empty: render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), False), "pl_grid", 500)
+        df_pl = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else bundle
+        if df_pl is not None and not df_pl.empty: 
+            render_big_table(_prepare_main_table(df_pl.sort_values("cost", ascending=False).head(top_n), False), "pl_grid", 500)
+        else:
+            st.info("파워링크 데이터가 없습니다.")
+            
     with tab_shop:
-        df_shop = bundle[bundle["campaign_type_label"] == "쇼핑검색"] if "campaign_type_label" in bundle.columns else bundle
-        if not df_shop.empty: render_big_table(_prepare_main_table(df_shop.sort_values("cost", ascending=False).head(top_n), True), "shop_grid", 500)
+        st.info("💡 **쇼핑검색 인사이트:** 사용자가 실제 검색한 **'검색어(Search Term)'**입니다. 불필요한 검색어는 비용 낭비를 막기 위해 제외 키워드로 설정하세요.")
+        
+        # [NEW] 스마트 검색어 추적 호출
+        shop_bundle = query_search_term_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=top_n)
+        
+        if shop_bundle is not None and "_debug_msg" in shop_bundle.columns:
+            msg = shop_bundle["_debug_msg"].iloc[0]
+            if msg == "NO_TABLE":
+                # 테이블 자체를 못 찾은 경우
+                tables = _get_table_names_cached(engine)
+                st.warning("🚨 **쇼핑검색/검색어 전용 테이블을 DB에서 찾을 수 없습니다.**")
+                st.write(f"**현재 DB에 존재하는 전체 테이블 목록:** `{tables}`")
+                st.caption("위 목록 중 쇼핑검색 리포트가 수집되고 있는 테이블 이름을 알려주시면 바로 쿼리를 수정해 드리겠습니다!")
+            elif msg.startswith("NO_TERM_COL"):
+                st.warning(f"🚨 **테이블은 찾았으나, 검색어 컬럼을 찾지 못했습니다.** ({msg})")
+            elif msg.startswith("SQL_ERROR"):
+                st.error("🚨 **검색어 조회 중 SQL 에러가 발생했습니다.**")
+                st.code(msg)
+                
+            # 만약 못 찾았다면, 아쉬운 대로 fact_keyword_daily 에 섞여있는지 최후의 탐색 (Fallback)
+            df_shop_fb = bundle[bundle["campaign_type_label"] == "쇼핑검색"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
+            if df_shop_fb is not None and not df_shop_fb.empty: 
+                st.success("대신 일반 키워드 테이블에서 '쇼핑검색'으로 분류된 데이터를 임시로 보여드립니다.")
+                render_big_table(_prepare_main_table(df_shop_fb.sort_values("cost", ascending=False).head(top_n), True), "shop_grid_fb", 500)
+                
+        elif shop_bundle is not None and not shop_bundle.empty:
+            render_big_table(_prepare_main_table(shop_bundle.sort_values("cost", ascending=False).head(top_n), True), "shop_grid", 500)
+        else:
+            st.info("해당 기간에 조회된 쇼핑검색/검색어 데이터가 없습니다.")
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -384,7 +476,7 @@ def page_settings(engine) -> None:
                 try:
                     cid_val = str(del_cid.strip())
                     sql_exec(engine, "DELETE FROM dim_account_meta WHERE customer_id = :cid", {"cid": int(cid_val)})
-                    for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
+                    for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_search_term_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
                         try: sql_exec(engine, f"DELETE FROM {table} WHERE customer_id::text = :cid", {"cid": cid_val})
                         except Exception: pass
                             
