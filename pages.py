@@ -17,7 +17,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.7 (쇼핑검색 API 한계 안내 및 AI노이즈 제거)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.8 (누락 함수 복구 및 예산 탭 컬럼 정상화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -145,7 +145,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             kw_bndl = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=200)
             kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
 
-            # 엑셀 다운로드 (쇼핑검색어 제외: 파워링크 키워드만)
             df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
 
             excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw)
@@ -186,7 +185,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트 (파워링크)</div>", unsafe_allow_html=True)
     
-    # [NEW] 파워링크 인사이트만 직관적으로 표시 (노이즈 필터링 완벽 적용)
     if not df_pl_kw.empty:
         c1, c2 = st.columns(2)
         with c1:
@@ -271,8 +269,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
 
+    # [FIX] 표에서 사라졌던 3일 소진액과 D-소진 복구
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
-    biz_view[f"최근{TOPUP_AVG_DAYS}일 소진"] = biz_view["avg_cost"].map(format_currency)
+    biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
@@ -286,7 +285,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
-    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+    # [FIX] 복구된 컬럼들을 표기하도록 리스트에 추가
+    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     render_big_table(display_df, key="budget_biz_table", height=450)
 
     st.divider()
@@ -392,7 +392,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         cols = base_cols + ["전환매출", "ROAS(%)", "광고비", "전환", "CPA", "클릭", "CTR(%)", "CPC", "노출"] if shopping_first else base_cols + ["노출", "클릭", "CTR(%)", "CPC", "광고비", "전환", "CPA", "전환매출", "ROAS(%)"]
         return view[[c for c in cols if c in view.columns]].copy()
 
-    # [NEW] 확장검색 탭 완전 삭제 (파워링크 / 쇼핑검색 안내 2개로 분리)
     tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 안내"])
     
     with tab_pl:
