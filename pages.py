@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v10.9.1 (예산 잔액 합계 에러 픽스)")
+BUILD_TAG = os.getenv("APP_BUILD", "v10.9.5 (예산 폼 콜백 완전 분리 및 안정화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -276,8 +276,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
     
-    # [FIX] 숫자 합산을 위해 원본 컬럼(bizmoney_balance, current_month_cost) 그대로 사용 (이미 숫자임)
-    total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"], errors="coerce").fillna(0).sum())
+    total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
     count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
 
@@ -309,6 +308,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
     budget_view["상태"] = tmp[0]
+    budget_view["status_text"] = tmp[1]
     budget_view["_rank"] = tmp[2].astype(int)
 
     budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
@@ -325,6 +325,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c_table:
         render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
 
+    # ==========================================
+    # [FIX] 에러가 발생하던 예산 입력 폼 로직 수정
+    # ==========================================
     with c_form:
         st.markdown("#### ✍️ 월 예산 설정/수정")
         st.caption("원하는 단위를 클릭하거나 직접 금액을 입력하세요.")
@@ -340,30 +343,33 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             cid = int(label_to_cid.get(sel, 0))
             sk = f"budget_input_{cid}"
             
+            # 초기 로드 시 DB에서 불러옴
             if sk not in st.session_state:
                 cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
                 st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
             
-            def format_budget_on_change():
-                val = st.session_state[sk]
+            # KeyError를 완벽 방지하는 명시적 파라미터 전달 콜백
+            def format_budget_on_change(key_name):
+                val = st.session_state.get(key_name, "0")
                 cleaned = re.sub(r"[^\d]", "", str(val))
                 if cleaned:
-                    st.session_state[sk] = f"{int(cleaned):,}"
+                    st.session_state[key_name] = f"{int(cleaned):,}"
                 else:
-                    st.session_state[sk] = "0"
+                    st.session_state[key_name] = "0"
 
-            st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change)
+            st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
             
-            raw_val = int(re.sub(r"[^\d]", "", str(st.session_state[sk])) or 0)
+            raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
             
+            # 버튼 클릭 시 실시간 업데이트 (st.form 내부가 아니어서 오류 안 남)
             b1, b2, b3, b4 = st.columns(4)
-            if b1.button("+10만", use_container_width=True): 
+            if b1.button("+10만", key=f"btn_10_{cid}", use_container_width=True): 
                 st.session_state[sk] = f"{raw_val + 100000:,}"; st.rerun()
-            if b2.button("+100만", use_container_width=True): 
+            if b2.button("+100만", key=f"btn_100_{cid}", use_container_width=True): 
                 st.session_state[sk] = f"{raw_val + 1000000:,}"; st.rerun()
-            if b3.button("+1000만", use_container_width=True): 
+            if b3.button("+1000만", key=f"btn_1000_{cid}", use_container_width=True): 
                 st.session_state[sk] = f"{raw_val + 10000000:,}"; st.rerun()
-            if b4.button("초기화", use_container_width=True): 
+            if b4.button("초기화", key=f"btn_0_{cid}", use_container_width=True): 
                 st.session_state[sk] = "0"; st.rerun()
                 
             def get_korean_money_str(amount: int) -> str:
@@ -376,10 +382,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             st.info(f"💡 **입력금액:** {get_korean_money_str(raw_val)}")
 
+            # 실제 DB 저장
             if st.button("💾 예산 저장", type="primary", use_container_width=True):
                 update_monthly_budget(engine, cid, raw_val)
                 st.success("✅ 예산이 안전하게 저장되었습니다!")
-                del st.session_state[sk]
+                if sk in st.session_state:
+                    del st.session_state[sk] # 캐시 찌꺼기 제거
                 st.cache_data.clear()
                 time.sleep(0.5)
                 st.rerun()
