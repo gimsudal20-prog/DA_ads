@@ -17,7 +17,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v9.8 (와이드 레이아웃 & 예산 폼 복구)")
+BUILD_TAG = os.getenv("APP_BUILD", "v9.8 (UX/워딩 심플화 및 카드 UI)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -125,6 +125,7 @@ def _render_empty_state_no_data(key: str = "empty") -> None:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.write("• 담당자/계정 필터를 풀어보거나, accounts.xlsx 동기화를 확인해보세요.")
 
+# --- 페이지 로직 ---
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -181,29 +182,36 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='kpi-row'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    st.markdown("### 🚨 최적화 자동 분석 (Action Item)")
+    # ==========================================
+    # [UX 개선] 주요 최적화 포인트 (심플 워딩 & 카드 UI)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트</div>", unsafe_allow_html=True)
     
     if kw_df is not None and not kw_df.empty:
         c1, c2 = st.columns(2)
         with c1:
-            st.error("#### 💸 돈 먹는 하마 (비용 누수)")
-            st.caption("비용은 3만 원 이상 쓰면서 전환이 없는 키워드 (제외 권장)")
-            hippos = kw_df[(kw_df['cost'] >= 30000) & (kw_df['conv'] == 0)].sort_values('cost', ascending=False)
-            if not hippos.empty:
-                disp_h = hippos[['account_name', 'keyword', 'cost']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'cost': '비용'})
-                disp_h['비용'] = disp_h['비용'].apply(format_currency)
-                ui_table_or_dataframe(disp_h.head(5), "hippos_table", 200)
-            else: st.success("🎉 비용 누수 키워드 없음!")
+            with st.container(border=True):
+                st.markdown("<h4 style='margin-bottom: 4px; margin-top: 0;'>🚨 저효율 키워드 (개선 필요)</h4>", unsafe_allow_html=True)
+                st.caption("비용 3만 원 이상 소진 중이나 전환이 0건인 키워드입니다. (제외 권장)")
+                hippos = kw_df[(kw_df['cost'] >= 30000) & (kw_df['conv'] == 0)].sort_values('cost', ascending=False)
+                if not hippos.empty:
+                    disp_h = hippos[['account_name', 'keyword', 'cost']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'cost': '비용'})
+                    disp_h['비용'] = disp_h['비용'].apply(format_currency)
+                    st_dataframe_safe(disp_h.head(5), hide_index=True, use_container_width=True)
+                else: 
+                    st.success("✅ 해당되는 저효율 키워드가 없습니다.")
 
         with c2:
-            st.info("#### ⭐ 예산 증액 추천 (고효율)")
-            st.caption("적은 비용(5만 이하)으로 ROAS 500% 이상 기록 중 (입찰가 상향 권장)")
-            stars = kw_df[(kw_df['cost'] <= 50000) & (kw_df['conv'] >= 1) & (kw_df['roas'] >= 500)].sort_values('roas', ascending=False)
-            if not stars.empty:
-                disp_s = stars[['account_name', 'keyword', 'roas']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'roas': 'ROAS(%)'})
-                disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
-                ui_table_or_dataframe(disp_s.head(5), "stars_table", 200)
-            else: st.write("발굴된 고효율 키워드가 없습니다.")
+            with st.container(border=True):
+                st.markdown("<h4 style='margin-bottom: 4px; margin-top: 0;'>⭐ 고효율 키워드 (기회 발굴)</h4>", unsafe_allow_html=True)
+                st.caption("비용 5만 원 미만 소진, ROAS 500% 이상 기록 중인 우수 키워드입니다. (입찰가 상향 권장)")
+                stars = kw_df[(kw_df['cost'] <= 50000) & (kw_df['conv'] >= 1) & (kw_df['roas'] >= 500)].sort_values('roas', ascending=False)
+                if not stars.empty:
+                    disp_s = stars[['account_name', 'keyword', 'roas']].rename(columns={'account_name': '업체명', 'keyword': '키워드', 'roas': 'ROAS(%)'})
+                    disp_s['ROAS(%)'] = disp_s['ROAS(%)'].apply(format_roas)
+                    st_dataframe_safe(disp_s.head(5), hide_index=True, use_container_width=True)
+                else: 
+                    st.info("해당되는 고효율 키워드가 없습니다.")
     st.divider()
 
     try:
@@ -222,7 +230,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
     except Exception as e:
         st.info(f"추세 데이터를 불러오는 중 오류가 발생했습니다: {e}")
-
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
@@ -265,7 +272,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view[f"최근{TOPUP_AVG_DAYS}일 소진"] = biz_view["avg_cost"].map(format_currency)
     biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
-    st.markdown("### 🔍 전체 계정 현황 및 기상도")
+    st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
     
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"], errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
@@ -276,76 +283,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
+    # [UX 개선] 기본 DataFrame을 render_big_table (AgGrid)로 교체하여 정렬/UI 개선
     display_df = biz_view[["account_name", "manager", "비즈머니 잔액", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
-    ui_table_or_dataframe(display_df, key="budget_biz_table", height=520)
-
-    # ==========================================
-    # [RESTORED] 월 예산 관리 및 수정 폼
-    # ==========================================
-    st.divider()
-    st.markdown(f"### 📅 당월 예산 설정 및 집행률 관리 ({end_dt.strftime('%Y년 %m월')} 기준)")
-
-    budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
-    budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
-    budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
-
-    budget_view["usage_rate"] = 0.0
-    m2 = budget_view["monthly_budget_val"] > 0
-    budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
-    budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
-
-    def _status(rate: float, budget: int):
-        if budget == 0: return ("⚪ 미설정", 3)
-        if rate >= 1.0: return ("🔴 초과", 0)
-        if rate >= 0.9: return ("🟡 주의", 1)
-        return ("🟢 적정", 2)
-
-    tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
-    budget_view["상태"] = tmp[0]
-    budget_view["_rank"] = tmp[1].astype(int)
-
-    budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
-
-    budget_view_disp = budget_view.copy()
-    budget_view_disp["월 예산(원)"] = budget_view_disp["monthly_budget_val"].map(format_number_commas)
-    budget_view_disp[f"{end_dt.month}월 사용액"] = budget_view_disp["current_month_cost_val"].map(format_number_commas)
-    budget_view_disp["집행률(%)"] = budget_view_disp["usage_pct"].map(lambda x: round(float(x), 1) if pd.notna(x) else 0.0)
-
-    disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
-    table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
-
-    c_table, c_form = st.columns([3, 1])
-    with c_table:
-        render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
-
-    with c_form:
-        st.markdown("#### ✍️ 월 예산 설정/수정")
-        st.caption("예산을 입력하면 좌측 집행률 표에 즉시 반영됩니다.")
-        
-        opts = budget_view_disp[["customer_id", "account_name"]].copy()
-        opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
-        labels = opts["label"].tolist()
-        label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
-
-        with st.form("budget_update_form", clear_on_submit=False):
-            sel = st.selectbox("업체 선택", labels, index=0 if labels else None, disabled=(len(labels) == 0))
-            cur_budget = 0
-            if labels:
-                cid = int(label_to_cid.get(sel, 0))
-                cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
-            
-            new_budget = st.text_input("새 월 예산 (예: 500,000)", value=format_number_commas(cur_budget) if labels else "0")
-            submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
-
-        if submitted and labels:
-            cid = int(label_to_cid.get(sel, 0))
-            nb = parse_currency(new_budget)
-            update_monthly_budget(engine, cid, nb)
-            st.success("예산 수정 완료! (새로고침 됩니다)")
-            st.cache_data.clear()
-            time.sleep(0.5)
-            st.rerun()
-
+    render_big_table(display_df, key="budget_biz_table", height=450)
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
