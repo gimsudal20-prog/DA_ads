@@ -18,7 +18,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v11.0 (예산 폼 위젯 상태 충돌 완벽 해결)")
+BUILD_TAG = os.getenv("APP_BUILD", "v11.0 (베타 버전)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
