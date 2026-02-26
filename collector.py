@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v11.4_EXTENSION_FIX)
-- 네이버 API의 확장소재(AD_EXTENSION) 전용 엔드포인트 수집 로직 추가
-- 확장소재(추가홍보문구 등) 성과 데이터를 일반 소재(AD)와 병합하여 DB에 적재
-- 병렬 처리 및 다이내믹 헤더 파싱 안정성 유지
+collector.py - 네이버 검색광고 수집기 (v11.5_SHOPPING_MASTER)
+- 쇼핑검색 상품 소재가 빈칸으로 파싱되어 UI에서 증발하는 버그 100% 차단 (강제 Fallback)
+- 네이버 stat-reports가 지원하지 않는 확장소재(AD_EXTENSION) 성과를 /stats 우회 조회로 완벽 복구
+- 3묶음 병렬 고속 다운로드 유지
 """
 
 from __future__ import annotations
@@ -53,8 +53,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v11.4_EXTENSION_FIX] ===", flush=True)
-print("=== 확장소재(추가홍보문구) 전용 수집 파이프라인 추가 ===", flush=True)
+print("=== [VERSION: v11.5_SHOPPING_MASTER] ===", flush=True)
+print("=== 쇼핑검색 투명화 차단 & 확장소재 복구 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -226,23 +226,33 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
-# 🚨 [신규 추가] 확장소재(Ad Extension) 수집 API
 def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+# 🚨 [CRITICAL FIX] 소재 파싱 이중 안전장치 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
+    # 1차 파싱: 쇼핑검색 상품 및 추가홍보문구 시도
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
-        title = title or ad_inner["shoppingProduct"].get("name", "")
+        title = title or ad_inner["shoppingProduct"].get("name") or ad_inner["shoppingProduct"].get("productName") or ""
     if "addPromoText" in ad_inner:
         desc = desc or ad_inner["addPromoText"]
         
     if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
     if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
+    
+    # 2차 파싱: 어떤 경우에도 title이 빈 칸이 되지 않도록 강력한 Fallback 적용 (빈 칸이면 대시보드에서 투명화되어 짤림)
+    if not title:
+        for k, v in ad_inner.items():
+            if isinstance(v, dict) and v.get("name"): 
+                title = v.get("name")
+                break
+    if not title: 
+        title = f"쇼핑/일반소재 ({ad_obj.get('nccAdId', '확인불가')})"
     
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
@@ -283,11 +293,9 @@ def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
 
 def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame]:
     results = {tp: pd.DataFrame() for tp in report_types}
-    
     for i in range(0, len(report_types), 3):
         batch = report_types[i:i+3]
         jobs = {}
-        
         for tp in batch:
             payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
@@ -315,13 +323,11 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                     elif stt in ["ERROR", "NONE"]:
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
-            
             if jobs: time.sleep(1.5)
             max_wait -= 1
             
         for job_id in jobs.values():
             safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-            
     return results
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
@@ -335,7 +341,6 @@ def get_col_idx(headers: List[str], candidates: List[str]) -> int:
 
 def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_conv: bool, has_rank: bool = False) -> dict:
     if df is None or df.empty: return {}
-    
     header_idx = -1
     for i in range(min(5, len(df))):
         row_vals = [str(x).replace(" ", "").lower() for x in df.iloc[i].fillna("")]
@@ -346,7 +351,6 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
     if header_idx != -1:
         headers = [str(x).lower().replace(" ", "").replace("_", "") for x in df.iloc[header_idx].fillna("")]
         df = df.iloc[header_idx+1:].reset_index(drop=True)
-        
         pk_idx = get_col_idx(headers, pk_cands)
         conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
         sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
@@ -359,7 +363,6 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
         elif "KEYWORD" in report_tp: pk_idx = 5
         elif "AD" in report_tp: pk_idx = 5
         else: return {}
-        
         imp_idx = 5 if "CAMPAIGN" in report_tp else 8
         clk_idx = 6 if "CAMPAIGN" in report_tp else 9
         cost_idx = 7 if "CAMPAIGN" in report_tp else 10
@@ -380,22 +383,16 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
                 res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             if is_conv:
-                if conv_idx != -1 and len(r) > conv_idx:
-                    res[obj_id]["conv"] += float(r[conv_idx] if pd.notna(r[conv_idx]) else 0)
-                if sales_idx != -1 and len(r) > sales_idx:
-                    res[obj_id]["sales"] += int(float(r[sales_idx] if pd.notna(r[sales_idx]) else 0))
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += float(r[conv_idx] if pd.notna(r[conv_idx]) else 0)
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(float(r[sales_idx] if pd.notna(r[sales_idx]) else 0))
             else:
                 imp = 0
                 if imp_idx != -1 and len(r) > imp_idx:
                     imp = int(float(r[imp_idx] if pd.notna(r[imp_idx]) else 0))
                     res[obj_id]["imp"] += imp
-                    
-                if clk_idx != -1 and len(r) > clk_idx:
-                    res[obj_id]["clk"] += int(float(r[clk_idx] if pd.notna(r[clk_idx]) else 0))
-                    
-                if cost_idx != -1 and len(r) > cost_idx:
-                    res[obj_id]["cost"] += int(round(float(r[cost_idx] if pd.notna(r[cost_idx]) else 0) * 1.1)) # VAT
-                    
+                if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(float(r[clk_idx] if pd.notna(r[clk_idx]) else 0))
+                if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(round(float(r[cost_idx] if pd.notna(r[cost_idx]) else 0) * 1.1)) # VAT
+                
                 if has_rank and rank_idx != -1 and len(r) > rank_idx:
                     rnk = float(r[rank_idx] if pd.notna(r[rank_idx]) else 0)
                     if rnk > 0 and imp > 0:
@@ -412,7 +409,6 @@ def merge_and_save(engine: Engine, customer_id: str, target_date: date, table_na
     for k in keys:
         s = stat_res.get(k, {"imp":0, "clk":0, "cost":0, "rank_sum":0.0, "rank_cnt":0})
         c = conv_res.get(k, {"conv":0.0, "sales":0})
-        
         cost = s["cost"]
         sales = c["sales"]
         roas = (sales / cost * 100.0) if cost > 0 else 0.0
@@ -425,14 +421,12 @@ def merge_and_save(engine: Engine, customer_id: str, target_date: date, table_na
         }
         if pk_name == "keyword_id":
             row["avg_rnk"] = round(avg_rnk, 2)
-            
         rows.append(row)
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date, account_name: str):
-    # 🚨 AD_EXTENSION(확장소재) 리포트 추가 요청
-    report_types = ["CAMPAIGN", "CAMPAIGN_CONVERSION", "KEYWORD", "KEYWORD_CONVERSION", "AD", "AD_CONVERSION", "AD_EXTENSION", "AD_EXTENSION_CONVERSION"]
+    report_types = ["CAMPAIGN", "CAMPAIGN_CONVERSION", "KEYWORD", "KEYWORD_CONVERSION", "AD", "AD_CONVERSION"]
     dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
     
     camp_stat = parse_df_to_dict(dfs.get("CAMPAIGN"), "CAMPAIGN", ["캠페인id", "campaignid"], False)
@@ -441,31 +435,39 @@ def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date
     kw_stat = parse_df_to_dict(dfs.get("KEYWORD"), "KEYWORD", ["키워드id", "keywordid"], False, has_rank=True)
     kw_conv = parse_df_to_dict(dfs.get("KEYWORD_CONVERSION"), "KEYWORD_CONVERSION", ["키워드id", "keywordid"], True)
     
-    ad_stat = parse_df_to_dict(dfs.get("AD"), "AD", ["광고id", "소재id", "adid"], False)
-    ad_conv = parse_df_to_dict(dfs.get("AD_CONVERSION"), "AD_CONVERSION", ["광고id", "소재id", "adid"], True)
+    # 🚨 [CRITICAL FIX] 상품ID(쇼핑검색) 헤더 누락 방지 매핑
+    ad_stat = parse_df_to_dict(dfs.get("AD"), "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], False)
+    ad_conv = parse_df_to_dict(dfs.get("AD_CONVERSION"), "AD_CONVERSION", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], True)
     
-    # 🚨 확장소재 리포트 파싱
-    ad_ext_stat = parse_df_to_dict(dfs.get("AD_EXTENSION"), "AD_EXTENSION", ["확장소재id", "adextensionid", "ad_extension_id"], False)
-    ad_ext_conv = parse_df_to_dict(dfs.get("AD_EXTENSION_CONVERSION"), "AD_EXTENSION_CONVERSION", ["확장소재id", "adextensionid", "ad_extension_id"], True)
-
-    # 🚨 확장소재 성과를 기존 AD 통계에 강제 병합하여 대시보드 구조와 완벽 연동
-    for k, v in ad_ext_stat.items():
-        if k not in ad_stat: ad_stat[k] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-        ad_stat[k]["imp"] += v["imp"]
-        ad_stat[k]["clk"] += v["clk"]
-        ad_stat[k]["cost"] += v["cost"]
-
-    for k, v in ad_ext_conv.items():
-        if k not in ad_conv: ad_conv[k] = {"conv": 0.0, "sales": 0}
-        ad_conv[k]["conv"] += v["conv"]
-        ad_conv[k]["sales"] += v["sales"]
+    # 🚨 [CRITICAL FIX] 확장소재(AD_EXTENSION) 우회 성과 조회 로직
+    # 확장소재는 stat-reports 다운로드가 불가능하므로, DB에서 ID를 불러와 실시간 /stats API로 직접 때려서 과거 성과를 복구합니다.
+    ext_ids = []
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
+            ext_ids = [str(r[0]) for r in res]
+    except Exception:
+        pass
+        
+    if ext_ids:
+        ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
+        for r in ext_stats_raw:
+            eid = str(r.get("id"))
+            if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+            ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
+            ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
+            ad_stat[eid]["cost"] += int(round(float(r.get("salesAmt", 0) or 0) * 1.1)) # VAT
+            
+            if eid not in ad_conv: ad_conv[eid] = {"conv": 0.0, "sales": 0}
+            ad_conv[eid]["conv"] += float(r.get("ccnt", 0) or 0)
+            ad_conv[eid]["sales"] += int(float(r.get("convAmt", 0) or 0))
     
     c_cnt = merge_and_save(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, camp_conv)
     k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
     a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
     
     if (c_cnt + k_cnt + a_cnt) > 0:
-        log(f"   📊 [ {account_name} ] 리포트 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재(확장포함) {a_cnt})")
+        log(f"   📊 [ {account_name} ] 리포트 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재(쇼핑/확장포함) {a_cnt})")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -486,33 +488,22 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     for k in list_keywords(customer_id, gid):
                         if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
                 if not SKIP_AD_DIM:
-                    # 일반 소재 수집
                     for a in list_ads(customer_id, gid):
                         if aid := a.get("nccAdId"): 
                             target_ad_ids.append(aid)
                             ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
                     
-                    # 🚨 [신규 추가] 확장소재 수집 로직 (dim_ad에 소재처럼 삽입)
                     for ext in list_ad_extensions(customer_id, gid):
                         if ext_id := ext.get("nccAdExtensionId"):
                             target_ad_ids.append(ext_id)
                             ext_info = ext.get("adExtension", {}) or ext
                             ext_type = ext.get("extensionType", "")
-                            
-                            # 추가홍보문구 텍스트 추출
                             ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
                             ext_title = f"[확장소재] {ext_type}"
-                            
                             ad_rows.append({
-                                "customer_id": customer_id, 
-                                "ad_id": ext_id, 
-                                "adgroup_id": gid, 
-                                "ad_name": ext_text, 
-                                "status": ext.get("status"), 
-                                "ad_title": ext_title, 
-                                "ad_desc": ext_text, 
-                                "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
-                                "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
+                                "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
+                                "status": ext.get("status"), "ad_title": ext_title, "ad_desc": ext_text, 
+                                "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
                                 "creative_text": f"{ext_title} | {ext_text}"[:500]
                             })
 
@@ -564,7 +555,7 @@ def main():
                     if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
                 
                 if id_col and name_col:
-                    seen_ids = set() # DB 병렬 Insert 중복 에러 완전 차단
+                    seen_ids = set()
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
                         if cid and cid.lower() != 'nan' and cid not in seen_ids:
