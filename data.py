@@ -233,6 +233,25 @@ def format_roas(val) -> str:
         return f"{float(val):.0f}%"
     except Exception: return "-"
 
+# ----------------------------------------------------
+# [RESTORED] 예산 문자열 파싱 및 DB 업데이트 함수 복구
+# ----------------------------------------------------
+def parse_currency(val_str) -> int:
+    """문자열 '500,000' -> 숫자 500000 으로 변환"""
+    if pd.isna(val_str): return 0
+    s = re.sub(r"[^\d]", "", str(val_str))
+    return int(s) if s else 0
+
+def update_monthly_budget(engine, customer_id: int, monthly_budget: int) -> None:
+    """월 예산을 DB에 저장"""
+    if not table_exists(engine, "dim_account_meta"): return
+    sql_exec(
+        engine,
+        "UPDATE dim_account_meta SET monthly_budget = :b, updated_at = now() WHERE customer_id = :cid",
+        {"b": int(monthly_budget), "cid": int(customer_id)},
+    )
+# ----------------------------------------------------
+
 def finalize_ctr_col(df: pd.DataFrame, col: str = "CTR(%)") -> pd.DataFrame:
     if df is None or df.empty or col not in df.columns: return df
     out = df.copy()
