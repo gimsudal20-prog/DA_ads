@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.1 (광고그룹 최적화 카드 삭제 및 쇼핑검색 소재 완벽 분리)")
+BUILD_TAG = os.getenv("APP_BUILD", "v15.2 (키워드/그룹/쇼핑검색 계층형 필터 검색 지원)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -513,12 +513,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not base_bundle.empty:
             view = append_comparison_data(view, base_bundle, ['customer_id', 'campaign_id'])
 
-    # 기존 💡 광고그룹/캠페인 최적화 포인트(Insight Cards) 삭제됨
-
     c1, c2 = st.columns([1, 3])
     with c1:
         camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
-        sel_camp = st.selectbox("🎯 개별 캠페인 필터", camps, key="camp_name_filter")
+        sel_camp = st.selectbox("🎯 개별 캠페인 검색/필터", camps, key="camp_name_filter", help="타이핑하여 캠페인명을 검색할 수 있습니다.")
 
     if sel_camp != "전체": 
         view = view[view["캠페인"] == sel_camp]
@@ -607,11 +605,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             c1, c2 = st.columns([1, 3])
             with c1:
-                kws = ["전체"] + sorted([str(x) for x in view["키워드"].unique() if str(x).strip()])
-                sel_kw = st.selectbox("🎯 개별 키워드 필터", kws, key="kw_name_filter")
+                # [기능 개선] 키워드 필터 옵션명에 캠페인과 광고그룹 포함 (검색 용이)
+                view["_filter_label"] = view["캠페인"].astype(str) + " > " + view["광고그룹"].astype(str) + " > " + view["키워드"].astype(str)
+                kws = ["전체"] + sorted([str(x) for x in view["_filter_label"].unique() if str(x).strip()])
+                sel_kw = st.selectbox("🎯 개별 키워드 검색/필터", kws, key="kw_name_filter", help="타이핑하여 캠페인, 그룹, 또는 키워드를 빠르게 검색할 수 있습니다.")
 
             if sel_kw != "전체":
-                view = view[view["키워드"] == sel_kw]
+                view = view[view["_filter_label"] == sel_kw]
                 if cmp_mode_pl != "비교 안함" and not view.empty:
                     st.markdown("### 🔍 선택 키워드 상세 비교 (Side-by-Side)")
                     agg_cur = view[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
@@ -691,11 +691,16 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     
             c1, c2 = st.columns([1, 3])
             with c1:
-                grps = ["전체"] + sorted([str(x) for x in view_grp["광고그룹"].unique() if str(x).strip()])
-                sel_grp = st.selectbox("🎯 개별 광고그룹 필터", grps, key="grp_name_filter")
+                # [기능 개선] 광고그룹 필터 옵션명에 캠페인명 포함 (검색 용이)
+                if not view_grp.empty and "캠페인" in view_grp.columns and "광고그룹" in view_grp.columns:
+                    view_grp["_filter_label"] = view_grp["캠페인"].astype(str) + " > " + view_grp["광고그룹"].astype(str)
+                    grps = ["전체"] + sorted([str(x) for x in view_grp["_filter_label"].unique() if str(x).strip()])
+                else:
+                    grps = ["전체"]
+                sel_grp = st.selectbox("🎯 개별 광고그룹 검색/필터", grps, key="grp_name_filter", help="타이핑하여 캠페인명이나 그룹명을 빠르게 검색할 수 있습니다.")
 
             if sel_grp != "전체":
-                view_grp = view_grp[view_grp["광고그룹"] == sel_grp]
+                view_grp = view_grp[view_grp["_filter_label"] == sel_grp]
                 if cmp_mode_grp != "비교 안함" and not view_grp.empty:
                     st.markdown("### 🔍 선택 광고그룹 상세 비교 (Side-by-Side)")
                     agg_cur = view_grp[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
@@ -789,11 +794,16 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 c1, c2 = st.columns([1, 3])
                 with c1:
-                    items = ["전체"] + sorted([str(x) for x in view_shop["상품/소재명"].unique() if str(x).strip()])
-                    sel_item = st.selectbox("🎯 개별 상품/소재 필터", items, key="shop_item_filter")
+                    # [기능 개선] 쇼핑검색 필터 옵션명에 캠페인과 광고그룹 포함 (검색 용이)
+                    if "캠페인" in view_shop.columns and "광고그룹" in view_shop.columns and "상품/소재명" in view_shop.columns:
+                        view_shop["_filter_label"] = view_shop["캠페인"].astype(str) + " > " + view_shop["광고그룹"].astype(str) + " > " + view_shop["상품/소재명"].astype(str)
+                        items = ["전체"] + sorted([str(x) for x in view_shop["_filter_label"].unique() if str(x).strip()])
+                    else:
+                        items = ["전체"]
+                    sel_item = st.selectbox("🎯 개별 상품/소재 검색/필터", items, key="shop_item_filter", help="타이핑하여 캠페인, 그룹, 또는 상품명을 빠르게 검색할 수 있습니다.")
 
                 if sel_item != "전체":
-                    view_shop = view_shop[view_shop["상품/소재명"] == sel_item]
+                    view_shop = view_shop[view_shop["_filter_label"] == sel_item]
                     if cmp_mode_shop != "비교 안함" and not view_shop.empty:
                         st.markdown("### 🔍 선택 상품/소재 상세 비교 (Side-by-Side)")
                         agg_cur = view_shop[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
