@@ -16,6 +16,9 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+# ▼ 이 부분이 누락되어서 발생한 에러입니다! ▼
+from styles import apply_global_css
+
 # ... (생략: 기존 import 문 및 예외 처리, 데이터 변환 로직 유지) ...
 
 def _aggrid_grid_options(cols: List[str], pinned_rows: Optional[list] = None, right_cols: Optional[set] = None, quick_filter: str = "", enable_filter: bool = False, cond_thresholds: Optional[dict] = None) -> dict:
