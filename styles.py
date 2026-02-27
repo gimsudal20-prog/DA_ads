@@ -203,27 +203,16 @@ table.nv-table tr:hover td { background: var(--nv-bg); }
 [data-baseweb="tab-list"] { gap: 8px; }
 [data-baseweb="tab"] { background: var(--nv-panel); border-radius: 8px; border: 1px solid var(--nv-line2); font-weight: 600; padding: 10px 16px; margin: 0 !important; }
 [aria-selected="true"] { background: var(--nv-bg) !important; border-bottom-color: transparent !important; color: var(--nv-primary) !important; }
+
+/* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
+[data-testid="collapsedControl"] {
+    z-index: 999999 !important;
+}
 </style>
 """
-
-import streamlit as st
-
-# =========================================================
-# 이 위쪽에는 기존에 쓰시던 GLOBAL_UI_CSS 변수 선언이 있어야 합니다.
-# (절대 지우지 마세요!)
-# =========================================================
 
 def apply_global_css() -> None:
     try:
         st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
     except Exception:
         pass
-        
-    st.markdown("""
-    <style>
-    /* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
-    [data-testid="collapsedControl"] {
-        z-index: 999999 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
