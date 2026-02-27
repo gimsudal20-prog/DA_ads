@@ -206,13 +206,19 @@ table.nv-table tr:hover td { background: var(--nv-bg); }
 </style>
 """
 
+import streamlit as st
+
+# =========================================================
+# 이 위쪽에는 기존에 쓰시던 GLOBAL_UI_CSS 변수 선언이 있어야 합니다.
+# (절대 지우지 마세요!)
+# =========================================================
+
 def apply_global_css() -> None:
-    try: 
+    try:
         st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    except Exception: 
+    except Exception:
         pass
         
-    # ▼ 사이드바 구출용 CSS를 문자열과 style 태그로 감싸서 추가 ▼
     st.markdown("""
     <style>
     /* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
@@ -221,4 +227,3 @@ def apply_global_css() -> None:
     }
     </style>
     """, unsafe_allow_html=True)
-
