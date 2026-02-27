@@ -7,7 +7,6 @@ import os
 import re
 import math
 import time
-import csv
 import io
 import numpy as np
 from datetime import date, timedelta, datetime
@@ -21,7 +20,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.6 (쇼핑검색 데이터 컷오프 증발 버그 전면 해결)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.7 (쇼핑검색 일반소재 탭 이동 및 ROAS 필터/다운로드 기능 추가)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -420,77 +419,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     render_big_table(disp, key="camp_main_grid", height=560)
 
-def process_manual_shopping_report(file_obj):
-    try:
-        if file_obj.name.lower().endswith('.csv'):
-            raw_bytes = file_obj.read()
-            try: text_data = raw_bytes.decode('euc-kr')
-            except UnicodeDecodeError: text_data = raw_bytes.decode('utf-8')
-                
-            sample_lines = text_data.split('\n')[:5]
-            sep = '\t' if sum(l.count('\t') for l in sample_lines) > sum(l.count(',') for l in sample_lines) else ','
-            reader = csv.reader(io.StringIO(text_data), delimiter=sep)
-            df_raw = pd.DataFrame(list(reader))
-        else:
-            df_raw = pd.read_excel(file_obj, header=None)
-            
-        header_idx = -1
-        for i in range(min(20, len(df_raw))):
-            row_str = "".join(df_raw.iloc[i].fillna("").astype(str))
-            if "검색어" in row_str or "키워드" in row_str or "Keyword" in row_str or "소재명" in row_str:
-                header_idx = i
-                break
-                
-        if header_idx == -1: return None, f"[{file_obj.name}] 헤더 열('검색어' 등)을 찾을 수 없습니다."
-        
-        df = df_raw.iloc[header_idx+1:].copy()
-        df.columns = df_raw.iloc[header_idx].fillna("").astype(str).str.strip()
-        
-        def get_col(candidates):
-            for c in candidates:
-                for col in df.columns:
-                    if c.lower() in col.lower(): return col
-            return None
-            
-        kw_col = get_col(['검색어', '키워드', 'Keyword', '소재명'])
-        cost_col = get_col(['총비용', '비용', 'Cost', '지출'])
-        rev_col = get_col(['전환매출', '매출', 'Revenue', '구매액', '주문금액'])
-        conv_col = get_col(['전환수', 'Conversions', '전환'])
-        clk_col = get_col(['클릭수', 'Clicks', '클릭'])
-        imp_col = get_col(['노출수', 'Impressions', '노출'])
-        camp_col = get_col(['캠페인', 'Campaign'])
-        ag_col = get_col(['광고그룹', '그룹', 'Ad Group'])
-        
-        if not kw_col or not cost_col: return None, f"[{file_obj.name}] 필수 열(검색어, 총비용) 매칭 실패."
-            
-        for c in [cost_col, rev_col, conv_col, clk_col, imp_col]:
-            if c and c in df.columns:
-                df[c] = pd.to_numeric(df[c].astype(str).str.replace(r'[^\d.-]', '', regex=True), errors='coerce').fillna(0)
-                
-        agg_dict = {cost_col: 'sum'}
-        if rev_col: agg_dict[rev_col] = 'sum'
-        if conv_col: agg_dict[conv_col] = 'sum'
-        if clk_col: agg_dict[clk_col] = 'sum'
-        if imp_col: agg_dict[imp_col] = 'sum'
-        
-        group_cols = [kw_col]
-        if camp_col: group_cols.append(camp_col)
-        if ag_col: group_cols.append(ag_col)
-        
-        agg_df = df.groupby(group_cols, as_index=False).agg(agg_dict)
-        
-        rename_dict = {kw_col: '검색어', cost_col: '광고비'}
-        if rev_col: rename_dict[rev_col] = '전환매출'
-        if conv_col: rename_dict[conv_col] = '전환'
-        if clk_col: rename_dict[clk_col] = '클릭'
-        if imp_col: rename_dict[imp_col] = '노출'
-        if camp_col: rename_dict[camp_col] = '캠페인'
-        if ag_col: rename_dict[ag_col] = '광고그룹'
-        
-        return agg_df.rename(columns=rename_dict), None
-    except Exception as e:
-        return None, f"[{file_obj.name}] 처리 오류: {str(e)}"
-
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("## 🔎 성과 (매체별 키워드/검색어)")
@@ -535,14 +463,26 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         
         return view, disp
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (수동 분석기)"])
+    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (등록키워드)", "🛒 쇼핑검색 (상품/일반소재)"])
     
     with tab_pl:
         df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
         if not df_pl_raw.empty: 
-            # 여기서 파워링크에 해당하는 데이터만 걸러낸 후, 화면 출력 설정값(top_n) 만큼 다시 잘라서 보여줍니다.
             view_full, disp = _prepare_main_table(df_pl_raw.sort_values("cost", ascending=False).head(top_n), shopping_first=False)
             
+            # [기능 추가] 파워링크 ROAS 필터링 및 다운로드
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                min_roas = st.number_input("🎯 파워링크 최소 ROAS (%) 필터", min_value=0, value=0, step=50, help="설정한 ROAS 미만인 키워드를 표에서 제외합니다.")
+            with c2:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                csv_data = disp[disp["ROAS(%)"] >= min_roas].to_csv(index=False).encode("utf-8-sig") if min_roas > 0 else disp.to_csv(index=False).encode("utf-8-sig")
+                st.download_button("📥 필터링된 키워드 다운로드 (CSV)", data=csv_data, file_name=f"파워링크_키워드_ROAS_{min_roas}이상.csv", mime="text/csv", use_container_width=True)
+
+            if min_roas > 0:
+                disp = disp[disp["ROAS(%)"] >= min_roas]
+                view_full = view_full[view_full["ROAS(%)"] >= min_roas]
+
             if "평균순위" in view_full.columns:
                 all_kws = sorted([str(x) for x in view_full["키워드"].unique() if str(x).strip()])
                 selected_kws = st.multiselect("모니터링 핵심 키워드 선택", all_kws, default=all_kws[:4] if len(all_kws) >= 4 else all_kws, key="star_kws")
@@ -566,70 +506,68 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
             
     with tab_shop:
-        st.markdown("### 🛒 쇼핑검색어 수동 분석기 Pro")
-        st.info("💡 **네이버 API 정책 한계 완벽 대응:** 네이버 광고시스템에서 다운로드한 **'쇼핑검색어 리포트(csv, xlsx)'** 파일을 아래에 드래그 앤 드롭하시면, 여러 파일을 한 번에 병합하여 즉시 고도화된 타겟 분석을 제공합니다.")
-        
-        uploaded_files = st.file_uploader("보고서 다중 업로드 가능 (.csv, .xlsx)", type=["csv", "xlsx", "xls"], accept_multiple_files=True)
-        
-        if uploaded_files:
-            all_res = []
-            for file in uploaded_files:
-                res, err = process_manual_shopping_report(file)
-                if err: st.error(err)
-                elif res is not None: all_res.append(res)
-                    
-            if all_res:
-                final_df = pd.concat(all_res, ignore_index=True)
-                
-                agg_dict = {'광고비': 'sum'}
-                for c in ['전환매출', '전환', '클릭', '노출']:
-                    if c in final_df.columns: agg_dict[c] = 'sum'
-                    
-                group_cols = ['검색어']
-                if '캠페인' in final_df.columns: group_cols.append('캠페인')
-                if '광고그룹' in final_df.columns: group_cols.append('광고그룹')
-                
-                final_agg = final_df.groupby(group_cols, as_index=False).agg(agg_dict)
-                for c in ['전환매출', '전환', '클릭', '노출']:
-                    if c not in final_agg.columns: final_agg[c] = 0
-                
-                final_agg["CTR(%)"] = np.where(final_agg["노출"] > 0, (final_agg["클릭"] / final_agg["노출"]) * 100, 0.0).round(2)
-                final_agg["CPC(원)"] = np.where(final_agg["클릭"] > 0, final_agg["광고비"] / final_agg["클릭"], 0.0).round(0)
-                final_agg["CPA(원)"] = np.where(final_agg["전환"] > 0, final_agg["광고비"] / final_agg["전환"], 0.0).round(0)
-                final_agg["ROAS(%)"] = np.where(final_agg["광고비"] > 0, (final_agg["전환매출"] / final_agg["광고비"]) * 100, 0.0).round(0)
-                
-                final_agg['업체명'] = '수동 업로드 (통합)'
-                
-                tot_cost = final_agg['광고비'].sum()
-                tot_rev = final_agg['전환매출'].sum()
-                tot_roas = (tot_rev / tot_cost * 100) if tot_cost > 0 else 0
-                
-                st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("총 광고비 소진", format_currency(tot_cost))
-                c2.metric("총 전환매출 발생", format_currency(tot_rev))
-                c3.metric("평균 ROAS", f"{tot_roas:.0f}%")
-                c4.metric("분석된 유효 검색어 수", f"{len(final_agg):,}개")
-                
+        st.markdown("### 🛒 쇼핑검색 (상품/일반소재)")
+        st.info("💡 **안내:** 기존 '소재' 탭에 있던 쇼핑검색 일반소재(상품) 데이터가 이곳으로 통합되었습니다. (수동 분석기는 제거되었습니다.)")
+
+        # [기능 추가] 쇼핑검색 일반소재(상품) 데이터를 불러오기 위해 ad_bundle 재활용
+        shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
+        if shop_ad_bundle is not None and not shop_ad_bundle.empty:
+            shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
+            view_shop = shop_ad_df.rename(columns={
+                "account_name": "업체명", "manager": "담당자", 
+                "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
+                "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", 
+                "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+            }).copy()
+
+            if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns:
+                view_shop["캠페인유형"] = view_shop["campaign_type"]
+
+            # 💡 확장소재 제외 & 쇼핑검색만 필터링
+            is_shopping = view_shop["캠페인유형"] == "쇼핑검색"
+            is_not_ext = ~view_shop["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
+            view_shop = view_shop[is_shopping & is_not_ext].copy()
+
+            if not view_shop.empty:
+                for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
+                    view_shop[c] = pd.to_numeric(view_shop.get(c, 0), errors="coerce").fillna(0)
+
+                view_shop["CTR(%)"] = np.where(view_shop["노출"] > 0, (view_shop["클릭"] / view_shop["노출"]) * 100, 0.0).round(2)
+                view_shop["CPC(원)"] = np.where(view_shop["클릭"] > 0, view_shop["광고비"] / view_shop["클릭"], 0.0).round(0)
+                view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0).round(0)
+                view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0).round(0)
+
+                # [기능 추가] 쇼핑검색 ROAS 필터 및 다운로드
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    min_roas_shop = st.number_input("🎯 쇼핑검색 최소 ROAS (%) 필터", min_value=0, value=0, step=50, key="shop_roas_filter")
+                with c2:
+                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                    dl_df = view_shop[view_shop["ROAS(%)"] >= min_roas_shop] if min_roas_shop > 0 else view_shop
+                    csv_data_shop = dl_df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button("📥 필터링된 상품소재 다운로드 (CSV)", data=csv_data_shop, file_name=f"쇼핑검색_일반소재_ROAS_{min_roas_shop}이상.csv", mime="text/csv", use_container_width=True, key="shop_dl_btn")
+
+                if min_roas_shop > 0:
+                    view_shop = view_shop[view_shop["ROAS(%)"] >= min_roas_shop]
+
                 st.divider()
-                st.markdown("<div class='nv-sec-title'>💡 쇼핑검색어 최적화 포인트</div>", unsafe_allow_html=True)
-                render_insight_cards(final_agg, "검색어", "검색어")
+                st.markdown("<div class='nv-sec-title'>💡 쇼핑검색 최적화 포인트</div>", unsafe_allow_html=True)
+                render_insight_cards(view_shop, "상품/소재", "상품/소재명")
                 st.divider()
-                
-                st.markdown("#### 📊 검색어별 상세 성과 표")
-                disp_shop = final_agg.sort_values('광고비', ascending=False)
+
+                cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명", "전환매출", "ROAS(%)", "광고비", "전환", "CPA(원)", "클릭", "CTR(%)", "CPC(원)", "노출"]
+                disp_shop = view_shop[[c for c in cols if c in view_shop.columns]].sort_values("광고비", ascending=False).head(top_n)
+
                 for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
                     if c in disp_shop.columns: disp_shop[c] = disp_shop[c].astype(int)
-                if "CTR(%)" in disp_shop.columns: disp_shop["CTR(%)"] = disp_shop["CTR(%)"].astype(float).round(2)
-                
-                target_cols = ['캠페인', '광고그룹', '검색어', '전환매출', 'ROAS(%)', '광고비', '전환', 'CPA(원)', '클릭', 'CTR(%)', 'CPC(원)', '노출']
-                disp_shop = disp_shop[[c for c in target_cols if c in disp_shop.columns]]
-                
-                render_big_table(disp_shop, "manual_shop_grid", 600)
 
-# ==========================================
-# 🚨 [CRITICAL FIX] 데이터 증발 버그 전면 해결!
-# ==========================================
+                st.markdown("#### 📊 상품/소재별 상세 성과 표")
+                render_big_table(disp_shop, "shop_general_grid", 500)
+            else:
+                st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
+        else:
+            st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
+
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🧩 성과 (광고 소재 분석)")
@@ -670,7 +608,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장 소재 포함)"])
+    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
         if df_tab.empty:
@@ -739,14 +677,18 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     with tab_shop:
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
         
-        # 💡 시각적 안심 배지 추가
+        # 💡 일반소재를 제외하고 오직 확장소재만 보여줍니다.
         if not df_shop.empty:
-            ext_count = len(df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)])
-            if ext_count > 0:
-                st.success(f"🎉 성공! 수집된 쇼핑검색 확장소재(추가홍보문구 등)가 **{ext_count}건** 발견되어 병합되었습니다.")
+            df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
 
-        st.info("💡 **쇼핑검색 소재 분석:** 상품 정보 및 추가로 등록한 '확장소재(추가홍보문구 등)' 데이터를 종합하여 보여줍니다.")
-        _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 전체 소재(확장 포함)")
+        st.info("💡 **쇼핑검색 확장소재 전용 분석:** 오직 쇼핑검색 추가로 등록한 '확장소재(추가홍보문구 등)' 데이터만 표시됩니다. (일반 상품 소재는 '키워드' 탭으로 이동되었습니다.)")
+        
+        if not df_shop.empty:
+            ext_count = len(df_shop)
+            st.success(f"🎉 성공! 수집된 쇼핑검색 확장소재(추가홍보문구 등)가 **{ext_count}건** 발견되어 분석되었습니다.")
+            _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
+        else:
+            st.warning("해당 기간에 사용된 쇼핑검색 확장소재가 없습니다.")
 
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 / 연결")
