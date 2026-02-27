@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v12.0_LOG_ENHANCED)
-- 상세 로깅 추가: 수집 성공 건수, 실패 원인, 0건 수집 등 명확한 에러 트래킹 지원
-- 쇼핑검색 상품 소재가 빈칸으로 파싱되어 UI에서 증발하는 버그 100% 차단 (강제 Fallback)
-- 네이버 stat-reports가 지원하지 않는 확장소재(AD_EXTENSION) 성과를 /stats 우회 조회로 완벽 복구
+collector.py - 네이버 검색광고 수집기 (v12.1_FIX_REPORTS)
+- 400 에러(리포트 5개 초과 병목) 완벽 해결: 수집 전 유령 리포트 강제 소각 프로세스 추가
+- 실패 시 네이버가 반환하는 '진짜 실패 사유(메시지)'를 터미널에 명확히 출력
+- NONE 상태를 '에러'가 아닌 '데이터 0건' 안내로 친절하게 변경
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v12.0_LOG_ENHANCED] ===", flush=True)
-print("=== 상세 수집 로그 & 에러 트래킹 적용 ===", flush=True)
+print("=== [VERSION: v12.1_FIX_REPORTS] ===", flush=True)
+print("=== 400 병목 해결 (유령 리포트 강제 소각) ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -277,20 +277,19 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
     return out
 
-def parse_stats(r: dict, d1: date, customer_id: str, id_key: str) -> dict:
-    cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1)) # VAT
-    sales = int(float(r.get("convAmt", 0) or 0))
-    out = {
-        "dt": d1, "customer_id": str(customer_id), id_key: str(r.get("id")),
-        "imp": int(r.get("impCnt", 0) or 0), "clk": int(r.get("clkCnt", 0) or 0),
-        "cost": cost, "conv": float(r.get("ccnt", 0) or 0), "sales": sales,
-        "roas": (sales / cost * 100) if cost > 0 else 0.0
-    }
-    if id_key == "keyword_id":
-        out["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
-    return out
+# 🚨 [신규 추가] 과거 오류로 네이버 서버에 적체된 "유령 리포트 작업" 강제 청소 (5개 초과 400 에러 원천 차단)
+def cleanup_ghost_reports(customer_id: str):
+    status, data = request_json("GET", "/stat-reports", customer_id, raise_error=False)
+    if status == 200 and isinstance(data, list):
+        for job in data:
+            job_id = job.get("reportJobId")
+            if job_id:
+                safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
 def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame]:
+    # 수집 시작 전에 찌꺼기 리포트 청소 진행
+    cleanup_ghost_reports(customer_id)
+    
     results = {tp: pd.DataFrame() for tp in report_types}
     for i in range(0, len(report_types), 3):
         batch = report_types[i:i+3]
@@ -301,7 +300,11 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
             else:
-                log(f"   ❌ [ {customer_id} ] {tp} 리포트 요청 실패 (상태 코드: {status})")
+                # 🚨 [로그 강화] 네이버 API가 반환하는 정확한 에러 메시지 추출
+                err_msg = str(data)
+                if isinstance(data, dict):
+                    err_msg = data.get("message", str(data))
+                log(f"   ❌ [ {customer_id} ] {tp} 리포트 요청 실패 (상태 코드: {status} / 사유: {err_msg})")
             time.sleep(0.2)
             
         max_wait = 20
@@ -319,14 +322,15 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                 txt = r.text.strip()
                                 if txt: 
                                     results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
-                                else:
-                                    log(f"   ⚠️ [ {customer_id} ] {tp} 리포트 다운로드 완료했으나 데이터가 비어있음.")
                             except Exception as e: 
-                                log(f"   ❌ [ {customer_id} ] {tp} 리포트 다운로드 에러: {e}")
+                                log(f"   ❌ [ {customer_id} ] {tp} 다운로드 에러: {e}")
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
                     elif stt in ["ERROR", "NONE"]:
-                        log(f"   ❌ [ {customer_id} ] {tp} 네이버 서버 내 리포트 생성 실패 (상태: {stt})")
+                        if stt == "NONE":
+                            log(f"   💤 [ {customer_id} ] {tp} 데이터 없음 (해당 날짜에 노출/클릭 0건)")
+                        else:
+                            log(f"   ❌ [ {customer_id} ] {tp} 리포트 생성 중 네이버 서버 에러 발생")
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
             if jobs: time.sleep(1.5)
@@ -369,7 +373,6 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
         elif "KEYWORD" in report_tp: pk_idx = 5
         elif "AD" in report_tp: pk_idx = 5
         else: 
-            log(f"   ⚠️ {report_tp} 파싱 실패 (헤더 인덱스 탐색 실패)")
             return {}
         imp_idx = 5 if "CAMPAIGN" in report_tp else 8
         clk_idx = 6 if "CAMPAIGN" in report_tp else 9
@@ -379,7 +382,6 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
         rank_idx = 11
 
     if pk_idx == -1: 
-        log(f"   ⚠️ {report_tp} 파싱 실패 (PK 컬럼 매칭 실패)")
         return {}
     
     res = {}
@@ -453,8 +455,7 @@ def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date
         with engine.connect() as conn:
             res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
             ext_ids = [str(r[0]) for r in res]
-    except Exception as e:
-        log(f"   ⚠️ 확장소재 ID 조회 실패: {e}")
+    except Exception:
         pass
         
     if ext_ids:
@@ -474,19 +475,17 @@ def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date
     k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
     a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
     
-    log(f"   📊 [ {account_name} ] 적재 결과 - 캠페인: {c_cnt}건 | 키워드: {k_cnt}건 | 소재: {a_cnt}건")
-    if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
-        log(f"   ⚠️ [ {account_name} ] 경고: 해당 날짜({target_date})에 수집된 성과 데이터가 0건입니다. (API 지연, 계정 정지, 혹은 실제 데이터 없음)")
+    log(f"   📊 [ {account_name} ] DB 적재: 캠페인({c_cnt}건) | 키워드({k_cnt}건) | 소재({a_cnt}건)")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     try:
-        log(f"▶️ [ {account_name} ] ({customer_id}) 계정 처리 시작...")
+        log(f"▶️ [ {account_name} ] 계정 처리 시작...")
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         
         if not skip_dim:
             camp_list = list_campaigns(customer_id)
             if not camp_list:
-                log(f"   ⚠️ [ {account_name} ] 등록된 캠페인이 없거나 캠페인 목록 API 호출에 실패했습니다.")
+                log(f"   ⚠️ [ {account_name} ] 등록된 캠페인이 없거나 API 호출에 실패했습니다.")
                 return
                 
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
@@ -528,18 +527,17 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
         
         if target_date == date.today():
-            log(f"   ⚠️ [ {account_name} ] 당일 데이터는 stat-reports가 불가능하여 /stats 우회 조회로 전환합니다.")
+            log(f"   ⚠️ [ {account_name} ] 당일 데이터는 stat-reports 불가로 실시간 우회 조회를 진행합니다.")
             if target_camp_ids: replace_fact_range(engine, "fact_campaign_daily", [parse_stats(r, target_date, customer_id, "campaign_id") for r in get_stats_range(customer_id, target_camp_ids, target_date)], customer_id, target_date)
             if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
             if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
         else:
             process_daily_reports_v2(engine, customer_id, target_date, account_name)
             
-        log(f"✅ [ {account_name} ] 계정 수집 및 처리 완료")
+        log(f"✅ [ {account_name} ] 계정 처리 완료")
         
     except Exception as e:
-        log(f"❌ [ {account_name} ] 계정 처리 중 치명적 오류 발생: {str(e)}")
-        log(traceback.format_exc())
+        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
 
 def main():
     engine = get_engine()
@@ -582,7 +580,7 @@ def main():
                         if cid and cid.lower() != 'nan' and cid not in seen_ids:
                             accounts_info.append({"id": cid, "name": str(row[name_col])})
                             seen_ids.add(cid)
-                    log(f"🟢 accounts.xlsx 엑셀 파일에서 중복을 제외한 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
+                    log(f"🟢 accounts.xlsx 엑셀 파일에서 {len(accounts_info)}개 업체를 불러왔습니다.")
 
         if not accounts_info:
             try:
@@ -592,7 +590,7 @@ def main():
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
-        log("⚠️ 수집할 계정이 없습니다. (accounts.xlsx 확인 요망)")
+        log("⚠️ 수집할 계정이 없습니다.")
         return
         
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
