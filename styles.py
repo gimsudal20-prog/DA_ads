@@ -35,7 +35,11 @@ GLOBAL_UI_CSS = """
 
 /* Kill Streamlit chrome */
 #MainMenu, footer {visibility:hidden;}
-header[data-testid="stHeader"] {background: transparent; height:0px;}
+header[data-testid="stHeader"] {
+  background: transparent !important; 
+  height: 0px !important;
+  z-index: 999999 !important; /* 부모 컨테이너 자체를 최상단으로 끌어올림 */
+}
 div[data-testid="stToolbar"] {visibility:hidden; height:0;}
 
 /* Page background + base font */
@@ -204,9 +208,12 @@ table.nv-table tr:hover td { background: var(--nv-bg); }
 [data-baseweb="tab"] { background: var(--nv-panel); border-radius: 8px; border: 1px solid var(--nv-line2); font-weight: 600; padding: 10px 16px; margin: 0 !important; }
 [aria-selected="true"] { background: var(--nv-bg) !important; border-bottom-color: transparent !important; color: var(--nv-primary) !important; }
 
-/* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
+/* 닫힌 사이드바 열기 버튼(>) 구출 작전 */
 [data-testid="collapsedControl"] {
     z-index: 999999 !important;
+    background-color: rgba(255, 255, 255, 0.8) !important; /* 가시성 확보 */
+    border-radius: 50% !important; /* 버튼을 둥글게 */
+    box-shadow: var(--nv-shadow-sm) !important; /* 살짝 띄워보이게 */
 }
 </style>
 """
