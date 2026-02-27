@@ -207,11 +207,18 @@ table.nv-table tr:hover td { background: var(--nv-bg); }
 """
 
 def apply_global_css() -> None:
-    try: st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    except Exception: pass
-      /* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
-[data-testid="collapsedControl"] {
-    z-index: 999999 !important;
-}
-
+    try: 
+        st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    except Exception: 
+        pass
+        
+    # ▼ 사이드바 구출용 CSS를 문자열과 style 태그로 감싸서 추가 ▼
+    st.markdown("""
+    <style>
+    /* 닫힌 사이드바 열기 버튼(>)을 최상단으로 구출 */
+    [data-testid="collapsedControl"] {
+        z-index: 999999 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
