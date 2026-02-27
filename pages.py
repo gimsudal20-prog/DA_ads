@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.7 (캠페인/그룹/키워드 단위 전일/전주/전월 데이터 비교 기능 탑재)")
+BUILD_TAG = os.getenv("APP_BUILD", "v14.8 (그룹 단위 집계 KeyError 방어 및 예외 처리 강화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -149,24 +149,30 @@ def render_insight_cards(df_target: pd.DataFrame, item_name: str, keyword_col: s
             else: 
                 st.info(f"조건에 맞는 고효율 {item_name}가 없습니다.")
 
-# [신규 추가] 기간 단위 비교를 위해 이전 데이터를 병합하고 증감율을 산출하는 공용 함수
 def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_keys: list) -> pd.DataFrame:
     if df_prev is None or df_prev.empty or df_cur is None or df_cur.empty:
         return df_cur
         
     df_cur_copy = df_cur.copy()
-    for k in join_keys:
-        if k in df_cur_copy.columns: df_cur_copy[k] = df_cur_copy[k].astype(str)
-        if k in df_prev.columns: df_prev[k] = df_prev[k].astype(str)
+    
+    # [방어코드] 존재하지 않는 컬럼으로 join하려는 상황 완벽 방어
+    valid_join_keys = [k for k in join_keys if k in df_cur_copy.columns and k in df_prev.columns]
+    if not valid_join_keys: return df_cur_copy
+    
+    for k in valid_join_keys:
+        df_cur_copy[k] = df_cur_copy[k].astype(str)
+        df_prev[k] = df_prev[k].astype(str)
         
-    base_tmp = df_prev[join_keys + ['cost', 'sales', 'conv', 'clk', 'imp']].copy()
-    for c in ['cost', 'sales', 'conv', 'clk', 'imp']:
+    val_cols = [c for c in ['cost', 'sales', 'conv', 'clk', 'imp'] if c in df_prev.columns]
+    base_tmp = df_prev[valid_join_keys + val_cols].copy()
+    
+    for c in val_cols:
         base_tmp[c] = pd.to_numeric(base_tmp[c], errors='coerce').fillna(0)
         
-    base_tmp = base_tmp.groupby(join_keys, as_index=False).sum()
+    base_tmp = base_tmp.groupby(valid_join_keys, as_index=False).sum()
     base_tmp.rename(columns={'cost':'p_cost', 'sales':'p_sales', 'conv':'p_conv', 'clk':'p_clk', 'imp':'p_imp'}, inplace=True)
     
-    out = df_cur_copy.merge(base_tmp, on=join_keys, how='left')
+    out = df_cur_copy.merge(base_tmp, on=valid_join_keys, how='left')
     for c in ['p_cost', 'p_sales', 'p_conv', 'p_clk', 'p_imp']:
         if c in out.columns: out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0)
         else: out[c] = 0
@@ -422,7 +428,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("## 🚀 성과 (캠페인 기준)")
     
-    # [신기능] 캠페인 단위 기간 비교 라디오 버튼 추가
     c1, c2 = st.columns([2, 1])
     with c1:
         cmp_mode = st.radio("📊 캠페인 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="camp_cmp_mode")
@@ -451,7 +456,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    # 이전 데이터와 병합하여 증감 지표 추가
     if cmp_mode != "비교 안함":
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=10)
@@ -472,7 +476,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
     metrics_cols = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
     
-    # 비교 모드일 경우 증감 컬럼 추가 노출
     if cmp_mode != "비교 안함":
         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
 
@@ -539,9 +542,8 @@ def process_manual_shopping_report(file_obj):
         if clk_col: agg_dict[clk_col] = 'sum'
         if imp_col: agg_dict[imp_col] = 'sum'
         
-        group_cols = [kw_col]
-        if camp_col: group_cols.append(camp_col)
-        if ag_col: group_cols.append(ag_col)
+        # [방어코드] 존재하는 열만 GroupBy 하도록 필터링
+        group_cols = [c for c in [kw_col, camp_col, ag_col] if c and c in df.columns]
         
         agg_df = df.groupby(group_cols, as_index=False).agg(agg_dict)
         
@@ -562,10 +564,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     st.markdown("## 🔎 성과 (그룹 / 키워드 단위)")
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
     
-    # 컷오프(증발) 방지를 위해 10,000개를 우선 DB에서 전부 가져옵니다.
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    # 💡 [신규 추가] 광고그룹 탭을 위해 탭을 3개로 분리
     tab_pl, tab_group, tab_shop = st.tabs(["🎯 파워링크 (키워드 기준)", "📂 파워링크 (광고그룹 기준)", "🛒 쇼핑검색 (수동 분석기)"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
@@ -601,8 +601,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
             if base_kw_bundle is not None and not base_kw_bundle.empty:
-                view = append_comparison_data(view, base_kw_bundle, ['customer_id', 'keyword_id'])
-                metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+                # [방어코드] join을 안전하게 하도록 체크
+                valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
+                if valid_keys:
+                    view = append_comparison_data(view, base_kw_bundle, valid_keys)
+                    metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
 
             disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
             for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
@@ -635,8 +638,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         if not df_pl_raw.empty:
             cmp_mode_grp = st.radio("📊 광고그룹 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="kw_grp_cmp_mode")
             
-            # DB 데이터를 광고그룹 단위로 그룹핑
-            grp_cur = df_pl_raw.groupby(['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
+            # [🔥핵심 방어코드🔥] DataFrame에 실제로 존재하는 컬럼들만 추려서 GroupBy 실행
+            grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
+            val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
+            
+            grp_cur = df_pl_raw.groupby(grp_cols, as_index=False)[val_cols].sum()
             grp_cur = _perf_common_merge_meta(grp_cur, meta)
             
             view_grp = grp_cur.rename(columns={
@@ -648,30 +654,34 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
                 if c in view_grp.columns: view_grp[c] = pd.to_numeric(view_grp[c], errors="coerce").fillna(0)
                 
-            view_grp["CTR(%)"] = np.where(view_grp["노출"] > 0, (view_grp["클릭"] / view_grp["노출"]) * 100, 0.0).round(2)
-            view_grp["CPC(원)"] = np.where(view_grp["클릭"] > 0, view_grp["광고비"] / view_grp["클릭"], 0.0).round(0)
-            view_grp["CPA(원)"] = np.where(view_grp["전환"] > 0, view_grp["광고비"] / view_grp["전환"], 0.0).round(0)
-            view_grp["ROAS(%)"] = np.where(view_grp["광고비"] > 0, (view_grp["전환매출"] / view_grp["광고비"]) * 100, 0.0).round(0)
+            view_grp["CTR(%)"] = np.where(view_grp.get("노출", 0) > 0, (view_grp.get("클릭", 0) / view_grp.get("노출", 0)) * 100, 0.0).round(2)
+            view_grp["CPC(원)"] = np.where(view_grp.get("클릭", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("클릭", 0), 0.0).round(0)
+            view_grp["CPA(원)"] = np.where(view_grp.get("전환", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("전환", 0), 0.0).round(0)
+            view_grp["ROAS(%)"] = np.where(view_grp.get("광고비", 0) > 0, (view_grp.get("전환매출", 0) / view_grp.get("광고비", 0)) * 100, 0.0).round(0)
             
             if cmp_mode_grp != "비교 안함":
                 b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_grp)
                 base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
                 if not base_kw_bundle.empty:
-                    view_grp = append_comparison_data(view_grp, base_kw_bundle, ['customer_id', 'adgroup_id'])
+                    valid_keys = [k for k in ['customer_id', 'adgroup_id'] if k in view_grp.columns and k in base_kw_bundle.columns]
+                    if valid_keys:
+                        view_grp = append_comparison_data(view_grp, base_kw_bundle, valid_keys)
                     
             base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
             metrics_cols_grp = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
             if cmp_mode_grp != "비교 안함": 
                 metrics_cols_grp.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
             
-            disp_grp = view_grp[[c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]].sort_values("광고비", ascending=False).head(top_n)
+            # 존재하는 컬럼만 노출
+            final_cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]
+            disp_grp = view_grp[final_cols_grp].sort_values(by="광고비" if "광고비" in view_grp.columns else final_cols_grp[0], ascending=False).head(top_n)
             
             for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
                 if c in disp_grp.columns: disp_grp[c] = disp_grp[c].astype(int)
             if "CTR(%)" in disp_grp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
             
             st.markdown("<div class='nv-sec-title'>💡 광고그룹 최적화 포인트</div>", unsafe_allow_html=True)
-            render_insight_cards(view_grp, "광고그룹", "광고그룹")
+            if "광고그룹" in view_grp.columns: render_insight_cards(view_grp, "광고그룹", "광고그룹")
             st.divider()
             st.markdown("#### 📊 광고그룹별 종합 성과 표")
             render_big_table(disp_grp, "pl_grp_grid", 500)
@@ -698,9 +708,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 for c in ['전환매출', '전환', '클릭', '노출']:
                     if c in final_df.columns: agg_dict[c] = 'sum'
                     
-                group_cols = ['검색어']
-                if '캠페인' in final_df.columns: group_cols.append('캠페인')
-                if '광고그룹' in final_df.columns: group_cols.append('광고그룹')
+                group_cols = [c for c in ['검색어', '캠페인', '광고그룹'] if c in final_df.columns]
                 
                 final_agg = final_df.groupby(group_cols, as_index=False).agg(agg_dict)
                 for c in ['전환매출', '전환', '클릭', '노출']:
@@ -726,7 +734,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 st.divider()
                 st.markdown("<div class='nv-sec-title'>💡 쇼핑검색어 최적화 포인트</div>", unsafe_allow_html=True)
-                render_insight_cards(final_agg, "검색어", "검색어")
+                if "검색어" in final_agg.columns: render_insight_cards(final_agg, "검색어", "검색어")
                 st.divider()
                 
                 st.markdown("#### 📊 검색어별 상세 성과 표")
@@ -819,14 +827,15 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         st.divider()
         
-        # [신규 추가] 소재 탭 전용 비교 모드
         cmp_mode_ad = st.radio(f"📊 소재 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key=f"ad_cmp_mode_{ad_type_name}")
         
         if cmp_mode_ad != "비교 안함":
             b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_ad)
             base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
             if not base_ad_bundle.empty:
-                df_tab = append_comparison_data(df_tab, base_ad_bundle, ['customer_id', 'ad_id'])
+                valid_keys = [k for k in ['customer_id', 'ad_id'] if k in df_tab.columns and k in base_ad_bundle.columns]
+                if valid_keys:
+                    df_tab = append_comparison_data(df_tab, base_ad_bundle, valid_keys)
                 
         st.markdown(f"<div class='nv-sec-title'>💡 {ad_type_name} 최적화 포인트</div>", unsafe_allow_html=True)
         render_insight_cards(df_tab, "소재", "소재내용")
