@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v14.8 (그룹 단위 집계 KeyError 방어 및 예외 처리 강화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v15.0 (A/B테스트 직관화 및 필터 기반 좌우 비교 뷰 탑재)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -154,8 +154,6 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         return df_cur
         
     df_cur_copy = df_cur.copy()
-    
-    # [방어코드] 존재하지 않는 컬럼으로 join하려는 상황 완벽 방어
     valid_join_keys = [k for k in join_keys if k in df_cur_copy.columns and k in df_prev.columns]
     if not valid_join_keys: return df_cur_copy
     
@@ -184,6 +182,7 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     out["광고비 증감(%)"] = np.where(out["p_cost"] > 0, (cur_cost - out["p_cost"]) / out["p_cost"] * 100, np.where(cur_cost > 0, 100.0, 0.0))
     p_roas = np.where(out["p_cost"] > 0, (out["p_sales"] / out["p_cost"]) * 100, 0.0)
+    out["p_roas"] = p_roas  # 좌우비교 뷰를 위해 저장
     out["ROAS 증감(%p)"] = cur_roas - p_roas
     out["전환 증감"] = cur_conv - out["p_conv"]
     
@@ -199,6 +198,59 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     out["전환 증감"] = out["전환 증감"].apply(fmt_diff)
     
     return out
+
+# [신규] 좌우 대조표 렌더링 (Side-by-Side View)
+def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str):
+    c1, c2 = st.columns(2)
+    
+    def _card(title, imp, clk, cost, conv, sales, roas, is_cur=False):
+        bg = "#F8FAFC" if not is_cur else "#EFF6FF"
+        border = "#E2E8F0" if not is_cur else "#BFDBFE"
+        color_title = "#475569" if not is_cur else "#1E40AF"
+        
+        f_cost = format_currency(cost)
+        f_sales = format_currency(sales)
+        f_roas = f"{roas:,.0f}%"
+        f_imp = format_number_commas(imp)
+        f_clk = format_number_commas(clk)
+        f_conv = f"{conv:,.1f}"
+        
+        html = f"""
+        <div style='background:{bg}; padding:20px; border-radius:12px; border:1px solid {border}; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:{color_title}; font-size:16px; font-weight:700;'>{title}</h4>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>광고비</span>
+                <span style='font-weight:700; color:#0F172A;'>{f_cost}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>전환매출</span>
+                <span style='font-weight:700; color:#0F172A;'>{f_sales}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
+                <span style='color:#64748B; font-weight:600;'>ROAS</span>
+                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{f_roas}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>노출수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_imp}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>클릭수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_clk}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between;'>
+                <span style='color:#64748B; font-size:13px;'>전환수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_conv}</span>
+            </div>
+        </div>
+        """
+        return html
+        
+    with c1:
+        st.markdown(_card(prev_label, row.get('p_imp',0), row.get('p_clk',0), row.get('p_cost',0), row.get('p_conv',0), row.get('p_sales',0), row.get('p_roas',0)), unsafe_allow_html=True)
+    with c2:
+        st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True), unsafe_allow_html=True)
+
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
@@ -462,16 +514,34 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not base_bundle.empty:
             view = append_comparison_data(view, base_bundle, ['customer_id', 'campaign_id'])
 
-    st.markdown("<div class='nv-sec-title'>💡 캠페인 최적화 포인트</div>", unsafe_allow_html=True)
-    render_insight_cards(view, "캠페인", "캠페인")
-    st.divider()
-
+    # 기존 '고효율/저효율 캠페인 카드' 삭제 요청 반영
+    
     c1, c2 = st.columns([1, 3])
     with c1:
         camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
         sel_camp = st.selectbox("🎯 개별 캠페인 필터", camps, key="camp_name_filter")
 
-    if sel_camp != "전체": view = view[view["캠페인"] == sel_camp]
+    if sel_camp != "전체": 
+        view = view[view["캠페인"] == sel_camp]
+        # [신규 추가] 필터링 시 좌우 비교 뷰 출력
+        if cmp_mode != "비교 안함" and not view.empty:
+            st.markdown("### 🔍 선택 캠페인 상세 비교 (Side-by-Side)")
+            agg_cur = view[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
+            agg_prev = view[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in view.columns else None
+            
+            combined_row = pd.Series({
+                '노출': agg_cur['노출'], '클릭': agg_cur['클릭'], '광고비': agg_cur['광고비'], '전환': agg_cur['전환'], '전환매출': agg_cur['전환매출'],
+                'ROAS(%)': (agg_cur['전환매출'] / agg_cur['광고비'] * 100) if agg_cur['광고비'] > 0 else 0,
+                'p_imp': agg_prev['p_imp'] if agg_prev is not None else 0,
+                'p_clk': agg_prev['p_clk'] if agg_prev is not None else 0,
+                'p_cost': agg_prev['p_cost'] if agg_prev is not None else 0,
+                'p_conv': agg_prev['p_conv'] if agg_prev is not None else 0,
+                'p_sales': agg_prev['p_sales'] if agg_prev is not None else 0,
+                'p_roas': (agg_prev['p_sales'] / agg_prev['p_cost'] * 100) if agg_prev is not None and agg_prev['p_cost'] > 0 else 0,
+            })
+            
+            render_side_by_side_metrics(combined_row, f"비교 기간 ({cmp_mode})", "조회 기간 (현재)")
+            st.divider()
 
     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
     metrics_cols = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -542,9 +612,7 @@ def process_manual_shopping_report(file_obj):
         if clk_col: agg_dict[clk_col] = 'sum'
         if imp_col: agg_dict[imp_col] = 'sum'
         
-        # [방어코드] 존재하는 열만 GroupBy 하도록 필터링
         group_cols = [c for c in [kw_col, camp_col, ag_col] if c and c in df.columns]
-        
         agg_df = df.groupby(group_cols, as_index=False).agg(agg_dict)
         
         rename_dict = {kw_col: '검색어', cost_col: '광고비'}
@@ -601,11 +669,36 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
             if base_kw_bundle is not None and not base_kw_bundle.empty:
-                # [방어코드] join을 안전하게 하도록 체크
                 valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
                 if valid_keys:
                     view = append_comparison_data(view, base_kw_bundle, valid_keys)
                     metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+
+            # 필터링 및 좌우 비교 (Side-by-Side)
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                kws = ["전체"] + sorted([str(x) for x in view["키워드"].unique() if str(x).strip()])
+                sel_kw = st.selectbox("🎯 개별 키워드 필터", kws, key="kw_name_filter")
+
+            if sel_kw != "전체":
+                view = view[view["키워드"] == sel_kw]
+                if cmp_mode_pl != "비교 안함" and not view.empty:
+                    st.markdown("### 🔍 선택 키워드 상세 비교 (Side-by-Side)")
+                    agg_cur = view[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
+                    agg_prev = view[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in view.columns else None
+                    
+                    combined_row = pd.Series({
+                        '노출': agg_cur['노출'], '클릭': agg_cur['클릭'], '광고비': agg_cur['광고비'], '전환': agg_cur['전환'], '전환매출': agg_cur['전환매출'],
+                        'ROAS(%)': (agg_cur['전환매출'] / agg_cur['광고비'] * 100) if agg_cur['광고비'] > 0 else 0,
+                        'p_imp': agg_prev['p_imp'] if agg_prev is not None else 0,
+                        'p_clk': agg_prev['p_clk'] if agg_prev is not None else 0,
+                        'p_cost': agg_prev['p_cost'] if agg_prev is not None else 0,
+                        'p_conv': agg_prev['p_conv'] if agg_prev is not None else 0,
+                        'p_sales': agg_prev['p_sales'] if agg_prev is not None else 0,
+                        'p_roas': (agg_prev['p_sales'] / agg_prev['p_cost'] * 100) if agg_prev is not None and agg_prev['p_cost'] > 0 else 0,
+                    })
+                    render_side_by_side_metrics(combined_row, f"비교 기간 ({cmp_mode_pl})", "조회 기간 (현재)")
+                    st.divider()
 
             disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
             for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
@@ -638,7 +731,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         if not df_pl_raw.empty:
             cmp_mode_grp = st.radio("📊 광고그룹 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="kw_grp_cmp_mode")
             
-            # [🔥핵심 방어코드🔥] DataFrame에 실제로 존재하는 컬럼들만 추려서 GroupBy 실행
             grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
             val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
             
@@ -667,12 +759,36 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     if valid_keys:
                         view_grp = append_comparison_data(view_grp, base_kw_bundle, valid_keys)
                     
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                grps = ["전체"] + sorted([str(x) for x in view_grp["광고그룹"].unique() if str(x).strip()])
+                sel_grp = st.selectbox("🎯 개별 광고그룹 필터", grps, key="grp_name_filter")
+
+            if sel_grp != "전체":
+                view_grp = view_grp[view_grp["광고그룹"] == sel_grp]
+                if cmp_mode_grp != "비교 안함" and not view_grp.empty:
+                    st.markdown("### 🔍 선택 광고그룹 상세 비교 (Side-by-Side)")
+                    agg_cur = view_grp[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
+                    agg_prev = view_grp[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in view_grp.columns else None
+                    
+                    combined_row = pd.Series({
+                        '노출': agg_cur['노출'], '클릭': agg_cur['클릭'], '광고비': agg_cur['광고비'], '전환': agg_cur['전환'], '전환매출': agg_cur['전환매출'],
+                        'ROAS(%)': (agg_cur['전환매출'] / agg_cur['광고비'] * 100) if agg_cur['광고비'] > 0 else 0,
+                        'p_imp': agg_prev['p_imp'] if agg_prev is not None else 0,
+                        'p_clk': agg_prev['p_clk'] if agg_prev is not None else 0,
+                        'p_cost': agg_prev['p_cost'] if agg_prev is not None else 0,
+                        'p_conv': agg_prev['p_conv'] if agg_prev is not None else 0,
+                        'p_sales': agg_prev['p_sales'] if agg_prev is not None else 0,
+                        'p_roas': (agg_prev['p_sales'] / agg_prev['p_cost'] * 100) if agg_prev is not None and agg_prev['p_cost'] > 0 else 0,
+                    })
+                    render_side_by_side_metrics(combined_row, f"비교 기간 ({cmp_mode_grp})", "조회 기간 (현재)")
+                    st.divider()
+                    
             base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
             metrics_cols_grp = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
             if cmp_mode_grp != "비교 안함": 
                 metrics_cols_grp.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
             
-            # 존재하는 컬럼만 노출
             final_cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]
             disp_grp = view_grp[final_cols_grp].sort_values(by="광고비" if "광고비" in view_grp.columns else final_cols_grp[0], ascending=False).head(top_n)
             
@@ -814,12 +930,17 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if diff_conv > 0: reasons.append(f"전환 +{diff_conv:.0f}건")
                     if diff_ctr > 0: reasons.append(f"CTR +{diff_ctr:.2f}%p")
                     
+                    # [요청사항 반영] 우수/저조 지표를 엑셀 형식처럼 직관적으로 분리
                     winners.append({
-                        '업체명': g[0], '캠페인': g[1], '광고그룹': g[2],
-                        '우수 소재 🌟': best['소재내용'], 
-                        '우수 지표': f"ROAS {best['ROAS(%)']}% / 전환 {best['전환']}건 / CTR {best['CTR(%)']}%",
-                        '일반/저조 소재': worst['소재내용'], 
-                        '주요 격차': " | ".join(reasons) if reasons else "종합 지표 우위"
+                        '캠페인': g[1], 
+                        '광고그룹': g[2],
+                        '🏆 WINNER 소재': best['소재내용'], 
+                        'W_ROAS': f"{best['ROAS(%)']:.0f}%",
+                        'W_전환': f"{best['전환']}건",
+                        '😢 LOSER 소재': worst['소재내용'], 
+                        'L_ROAS': f"{worst['ROAS(%)']:.0f}%",
+                        'L_전환': f"{worst['전환']}건",
+                        '💡 핵심 격차': " | ".join(reasons) if reasons else "종합 우위"
                     })
             if winners: st_dataframe_safe(pd.DataFrame(winners), hide_index=True, use_container_width=True)
             else: st.caption("현재 A/B 테스트 그룹 중 유의미한 성과 격차를 보이는 데이터가 없습니다.")
@@ -840,13 +961,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown(f"<div class='nv-sec-title'>💡 {ad_type_name} 최적화 포인트</div>", unsafe_allow_html=True)
         render_insight_cards(df_tab, "소재", "소재내용")
         st.divider()
-
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
-            sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key=f"ad_camp_filter_{ad_type_name}")
-            
-        if sel_camp != "전체": df_tab = df_tab[df_tab["캠페인"] == sel_camp]
 
         cols = ["업체명", "담당자", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         if cmp_mode_ad != "비교 안함":
