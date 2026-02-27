@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v11.5_SHOPPING_MASTER)
+collector.py - 네이버 검색광고 수집기 (v12.0_LOG_ENHANCED)
+- 상세 로깅 추가: 수집 성공 건수, 실패 원인, 0건 수집 등 명확한 에러 트래킹 지원
 - 쇼핑검색 상품 소재가 빈칸으로 파싱되어 UI에서 증발하는 버그 100% 차단 (강제 Fallback)
 - 네이버 stat-reports가 지원하지 않는 확장소재(AD_EXTENSION) 성과를 /stats 우회 조회로 완벽 복구
-- 3묶음 병렬 고속 다운로드 유지
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import argparse
 import sys
 import io
 import concurrent.futures
+import traceback
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
 
@@ -53,8 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 print("="*50, flush=True)
-print("=== [VERSION: v11.5_SHOPPING_MASTER] ===", flush=True)
-print("=== 쇼핑검색 투명화 차단 & 확장소재 복구 ===", flush=True)
+print("=== [VERSION: v12.0_LOG_ENHANCED] ===", flush=True)
+print("=== 상세 수집 로그 & 에러 트래킹 적용 ===", flush=True)
 print("="*50, flush=True)
 
 if not API_KEY or not API_SECRET:
@@ -87,7 +88,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
         try:
             r = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=TIMEOUT)
             if r.status_code == 403:
-                if raise_error: raise requests.HTTPError(f"403 Forbidden: {customer_id}", response=r)
+                if raise_error: raise requests.HTTPError(f"403 Forbidden: 권한이 없습니다 ({customer_id})", response=r)
                 return 403, None
             if r.status_code == 429 or r.status_code >= 500:
                 time.sleep(2 + attempt)
@@ -96,7 +97,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
             try: data = r.json()
             except: data = r.text
             if raise_error and r.status_code >= 400:
-                raise requests.HTTPError(f"{r.status_code}", response=r)
+                raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
         except requests.exceptions.RequestException as e:
             if "403" in str(e): raise e
@@ -108,7 +109,8 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     try:
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
-    except Exception:
+    except Exception as e:
+        log(f"   ⚠️ API 호출 실패 [{method} {path}]: {str(e)}")
         return False, None
 
 def get_engine() -> Engine:
@@ -161,7 +163,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             if raw_conn:
                 try: raw_conn.rollback()
                 except: pass
-            if attempt == 2: log(f"❌ Upsert Error in {table}: {e}")
+            if attempt == 2: log(f"   ❌ DB 적재 에러 ({table}): {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -182,7 +184,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
-            if attempt == 2: log(f"❌ Delete Error: {e}")
+            if attempt == 2: log(f"   ❌ 기존 데이터 삭제 에러 ({table}): {e}")
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
@@ -200,7 +202,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             if raw_conn:
                 try: raw_conn.rollback()
                 except: pass
-            if attempt == 2: log(f"❌ Insert Error: {e}")
+            if attempt == 2: log(f"   ❌ 신규 데이터 삽입 에러 ({table}): {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -230,13 +232,11 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
-# 🚨 [CRITICAL FIX] 소재 파싱 이중 안전장치 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
-    # 1차 파싱: 쇼핑검색 상품 및 추가홍보문구 시도
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         title = title or ad_inner["shoppingProduct"].get("name") or ad_inner["shoppingProduct"].get("productName") or ""
     if "addPromoText" in ad_inner:
@@ -245,7 +245,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
     if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
     
-    # 2차 파싱: 어떤 경우에도 title이 빈 칸이 되지 않도록 강력한 Fallback 적용 (빈 칸이면 대시보드에서 투명화되어 짤림)
     if not title:
         for k, v in ad_inner.items():
             if isinstance(v, dict) and v.get("name"): 
@@ -301,6 +300,8 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
+            else:
+                log(f"   ❌ [ {customer_id} ] {tp} 리포트 요청 실패 (상태 코드: {status})")
             time.sleep(0.2)
             
         max_wait = 20
@@ -316,11 +317,16 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                 r = requests.get(dl_url, timeout=60)
                                 r.encoding = 'utf-8'
                                 txt = r.text.strip()
-                                if txt: results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
-                            except Exception: pass
+                                if txt: 
+                                    results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
+                                else:
+                                    log(f"   ⚠️ [ {customer_id} ] {tp} 리포트 다운로드 완료했으나 데이터가 비어있음.")
+                            except Exception as e: 
+                                log(f"   ❌ [ {customer_id} ] {tp} 리포트 다운로드 에러: {e}")
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
                     elif stt in ["ERROR", "NONE"]:
+                        log(f"   ❌ [ {customer_id} ] {tp} 네이버 서버 내 리포트 생성 실패 (상태: {stt})")
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
             if jobs: time.sleep(1.5)
@@ -362,7 +368,9 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
         if "CAMPAIGN" in report_tp: pk_idx = 2
         elif "KEYWORD" in report_tp: pk_idx = 5
         elif "AD" in report_tp: pk_idx = 5
-        else: return {}
+        else: 
+            log(f"   ⚠️ {report_tp} 파싱 실패 (헤더 인덱스 탐색 실패)")
+            return {}
         imp_idx = 5 if "CAMPAIGN" in report_tp else 8
         clk_idx = 6 if "CAMPAIGN" in report_tp else 9
         cost_idx = 7 if "CAMPAIGN" in report_tp else 10
@@ -370,7 +378,9 @@ def parse_df_to_dict(df: pd.DataFrame, report_tp: str, pk_cands: List[str], is_c
         sales_idx = 7 if "CAMPAIGN" in report_tp else 10
         rank_idx = 11
 
-    if pk_idx == -1: return {}
+    if pk_idx == -1: 
+        log(f"   ⚠️ {report_tp} 파싱 실패 (PK 컬럼 매칭 실패)")
+        return {}
     
     res = {}
     for _, r in df.iterrows():
@@ -435,18 +445,16 @@ def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date
     kw_stat = parse_df_to_dict(dfs.get("KEYWORD"), "KEYWORD", ["키워드id", "keywordid"], False, has_rank=True)
     kw_conv = parse_df_to_dict(dfs.get("KEYWORD_CONVERSION"), "KEYWORD_CONVERSION", ["키워드id", "keywordid"], True)
     
-    # 🚨 [CRITICAL FIX] 상품ID(쇼핑검색) 헤더 누락 방지 매핑
     ad_stat = parse_df_to_dict(dfs.get("AD"), "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], False)
     ad_conv = parse_df_to_dict(dfs.get("AD_CONVERSION"), "AD_CONVERSION", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], True)
     
-    # 🚨 [CRITICAL FIX] 확장소재(AD_EXTENSION) 우회 성과 조회 로직
-    # 확장소재는 stat-reports 다운로드가 불가능하므로, DB에서 ID를 불러와 실시간 /stats API로 직접 때려서 과거 성과를 복구합니다.
     ext_ids = []
     try:
         with engine.connect() as conn:
             res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
             ext_ids = [str(r[0]) for r in res]
-    except Exception:
+    except Exception as e:
+        log(f"   ⚠️ 확장소재 ID 조회 실패: {e}")
         pass
         
     if ext_ids:
@@ -466,59 +474,72 @@ def process_daily_reports_v2(engine: Engine, customer_id: str, target_date: date
     k_cnt = merge_and_save(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, kw_conv)
     a_cnt = merge_and_save(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, ad_conv)
     
-    if (c_cnt + k_cnt + a_cnt) > 0:
-        log(f"   📊 [ {account_name} ] 리포트 적재 완료 (캠페인 {c_cnt} / 키워드 {k_cnt} / 소재(쇼핑/확장포함) {a_cnt})")
+    log(f"   📊 [ {account_name} ] 적재 결과 - 캠페인: {c_cnt}건 | 키워드: {k_cnt}건 | 소재: {a_cnt}건")
+    if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+        log(f"   ⚠️ [ {account_name} ] 경고: 해당 날짜({target_date})에 수집된 성과 데이터가 0건입니다. (API 지연, 계정 정지, 혹은 실제 데이터 없음)")
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
-    target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
-    if not skip_dim:
-        camp_list = list_campaigns(customer_id)
-        if not camp_list: return
-        camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
-        for c in camp_list:
-            cid = c.get("nccCampaignId")
-            if not cid: continue
-            target_camp_ids.append(cid)
-            camp_rows.append({"customer_id": customer_id, "campaign_id": cid, "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")})
-            for g in list_adgroups(customer_id, cid):
-                gid = g.get("nccAdgroupId")
-                if not gid: continue
-                ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
-                if not SKIP_KEYWORD_DIM:
-                    for k in list_keywords(customer_id, gid):
-                        if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
-                if not SKIP_AD_DIM:
-                    for a in list_ads(customer_id, gid):
-                        if aid := a.get("nccAdId"): 
-                            target_ad_ids.append(aid)
-                            ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
-                    
-                    for ext in list_ad_extensions(customer_id, gid):
-                        if ext_id := ext.get("nccAdExtensionId"):
-                            target_ad_ids.append(ext_id)
-                            ext_info = ext.get("adExtension", {}) or ext
-                            ext_type = ext.get("extensionType", "")
-                            ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                            ext_title = f"[확장소재] {ext_type}"
-                            ad_rows.append({
-                                "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
-                                "status": ext.get("status"), "ad_title": ext_title, "ad_desc": ext_text, 
-                                "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
-                                "creative_text": f"{ext_title} | {ext_text}"[:500]
-                            })
+    try:
+        log(f"▶️ [ {account_name} ] ({customer_id}) 계정 처리 시작...")
+        target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
+        
+        if not skip_dim:
+            camp_list = list_campaigns(customer_id)
+            if not camp_list:
+                log(f"   ⚠️ [ {account_name} ] 등록된 캠페인이 없거나 캠페인 목록 API 호출에 실패했습니다.")
+                return
+                
+            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+            for c in camp_list:
+                cid = c.get("nccCampaignId")
+                if not cid: continue
+                target_camp_ids.append(cid)
+                camp_rows.append({"customer_id": customer_id, "campaign_id": cid, "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")})
+                for g in list_adgroups(customer_id, cid):
+                    gid = g.get("nccAdgroupId")
+                    if not gid: continue
+                    ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
+                    if not SKIP_KEYWORD_DIM:
+                        for k in list_keywords(customer_id, gid):
+                            if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
+                    if not SKIP_AD_DIM:
+                        for a in list_ads(customer_id, gid):
+                            if aid := a.get("nccAdId"): 
+                                target_ad_ids.append(aid)
+                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
+                        
+                        for ext in list_ad_extensions(customer_id, gid):
+                            if ext_id := ext.get("nccAdExtensionId"):
+                                target_ad_ids.append(ext_id)
+                                ext_info = ext.get("adExtension", {}) or ext
+                                ext_type = ext.get("extensionType", "")
+                                ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
+                                ext_title = f"[확장소재] {ext_type}"
+                                ad_rows.append({
+                                    "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
+                                    "status": ext.get("status"), "ad_title": ext_title, "ad_desc": ext_text, 
+                                    "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
+                                    "creative_text": f"{ext_title} | {ext_text}"[:500]
+                                })
 
-        upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
-        upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-        if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-        if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
-    
-    if target_date == date.today():
-        if target_camp_ids: replace_fact_range(engine, "fact_campaign_daily", [parse_stats(r, target_date, customer_id, "campaign_id") for r in get_stats_range(customer_id, target_camp_ids, target_date)], customer_id, target_date)
-        if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
-        if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
-    else:
-        process_daily_reports_v2(engine, customer_id, target_date, account_name)
-    log(f"✅ 완료: {account_name}")
+            upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+            upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+            if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+            if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+        
+        if target_date == date.today():
+            log(f"   ⚠️ [ {account_name} ] 당일 데이터는 stat-reports가 불가능하여 /stats 우회 조회로 전환합니다.")
+            if target_camp_ids: replace_fact_range(engine, "fact_campaign_daily", [parse_stats(r, target_date, customer_id, "campaign_id") for r in get_stats_range(customer_id, target_camp_ids, target_date)], customer_id, target_date)
+            if target_kw_ids and not SKIP_KEYWORD_STATS: replace_fact_range(engine, "fact_keyword_daily", [parse_stats(r, target_date, customer_id, "keyword_id") for r in get_stats_range(customer_id, target_kw_ids, target_date)], customer_id, target_date)
+            if target_ad_ids and not SKIP_AD_STATS: replace_fact_range(engine, "fact_ad_daily", [parse_stats(r, target_date, customer_id, "ad_id") for r in get_stats_range(customer_id, target_ad_ids, target_date)], customer_id, target_date)
+        else:
+            process_daily_reports_v2(engine, customer_id, target_date, account_name)
+            
+        log(f"✅ [ {account_name} ] 계정 수집 및 처리 완료")
+        
+    except Exception as e:
+        log(f"❌ [ {account_name} ] 계정 처리 중 치명적 오류 발생: {str(e)}")
+        log(traceback.format_exc())
 
 def main():
     engine = get_engine()
@@ -571,7 +592,7 @@ def main():
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
-        log("⚠️ 수집할 계정이 없습니다.")
+        log("⚠️ 수집할 계정이 없습니다. (accounts.xlsx 확인 요망)")
         return
         
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
@@ -579,9 +600,11 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
-            try: future.result()
+            try: 
+                future.result()
             except Exception as e:
-                if "403" not in str(e): log(f"❌ 에러: {e}")
+                if "403" not in str(e): 
+                    log(f"❌ 쓰레드 작업 에러: {e}")
 
 if __name__ == "__main__":
     main()
