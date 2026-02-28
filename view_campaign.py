@@ -41,53 +41,66 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
-    opts = get_dynamic_cmp_options(f["start"], f["end"])
-    is_cmp = st.toggle(f"📊 기간 비교 켜기 ({opts[1]})", value=False, key="camp_cmp_toggle")
-    cmp_mode = opts[1] if is_cmp else "비교 안함"
-    
-    b1, b2 = None, None
-    if cmp_mode != "비교 안함":
+    # ✨ [핵심 조치] 비교 기능을 전용 탭으로 분리
+    tab_main, tab_cmp = st.tabs(["📊 캠페인 종합 성과", "⚖️ 기간 비교 분석"])
+
+    fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
+
+    with tab_main:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if not view.empty and "캠페인" in view.columns:
+                camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
+                sel_camp_main = st.selectbox("🎯 개별 캠페인 검색/필터", camps_main, key="camp_name_filter_main")
+            else:
+                sel_camp_main = "전체"
+
+        disp_main = view.copy()
+        if sel_camp_main != "전체":
+            disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
+
+        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
+        metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+        
+        final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
+        disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
+
+        styled_disp_main = disp_main.style.format(fmt)
+        st.markdown("#### 📊 캠페인 종합 성과 표")
+        render_big_table(styled_disp_main, "camp_grid_main", 550)
+
+    with tab_cmp:
+        st.markdown("### ⚖️ 기간 비교 분석 (캠페인)")
+        opts = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_opts = [o for o in opts if o != "비교 안함"]
+        cmp_mode = st.radio("📊 기간 비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
+        
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
-        if not base_bundle.empty:
-            valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view.columns and k in base_bundle.columns]
-            if valid_keys:
-                view = append_comparison_data(view, base_bundle, valid_keys)
-
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        if not view.empty and "캠페인" in view.columns:
-            camps = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
-            sel_camp = st.selectbox("🎯 개별 캠페인 검색/필터", camps, key="camp_name_filter")
-        else:
-            sel_camp = "전체"
-
-    if sel_camp != "전체":
-        view = view[view["캠페인"] == sel_camp]
-        if cmp_mode != "비교 안함" and not view.empty:
-            render_comparison_section(view, cmp_mode, b1, b2, f["start"], f["end"], "선택 캠페인 상세 비교")
-
-    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
-    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
-    if cmp_mode != "비교 안함":
-        metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
         
-    final_cols = [c for c in base_cols + metrics_cols if c in view.columns]
-    disp = view[final_cols].sort_values("광고비", ascending=False).head(top_n)
+        view_cmp = view.copy()
+        if not base_bundle.empty:
+            valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view_cmp.columns and k in base_bundle.columns]
+            if valid_keys:
+                view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
 
-    # ✨ [NEW] 데이터를 억지로 자르지 않고, Styler 포맷터를 통해 예쁘게 표출합니다!
-    fmt = {}
-    if "노출" in disp.columns: fmt["노출"] = "{:,.0f}"
-    if "클릭" in disp.columns: fmt["클릭"] = "{:,.0f}"
-    if "광고비" in disp.columns: fmt["광고비"] = "{:,.0f}"
-    if "CPC(원)" in disp.columns: fmt["CPC(원)"] = "{:,.0f}"
-    if "CPA(원)" in disp.columns: fmt["CPA(원)"] = "{:,.0f}"
-    if "전환매출" in disp.columns: fmt["전환매출"] = "{:,.0f}"
-    if "전환" in disp.columns: fmt["전환"] = "{:,.1f}"
-    if "CTR(%)" in disp.columns: fmt["CTR(%)"] = "{:,.2f}%"
-    if "ROAS(%)" in disp.columns: fmt["ROAS(%)"] = "{:,.2f}%"
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if not view_cmp.empty and "캠페인" in view_cmp.columns:
+                camps_cmp = ["전체"] + sorted([str(x) for x in view_cmp["캠페인"].unique() if str(x).strip()])
+                sel_camp_cmp = st.selectbox("🎯 개별 캠페인 검색/필터", camps_cmp, key="camp_name_filter_cmp")
+            else:
+                sel_camp_cmp = "전체"
 
-    styled_disp = disp.style.format(fmt)
+        if sel_camp_cmp != "전체":
+            view_cmp = view_cmp[view_cmp["캠페인"] == sel_camp_cmp]
+            if not view_cmp.empty:
+                render_comparison_section(view_cmp, cmp_mode, b1, b2, f["start"], f["end"], "선택 캠페인 상세 비교")
 
-    st.markdown("#### 📊 캠페인 종합 성과 표")
-    render_big_table(styled_disp, "camp_grid", 550)
+        metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
+        final_cols_cmp = [c for c in base_cols + metrics_cols_cmp if c in view_cmp.columns]
+        disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
+
+        styled_disp_cmp = disp_cmp.style.format(fmt)
+        st.markdown("#### 📊 캠페인 기간 비교 표")
+        render_big_table(styled_disp_cmp, "camp_grid_cmp", 550)
