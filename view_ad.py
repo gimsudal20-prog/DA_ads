@@ -60,7 +60,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             return
 
         opts_ad = get_dynamic_cmp_options(f["start"], f["end"])
-        cmp_mode_ad = st.radio(f"📊 소재 단위 기간 비교", opts_ad, horizontal=True, key=f"ad_cmp_mode_{ad_type_name}")
+        # ✨ [개선] 기간 비교를 토글 스위치로 변경
+        is_cmp_ad = st.toggle(f"📊 기간 비교 켜기 ({opts_ad[1]})", value=False, key=f"ad_cmp_toggle_{ad_type_name}")
+        cmp_mode_ad = opts_ad[1] if is_cmp_ad else "비교 안함"
         
         b1, b2 = None, None
         if cmp_mode_ad != "비교 안함":
@@ -98,7 +100,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         if cmp_mode_ad != "비교 안함":
-            # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
             cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
             
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
@@ -133,7 +134,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "landing_url" in view.columns:
             df_lp = view[view["landing_url"].astype(str) != ""].copy()
             if df_lp.empty:
-                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (수집기를 다시 한 번 돌려 DB를 업데이트해주세요.)")
+                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (수집기를 다시 한 일 돌려 DB를 업데이트해주세요.)")
             else:
                 lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
                 
