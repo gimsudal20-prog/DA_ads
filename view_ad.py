@@ -52,26 +52,16 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
-    tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
+    # ✨ [핵심 조치] 비교 기능을 전용 탭으로 분리
+    tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석", "⚖️ 기간 비교 분석"])
+    
+    fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
         if df_tab.empty:
             st.info(f"해당 기간의 {ad_type_name} 데이터가 없습니다.")
             return
 
-        opts_ad = get_dynamic_cmp_options(f["start"], f["end"])
-        is_cmp_ad = st.toggle(f"📊 기간 비교 켜기 ({opts_ad[1]})", value=False, key=f"ad_cmp_toggle_{ad_type_name}")
-        cmp_mode_ad = opts_ad[1] if is_cmp_ad else "비교 안함"
-        
-        b1, b2 = None, None
-        if cmp_mode_ad != "비교 안함":
-            b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_ad)
-            base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
-            if not base_ad_bundle.empty:
-                valid_keys = [k for k in ['customer_id', 'ad_id'] if k in df_tab.columns and k in base_ad_bundle.columns]
-                if valid_keys:
-                    df_tab = append_comparison_data(df_tab, base_ad_bundle, valid_keys)
-                
         c1, c2 = st.columns([1, 1])
         with c1:
             camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
@@ -94,29 +84,12 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 df_tab = df_tab[df_tab["광고그룹"] == sel_grp]
                 _render_ab_test_sbs(df_tab, f["start"], f["end"])
 
-            if cmp_mode_ad != "비교 안함" and not df_tab.empty:
-                render_comparison_section(df_tab, cmp_mode_ad, b1, b2, f["start"], f["end"], f"선택 {ad_type_name} 상세 비교")
-
         cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
-        if cmp_mode_ad != "비교 안함":
-            cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
             
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
-        # ✨ [NEW] Styler 포맷 적용
-        fmt = {}
-        if "노출" in disp.columns: fmt["노출"] = "{:,.0f}"
-        if "클릭" in disp.columns: fmt["클릭"] = "{:,.0f}"
-        if "광고비" in disp.columns: fmt["광고비"] = "{:,.0f}"
-        if "CPC(원)" in disp.columns: fmt["CPC(원)"] = "{:,.0f}"
-        if "CPA(원)" in disp.columns: fmt["CPA(원)"] = "{:,.0f}"
-        if "전환매출" in disp.columns: fmt["전환매출"] = "{:,.0f}"
-        if "전환" in disp.columns: fmt["전환"] = "{:,.1f}"
-        if "CTR(%)" in disp.columns: fmt["CTR(%)"] = "{:,.2f}%"
-        if "ROAS(%)" in disp.columns: fmt["ROAS(%)"] = "{:,.2f}%"
         styled_disp = disp.style.format(fmt)
-
         st.markdown(f"#### 📊 {ad_type_name} 상세 성과 표")
         render_big_table(styled_disp, f"ad_big_table_{ad_type_name}", 500)
 
@@ -126,10 +99,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         
     with tab_shop:
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
-        
         if not df_shop.empty:
             df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
-        
         if not df_shop.empty:
             _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
         else:
@@ -164,3 +135,62 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
         else:
             st.info("DB 구조에 랜딩페이지 URL 정보가 아직 포함되어 있지 않습니다. (수집기를 최신 버전으로 돌려주세요)")
+
+    # ✨ [핵심 조치] 소재 기간 비교 전용 탭 구축
+    with tab_cmp:
+        st.markdown("### ⚖️ 기간 비교 분석")
+        cmp_view_mode = st.radio("비교 대상 선택", ["🎯 파워링크 일반 소재", "🛍️ 쇼핑검색 확장소재"], horizontal=True)
+        
+        opts = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_opts = [o for o in opts if o != "비교 안함"]
+        cmp_mode = st.radio("📊 기간 비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="ad_cmp_mode")
+        
+        b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
+        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
+
+        df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_view_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
+        if "쇼핑검색" in cmp_view_mode:
+            df_target = df_target[df_target['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
+
+        if df_target.empty:
+            st.info("비교할 데이터가 없습니다.")
+        else:
+            if not base_ad_bundle.empty:
+                valid_keys = [k for k in ['customer_id', 'ad_id'] if k in df_target.columns and k in base_ad_bundle.columns]
+                if valid_keys:
+                    df_target = append_comparison_data(df_target, base_ad_bundle, valid_keys)
+                    
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                camps = ["전체"] + sorted([str(x) for x in df_target["캠페인"].unique() if str(x).strip()])
+                sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key=f"ad_cmp_camp_filter")
+                
+            with c2:
+                if sel_camp != "전체":
+                    filtered_grp = df_target[df_target["캠페인"] == sel_camp]
+                    grps = ["전체"] + sorted([str(x) for x in filtered_grp["광고그룹"].unique() if str(x).strip()])
+                    sel_grp = st.selectbox("📂 소속 광고그룹 필터", grps, key=f"ad_cmp_grp_filter")
+                else:
+                    sel_grp = "전체"
+                    st.selectbox("📂 소속 광고그룹 필터", ["전체"], disabled=True, key=f"ad_cmp_grp_filter")
+
+            st.divider()
+
+            if sel_camp != "전체":
+                df_target = df_target[df_target["캠페인"] == sel_camp]
+                if sel_grp != "전체":
+                    df_target = df_target[df_target["광고그룹"] == sel_grp]
+                    _render_ab_test_sbs(df_target, f["start"], f["end"])
+
+                if not df_target.empty:
+                    render_comparison_section(df_target, cmp_mode, b1, b2, f["start"], f["end"], "선택 항목 상세 비교")
+
+            cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
+            
+            disp = df_target[[c for c in cols if c in df_target.columns]].copy()
+            disp = disp.sort_values("광고비", ascending=False).head(top_n)
+
+            styled_disp = disp.style.format(fmt)
+
+            st.markdown("#### 📊 소재 기간 비교 표")
+            render_big_table(styled_disp, f"ad_cmp_grid", 500)
