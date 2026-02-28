@@ -28,10 +28,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if cur_cost > 0 and cur_roas < 100:
         alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.0f}%**로 매우 낮습니다.")
         
-    pm = f.get("period_mode", "어제")
     opts = get_dynamic_cmp_options(f["start"], f["end"])
-    cmp_opts = [o for o in opts if o != "비교 안함"]
-    cmp_mode = st.radio("비교 기준 선택", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
+    # ✨ [개선] 요약 탭의 무의미한 라디오 버튼을 아예 지우고 기본값으로 자동 연산합니다.
+    cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
     base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
@@ -52,7 +51,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     else:
         st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
     
-    # ✨ [수정] 오버스러웠던 빨간 박스를 지우고, 이전의 깔끔하고 심플한 텍스트로 원복했습니다.
     if not hippos.empty:
         disp_hippos = _perf_common_merge_meta(hippos, meta)
         disp_hippos = disp_hippos.rename(columns={
@@ -72,7 +70,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.divider()
 
     st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-    st.caption("선택한 전체 계정의 핵심 성과(KPI)를 이전 기간과 직관적으로 비교해 줍니다. 큰 숫자를 중심으로 흐름을 파악하세요.")
+    st.caption("선택한 전체 계정의 핵심 성과(KPI)를 직관적으로 요약합니다.")
+    
+    # ✨ 어떤 기간과 비교하는지 텍스트로 깔끔하게 안내
+    st.markdown(f"<div style='font-size:13px; font-weight:600; color:#475569; margin-bottom:12px;'>📊 자동 비교 기준: <span style='color:#2563EB;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
     base = base_summary
