@@ -39,10 +39,11 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+    
+    # ✨ [수정] ROAS의 .round(0) 제거 (소수점 유지)
+    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
     opts = get_dynamic_cmp_options(f["start"], f["end"])
-    # ✨ [개선] 기간 비교를 토글 스위치로 변경
     is_cmp = st.toggle(f"📊 기간 비교 켜기 ({opts[1]})", value=False, key="camp_cmp_toggle")
     cmp_mode = opts[1] if is_cmp else "비교 안함"
     
@@ -76,9 +77,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     final_cols = [c for c in base_cols + metrics_cols if c in view.columns]
     disp = view[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-    for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+    # ✨ [수정] 전환과 ROAS는 정수 변환(astype int)에서 제외하고 float 소수점 1자리로 처리
+    for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
         if c in disp.columns: disp[c] = disp[c].astype(int)
+    if "전환" in disp.columns: disp["전환"] = disp["전환"].astype(float).round(1)
     if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
+    if "ROAS(%)" in disp.columns: disp["ROAS(%)"] = disp["ROAS(%)"].astype(float).round(1)
 
     st.markdown("#### 📊 캠페인 종합 성과 표")
     render_big_table(disp, "camp_grid", 550)
