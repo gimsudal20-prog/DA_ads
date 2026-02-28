@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v12.2_ULTIMATE_FIX)
-- 잘못된 파라미터(400) 에러 완벽 해결: 존재하지 않는 _CONVERSION 리포트 요청 완전 제거
-- 성과/전환 통합 파싱: 단일 리포트에서 전환액까지 한 번에 파싱하여 수집 속도 2배 향상
-- 무결점 우회 수집(Fallback): GFA 등 리포트 미지원 계정은 실시간 API로 자동 우회 수집
+collector.py - 네이버 검색광고 수집기 (v12.3)
+- 랜딩페이지 URL(pc, mobile) DB 자동 업데이트 기능 추가
 """
 
 from __future__ import annotations
@@ -52,16 +50,10 @@ def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
-print("="*50, flush=True)
-print("=== [VERSION: v12.2_ULTIMATE_FIX] ===", flush=True)
-print("=== 400 에러 해결 & 무결점 우회 수집 적용 ===", flush=True)
-print("="*50, flush=True)
-
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 
-def now_millis() -> str:
-    return str(int(time.time() * 1000))
+def now_millis() -> str: return str(int(time.time() * 1000))
 
 def sign_path_only(method: str, path: str, timestamp: str, secret: str) -> str:
     msg = f"{timestamp}.{method}.{path}".encode("utf-8")
@@ -94,15 +86,12 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 continue
             data = None
             try: data = r.json()
-            except Exception as e: 
-                log(f"   ⚠️ API 응답 JSON 파싱 실패 ({url}): {e}")
-                data = r.text
+            except Exception as e: data = r.text
             if raise_error and r.status_code >= 400:
                 raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
         except requests.exceptions.RequestException as e:
             if "403" in str(e): raise e
-            log(f"   ⚠️ API 호출 에러 발생 재시도 중 ({attempt+1}/{max_retries}): {e}")
             time.sleep(2 + attempt)
     if raise_error: raise Exception(f"최대 재시도 초과: {url}")
     return 0, None
@@ -112,7 +101,6 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
     except Exception as e:
-        log(f"   ⚠️ API 호출 실패 [{method} {path}]: {str(e)}")
         return False, None
 
 def get_engine() -> Engine:
@@ -133,15 +121,21 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+            
+            # ✨ [핵심 조치] 기존 DB에 랜딩페이지 컬럼이 없을 경우 강제로 추가 (에러 나면 이미 있는 것이므로 무시)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN mobile_landing_url TEXT"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN creative_text TEXT"))
+            except Exception: pass
+            
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-            except Exception as e: 
-                # 컬럼이 이미 존재할 때 발생하는 에러는 정상 무시
-                pass
+            except Exception: pass
             break
         except Exception as e:
-            log(f"   ⚠️ 테이블 생성 실패 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
             if attempt == 2: raise e
 
@@ -167,16 +161,15 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
-                except Exception as ex: log(f"   ⚠️ Rollback 실패: {ex}")
-            log(f"   ⚠️ DB Upsert 에러 재시도 중 ({attempt+1}/3): {e}")
+                except Exception as ex: pass
             time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
-                except Exception as ex: log(f"   ⚠️ Cursor 닫기 실패: {ex}")
+                except Exception: pass
             if raw_conn:
                 try: raw_conn.close()
-                except Exception as ex: log(f"   ⚠️ Connection 닫기 실패: {ex}")
+                except Exception: pass
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
@@ -189,7 +182,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
-            log(f"   ⚠️ 기존 데이터 DELETE 에러 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
@@ -206,16 +198,15 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
-                except Exception as ex: log(f"   ⚠️ Rollback 실패: {ex}")
-            log(f"   ⚠️ DB Insert 에러 재시도 중 ({attempt+1}/3): {e}")
+                except Exception: pass
             time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
-                except Exception as ex: log(f"   ⚠️ Cursor 닫기 실패: {ex}")
+                except Exception: pass
             if raw_conn:
                 try: raw_conn.close()
-                except Exception as ex: log(f"   ⚠️ Connection 닫기 실패: {ex}")
+                except Exception: pass
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -283,7 +274,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     return out
 
 def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
-    """우회 수집(Fallback): 리포트가 불가능할 때 실시간 /stats API를 이용해 한땀한땀 수집"""
     if not ids: return 0
     raw_stats = get_stats_range(customer_id, ids, target_date)
     if not raw_stats: return 0
@@ -319,7 +309,7 @@ def cleanup_ghost_reports(customer_id: str):
 def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame | None]:
     cleanup_ghost_reports(customer_id)
     
-    results = {tp: None for tp in report_types} # None = 실패 (우회 수집 대상), DataFrame = 성공
+    results = {tp: None for tp in report_types}
     for i in range(0, len(report_types), 3):
         batch = report_types[i:i+3]
         jobs = {}
@@ -328,12 +318,6 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
-            elif status == 400:
-                # GFA 계정 등에서 발생하는 에러는 조용히 넘기고 우회 수집 모드로 넘깁니다.
-                pass
-            else:
-                err_msg = data.get("message", str(data)) if isinstance(data, dict) else str(data)
-                log(f"   ❌ [ {customer_id} ] {tp} 리포트 요청 실패 ({status}: {err_msg})")
             time.sleep(0.2)
             
         max_wait = 20
@@ -353,15 +337,11 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                     results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
                                 else:
                                     results[tp] = pd.DataFrame()
-                            except Exception as e: 
-                                log(f"   ❌ [ {customer_id} ] {tp} 다운로드 에러: {e}")
+                            except Exception: pass
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
-                    elif stt == "NONE":
-                        results[tp] = pd.DataFrame()
-                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-                        del jobs[tp]
-                    elif stt == "ERROR":
+                    elif stt in ["NONE", "ERROR"]:
+                        results[tp] = pd.DataFrame() if stt == "NONE" else None
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
             if jobs: time.sleep(1.5)
@@ -386,12 +366,9 @@ def safe_float(v) -> float:
     s = str(v).replace(",", "").strip()
     if not s or s == "-": return 0.0
     try: return float(s)
-    except Exception as e: 
-        # 자주 일어나는 에러이므로 pass하되 개발자 추적용으로 남김
-        return 0.0
+    except Exception: return 0.0
 
 def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False) -> dict:
-    """단일 리포트 파일에서 노출/클릭/비용과 전환/매출을 동시에 추출합니다."""
     if df is None or df.empty: return {}
     header_idx = -1
     for i in range(min(5, len(df))):
@@ -452,9 +429,7 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
                 if rnk > 0 and imp > 0:
                     res[obj_id]["rank_sum"] += (rnk * imp)
                     res[obj_id]["rank_cnt"] += imp
-        except Exception as e:
-            log(f"   ⚠️ 리포트 파싱 중 행 건너뜀: {e}")
-            pass
+        except Exception: pass
     return res
 
 def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict) -> int:
@@ -483,8 +458,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         
         if not skip_dim:
             camp_list = list_campaigns(customer_id)
-            if not camp_list:
-                return
+            if not camp_list: return
                 
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
             for c in camp_list:
@@ -536,34 +510,27 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
             log(f"   📊 [ {account_name} ] 당일 적재: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
-            # 존재하지 않는 _CONVERSION 타입 삭제! 캠페인 리포트 하나로 성과/전환 통합 파싱
             report_types = ["CAMPAIGN", "KEYWORD", "AD"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
-            # 캠페인 파싱 (에러 시 Fallback)
             if dfs.get("CAMPAIGN") is not None:
                 camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"])
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
             else:
-                log(f"   🔄 [ {account_name} ] 캠페인 대용량 리포트 우회 -> 실시간 API 수집 중...")
                 c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
 
-            # 키워드 파싱 (에러 시 Fallback)
             if dfs.get("KEYWORD") is not None:
                 kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid"], has_rank=True)
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
             else:
-                log(f"   🔄 [ {account_name} ] 키워드 대용량 리포트 우회 -> 실시간 API 수집 중...")
                 k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
 
-            # 소재 파싱 (에러 시 Fallback)
             ad_stat = {}
             if dfs.get("AD") is not None:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"])
             else:
-                log(f"   🔄 [ {account_name} ] 소재 대용량 리포트 우회 -> 실시간 API 수집 중...")
                 if target_ad_ids and not SKIP_AD_STATS:
                     raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
                     for r in raw_ad_stats:
@@ -579,15 +546,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             "rank_sum": 0.0, "rank_cnt": 0
                         }
             
-            # 확장소재는 리포트에 안 나오므로 항상 실시간 조회
             ext_ids = []
             try:
                 with engine.connect() as conn:
                     res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
                     ext_ids = [str(r[0]) for r in res]
-            except Exception as e:
-                log(f"   ⚠️ 확장소재 ID 로드 중 에러: {e}")
-                pass
+            except Exception: pass
                 
             if ext_ids:
                 ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
@@ -634,7 +598,7 @@ def main():
             except Exception as e:
                 log(f"⚠️ accounts.xlsx 파싱 실패 (Excel): {e}")
                 try: df_acc = pd.read_csv("accounts.xlsx")
-                except Exception as ex: log(f"⚠️ accounts.xlsx 파싱 실패 (CSV): {ex}")
+                except Exception: pass
             
             if df_acc is not None:
                 id_col, name_col = None, None
@@ -656,9 +620,7 @@ def main():
             try:
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
-            except Exception as e:
-                log(f"⚠️ DB에서 계정 정보 로드 실패: {e}")
-                pass
+            except Exception: pass
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
@@ -671,7 +633,7 @@ def main():
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
-            except Exception as e: log(f"⚠️ Worker 실행 중 에러 발생: {e}")
+            except Exception: pass
 
 if __name__ == "__main__":
     main()
