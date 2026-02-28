@@ -8,6 +8,7 @@ import re
 import io
 import time
 import math
+import logging
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +22,9 @@ from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 예외 추적을 위한 로거 설정
+logger = logging.getLogger(__name__)
 
 _HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
 
@@ -57,7 +61,7 @@ def get_engine():
 
 def _reset_engine_cache() -> None:
     try: get_engine.clear()
-    except Exception: pass
+    except Exception as e: logger.warning(f"Cache clear failed: {e}")
 
 def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) -> pd.DataFrame:
     last_err: Exception | None = None
@@ -77,6 +81,7 @@ def sql_read(engine, sql: str, params: Optional[dict] = None, retries: int = 2) 
             if i < retries:
                 time.sleep(0.35 * (2 ** i))
                 continue
+            logger.error(f"SQL Read Error on attempt {i+1}: {e}\nSQL: {sql}")
             raise last_err
 
 def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) -> None:
@@ -93,6 +98,7 @@ def sql_exec(engine, sql: str, params: Optional[dict] = None, retries: int = 1) 
             if i < retries:
                 time.sleep(0.25 * (2 ** i))
                 continue
+            logger.error(f"SQL Exec Error on attempt {i+1}: {e}\nSQL: {sql}")
             raise last_err
 
 def db_ping(engine, retries: int = 2) -> None:
@@ -113,6 +119,7 @@ def db_ping(engine, retries: int = 2) -> None:
             if i < retries:
                 time.sleep(0.35 * (2 ** i))
                 continue
+            logger.error(f"DB Ping failed: {e}")
             raise last_err
 
 def _get_table_names_cached(engine, schema: str = "public") -> set:
@@ -121,7 +128,9 @@ def _get_table_names_cached(engine, schema: str = "public") -> set:
     try:
         insp = inspect(engine)
         names = set(insp.get_table_names(schema=schema))
-    except Exception: names = set()
+    except Exception as e: 
+        logger.warning(f"Error inspecting table names: {e}")
+        names = set()
     cache[schema] = names
     return names
 
@@ -136,10 +145,13 @@ def get_table_columns(engine, table: str, schema: str = "public") -> set:
         insp = inspect(engine)
         cols = insp.get_columns(table, schema=schema)
         out = {str(c.get("name", "")).lower() for c in cols}
-    except Exception: out = set()
+    except Exception as e: 
+        logger.warning(f"Error inspecting columns for {table}: {e}")
+        out = set()
     cache[key] = out
     return out
 
+# [안정성 개선] 싱글 쿼트 이스케이프 강화를 통한 파라미터 방어
 def _sql_in_str_list(values: List[int]) -> str:
     safe = []
     for v in values:
@@ -153,7 +165,7 @@ def _sql_in_text_list(values: List[str]) -> str:
         if v is None: continue
         s = str(v).strip()
         if not s: continue
-        s = s.replace("'", "''")
+        s = s.replace("'", "''")  # 싱글 쿼트 이스케이프 처리 확인
         safe.append(f"'{s}'")
     return ",".join(safe) if safe else "''"
 
@@ -288,7 +300,6 @@ def finalize_display_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def campaign_tp_to_label(tp: str) -> str:
-    """NULL 또는 NaN을 안전하게 처리하여 필터링 증발을 방지합니다."""
     t = str(tp or "").strip().lower()
     if not t or t == "none" or t == "nan": return "기타"
     return _CAMPAIGN_TP_LABEL.get(t, tp)
@@ -393,7 +404,8 @@ def query_latest_dates(_engine) -> Dict[str, str]:
             df = sql_read(_engine, f"SELECT MAX(dt) AS mx FROM {t}")
             mx = df.iloc[0, 0] if (df is not None and not df.empty) else None
             out[str(t)] = str(mx)[:10] if mx is not None else "-"
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error checking latest date for {t}: {e}")
             continue
     return out
 
@@ -501,7 +513,6 @@ def query_keyword_timeseries(_engine, d1: date, d2: date, cids: Tuple[int, ...],
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel: Tuple[str, ...], topn_cost: int = 10000, top_k: int = 50) -> pd.DataFrame:
-    # 💡 [핵심 수정] 파워링크 등 타 캠페인 유형에 의해 쇼핑검색이 밀려 짤리지 않도록 LIMIT을 10,000으로 대폭 상향
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     fad_cols = get_table_columns(_engine, "fact_ad_daily")
     sales_expr = "SUM(COALESCE(f.sales,0))" if "sales" in fad_cols else "0::numeric"
@@ -557,7 +568,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
 
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=300, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, customer_ids: List[str], type_sel: Tuple[str, ...], topn_cost: int = 10000) -> pd.DataFrame:
-    # 💡 [핵심 수정] 타 캠페인 유형에 의해 밀려 짤리지 않도록 LIMIT을 10,000으로 대폭 상향
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     fk_cols = get_table_columns(_engine, "fact_keyword_daily")
     sales_sum = "SUM(COALESCE(fk.sales, 0)) AS sales" if "sales" in fk_cols else "0::numeric AS sales"
@@ -667,7 +677,9 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: Tuple[int,
         if entity == "campaign": ts = query_campaign_timeseries(_engine, d1, d2, cids, type_sel)
         elif entity == "keyword": ts = query_keyword_timeseries(_engine, d1, d2, cids, type_sel)
         else: ts = query_ad_timeseries(_engine, d1, d2, cids, type_sel)
-    except Exception: ts = pd.DataFrame()
+    except Exception as e: 
+        logger.error(f"Error fetching totals for {entity}: {e}")
+        ts = pd.DataFrame()
 
     if ts is None or ts.empty: return {"imp": 0.0, "clk": 0.0, "cost": 0.0, "conv": 0.0, "sales": 0.0, "ctr": 0.0, "cpc": 0.0, "cpa": 0.0, "roas": 0.0}
 
