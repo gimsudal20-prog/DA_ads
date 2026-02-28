@@ -36,8 +36,28 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
     biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
     biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+    
+    # ✨ [신규 기능 3] ⏳ 광고 중단(꺼짐) 정확한 날짜 예측 
+    def get_depletion_date(days_left):
+        if pd.isna(days_left) or float(days_left) >= 99:
+            return "🟢 여유 (한 달 이상)"
+        days = float(days_left)
+        if days <= 0:
+            return "🔴 즉시 충전 필요"
+            
+        deplete_date = date.today() + timedelta(days=int(days))
+        date_str = deplete_date.strftime("%m월 %d일")
+        
+        if days <= 3:
+            return f"🚨 {date_str} (위험)"
+        elif days <= 7:
+            return f"🟡 {date_str} (주의)"
+        else:
+            return f"🟢 {date_str}"
+
     biz_view["잔액상태"] = "🟢 여유"
     biz_view.loc[biz_view["bizmoney_balance"].astype(float) < biz_view["threshold"].astype(float), "잔액상태"] = "🔴 충전요망"
+    biz_view["예상 광고중단일"] = biz_view["days_cover"].apply(get_depletion_date)
 
     biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
     
@@ -50,7 +70,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
     biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
     biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
-    biz_view["D-소진"] = biz_view["days_cover"].map(lambda d: "-" if pd.isna(d) else ("99+일" if float(d)>99 else f"{float(d):.1f}일"))
 
     st.markdown("<div class='nv-sec-title'>🔍 전체 계정 현황 및 기상도</div>", unsafe_allow_html=True)
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
@@ -62,7 +81,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
     with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
 
-    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "D-소진", "잔액상태", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+    # 컬럼 순서 최적화 반영
+    display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "예상 광고중단일", "당월 ROAS", "ROAS 기상도"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+    
+    # 중단일이 가까운 순서대로 정렬하기 위해 내부적으로 sort
+    display_df = display_df.sort_values(by="예상 광고중단일", ascending=False) # '🚨'나 '🔴'가 위로 오도록 텍스트 정렬
     render_big_table(display_df, key="budget_biz_table", height=450)
 
     st.divider()
