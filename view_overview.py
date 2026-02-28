@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from typing import Dict
-from datetime import date
+from datetime import date, timedelta
 
 from data import *
 from ui import *
@@ -14,34 +14,64 @@ from page_helpers import *
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
+    
+    cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
+    cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+    camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=5000)
+    
+    # ✨ [신규 기능 1] 🚨 실시간 이상 징후 알림 (AI 모니터링)
+    st.markdown("<div class='nv-sec-title'>🚨 실시간 AI 알림 보드</div>", unsafe_allow_html=True)
+    alerts = []
+    
+    # 1. 수익성 경고
+    cur_roas = cur_summary.get('roas', 0)
+    cur_cost = cur_summary.get('cost', 0)
+    if cur_cost > 0 and cur_roas < 100:
+        alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.0f}%**로 매우 낮습니다.")
+        
+    # 2. 전 기간 대비 비용 폭증 경고
+    pm = f.get("period_mode", "어제")
+    opts = get_dynamic_cmp_options(f["start"], f["end"])
+    cmp_opts = [o for o in opts if o != "비교 안함"]
+    cmp_mode = st.radio("비교 기준 선택", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
+    
+    b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
+    base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+    
+    if base_summary.get('cost', 0) > 0:
+        cost_surge = (cur_cost - base_summary['cost']) / base_summary['cost'] * 100
+        if cost_surge >= 150:
+            alerts.append(f"🔥 **비용 폭증 알림:** 이전 기간 대비 전체 광고비 소진율이 **{cost_surge:.0f}% 폭증**했습니다. 입찰가를 확인하세요!")
+    
+    # 3. 비용 누수 (하마 캠페인) 경고
+    if not camp_bndl.empty:
+        hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)]
+        if not hippos.empty:
+            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 있습니다. (캠페인 탭 확인)")
+
+    if alerts:
+        for a in alerts: st.warning(a)
+    else:
+        st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
+    
+    st.divider()
+
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.markdown("<div class='nv-sec-title'>요약 및 인사이트</div>", unsafe_allow_html=True)
+        st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
         st.caption(f"조회 기간: {f['start']} ~ {f['end']}")
     with col2:
-        cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
         with st.spinner("보고서 생성 중..."):
-            cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
             df_summary = pd.DataFrame([cur_summary])
-            camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50)
             camp_df = _perf_common_merge_meta(add_rates(camp_bndl), meta) if not camp_bndl.empty else pd.DataFrame()
             kw_bndl = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=200)
             kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
             df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
-
             excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw)
             st.download_button(label="📥 보고서(Excel) 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
 
-    st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-    opts = get_dynamic_cmp_options(f["start"], f["end"])
-    cmp_opts = [o for o in opts if o != "비교 안함"]
-    if not cmp_opts: cmp_opts = ["이전 같은 기간 대비"]
-    
-    pm = f.get("period_mode", "어제")
-    cmp_mode = st.radio("비교 기준 선택", cmp_opts, horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
     cur = cur_summary
-    b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
-    base = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+    base = base_summary
 
     def _delta_pct(key):
         try: return _pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
@@ -64,28 +94,43 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='kpi-row' style='margin-top: 5px;'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
-    st.markdown("<div class='nv-sec-title'>💡 주요 최적화 포인트 (파워링크)</div>", unsafe_allow_html=True)
-    if not df_pl_kw.empty:
-        df_pl_kw_fmt = df_pl_kw.copy()
-        df_pl_kw_fmt["광고비"] = pd.to_numeric(df_pl_kw_fmt["cost"], errors="coerce").fillna(0)
-        df_pl_kw_fmt["전환"] = pd.to_numeric(df_pl_kw_fmt["conv"], errors="coerce").fillna(0)
-        df_pl_kw_fmt["ROAS(%)"] = pd.to_numeric(df_pl_kw_fmt["roas"], errors="coerce").fillna(0)
-        render_insight_cards(df_pl_kw_fmt, "키워드", "keyword")
-    else:
-        st.info("파워링크 데이터가 수집되지 않아 분석할 수 없습니다.")
-        
-    st.divider()
-
     try:
-        ts = query_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        # 트렌드를 보기 위해 최소 7일 전부터 데이터를 로드
+        trend_d1 = min(f["start"], date.today() - timedelta(days=7))
+        ts = query_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
         if ts is not None and not ts.empty:
             st.markdown("### 📅 트렌드 및 요일별 효율 분석")
-            tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 분석"])
+            tab_trend, tab_dow = st.tabs(["📉 전체 트렌드 차트", "🌡️ 요일별 성과 히트맵"])
             with tab_trend:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("전체 트렌드", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
             with tab_dow:
-                st.caption("💡 주말(토/일)과 평일의 효율(ROAS) 차이를 확인하고 요일별 입찰 가중치를 조절하세요.")
-                if HAS_ECHARTS: render_echarts_dow_bar(ts, height=320)
+                # ✨ [신규 기능 2] 🌡️ 요일별 성과 히트맵 (Dayparting)
+                st.caption("💡 어떤 요일에 수익(ROAS)이 가장 좋고 비용이 많이 나가는지 색상(히트맵)으로 직관적으로 파악하여 입찰 가중치를 조절하세요.")
+                
+                # 요일 추출 및 한글 매핑
+                ts_dow = ts.copy()
+                ts_dow["요일"] = ts_dow["dt"].dt.day_name()
+                dow_map = {'Monday': '월', 'Tuesday': '화', 'Wednesday': '수', 'Thursday': '목', 'Friday': '금', 'Saturday': '토', 'Sunday': '일'}
+                ts_dow["요일"] = ts_dow["요일"].map(dow_map)
+                
+                # 요일별 합산
+                dow_df = ts_dow.groupby("요일")[["cost", "conv", "sales"]].sum().reset_index()
+                dow_df["ROAS(%)"] = np.where(dow_df["cost"] > 0, dow_df["sales"]/dow_df["cost"]*100, 0)
+                
+                # 월~일 순서 정렬
+                cat_dtype = pd.CategoricalDtype(categories=['월', '화', '수', '목', '금', '토', '일'], ordered=True)
+                dow_df["요일"] = dow_df["요일"].astype(cat_dtype)
+                dow_df = dow_df.sort_values("요일")
+                
+                # 출력용 컬럼 정리
+                dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
+                
+                # Streamlit의 강력한 background_gradient(히트맵) 적용!
+                styled_df = dow_disp.style.background_gradient(cmap='Reds', subset=['광고비']).background_gradient(cmap='Greens', subset=['ROAS(%)']).format({
+                    '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.0f}%'
+                })
+                
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
     except Exception as e:
         st.info(f"추세 데이터를 불러오는 중 오류가 발생했습니다: {e}")
