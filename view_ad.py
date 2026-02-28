@@ -11,6 +11,8 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
+# ✨ [추가] 언더스코어(_)로 시작하는 함수 2개 명시적 불러오기
+from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -51,7 +53,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    # ✨ [신규 기능 5] 🔗 랜딩페이지(CVR) 탭 추가
     tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
@@ -134,7 +135,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             if df_lp.empty:
                 st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (URL 정보가 포함된 소재가 존재하지 않습니다.)")
             else:
-                # URL별로 그룹화하여 성과 합산
                 lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
                 
                 lp_grp["CTR(%)"] = np.where(lp_grp["노출"] > 0, (lp_grp["클릭"] / lp_grp["노출"]) * 100, 0)
@@ -146,7 +146,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
-                # Streamlit 네이티브 DataFrame의 강력한 그라데이션 스타일링 활용!
                 styled_df = lp_grp.style.background_gradient(cmap="Greens", subset=["CVR(%)", "ROAS(%)"]).format({
                     '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', 
                     '전환': '{:,.1f}', '전환매출': '{:,.0f}', 
