@@ -151,7 +151,6 @@ def get_table_columns(engine, table: str, schema: str = "public") -> set:
     cache[key] = out
     return out
 
-# [안정성 개선] 싱글 쿼트 이스케이프 강화를 통한 파라미터 방어
 def _sql_in_str_list(values: List[int]) -> str:
     safe = []
     for v in values:
@@ -165,7 +164,7 @@ def _sql_in_text_list(values: List[str]) -> str:
         if v is None: continue
         s = str(v).strip()
         if not s: continue
-        s = s.replace("'", "''")  # 싱글 쿼트 이스케이프 처리 확인
+        s = s.replace("'", "''")
         safe.append(f"'{s}'")
     return ",".join(safe) if safe else "''"
 
@@ -639,11 +638,16 @@ def _shift_month(d: date, months: int) -> date:
     day = min(int(d.day), (date(y + 1, 1, 1) - timedelta(days=1)).day if m == 12 else (date(y, m + 1, 1) - timedelta(days=1)).day)
     return date(int(y), int(m), int(day))
 
+# ✨ [NEW] 동적 비교 로직 지원을 위해 _period_compare_range 개선
 def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
-    mode = str(mode or "").strip()
+    mode = str(mode or "").strip().replace(" ", "")
     if mode == "전일대비": return d1 - timedelta(days=1), d2 - timedelta(days=1)
     if mode == "전주대비": return d1 - timedelta(days=7), d2 - timedelta(days=7)
-    return _shift_month(d1, -1), _shift_month(d2, -1)
+    if mode == "전월대비": return _shift_month(d1, -1), _shift_month(d2, -1)
+    
+    # "이전 같은 기간 대비" 등 커스텀 처리 (동일한 일수만큼 이전 기간 반환)
+    delta = (d2 - d1).days + 1
+    return d1 - timedelta(days=delta), d2 - timedelta(days=delta)
 
 period_compare_range = _period_compare_range
 
