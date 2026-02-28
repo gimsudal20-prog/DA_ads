@@ -11,6 +11,8 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
+# ✨ [추가] 언더스코어(_)로 시작하는 함수 명시적 불러오기
+from page_helpers import _perf_common_merge_meta
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
@@ -19,7 +21,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    # ✨ [신규 기능 4] 🚫 제외 키워드 자동 발굴 탭 추가
     tab_pl, tab_group, tab_shop, tab_neg = st.tabs(["🎯 파워링크 (키워드)", "📂 파워링크 (그룹)", "🛒 쇼핑검색", "🚫 제외 키워드 발굴기(누수 탐지)"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
@@ -259,7 +260,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         if df_pl_raw.empty:
             st.info("데이터가 부족하여 제외 키워드를 분석할 수 없습니다.")
         else:
-            # 1. 원본 데이터 포맷팅
             leak_view = df_pl_raw.rename(columns={
                 "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", 
                 "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환"
@@ -268,10 +268,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             for c in ["노출", "클릭", "광고비", "전환"]:
                 leak_view[c] = pd.to_numeric(leak_view[c], errors="coerce").fillna(0)
             
-            # 2. 전환 0건짜리만 필터링
             leak_df = leak_view[leak_view["전환"] == 0].copy()
             
-            # 3. 기준 설정 UI
             c1, c2 = st.columns([1, 2])
             with c1:
                 min_leak_cost = st.slider("최소 누수 비용 (원)", 5000, 100000, 20000, 5000, help="이 금액 이상 소진되었으나 전환이 0건인 키워드를 찾습니다.")
@@ -284,11 +282,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 target_leak["CTR(%)"] = np.where(target_leak["노출"] > 0, (target_leak["클릭"] / target_leak["노출"]) * 100, 0.0).round(2)
                 st.warning(f"🚨 총 **{len(target_leak)}개**의 키워드에서 심각한 비용 누수가 발견되었습니다! 네이버에서 즉시 제외하세요.")
                 
-                # 다운로드 버튼
                 csv = target_leak[["키워드"]].to_csv(index=False).encode('utf-8-sig')
                 st.download_button("📥 제외 키워드 목록 다운로드 (복사/붙여넣기용)", data=csv, file_name="제외키워드_추천.csv", mime="text/csv", type="primary")
                 
-                # 표 렌더링
                 disp_leak = target_leak[["캠페인", "광고그룹", "키워드", "노출", "클릭", "광고비", "CTR(%)"]].copy()
                 for c in ["노출", "클릭", "광고비"]: disp_leak[c] = disp_leak[c].astype(int)
                 
