@@ -66,11 +66,46 @@ table.nv-table tr:hover td { background: #F1F5F9; }
 /* Expander Styling */
 .streamlit-expanderHeader { font-weight: 700 !important; color: var(--nv-text) !important; background-color: #F8FAFC !important; border-radius: 8px; }
 
-/* ✨ [NEW] 사이드바 메뉴 간격 확대 */
-[data-testid="stSidebar"] [role="radiogroup"] label {
-    padding-top: 14px !important;
-    padding-bottom: 14px !important;
-    font-size: 15px;
+/* ========================================================
+   ✨ [NEW] 사이드바 라디오 버튼 -> 세련된 메뉴 버튼으로 변신
+   ======================================================== */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] {
+    gap: 8px; /* 버튼 사이 간격 넉넉하게 */
+}
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
+    padding: 14px 16px !important;
+    background-color: transparent;
+    border-radius: 10px;
+    transition: all 0.2s ease;
+    margin: 0;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+/* 기본 라디오 서클(동그라미) 완전 숨기기 */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+/* 평상시 텍스트 스타일 */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] p {
+    font-weight: 600 !important;
+    font-size: 15px !important;
+    color: #475569;
+    margin: 0;
+}
+/* 마우스 호버(Hover) 시 연한 배경 */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
+    background-color: #F1F5F9;
+}
+/* ✨ 현재 선택된(Active) 메뉴 버튼 하이라이트 (파란색 포인트) */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input:checked) {
+    background-color: #EFF6FF !important;
+    border: 1px solid #BFDBFE !important;
+    box-shadow: inset 4px 0 0 0 #2563EB; /* 왼쪽 파란색 인디케이터 선 */
+}
+/* 선택된 메뉴의 텍스트를 진하고 뚜렷하게 */
+div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input:checked) div[data-testid="stMarkdownContainer"] p {
+    color: #1E40AF !important;
+    font-weight: 800 !important;
 }
 </style>
 """
