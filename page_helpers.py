@@ -15,7 +15,8 @@ from ui import *
 
 from data import pct_change, pct_to_arrow
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.9 (오버스러운 테두리 제거 및 원복)")
+# ✨ [수정] 불필요한 버전 텍스트를 공백으로 삭제했습니다.
+BUILD_TAG = os.getenv("APP_BUILD", "")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -187,7 +188,6 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
     
     def _card(title, imp, clk, cost, conv, sales, roas, is_cur=False, d=None):
         if d is None: d = {}
-        # 배경색과 테두리를 가장 자연스럽고 깔끔하게 원복
         bg = "#F8FAFC" if not is_cur else "#EFF6FF"
         border = "#E2E8F0" if not is_cur else "#BFDBFE"
         color_title = "#475569" if not is_cur else "#1E40AF"
@@ -242,7 +242,6 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
     with c2:
         st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True, deltas), unsafe_allow_html=True)
 
-# ✨ [수정] st.container(border=True)를 걷어내고 원래의 깔끔한 타이틀로 원복했습니다.
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
     st.markdown(f"### 🔍 {section_title} (Side-by-Side)")
     agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
@@ -282,7 +281,6 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
     render_side_by_side_metrics(combined_row, prev_label, cur_label, deltas)
     st.divider()
 
-# ✨ [수정] A/B 테스트 역시 테두리 컨테이너를 없애고 깔끔한 타이틀로 원복했습니다.
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
     st.caption(f"조회 기간: {d1} ~ {d2}")
