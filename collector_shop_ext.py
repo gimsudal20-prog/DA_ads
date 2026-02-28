@@ -64,7 +64,6 @@ def get_engine():
     db_url = DB_URL + ("&sslmode=require" if "?" in DB_URL else "?sslmode=require")
     return create_engine(db_url, poolclass=NullPool, future=True)
 
-# ✨ [NEW] 족보(캠페인, 그룹)를 DB에 안전하게 덮어쓰기 위한 함수
 def upsert_many(engine, table: str, rows: list, pk_cols: list):
     if not rows: return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
@@ -101,7 +100,6 @@ def process_account(engine, customer_id: str, target_date: date):
     camp_rows, ag_rows, ad_rows = [], [], []
     target_ad_ids = []
     
-    # 1. 족보(캠페인, 그룹)와 확장소재 추출
     for c in shop_camps:
         cid = c.get("nccCampaignId")
         camp_rows.append({
@@ -109,6 +107,31 @@ def process_account(engine, customer_id: str, target_date: date):
             "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
         })
         
+        # ✨ 1. 캠페인 레벨에 달린 확장소재 수집 (ownerId 사용)
+        camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": cid}) or []
+        if camp_exts:
+            ag_rows.append({
+                "customer_id": str(customer_id), "adgroup_id": f"CAMP_{cid}", "campaign_id": str(cid),
+                "adgroup_name": "[캠페인 공통 소재]", "status": "ELIGIBLE"
+            })
+            for ext in camp_exts:
+                ext_id = ext.get("nccAdExtensionId")
+                if ext_id:
+                    target_ad_ids.append(ext_id)
+                    ext_info = ext.get("adExtension", {}) or ext
+                    ext_type = ext.get("extensionType", "")
+                    ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
+                    ext_title = f"[확장소재] {ext_type}"
+                    
+                    ad_rows.append({
+                        "customer_id": str(customer_id), "ad_id": str(ext_id), "adgroup_id": f"CAMP_{cid}",
+                        "ad_name": ext_text, "status": ext.get("status"), "ad_title": ext_title, 
+                        "ad_desc": ext_text, "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
+                        "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                        "creative_text": f"{ext_title} | {ext_text}"[:500]
+                    })
+        
+        # ✨ 2. 광고그룹 레벨에 달린 확장소재 수집 (ownerId 사용)
         groups = request_json("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": cid}) or []
         for g in groups:
             gid = g.get("nccAdgroupId")
@@ -117,14 +140,13 @@ def process_account(engine, customer_id: str, target_date: date):
                 "adgroup_name": g.get("name"), "status": g.get("status")
             })
             
-            extensions = request_json("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": gid}) or []
+            extensions = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": gid}) or []
             for ext in extensions:
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
                     ext_type = ext.get("extensionType", "")
-                    
                     ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
                     ext_title = f"[확장소재] {ext_type}"
                     
@@ -136,13 +158,11 @@ def process_account(engine, customer_id: str, target_date: date):
                         "creative_text": f"{ext_title} | {ext_text}"[:500]
                     })
 
-    # 2. 족보를 DB에 확실하게 기록 (이게 있어야 대시보드에 노출됩니다!)
     upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
     upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
     upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     log(f"   ▶ 캠페인({len(camp_rows)}), 광고그룹({len(ag_rows)}), 확장소재({len(ad_rows)}) 매핑 완료!")
 
-    # 3. 통계 데이터 수집
     if target_ad_ids:
         log(f"   ▶ 확장소재 {len(target_ad_ids)}개 실시간 통계 조회 중...")
         d_str = target_date.strftime("%Y-%m-%d")
