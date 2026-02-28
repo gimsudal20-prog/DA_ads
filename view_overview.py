@@ -11,6 +11,8 @@ from datetime import date, timedelta
 from data import *
 from ui import *
 from page_helpers import *
+# ✨ [추가] 언더스코어(_)로 시작하는 함수는 별도로 명시해서 불러와야 합니다.
+from page_helpers import _perf_common_merge_meta
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
@@ -19,17 +21,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=5000)
     
-    # ✨ [신규 기능 1] 🚨 실시간 이상 징후 알림 (AI 모니터링)
     st.markdown("<div class='nv-sec-title'>🚨 실시간 AI 알림 보드</div>", unsafe_allow_html=True)
     alerts = []
     
-    # 1. 수익성 경고
     cur_roas = cur_summary.get('roas', 0)
     cur_cost = cur_summary.get('cost', 0)
     if cur_cost > 0 and cur_roas < 100:
         alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.0f}%**로 매우 낮습니다.")
         
-    # 2. 전 기간 대비 비용 폭증 경고
     pm = f.get("period_mode", "어제")
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_opts = [o for o in opts if o != "비교 안함"]
@@ -43,7 +42,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if cost_surge >= 150:
             alerts.append(f"🔥 **비용 폭증 알림:** 이전 기간 대비 전체 광고비 소진율이 **{cost_surge:.0f}% 폭증**했습니다. 입찰가를 확인하세요!")
     
-    # 3. 비용 누수 (하마 캠페인) 경고
     if not camp_bndl.empty:
         hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)]
         if not hippos.empty:
@@ -74,7 +72,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     base = base_summary
 
     def _delta_pct(key):
-        try: return _pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
+        # ✨ [수정] 언더스코어를 뺀 공개 함수(pct_change)를 사용하도록 수정했습니다.
+        try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
         except Exception: return None
 
     def _kpi_html(label, value, delta_text, delta_val):
@@ -95,7 +94,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.divider()
 
     try:
-        # 트렌드를 보기 위해 최소 7일 전부터 데이터를 로드
         trend_d1 = min(f["start"], date.today() - timedelta(days=7))
         ts = query_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
         if ts is not None and not ts.empty:
@@ -105,28 +103,22 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("전체 트렌드", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
             with tab_dow:
-                # ✨ [신규 기능 2] 🌡️ 요일별 성과 히트맵 (Dayparting)
                 st.caption("💡 어떤 요일에 수익(ROAS)이 가장 좋고 비용이 많이 나가는지 색상(히트맵)으로 직관적으로 파악하여 입찰 가중치를 조절하세요.")
                 
-                # 요일 추출 및 한글 매핑
                 ts_dow = ts.copy()
                 ts_dow["요일"] = ts_dow["dt"].dt.day_name()
                 dow_map = {'Monday': '월', 'Tuesday': '화', 'Wednesday': '수', 'Thursday': '목', 'Friday': '금', 'Saturday': '토', 'Sunday': '일'}
                 ts_dow["요일"] = ts_dow["요일"].map(dow_map)
                 
-                # 요일별 합산
                 dow_df = ts_dow.groupby("요일")[["cost", "conv", "sales"]].sum().reset_index()
                 dow_df["ROAS(%)"] = np.where(dow_df["cost"] > 0, dow_df["sales"]/dow_df["cost"]*100, 0)
                 
-                # 월~일 순서 정렬
                 cat_dtype = pd.CategoricalDtype(categories=['월', '화', '수', '목', '금', '토', '일'], ordered=True)
                 dow_df["요일"] = dow_df["요일"].astype(cat_dtype)
                 dow_df = dow_df.sort_values("요일")
                 
-                # 출력용 컬럼 정리
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # Streamlit의 강력한 background_gradient(히트맵) 적용!
                 styled_df = dow_disp.style.background_gradient(cmap='Reds', subset=['광고비']).background_gradient(cmap='Greens', subset=['ROAS(%)']).format({
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.0f}%'
                 })
