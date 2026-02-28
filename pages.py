@@ -43,7 +43,6 @@ def ui_multiselect(col, label: str, options, default=None, *, key: str, placehol
     try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
     except Exception: return col.multiselect(label, options, default=default, key=key)
 
-# ✨ [NEW] 조회 기간에 맞춰 비교할 수 있는 옵션을 스마트하게 제한해 주는 헬퍼 함수
 def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
     delta = (d2 - d1).days + 1
     if delta == 1: return ["비교 안함", "전일대비"]
@@ -258,7 +257,6 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str)
     with c2:
         st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True), unsafe_allow_html=True)
 
-# ✨ [NEW] 정확한 날짜 표기를 추가한 Side-by-Side 렌더링 헬퍼 함수
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
     st.markdown(f"### 🔍 {section_title} (Side-by-Side)")
     agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
@@ -285,7 +283,6 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
     render_side_by_side_metrics(combined_row, prev_label, cur_label)
     st.divider()
 
-# ✨ [NEW] 소재 A/B 좌우 비교 화면을 그리는 헬퍼 함수
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
     st.caption(f"조회 기간: {d1} ~ {d2}")
@@ -779,8 +776,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             
     with tab_shop:
         st.markdown("### 🛒 쇼핑검색 (상품/일반소재)")
-        st.info("💡 **안내:** 쇼핑검색 일반소재(상품) 데이터가 API 수집을 통해 이곳으로 통합되었습니다. (수동 분석기는 제거되었습니다.)")
-
+        
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
             opts_shop = get_dynamic_cmp_options(f["start"], f["end"])
@@ -927,7 +923,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if valid_keys:
                     df_tab = append_comparison_data(df_tab, base_ad_bundle, valid_keys)
                 
-        # ✨ [NEW] 캠페인 > 광고그룹 계층형 필터 
         c1, c2 = st.columns([1, 1])
         with c1:
             camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
@@ -944,15 +939,12 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         st.divider()
 
-        # 데이터 필터링 적용
         if sel_camp != "전체":
             df_tab = df_tab[df_tab["캠페인"] == sel_camp]
             if sel_grp != "전체":
                 df_tab = df_tab[df_tab["광고그룹"] == sel_grp]
-                # ✨ [NEW] 캠페인과 그룹이 모두 선택되었을 때만 좌/우 A/B 비교 출력!
                 _render_ab_test_sbs(df_tab, f["start"], f["end"])
 
-            # 비교 모드가 켜져 있으면, 필터링된 결과물로 Side-by-Side 비교도 보여줌
             if cmp_mode_ad != "비교 안함" and not df_tab.empty:
                 render_comparison_section(df_tab, cmp_mode_ad, b1, b2, f["start"], f["end"], f"선택 {ad_type_name} 상세 비교")
 
