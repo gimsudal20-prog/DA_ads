@@ -41,32 +41,41 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if cost_surge >= 150:
             alerts.append(f"🔥 **비용 폭증 알림:** 이전 기간 대비 전체 광고비 소진율이 **{cost_surge:.0f}% 폭증**했습니다. 입찰가를 확인하세요!")
     
+    hippos = pd.DataFrame()
     if not camp_bndl.empty:
-        hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)]
+        # 전환은 0인데 비용이 5만원 이상 발생한 캠페인 찾기
+        hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)].sort_values('cost', ascending=False)
         if not hippos.empty:
-            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 있습니다. (캠페인 탭 확인)")
+            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 발견되었습니다! (아래 표 참조)")
 
     if alerts:
         for a in alerts: st.warning(a)
     else:
         st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
     
+    # ✨ [핵심 조치] 캠페인 탭으로 가지 않아도, 요약 화면에서 누수 캠페인을 즉시 띄워줍니다!
+    if not hippos.empty:
+        disp_hippos = _perf_common_merge_meta(hippos, meta)
+        disp_hippos = disp_hippos.rename(columns={
+            "account_name": "업체명", "campaign_name": "캠페인명", "cost": "광고비", "clk": "클릭수"
+        })
+        
+        cols_to_show = [c for c in ["업체명", "캠페인명", "광고비", "클릭수"] if c in disp_hippos.columns]
+        df_show = disp_hippos[cols_to_show].copy()
+        
+        for c in ["광고비", "클릭수"]:
+            if c in df_show.columns:
+                # 숫자 포맷팅 (원 단위 및 콤마)
+                df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
+        
+        st.markdown("<div style='margin-top: 12px; margin-bottom: 8px; font-weight: 700; color: #B91C1C;'>🚨 [긴급 조치 필요] 비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+    
     st.divider()
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-        # ✨ [UI 개선] 마케터 초보자를 위한 안내 캡션 추가
-        st.caption("선택한 전체 계정의 핵심 성과(KPI)를 이전 기간과 직관적으로 비교해 줍니다. 큰 숫자를 중심으로 흐름을 파악하세요.")
-    with col2:
-        with st.spinner("보고서 생성 중..."):
-            df_summary = pd.DataFrame([cur_summary])
-            camp_df = _perf_common_merge_meta(add_rates(camp_bndl), meta) if not camp_bndl.empty else pd.DataFrame()
-            kw_bndl = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=200)
-            kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
-            df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
-            excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw)
-            st.download_button(label="📥 전체 리포트 엑셀 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+    # ✨ [핵심 조치] 불필요한 전체 리포트 엑셀 다운로드 영역을 말끔히 삭제했습니다.
+    st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
+    st.caption("선택한 전체 계정의 핵심 성과(KPI)를 이전 기간과 직관적으로 비교해 줍니다. 큰 숫자를 중심으로 흐름을 파악하세요.")
 
     cur = cur_summary
     base = base_summary
