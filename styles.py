@@ -67,22 +67,20 @@ table.nv-table tr:hover td { background: #F1F5F9; }
 .streamlit-expanderHeader { font-weight: 700 !important; color: var(--nv-text) !important; background-color: #F8FAFC !important; border-radius: 8px; }
 
 /* ========================================================
-   ✨ [NEW] 사이드바 라디오 버튼 -> 세련된 블록 메뉴로 완벽 변신
+   ✨ [NEW] 사이드바 메뉴 - 모던 & 미니멀리즘 (SaaS 스타일)
    ======================================================== */
-/* 버튼 사이 상하 간격을 넓혀 클릭을 편하게 만듭니다. */
 [data-testid="stSidebar"] [role="radiogroup"] {
-    gap: 12px !important; 
+    gap: 6px !important; 
 }
 
-/* 각 메뉴 항목(라벨)을 네모난 블록 모양으로 만듭니다. */
 [data-testid="stSidebar"] [role="radiogroup"] label {
-    padding: 14px 16px !important;
+    padding: 10px 14px !important;
     background-color: transparent !important;
-    border-radius: 10px !important;
+    border-radius: 8px !important;
     transition: all 0.2s ease !important;
     margin: 0 !important;
     cursor: pointer !important;
-    border: 1px solid transparent !important;
+    border: none !important;
     display: block !important;
 }
 
@@ -93,9 +91,9 @@ table.nv-table tr:hover td { background: #F1F5F9; }
 
 /* 평상시 텍스트 스타일 */
 [data-testid="stSidebar"] [role="radiogroup"] label p {
-    font-weight: 600 !important;
-    font-size: 15.5px !important;
-    color: #475569 !important;
+    font-weight: 500 !important;
+    font-size: 15px !important;
+    color: #64748B !important;
     margin: 0 !important;
 }
 
@@ -103,18 +101,20 @@ table.nv-table tr:hover td { background: #F1F5F9; }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {
     background-color: #F1F5F9 !important;
 }
-
-/* ✨ 현재 선택된(Active) 메뉴 버튼 하이라이트 (파란색 배경 + 왼쪽 포인트 선) */
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-    background-color: #EFF6FF !important;
-    border: 1px solid #BFDBFE !important;
-    box-shadow: inset 5px 0 0 0 #2563EB !important; 
+[data-testid="stSidebar"] [role="radiogroup"] label:hover p {
+    color: #0F172A !important;
 }
 
-/* 선택된 메뉴의 텍스트를 진하고 뚜렷하게 */
+/* ✨ 현재 선택된(Active) 메뉴 버튼 (고급스러운 블루 포인트) */
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background-color: #2563EB !important;
+    box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2) !important; 
+}
+
+/* 선택된 메뉴의 텍스트 (화이트) */
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
-    color: #1E40AF !important;
-    font-weight: 800 !important;
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
 }
 </style>
 """
