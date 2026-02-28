@@ -98,7 +98,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         if cmp_mode_ad != "비교 안함":
-            cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+            # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
+            cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
             
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
@@ -117,7 +118,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     with tab_shop:
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
         
-        # ✨ [핵심 조치 4] 요청하신 대로 일반 상품 소재를 배제하고 오직 [확장소재]만 걸러내도록 필터를 복구했습니다.
         if not df_shop.empty:
             df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
         
