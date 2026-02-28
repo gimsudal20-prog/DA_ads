@@ -15,7 +15,7 @@ from ui import *
 
 from data import pct_change, pct_to_arrow
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.8 (비교영역 테두리 분리 및 심플화)")
+BUILD_TAG = os.getenv("APP_BUILD", "v15.9 (오버스러운 테두리 제거 및 원복)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -187,10 +187,10 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
     
     def _card(title, imp, clk, cost, conv, sales, roas, is_cur=False, d=None):
         if d is None: d = {}
-        # 배경색은 깔끔하게 통일하고 테두리 색상으로만 차이를 줍니다.
-        bg = "#FFFFFF" if not is_cur else "#F8FAFC"
-        border = "#E2E8F0" if not is_cur else "#93C5FD"
-        color_title = "#64748B" if not is_cur else "#1D4ED8"
+        # 배경색과 테두리를 가장 자연스럽고 깔끔하게 원복
+        bg = "#F8FAFC" if not is_cur else "#EFF6FF"
+        border = "#E2E8F0" if not is_cur else "#BFDBFE"
+        color_title = "#475569" if not is_cur else "#1E40AF"
         
         f_cost = format_currency(cost)
         f_sales = format_currency(sales)
@@ -207,30 +207,30 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
         b_conv = _badge(d.get('conv')) if is_cur else ""
         
         html = f"""
-        <div style='background:{bg}; padding:20px; border-radius:8px; border:1px solid {border};'>
-            <div style='text-align:center; margin-bottom:12px; color:{color_title}; font-size:14px; font-weight:700;'>{title}</div>
+        <div style='background:{bg}; padding:20px; border-radius:12px; border:1px solid {border}; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:{color_title}; font-size:16px; font-weight:700;'>{title}</h4>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#64748B; font-weight:600; font-size:13px;'>광고비</span>
-                <span><span style='font-weight:700; color:#0F172A; font-size:14px;'>{f_cost}</span>{b_cost}</span>
+                <span style='color:#64748B; font-weight:600;'>광고비</span>
+                <span><span style='font-weight:700; color:#0F172A;'>{f_cost}</span>{b_cost}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#64748B; font-weight:600; font-size:13px;'>전환매출</span>
-                <span><span style='font-weight:700; color:#0F172A; font-size:14px;'>{f_sales}</span>{b_sales}</span>
+                <span style='color:#64748B; font-weight:600;'>전환매출</span>
+                <span><span style='font-weight:700; color:#0F172A;'>{f_sales}</span>{b_sales}</span>
             </div>
-            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E2E8F0;'>
-                <span style='color:#64748B; font-weight:600; font-size:13px;'>ROAS</span>
-                <span><span style='font-weight:800; color:#EF4444; font-size:14px;'>{f_roas}</span>{b_roas}</span>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
+                <span style='color:#64748B; font-weight:600;'>ROAS</span>
+                <span><span style='font-weight:800; color:#EF4444; font-size:15px;'>{f_roas}</span>{b_roas}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#64748B; font-size:12px;'>노출수</span>
+                <span style='color:#64748B; font-size:13px;'>노출수</span>
                 <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_imp}</span>{b_imp}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#64748B; font-size:12px;'>클릭수</span>
+                <span style='color:#64748B; font-size:13px;'>클릭수</span>
                 <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_clk}</span>{b_clk}</span>
             </div>
             <div style='display:flex; justify-content:space-between;'>
-                <span style='color:#64748B; font-size:12px;'>전환수</span>
+                <span style='color:#64748B; font-size:13px;'>전환수</span>
                 <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_conv}</span>{b_conv}</span>
             </div>
         </div>
@@ -242,89 +242,92 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
     with c2:
         st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True, deltas), unsafe_allow_html=True)
 
-# ✨ [수정] 오바떨지 않고, 딱 표와 구분되게 회색 테두리 컨테이너 안에 묶어주었습니다.
+# ✨ [수정] st.container(border=True)를 걷어내고 원래의 깔끔한 타이틀로 원복했습니다.
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
-    with st.container(border=True):
-        st.markdown(f"**🔍 {section_title}**")
-        agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
-        agg_prev = df[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in df.columns else None
+    st.markdown(f"### 🔍 {section_title} (Side-by-Side)")
+    agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
+    agg_prev = df[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in df.columns else None
+    
+    combined_row = pd.Series({
+        '노출': agg_cur.get('노출', 0),
+        '클릭': agg_cur.get('클릭', 0),
+        '광고비': agg_cur.get('광고비', 0),
+        '전환': agg_cur.get('전환', 0),
+        '전환매출': agg_cur.get('전환매출', 0),
+        'ROAS(%)': (agg_cur.get('전환매출', 0) / agg_cur.get('광고비', 0) * 100) if agg_cur.get('광고비', 0) > 0 else 0,
+        'p_imp': agg_prev.get('p_imp', 0) if agg_prev is not None else 0,
+        'p_clk': agg_prev.get('p_clk', 0) if agg_prev is not None else 0,
+        'p_cost': agg_prev.get('p_cost', 0) if agg_prev is not None else 0,
+        'p_conv': agg_prev.get('p_conv', 0) if agg_prev is not None else 0,
+        'p_sales': agg_prev.get('p_sales', 0) if agg_prev is not None else 0,
+        'p_roas': (agg_prev.get('p_sales', 0) / agg_prev.get('p_cost', 0) * 100) if agg_prev is not None and agg_prev.get('p_cost', 0) > 0 else 0,
+    })
+    
+    deltas = {}
+    if agg_prev is not None:
+        deltas['cost'] = pct_to_arrow(pct_change(combined_row['광고비'], combined_row['p_cost']))
+        deltas['sales'] = pct_to_arrow(pct_change(combined_row['전환매출'], combined_row['p_sales']))
+        deltas['imp'] = pct_to_arrow(pct_change(combined_row['노출'], combined_row['p_imp']))
+        deltas['clk'] = pct_to_arrow(pct_change(combined_row['클릭'], combined_row['p_clk']))
         
-        combined_row = pd.Series({
-            '노출': agg_cur.get('노출', 0),
-            '클릭': agg_cur.get('클릭', 0),
-            '광고비': agg_cur.get('광고비', 0),
-            '전환': agg_cur.get('전환', 0),
-            '전환매출': agg_cur.get('전환매출', 0),
-            'ROAS(%)': (agg_cur.get('전환매출', 0) / agg_cur.get('광고비', 0) * 100) if agg_cur.get('광고비', 0) > 0 else 0,
-            'p_imp': agg_prev.get('p_imp', 0) if agg_prev is not None else 0,
-            'p_clk': agg_prev.get('p_clk', 0) if agg_prev is not None else 0,
-            'p_cost': agg_prev.get('p_cost', 0) if agg_prev is not None else 0,
-            'p_conv': agg_prev.get('p_conv', 0) if agg_prev is not None else 0,
-            'p_sales': agg_prev.get('p_sales', 0) if agg_prev is not None else 0,
-            'p_roas': (agg_prev.get('p_sales', 0) / agg_prev.get('p_cost', 0) * 100) if agg_prev is not None and agg_prev.get('p_cost', 0) > 0 else 0,
-        })
+        roas_diff = combined_row['ROAS(%)'] - combined_row['p_roas']
+        deltas['roas'] = f"▲ {abs(roas_diff):.0f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.0f}%" if roas_diff < 0 else "-")
         
-        deltas = {}
-        if agg_prev is not None:
-            deltas['cost'] = pct_to_arrow(pct_change(combined_row['광고비'], combined_row['p_cost']))
-            deltas['sales'] = pct_to_arrow(pct_change(combined_row['전환매출'], combined_row['p_sales']))
-            deltas['imp'] = pct_to_arrow(pct_change(combined_row['노출'], combined_row['p_imp']))
-            deltas['clk'] = pct_to_arrow(pct_change(combined_row['클릭'], combined_row['p_clk']))
-            
-            roas_diff = combined_row['ROAS(%)'] - combined_row['p_roas']
-            deltas['roas'] = f"▲ {abs(roas_diff):.0f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.0f}%" if roas_diff < 0 else "-")
-            
-            conv_diff = combined_row['전환'] - combined_row['p_conv']
-            deltas['conv'] = f"▲ {abs(conv_diff):.1f}" if conv_diff > 0 else (f"▼ {abs(conv_diff):.1f}" if conv_diff < 0 else "-")
-        
-        prev_label = f"비교 기간 ({cmp_mode})<br><span style='font-size:12px; font-weight:normal;'>{b1} ~ {b2}</span>"
-        cur_label = f"조회 기간 (현재)<br><span style='font-size:12px; font-weight:normal;'>{d1} ~ {d2}</span>"
-        
-        render_side_by_side_metrics(combined_row, prev_label, cur_label, deltas)
+        conv_diff = combined_row['전환'] - combined_row['p_conv']
+        deltas['conv'] = f"▲ {abs(conv_diff):.1f}" if conv_diff > 0 else (f"▼ {abs(conv_diff):.1f}" if conv_diff < 0 else "-")
+    
+    prev_label = f"비교 기간 ({cmp_mode})<br><span style='font-size:13px; font-weight:normal;'>{b1} ~ {b2}</span>"
+    cur_label = f"조회 기간 (현재)<br><span style='font-size:13px; font-weight:normal;'>{d1} ~ {d2}</span>"
+    
+    render_side_by_side_metrics(combined_row, prev_label, cur_label, deltas)
+    st.divider()
 
+# ✨ [수정] A/B 테스트 역시 테두리 컨테이너를 없애고 깔끔한 타이틀로 원복했습니다.
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
-    with st.container(border=True):
-        st.markdown(f"**📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)**")
+    st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
+    st.caption(f"조회 기간: {d1} ~ {d2}")
+    
+    valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
+    if len(valid_ads) < 2:
+        st.info("해당 그룹에 비교 가능한 소재가 2개 이상 없습니다.")
+        st.divider()
+        return
         
-        valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
-        if len(valid_ads) < 2:
-            st.info("해당 그룹에 비교 가능한 소재가 2개 이상 없습니다.")
-            return
-            
-        ad1, ad2 = valid_ads.iloc[0], valid_ads.iloc[1]
-        c1, c2 = st.columns(2)
-        
-        def _card(row, label):
-            return f"""
-            <div style='background:#FFFFFF; padding:16px; border-radius:8px; border:1px solid #E2E8F0;'>
-                <div style='text-align:center; font-size:12px; font-weight:800; color:#475569; margin-bottom:8px;'>{label}</div>
-                <h4 style='text-align:center; margin-top:0; margin-bottom:12px; color:#1E40AF; font-size:14px; font-weight:700;'>{row['소재내용']}</h4>
-                <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                    <span style='color:#64748B; font-weight:600; font-size:13px;'>광고비</span>
-                    <span style='font-weight:700; color:#0F172A; font-size:14px;'>{format_currency(row.get('광고비',0))}</span>
-                </div>
-                <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                    <span style='color:#64748B; font-weight:600; font-size:13px;'>전환매출</span>
-                    <span style='font-weight:700; color:#0F172A; font-size:14px;'>{format_currency(row.get('전환매출',0))}</span>
-                </div>
-                <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E2E8F0;'>
-                    <span style='color:#64748B; font-weight:600; font-size:13px;'>ROAS</span>
-                    <span style='font-weight:800; color:#EF4444; font-size:14px;'>{row.get('ROAS(%)',0):.0f}%</span>
-                </div>
-                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                    <span style='color:#64748B; font-size:12px;'>노출수</span>
-                    <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
-                </div>
-                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                    <span style='color:#64748B; font-size:12px;'>클릭수</span>
-                    <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
-                </div>
-                <div style='display:flex; justify-content:space-between;'>
-                    <span style='color:#64748B; font-size:12px;'>전환수</span>
-                    <span style='color:#334155; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
-                </div>
+    ad1, ad2 = valid_ads.iloc[0], valid_ads.iloc[1]
+    c1, c2 = st.columns(2)
+    
+    def _card(row, label):
+        return f"""
+        <div style='background:#F8FAFC; padding:20px; border-radius:12px; border:2px solid #E2E8F0;'>
+            <div style='text-align:center; font-size:13px; font-weight:800; color:#475569; margin-bottom:8px;'>{label}</div>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#1E40AF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>광고비</span>
+                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('광고비',0))}</span>
             </div>
-            """
-        
-        with c1: st.markdown(_card(ad1, "💡 소재 A"), unsafe_allow_html=True)
-        with c2: st.markdown(_card(ad2, "💡 소재 B"), unsafe_allow_html=True)
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>전환매출</span>
+                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('전환매출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
+                <span style='color:#64748B; font-weight:600;'>ROAS</span>
+                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.0f}%</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>노출수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>클릭수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between;'>
+                <span style='color:#64748B; font-size:13px;'>전환수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
+            </div>
+        </div>
+        """
+    
+    with c1: st.markdown(_card(ad1, "💡 소재 A"), unsafe_allow_html=True)
+    with c2: st.markdown(_card(ad2, "💡 소재 B"), unsafe_allow_html=True)
+    st.divider()
