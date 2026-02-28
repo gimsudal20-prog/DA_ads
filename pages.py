@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 import streamlit as st
 
 from data import *
@@ -18,11 +19,15 @@ from view_keyword import page_perf_keyword
 #       소재 페이지 import를 안전하게 감쌉니다.
 try:
     from view_ad import page_perf_ad  # type: ignore
-except Exception as _e:  # includes SyntaxError
-    def page_perf_ad(meta, engine, f):  # type: ignore
+except Exception:
+    # Python 3에서는 except 블록의 예외 변수(e)가 블록 종료 후 자동으로 삭제되므로,
+    # 나중에 페이지 렌더 시 NameError가 날 수 있습니다. 문자열로 캡처해 고정합니다.
+    _view_ad_import_error = traceback.format_exc()
+
+    def page_perf_ad(meta, engine, f, _err=_view_ad_import_error):  # type: ignore
         st.error("❌ 'view_ad.py' 로딩 실패로 소재 분석 페이지를 열 수 없습니다.")
         st.caption("아래 오류는 view_ad.py의 문법 오류(SyntaxError) 또는 import 오류일 가능성이 큽니다.")
-        st.code(str(_e))
+        st.code(_err)
         st.info("view_ad.py 파일을 이 대화에 업로드해주면, 문법 오류를 직접 고쳐서 전체 코드로 다시 드릴게요.")
 
 from view_settings import page_settings
