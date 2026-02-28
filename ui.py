@@ -87,25 +87,13 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
     else:
         st.metric(title, value, delta=desc)
 
-# ✨ [NEW] 모든 표 아래에 '이 표를 CSV로 다운로드' 버튼을 자동으로 달아주는 기능 추가
 def render_big_table(df: pd.DataFrame, key: str, height: int = 400) -> None:
     if df is None or df.empty:
         st.info("데이터가 없습니다.")
         return
+    # ✨ [원복 완료] 억지로 넣었던 버튼을 지우고 깔끔하게 원복했습니다.
+    # 💡 팁: 화면에 그려진 표 데이터 위에 마우스를 올리면 우측 상단에 자체 다운로드 버튼이 나타납니다!
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
-    
-    # 표 바로 아래에 다운로드 버튼 생성
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    col1, col2 = st.columns([8, 2])
-    with col2:
-        st.download_button(
-            label="📥 현재 표 CSV 다운로드",
-            data=csv,
-            file_name=f"export_{key}_{date.today()}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"btn_dl_{key}"
-        )
 
 def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int = 400) -> None:
     if df is None or df.empty:
@@ -144,13 +132,6 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
 
     table_html = f"<div style='height:{height}px; overflow-y:auto;'><table class='nv-table'><thead><tr>{th_html}</tr></thead><tbody>{''.join(html_rows)}</tbody></table></div>"
     st.markdown(table_html, unsafe_allow_html=True)
-    
-    # 엑셀 다운로드 버튼 (동일하게 적용)
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    col1, col2 = st.columns([8, 2])
-    with col2:
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        st.download_button("📥 예산 표 CSV 다운로드", data=csv, file_name=f"budget_{date.today()}.csv", mime="text/csv", use_container_width=True, key=f"btn_dl_{key}")
 
 def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: str, y1_name: str, y2_col: str, y2_name: str, height: int = 300):
     if df.empty: return
@@ -186,7 +167,6 @@ def render_echarts_dow_bar(ts_df: pd.DataFrame, height: int = 300):
     grp["dow_str"] = grp["dow"].map(dow_map)
     grp["roas"] = np.where(grp["cost"] > 0, grp["sales"] / grp["cost"] * 100, 0)
     
-    # 0~6 빠진 요일 채우기
     all_dows = pd.DataFrame({"dow": range(7), "dow_str": ["월","화","수","목","금","토","일"]})
     grp = pd.merge(all_dows, grp, on=["dow", "dow_str"], how="left").fillna(0).sort_values("dow")
 
