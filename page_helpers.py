@@ -157,9 +157,10 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     out["ROAS 증감(%)"] = cur_roas - p_roas
     out["전환 증감"] = cur_conv - out["p_conv"]
     
+    # ✨ [NEW] 증감률 0.01단위(.2f) 포맷으로 통일
     def fmt_pct(x):
         if pd.isna(x) or x == 0: return "-"
-        return f"▲ {x:.1f}%" if x > 0 else (f"▼ {abs(x):.1f}%" if x < 0 else "-")
+        return f"▲ {x:.2f}%" if x > 0 else (f"▼ {abs(x):.2f}%" if x < 0 else "-")
     def fmt_diff(x):
         if pd.isna(x) or x == 0: return "-"
         return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
@@ -194,8 +195,8 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
         f_cost = format_currency(cost)
         f_sales = format_currency(sales)
         
-        # ✨ [NEW] 카드 내 ROAS 소수점 1자리로 통일
-        f_roas = f"{roas:,.1f}%"
+        # ✨ [NEW] 비교 카드 ROAS 0.01단위(.2f) 포맷으로 통일
+        f_roas = f"{roas:,.2f}%"
         
         f_imp = format_number_commas(imp)
         f_clk = format_number_commas(clk)
@@ -272,9 +273,8 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
         deltas['clk'] = pct_to_arrow(pct_change(combined_row['클릭'], combined_row['p_clk']))
         
         roas_diff = combined_row['ROAS(%)'] - combined_row['p_roas']
-        
-        # ✨ [NEW] 비교 배지 내 ROAS 증감율도 소수점 1자리(.1f)로 표기
-        deltas['roas'] = f"▲ {abs(roas_diff):.1f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.1f}%" if roas_diff < 0 else "-")
+        # ✨ [NEW] 비교 배지 내 ROAS 증감율 0.01단위(.2f) 포맷으로 통일
+        deltas['roas'] = f"▲ {abs(roas_diff):.2f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.2f}%" if roas_diff < 0 else "-")
         
         conv_diff = combined_row['전환'] - combined_row['p_conv']
         deltas['conv'] = f"▲ {abs(conv_diff):.1f}" if conv_diff > 0 else (f"▼ {abs(conv_diff):.1f}" if conv_diff < 0 else "-")
@@ -313,7 +313,7 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
                 <span style='color:#64748B; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.1f}%</span>
+                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
                 <span style='color:#64748B; font-size:13px;'>노출수</span>
