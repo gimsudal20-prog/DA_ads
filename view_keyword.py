@@ -19,7 +19,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    tab_pl, tab_group, tab_shop = st.tabs(["🎯 파워링크 (키워드 기준)", "📂 파워링크 (광고그룹 기준)", "🛒 쇼핑검색 (상품/일반소재)"])
+    # ✨ [신규 기능 4] 🚫 제외 키워드 자동 발굴 탭 추가
+    tab_pl, tab_group, tab_shop, tab_neg = st.tabs(["🎯 파워링크 (키워드)", "📂 파워링크 (그룹)", "🛒 쇼핑검색", "🚫 제외 키워드 발굴기(누수 탐지)"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
@@ -235,10 +236,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     if cmp_mode_shop != "비교 안함" and not view_shop.empty:
                         render_comparison_section(view_shop, cmp_mode_shop, b1, b2, f["start"], f["end"], "선택 상품/소재 상세 비교")
 
-                st.markdown("<div class='nv-sec-title'>💡 쇼핑검색 최적화 포인트</div>", unsafe_allow_html=True)
-                if "상품/소재명" in view_shop.columns: render_insight_cards(view_shop, "상품/소재", "상품/소재명")
-                st.divider()
-
                 base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
                 final_cols_shop = [c for c in base_cols_shop + metrics_cols_shop if c in view_shop.columns]
                 
@@ -254,3 +251,45 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
         else:
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
+
+    with tab_neg:
+        st.markdown("### 🚫 제외 키워드 발굴기 (돈 먹는 하마 탐지)")
+        st.caption("클릭은 지속적으로 발생하여 광고비가 새고 있지만, 전환이 전혀 없는 키워드(검색어) 목록입니다. 네이버 광고 시스템에서 **제외 키워드**로 등록할 것을 강력히 권장합니다.")
+        
+        if df_pl_raw.empty:
+            st.info("데이터가 부족하여 제외 키워드를 분석할 수 없습니다.")
+        else:
+            # 1. 원본 데이터 포맷팅
+            leak_view = df_pl_raw.rename(columns={
+                "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", 
+                "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환"
+            }).copy()
+            
+            for c in ["노출", "클릭", "광고비", "전환"]:
+                leak_view[c] = pd.to_numeric(leak_view[c], errors="coerce").fillna(0)
+            
+            # 2. 전환 0건짜리만 필터링
+            leak_df = leak_view[leak_view["전환"] == 0].copy()
+            
+            # 3. 기준 설정 UI
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                min_leak_cost = st.slider("최소 누수 비용 (원)", 5000, 100000, 20000, 5000, help="이 금액 이상 소진되었으나 전환이 0건인 키워드를 찾습니다.")
+            
+            target_leak = leak_df[leak_df["광고비"] >= min_leak_cost].sort_values("광고비", ascending=False)
+            
+            if target_leak.empty:
+                st.success(f"🎉 현재 기준(비용 {format_currency(min_leak_cost)} 이상, 전환 0)에 해당하는 비용 누수 키워드가 없습니다!")
+            else:
+                target_leak["CTR(%)"] = np.where(target_leak["노출"] > 0, (target_leak["클릭"] / target_leak["노출"]) * 100, 0.0).round(2)
+                st.warning(f"🚨 총 **{len(target_leak)}개**의 키워드에서 심각한 비용 누수가 발견되었습니다! 네이버에서 즉시 제외하세요.")
+                
+                # 다운로드 버튼
+                csv = target_leak[["키워드"]].to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 제외 키워드 목록 다운로드 (복사/붙여넣기용)", data=csv, file_name="제외키워드_추천.csv", mime="text/csv", type="primary")
+                
+                # 표 렌더링
+                disp_leak = target_leak[["캠페인", "광고그룹", "키워드", "노출", "클릭", "광고비", "CTR(%)"]].copy()
+                for c in ["노출", "클릭", "광고비"]: disp_leak[c] = disp_leak[c].astype(int)
+                
+                render_big_table(disp_leak, key="leak_keyword_grid", height=400)
