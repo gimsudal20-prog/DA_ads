@@ -46,12 +46,10 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
         else: view[c] = 0
 
-    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
-    view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0).round(2)
-    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
-    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-    
-    # ✨ [수정] ROAS의 .round(0) 제거
+    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
+    view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0)
+    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
+    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
     tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
@@ -106,15 +104,21 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
-        # ✨ [수정] 전환과 ROAS는 float로 유지
-        for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
-            if c in disp.columns: disp[c] = disp[c].astype(int)
-        if "전환" in disp.columns: disp["전환"] = disp["전환"].astype(float).round(1)
-        if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
-        if "ROAS(%)" in disp.columns: disp["ROAS(%)"] = disp["ROAS(%)"].astype(float).round(1)
+        # ✨ [NEW] Styler 포맷 적용
+        fmt = {}
+        if "노출" in disp.columns: fmt["노출"] = "{:,.0f}"
+        if "클릭" in disp.columns: fmt["클릭"] = "{:,.0f}"
+        if "광고비" in disp.columns: fmt["광고비"] = "{:,.0f}"
+        if "CPC(원)" in disp.columns: fmt["CPC(원)"] = "{:,.0f}"
+        if "CPA(원)" in disp.columns: fmt["CPA(원)"] = "{:,.0f}"
+        if "전환매출" in disp.columns: fmt["전환매출"] = "{:,.0f}"
+        if "전환" in disp.columns: fmt["전환"] = "{:,.1f}"
+        if "CTR(%)" in disp.columns: fmt["CTR(%)"] = "{:,.2f}%"
+        if "ROAS(%)" in disp.columns: fmt["ROAS(%)"] = "{:,.2f}%"
+        styled_disp = disp.style.format(fmt)
 
         st.markdown(f"#### 📊 {ad_type_name} 상세 성과 표")
-        render_big_table(disp, f"ad_big_table_{ad_type_name}", 500)
+        render_big_table(styled_disp, f"ad_big_table_{ad_type_name}", 500)
 
     with tab_pl:
         df_pl = view[view["캠페인유형"] == "파워링크"] if "캠페인유형" in view.columns else view
@@ -154,7 +158,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 styled_df = lp_grp.style.background_gradient(cmap="Greens", subset=["CVR(%)", "ROAS(%)"]).format({
                     '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', 
                     '전환': '{:,.1f}', '전환매출': '{:,.0f}', 
-                    'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.1f}%'
+                    'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'
                 })
                 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
