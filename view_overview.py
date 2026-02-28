@@ -44,13 +44,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     hippos = pd.DataFrame()
     if not camp_bndl.empty:
         hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)].sort_values('cost', ascending=False)
+        if not hippos.empty:
+            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 발견되었습니다! (아래 표 참조)")
 
     if alerts:
         for a in alerts: st.warning(a)
-    elif hippos.empty:
+    else:
         st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
     
-    # ✨ [수정] 비용 누수 캠페인 목록을 다른 요소들과 확실하게 분리하는 "경고 배너 디자인" 적용
+    # ✨ [수정] 오버스러웠던 빨간 박스를 지우고, 이전의 깔끔하고 심플한 텍스트로 원복했습니다.
     if not hippos.empty:
         disp_hippos = _perf_common_merge_meta(hippos, meta)
         disp_hippos = disp_hippos.rename(columns={
@@ -64,19 +66,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if c in df_show.columns:
                 df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
         
-        st.markdown(f"""
-        <div style='background: linear-gradient(90deg, #FEF2F2 0%, #FFFFFF 100%); border-left: 6px solid #EF4444; border-radius: 8px; padding: 24px; margin-top: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(239,68,68,0.1);'>
-            <h3 style='margin: 0; color: #991B1B; font-size: 19px; font-weight: 800; display: flex; align-items: center;'>
-                <span style='font-size: 24px; margin-right: 10px;'>🚨</span> [긴급 조치 요망] 심각한 비용 누수 캠페인 발견 ({len(hippos)}건)
-            </h3>
-            <p style='margin: 8px 0 0 0; color: #B91C1C; font-size: 14.5px; font-weight: 600;'>
-                아래 캠페인들은 현재 비용이 5만 원 이상 지출되었으나 전환이 <strong style='font-size:16px;'>0건</strong>입니다. 즉시 네이버 광고센터에서 OFF 또는 입찰가를 대폭 하향하세요!
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        st.markdown("<div style='margin-top: 12px; margin-bottom: 8px; font-weight: 700; color: #B91C1C;'>🚨 [긴급 조치 필요] 비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
         st.dataframe(df_show, use_container_width=True, hide_index=True)
-        st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     
     st.divider()
 
