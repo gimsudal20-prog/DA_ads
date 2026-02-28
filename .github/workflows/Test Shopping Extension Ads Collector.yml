@@ -1,10 +1,13 @@
 name: Test Shopping Extension Ads Collector
-
 on:
   workflow_dispatch: 
     inputs:
-      date:
-        description: '수집할 날짜 (YYYY-MM-DD 포맷), 미입력시 자동으로 어제 날짜 수집'
+      start_date:
+        description: '시작 날짜 (YYYY-MM-DD 포맷), 미입력시 당해년도 1월 1일'
+        required: false
+        default: ''
+      end_date:
+        description: '종료 날짜 (YYYY-MM-DD 포맷), 미입력시 자동으로 어제 날짜'
         required: false
         default: ''
 
@@ -28,6 +31,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Set Date Range
+        id: dates
+        run: |
+          YEAR=$(TZ=Asia/Seoul date +%Y)
+          YESTERDAY=$(TZ=Asia/Seoul date -d 'yesterday' +%Y-%m-%d)
+
+          if [ -z "${{ github.event.inputs.start_date }}" ]; then
+            START_DATE="${YEAR}-01-01"
+          else
+            START_DATE="${{ github.event.inputs.start_date }}"
+          fi
+
+          if [ -z "${{ github.event.inputs.end_date }}" ]; then
+            END_DATE="${YESTERDAY}"
+          else
+            END_DATE="${{ github.event.inputs.end_date }}"
+          fi
+
+          echo "start_date=${START_DATE}" >> $GITHUB_OUTPUT
+          echo "end_date=${END_DATE}" >> $GITHUB_OUTPUT
+          echo "▶ 수집 기간: ${START_DATE} ~ ${END_DATE}"
+
       - name: Run Shopping Extension Collector
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -35,4 +60,12 @@ jobs:
           NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
           CUSTOMER_ID: ${{ secrets.CUSTOMER_ID }}
         run: |
-          python collector_shop_ext.py --date "${{ github.event.inputs.date }}"
+          START="${{ steps.dates.outputs.start_date }}"
+          END="${{ steps.dates.outputs.end_date }}"
+
+          CURRENT=$START
+          while [[ "$CURRENT" < "$END" || "$CURRENT" == "$END" ]]; do
+            echo "▶ 수집 중: $CURRENT"
+            python collector_shop_ext.py --date "$CURRENT"
+            CURRENT=$(date -d "$CURRENT + 1 day" +%Y-%m-%d)
+          done
