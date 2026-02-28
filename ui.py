@@ -27,19 +27,6 @@ except Exception:
     ui = None
     HAS_SHADCN_UI = False
 
-# Optional AgGrid
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
-    from st_aggrid.shared import GridUpdateMode, DataReturnMode
-    HAS_AGGRID = True
-except Exception:
-    AgGrid = None
-    GridOptionsBuilder = None
-    JsCode = None
-    GridUpdateMode = None
-    DataReturnMode = None
-    HAS_AGGRID = False
-
 # Optional ECharts
 try:
     from streamlit_echarts import st_echarts
@@ -82,7 +69,6 @@ def render_hero(latest_dates: dict | None, build_tag: str) -> None:
             except Exception:
                 pass
 
-    # ✨ [수정] 버전 정보 박스 삭제 및 타이틀 '마케팅 대시보드'로 변경
     html_str = f"""
     <div style='background: #FFFFFF; border: 1px solid #E2E8F0; padding: 20px 32px; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);'>
         <div style='display: flex; align-items: center; gap: 20px;'>
@@ -110,8 +96,14 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def render_big_table(df: pd.DataFrame, key: str, height: int = 400) -> None:
-    if df is None or df.empty:
+# ✨ [NEW] Styler 포맷(소수점 유지)을 지원하도록 테이블 렌더링 함수 수정
+def render_big_table(df, key: str, height: int = 400) -> None:
+    if df is None:
+        st.info("데이터가 없습니다.")
+        return
+    is_styler = hasattr(df, "data")
+    check_df = df.data if is_styler else df
+    if check_df.empty:
         st.info("데이터가 없습니다.")
         return
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
@@ -174,53 +166,3 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
         ]
     }
     st_echarts(options=options, height=f"{height}px")
-
-def render_echarts_dow_bar(ts_df: pd.DataFrame, height: int = 300):
-    if ts_df.empty or "cost" not in ts_df.columns: return
-    df = ts_df.copy()
-    if not pd.api.types.is_datetime64_any_dtype(df["dt"]): df["dt"] = pd.to_datetime(df["dt"])
-    df["dow"] = df["dt"].dt.dayofweek
-    dow_map = {0:"월", 1:"화", 2:"수", 3:"목", 4:"금", 5:"토", 6:"일"}
-    
-    grp = df.groupby("dow").agg({"cost": "sum", "sales": "sum", "conv": "sum"}).reset_index()
-    grp["dow_str"] = grp["dow"].map(dow_map)
-    grp["roas"] = np.where(grp["cost"] > 0, grp["sales"] / grp["cost"] * 100, 0)
-    
-    all_dows = pd.DataFrame({"dow": range(7), "dow_str": ["월","화","수","목","금","토","일"]})
-    grp = pd.merge(all_dows, grp, on=["dow", "dow_str"], how="left").fillna(0).sort_values("dow")
-
-    x_data = grp["dow_str"].tolist()
-    roas_data = grp["roas"].round(0).tolist()
-    cost_data = grp["cost"].tolist()
-
-    options = {
-        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-        "legend": {"data": ["광고비", "ROAS"], "bottom": 0},
-        "grid": {"left": "3%", "right": "3%", "bottom": "15%", "top": "10%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data}],
-        "yAxis": [
-            {"type": "value", "name": "광고비", "splitLine": {"lineStyle": {"type": "dashed", "color": "#f3f4f6"}}},
-            {"type": "value", "name": "ROAS(%)", "splitLine": {"show": False}}
-        ],
-        "series": [
-            {"name": "광고비", "type": "bar", "data": cost_data, "itemStyle": {"color": "#94A3B8", "borderRadius": [4,4,0,0]}},
-            {"name": "ROAS", "type": "line", "yAxisIndex": 1, "data": roas_data, "itemStyle": {"color": "#EF4444"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
-        ]
-    }
-    st_echarts(options=options, height=f"{height}px")
-
-def generate_full_report_excel(overview_df: pd.DataFrame, camp_df: pd.DataFrame, kw_df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    try:
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            if overview_df is not None and not overview_df.empty:
-                overview_df.to_excel(writer, index=False, sheet_name="요약_현황")
-            else:
-                pd.DataFrame({"결과": ["데이터 없음"]}).to_excel(writer, index=False, sheet_name="요약_현황")
-            if camp_df is not None and not camp_df.empty:
-                camp_df.to_excel(writer, index=False, sheet_name="캠페인_현황")
-            if kw_df is not None and not kw_df.empty:
-                kw_df.to_excel(writer, index=False, sheet_name="파워링크_현황")
-    except Exception as e:
-        pd.DataFrame({"Error": [str(e)]}).to_excel(output, index=False, sheet_name="Error")
-    return output.getvalue()
