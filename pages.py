@@ -20,7 +20,6 @@ def main():
     try: engine = get_engine(); latest = get_latest_dates(engine)
     except Exception as e: render_hero(None, BUILD_TAG); st.error(str(e)); return
 
-    # ✨ [NEW] 사이드바 맨 위쪽에도 로고(logo.png)를 띄워줍니다 (Streamlit 최신 기능 지원 시)
     try:
         for ext in ['png', 'jpg', 'jpeg', 'webp']:
             if os.path.exists(f"logo.{ext}"):
@@ -34,23 +33,35 @@ def main():
     meta_ready = (meta is not None) and (not meta.empty)
 
     with st.sidebar:
-        st.markdown("### 메뉴")
+        # 타이틀도 심심하지 않게 이모지 추가
+        st.markdown("### 📌 메뉴 이동")
         if not meta_ready: st.warning("동기화가 필요합니다.")
         
-        nav_items = ["요약(한눈에)", "예산/잔액", "캠페인", "키워드", "소재", "설정/연결"] if meta_ready else ["설정/연결"]
+        # ✨ [UI 개선] 각 메뉴 앞에 직관적인 아이콘(Emoji)을 달아 가독성을 높였습니다.
+        nav_items = [
+            "📊 요약 (한눈에)", 
+            "💰 예산 및 잔액", 
+            "🚀 캠페인 분석", 
+            "🔎 키워드 분석", 
+            "🧩 소재(A/B) 분석", 
+            "⚙️ 설정 및 연결"
+        ] if meta_ready else ["⚙️ 설정 및 연결"]
+        
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
+    # 선택된 메뉴의 이름도 아이콘과 함께 헤더에 멋지게 띄워줍니다.
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
     f = None
-    if nav != "설정/연결":
+    if nav != "⚙️ 설정 및 연결":
         if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
-    if nav == "요약(한눈에)": page_overview(meta, engine, f)
-    elif nav == "예산/잔액": page_budget(meta, engine, f)
-    elif nav == "캠페인": page_perf_campaign(meta, engine, f)
-    elif nav == "키워드": page_perf_keyword(meta, engine, f)
-    elif nav == "소재": page_perf_ad(meta, engine, f)
+    # ✨ 바뀐 메뉴 이름에 맞추어 조건문도 업데이트했습니다.
+    if nav == "📊 요약 (한눈에)": page_overview(meta, engine, f)
+    elif nav == "💰 예산 및 잔액": page_budget(meta, engine, f)
+    elif nav == "🚀 캠페인 분석": page_perf_campaign(meta, engine, f)
+    elif nav == "🔎 키워드 분석": page_perf_keyword(meta, engine, f)
+    elif nav == "🧩 소재(A/B) 분석": page_perf_ad(meta, engine, f)
     else: page_settings(engine)
 
 if __name__ == "__main__":
