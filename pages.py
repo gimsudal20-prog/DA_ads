@@ -21,7 +21,7 @@ from data import *
 from data import period_compare_range, pct_to_arrow, _get_table_names_cached, _pct_change
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.2 (키워드/그룹/쇼핑검색 계층형 필터 검색 지원)")
+BUILD_TAG = os.getenv("APP_BUILD", "v15.3 (A/B테스트 고도화 및 정확한 날짜 비교)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -42,6 +42,14 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
 def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
     try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
     except Exception: return col.multiselect(label, options, default=default, key=key)
+
+# ✨ [NEW] 조회 기간에 맞춰 비교할 수 있는 옵션을 스마트하게 제한해 주는 헬퍼 함수
+def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
+    delta = (d2 - d1).days + 1
+    if delta == 1: return ["비교 안함", "전일대비"]
+    elif delta == 7: return ["비교 안함", "전주대비"]
+    elif 28 <= delta <= 31: return ["비교 안함", "전월대비"]
+    else: return ["비교 안함", "이전 같은 기간 대비"]
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     today = date.today()
@@ -250,8 +258,8 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str)
     with c2:
         st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True), unsafe_allow_html=True)
 
-# ✨ [NEW] 코드 중복 제거를 위한 Side-by-Side 렌더링 헬퍼 함수
-def render_comparison_section(df: pd.DataFrame, cmp_mode: str, section_title: str = "선택 항목 상세 비교"):
+# ✨ [NEW] 정확한 날짜 표기를 추가한 Side-by-Side 렌더링 헬퍼 함수
+def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
     st.markdown(f"### 🔍 {section_title} (Side-by-Side)")
     agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
     agg_prev = df[['p_imp', 'p_clk', 'p_cost', 'p_conv', 'p_sales']].sum() if 'p_cost' in df.columns else None
@@ -270,7 +278,61 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, section_title: st
         'p_sales': agg_prev.get('p_sales', 0) if agg_prev is not None else 0,
         'p_roas': (agg_prev.get('p_sales', 0) / agg_prev.get('p_cost', 0) * 100) if agg_prev is not None and agg_prev.get('p_cost', 0) > 0 else 0,
     })
-    render_side_by_side_metrics(combined_row, f"비교 기간 ({cmp_mode})", "조회 기간 (현재)")
+    
+    prev_label = f"비교 기간 ({cmp_mode})<br><span style='font-size:13px; font-weight:normal;'>{b1} ~ {b2}</span>"
+    cur_label = f"조회 기간 (현재)<br><span style='font-size:13px; font-weight:normal;'>{d1} ~ {d2}</span>"
+    
+    render_side_by_side_metrics(combined_row, prev_label, cur_label)
+    st.divider()
+
+# ✨ [NEW] 소재 A/B 좌우 비교 화면을 그리는 헬퍼 함수
+def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
+    st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
+    st.caption(f"조회 기간: {d1} ~ {d2}")
+    
+    valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
+    if len(valid_ads) < 2:
+        st.info("해당 그룹에 비교 가능한 소재가 2개 이상 없습니다.")
+        st.divider()
+        return
+        
+    ad1, ad2 = valid_ads.iloc[0], valid_ads.iloc[1]
+    c1, c2 = st.columns(2)
+    
+    def _card(row, label):
+        return f"""
+        <div style='background:#F8FAFC; padding:20px; border-radius:12px; border:2px solid #E2E8F0;'>
+            <div style='text-align:center; font-size:13px; font-weight:800; color:#475569; margin-bottom:8px;'>{label}</div>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#1E40AF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>광고비</span>
+                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('광고비',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#64748B; font-weight:600;'>전환매출</span>
+                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('전환매출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
+                <span style='color:#64748B; font-weight:600;'>ROAS</span>
+                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.0f}%</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>노출수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#64748B; font-size:13px;'>클릭수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between;'>
+                <span style='color:#64748B; font-size:13px;'>전환수</span>
+                <span style='color:#334155; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
+            </div>
+        </div>
+        """
+    
+    with c1: st.markdown(_card(ad1, "💡 소재 A"), unsafe_allow_html=True)
+    with c2: st.markdown(_card(ad2, "💡 소재 B"), unsafe_allow_html=True)
     st.divider()
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -278,7 +340,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("<div class='nv-sec-title'>요약 및 인사이트</div>", unsafe_allow_html=True)
-        st.caption(f"기간: {f['start']} ~ {f['end']}")
+        st.caption(f"조회 기간: {f['start']} ~ {f['end']}")
     with col2:
         cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
         with st.spinner("보고서 생성 중..."):
@@ -294,12 +356,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.download_button(label="📥 보고서(Excel) 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
 
     st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
+    opts = get_dynamic_cmp_options(f["start"], f["end"])
+    cmp_opts = [o for o in opts if o != "비교 안함"]
+    if not cmp_opts: cmp_opts = ["이전 같은 기간 대비"]
+    
     pm = f.get("period_mode", "어제")
-    if pm in ["오늘", "어제"]: cmp_opts = ["전일대비"]
-    elif pm == "최근 7일": cmp_opts = ["전주대비"]
-    elif pm in ["이번 달", "지난 달"]: cmp_opts = ["전월대비"]
-    else: cmp_opts = ["전일대비", "전주대비", "전월대비"]
-        
     cmp_mode = st.radio("비교 기준 선택", cmp_opts, horizontal=True, key=f"ov_cmp_mode_{pm}", label_visibility="collapsed")
     cur = cur_summary
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
@@ -503,7 +564,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     c1, c2 = st.columns([2, 1])
     with c1:
-        cmp_mode = st.radio("📊 캠페인 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="camp_cmp_mode")
+        opts = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_mode = st.radio("📊 캠페인 단위 기간 비교", opts, horizontal=True, key="camp_cmp_mode")
         st.caption("선택한 이전 기간의 성과와 직접 비교하여 증감율을 제공합니다.")
     
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_campaign", 200))
@@ -529,6 +591,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
+    b1, b2 = None, None
     if cmp_mode != "비교 안함":
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=10)
@@ -542,9 +605,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if sel_camp != "전체": 
         view = view[view["캠페인"] == sel_camp]
-        # ✨ [적용] 헬퍼 함수로 중복 코드 최소화
         if cmp_mode != "비교 안함" and not view.empty:
-            render_comparison_section(view, cmp_mode, "선택 캠페인 상세 비교")
+            render_comparison_section(view, cmp_mode, b1, b2, f["start"], f["end"], "선택 캠페인 상세 비교")
 
     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
     metrics_cols = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -576,8 +638,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     with tab_pl:
         if not df_pl_raw.empty:
-            cmp_mode_pl = st.radio("📊 키워드 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="kw_pl_cmp_mode")
+            opts_pl = get_dynamic_cmp_options(f["start"], f["end"])
+            cmp_mode_pl = st.radio("📊 키워드 단위 기간 비교", opts_pl, horizontal=True, key="kw_pl_cmp_mode")
             base_kw_bundle = None
+            b1, b2 = None, None
             if cmp_mode_pl != "비교 안함":
                 b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_pl)
                 base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
@@ -618,9 +682,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if sel_kw != "전체":
                 view = view[view["_filter_label"] == sel_kw]
-                # ✨ [적용] 헬퍼 함수로 중복 코드 최소화
                 if cmp_mode_pl != "비교 안함" and not view.empty:
-                    render_comparison_section(view, cmp_mode_pl, "선택 키워드 상세 비교")
+                    render_comparison_section(view, cmp_mode_pl, b1, b2, f["start"], f["end"], "선택 키워드 상세 비교")
 
             disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
             for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
@@ -651,7 +714,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
     with tab_group:
         if not df_pl_raw.empty:
-            cmp_mode_grp = st.radio("📊 광고그룹 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="kw_grp_cmp_mode")
+            opts_grp = get_dynamic_cmp_options(f["start"], f["end"])
+            cmp_mode_grp = st.radio("📊 광고그룹 단위 기간 비교", opts_grp, horizontal=True, key="kw_grp_cmp_mode")
             
             grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
             val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
@@ -673,6 +737,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             view_grp["CPA(원)"] = np.where(view_grp.get("전환", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("전환", 0), 0.0).round(0)
             view_grp["ROAS(%)"] = np.where(view_grp.get("광고비", 0) > 0, (view_grp.get("전환매출", 0) / view_grp.get("광고비", 0)) * 100, 0.0).round(0)
             
+            b1, b2 = None, None
             if cmp_mode_grp != "비교 안함":
                 b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_grp)
                 base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
@@ -692,9 +757,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if sel_grp != "전체":
                 view_grp = view_grp[view_grp["_filter_label"] == sel_grp]
-                # ✨ [적용] 헬퍼 함수로 중복 코드 최소화
                 if cmp_mode_grp != "비교 안함" and not view_grp.empty:
-                    render_comparison_section(view_grp, cmp_mode_grp, "선택 광고그룹 상세 비교")
+                    render_comparison_section(view_grp, cmp_mode_grp, b1, b2, f["start"], f["end"], "선택 광고그룹 상세 비교")
                     
             base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
             metrics_cols_grp = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -719,8 +783,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
-            cmp_mode_shop = st.radio("📊 상품/소재 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key="shop_cmp_mode")
+            opts_shop = get_dynamic_cmp_options(f["start"], f["end"])
+            cmp_mode_shop = st.radio("📊 상품/소재 단위 기간 비교", opts_shop, horizontal=True, key="shop_cmp_mode")
             base_shop_bundle = None
+            b1, b2 = None, None
             if cmp_mode_shop != "비교 안함":
                 b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_shop)
                 base_shop_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000, top_k=50)
@@ -780,9 +846,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 if sel_item != "전체":
                     view_shop = view_shop[view_shop["_filter_label"] == sel_item]
-                    # ✨ [적용] 헬퍼 함수로 중복 코드 최소화
                     if cmp_mode_shop != "비교 안함" and not view_shop.empty:
-                        render_comparison_section(view_shop, cmp_mode_shop, "선택 상품/소재 상세 비교")
+                        render_comparison_section(view_shop, cmp_mode_shop, b1, b2, f["start"], f["end"], "선택 상품/소재 상세 비교")
 
                 st.markdown("<div class='nv-sec-title'>💡 쇼핑검색 최적화 포인트</div>", unsafe_allow_html=True)
                 if "상품/소재명" in view_shop.columns: render_insight_cards(view_shop, "상품/소재", "상품/소재명")
@@ -803,7 +868,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
         else:
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
-
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -851,45 +915,10 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info(f"해당 기간의 {ad_type_name} 데이터가 없습니다.")
             return
 
-        st.markdown(f"<div class='nv-sec-title'>📊 A/B 테스트 (종합 성과 비교)</div>", unsafe_allow_html=True)
-        st.caption("동일 광고그룹 내 노출수 500회 이상 소재 중 ROAS, 전환수, CTR 등을 종합적으로 평가하여 우수 카피를 추천합니다.")
+        opts_ad = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_mode_ad = st.radio(f"📊 소재 단위 기간 비교", opts_ad, horizontal=True, key=f"ad_cmp_mode_{ad_type_name}")
         
-        valid_ads = df_tab[df_tab['노출'] >= 500]
-        if '광고그룹' in valid_ads.columns:
-            group_counts = valid_ads.groupby(['업체명', '캠페인', '광고그룹']).size()
-            ab_groups = group_counts[group_counts >= 2].index
-            winners = []
-            for g in ab_groups:
-                g_df = valid_ads[(valid_ads['업체명'] == g[0]) & (valid_ads['캠페인'] == g[1]) & (valid_ads['광고그룹'] == g[2])]
-                sorted_g = g_df.sort_values(['ROAS(%)', '전환', 'CVR(%)', 'CTR(%)'], ascending=[False, False, False, False])
-                best, worst = sorted_g.iloc[0], sorted_g.iloc[-1]
-                
-                diff_roas, diff_conv, diff_ctr = best['ROAS(%)'] - worst['ROAS(%)'], best['전환'] - worst['전환'], best['CTR(%)'] - worst['CTR(%)']
-                if diff_roas >= 50 or diff_conv >= 1 or diff_ctr >= 0.5:
-                    reasons = []
-                    if diff_roas > 0: reasons.append(f"ROAS +{diff_roas:.0f}%p")
-                    if diff_conv > 0: reasons.append(f"전환 +{diff_conv:.0f}건")
-                    if diff_ctr > 0: reasons.append(f"CTR +{diff_ctr:.2f}%p")
-                    
-                    winners.append({
-                        '캠페인': g[1], 
-                        '광고그룹': g[2],
-                        '🏆 WINNER 소재': best['소재내용'], 
-                        'W_ROAS': f"{best['ROAS(%)']:.0f}%",
-                        'W_전환': f"{best['전환']}건",
-                        '😢 LOSER 소재': worst['소재내용'], 
-                        'L_ROAS': f"{worst['ROAS(%)']:.0f}%",
-                        'L_전환': f"{worst['전환']}건",
-                        '💡 핵심 격차': " | ".join(reasons) if reasons else "종합 우위"
-                    })
-            if winners: st_dataframe_safe(pd.DataFrame(winners), hide_index=True, use_container_width=True)
-            else: st.caption("현재 A/B 테스트 그룹 중 유의미한 성과 격차를 보이는 데이터가 없습니다.")
-        else: st.caption("데이터에 광고그룹 정보가 없어 A/B 테스트를 실행할 수 없습니다.")
-        
-        st.divider()
-        
-        cmp_mode_ad = st.radio(f"📊 소재 단위 기간 비교", ["비교 안함", "전일대비", "전주대비", "전월대비"], horizontal=True, key=f"ad_cmp_mode_{ad_type_name}")
-        
+        b1, b2 = None, None
         if cmp_mode_ad != "비교 안함":
             b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode_ad)
             base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
@@ -898,22 +927,36 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if valid_keys:
                     df_tab = append_comparison_data(df_tab, base_ad_bundle, valid_keys)
                 
-        c1, c2 = st.columns([1, 3])
+        # ✨ [NEW] 캠페인 > 광고그룹 계층형 필터 
+        c1, c2 = st.columns([1, 1])
         with c1:
             camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
             sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key=f"ad_camp_filter_{ad_type_name}")
             
-        if sel_camp != "전체": 
-            df_tab = df_tab[df_tab["캠페인"] == sel_camp]
-            # ✨ [적용] 헬퍼 함수로 중복 코드 최소화
-            if cmp_mode_ad != "비교 안함" and not df_tab.empty:
-                render_comparison_section(df_tab, cmp_mode_ad, "선택 캠페인 소속 소재 상세 비교")
+        with c2:
+            if sel_camp != "전체":
+                filtered_grp = df_tab[df_tab["캠페인"] == sel_camp]
+                grps = ["전체"] + sorted([str(x) for x in filtered_grp["광고그룹"].unique() if str(x).strip()])
+                sel_grp = st.selectbox("📂 소속 광고그룹 필터", grps, key=f"ad_grp_filter_{ad_type_name}")
+            else:
+                sel_grp = "전체"
+                st.selectbox("📂 소속 광고그룹 필터", ["전체"], disabled=True, key=f"ad_grp_filter_{ad_type_name}")
 
-        st.markdown(f"<div class='nv-sec-title'>💡 {ad_type_name} 최적화 포인트</div>", unsafe_allow_html=True)
-        render_insight_cards(df_tab, "소재", "소재내용")
         st.divider()
 
-        cols = ["업체명", "담당자", "캠페인", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+        # 데이터 필터링 적용
+        if sel_camp != "전체":
+            df_tab = df_tab[df_tab["캠페인"] == sel_camp]
+            if sel_grp != "전체":
+                df_tab = df_tab[df_tab["광고그룹"] == sel_grp]
+                # ✨ [NEW] 캠페인과 그룹이 모두 선택되었을 때만 좌/우 A/B 비교 출력!
+                _render_ab_test_sbs(df_tab, f["start"], f["end"])
+
+            # 비교 모드가 켜져 있으면, 필터링된 결과물로 Side-by-Side 비교도 보여줌
+            if cmp_mode_ad != "비교 안함" and not df_tab.empty:
+                render_comparison_section(df_tab, cmp_mode_ad, b1, b2, f["start"], f["end"], f"선택 {ad_type_name} 상세 비교")
+
+        cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         if cmp_mode_ad != "비교 안함":
             cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
             
@@ -924,6 +967,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             if c in disp.columns: disp[c] = disp[c].astype(int)
         if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
 
+        st.markdown(f"#### 📊 {ad_type_name} 상세 성과 표")
         render_big_table(disp, f"ad_big_table_{ad_type_name}", 500)
 
     with tab_pl:
