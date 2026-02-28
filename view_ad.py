@@ -11,7 +11,6 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-# ✨ [추가] 언더스코어(_)로 시작하는 함수 2개 명시적 불러오기
 from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -53,7 +52,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
+    tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (일반/확장소재 통합)", "🔗 랜딩페이지(URL) 효율 분석"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
         if df_tab.empty:
@@ -116,15 +115,13 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_ad_tab(df_pl, "파워링크", "파워링크 소재")
         
     with tab_shop:
+        # ✨ [핵심 조치 3] 정규식 필터를 해제하여 확장소재와 일반 상품 소재가 모두 노출되도록 보완했습니다.
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
         
         if not df_shop.empty:
-            df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
-        
-        if not df_shop.empty:
-            _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
+            _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 소재")
         else:
-            st.warning("해당 기간에 사용된 쇼핑검색 확장소재가 없습니다.")
+            st.warning("해당 기간에 사용된 쇼핑검색 소재 데이터가 없습니다.")
 
     with tab_landing:
         st.markdown("### 🔗 랜딩페이지(URL)별 구매 전환율(CVR) 비교")
@@ -133,7 +130,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "landing_url" in view.columns:
             df_lp = view[view["landing_url"].astype(str) != ""].copy()
             if df_lp.empty:
-                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (URL 정보가 포함된 소재가 존재하지 않습니다.)")
+                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (수집기를 다시 한 번 돌려 DB를 업데이트해주세요.)")
             else:
                 lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
                 
@@ -153,5 +150,11 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 })
                 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                
+                # 다운로드 버튼은 render_big_table이 아니라 기본 데이터프레임이므로 직접 달아줍니다.
+                csv = lp_grp.to_csv(index=False).encode('utf-8-sig')
+                col1, col2 = st.columns([8, 2])
+                with col2:
+                    st.download_button("📥 랜딩페이지 분석 CSV 다운로드", data=csv, file_name=f"landing_page_analysis_{date.today()}.csv", mime="text/csv", use_container_width=True, key="dl_lp")
         else:
             st.info("DB 구조에 랜딩페이지 URL 정보가 아직 포함되어 있지 않습니다. (수집기를 최신 버전으로 돌려주세요)")
