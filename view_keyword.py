@@ -20,7 +20,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    tab_pl, tab_shop, tab_neg = st.tabs(["🎯 파워링크", "🛒 쇼핑검색", "💸 저효율 키워드 발굴기(누수 탐지)"])
+    # ✨ [수정] 탭 이름에서 (누수 탐지) 제거
+    tab_pl, tab_shop, tab_neg = st.tabs(["🎯 파워링크", "🛒 쇼핑검색", "💸 저효율 키워드 발굴기"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
@@ -64,7 +65,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
                     if valid_keys:
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
-                        # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
                 c1, c2 = st.columns([1, 3])
@@ -156,7 +156,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 metrics_cols_grp = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 if cmp_mode_grp != "비교 안함": 
-                    # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
                     metrics_cols_grp.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                 
                 final_cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]
@@ -215,7 +214,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view_shop.columns and k in base_shop_bundle.columns]
                     if valid_keys:
                         view_shop = append_comparison_data(view_shop, base_shop_bundle, valid_keys)
-                        # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
                         metrics_cols_shop.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
                 c1, c2 = st.columns([1, 1])
@@ -256,7 +254,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
 
     with tab_neg:
-        st.markdown("### 💸 저효율 등록 키워드 발굴기 (돈 먹는 하마 탐지)")
+        # ✨ [수정] 헤더에서 (돈 먹는 하마 탐지) 제거
+        st.markdown("### 💸 저효율 등록 키워드 발굴기")
         st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다. **네이버 광고 시스템에서 입찰가를 낮추거나 OFF 상태로 변경할 것**을 강력히 권장합니다.")
         
         if df_pl_raw.empty:
