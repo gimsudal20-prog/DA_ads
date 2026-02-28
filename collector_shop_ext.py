@@ -90,6 +90,7 @@ def process_account(engine, customer_id: str, target_date: date):
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
                     ext_type = ext.get("extensionType", "")
+                    
                     # 추가홍보문구, 서브링크 등의 텍스트 추출
                     ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
                     ext_title = f"[확장소재] {ext_type}"
@@ -178,7 +179,6 @@ def main():
     print(f"🛍️ 쇼핑검색 확장소재 전용 테스트 수집기 [날짜: {target_date}]", flush=True)
     print("="*50 + "\n", flush=True)
 
-    # 연결된 계정 가져오기
     accounts = []
     try:
         with engine.connect() as conn:
