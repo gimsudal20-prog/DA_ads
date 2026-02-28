@@ -65,6 +65,13 @@ table.nv-table tr:hover td { background: #F1F5F9; }
 
 /* Expander Styling */
 .streamlit-expanderHeader { font-weight: 700 !important; color: var(--nv-text) !important; background-color: #F8FAFC !important; border-radius: 8px; }
+
+/* ✨ [NEW] 사이드바 메뉴 간격 확대 */
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    padding-top: 14px !important;
+    padding-bottom: 14px !important;
+    font-size: 15px;
+}
 </style>
 """
 
