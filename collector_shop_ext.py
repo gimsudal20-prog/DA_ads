@@ -156,7 +156,9 @@ def process_account(engine, customer_id: str, target_date: date):
             except Exception: pass
             
             tuples_f = list(df_fact.itertuples(index=False, name=None))
-            sql_f = f'INSERT INTO fact_ad_daily ("{ '", "'.join(df_fact.columns) }") VALUES %s'
+            # ✨ SyntaxError 해결: 문자열 합치는 부분을 밖으로 빼서 안전하게 처리
+            col_names = '", "'.join(df_fact.columns)
+            sql_f = f'INSERT INTO fact_ad_daily ("{col_names}") VALUES %s'
             try:
                 raw_conn = engine.raw_connection()
                 cur = raw_conn.cursor()
