@@ -64,26 +64,60 @@ def get_engine():
     db_url = DB_URL + ("&sslmode=require" if "?" in DB_URL else "?sslmode=require")
     return create_engine(db_url, poolclass=NullPool, future=True)
 
+# ✨ [NEW] 족보(캠페인, 그룹)를 DB에 안전하게 덮어쓰기 위한 함수
+def upsert_many(engine, table: str, rows: list, pk_cols: list):
+    if not rows: return
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last')
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    pk_str = ", ".join([f'"{c}"' for c in pk_cols])
+    
+    conflict = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols]) if update_cols else f'ON CONFLICT ({pk_str}) DO NOTHING'
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict}'
+    
+    tuples = list(df.itertuples(index=False, name=None))
+    raw_conn, cur = None, None
+    try:
+        raw_conn = engine.raw_connection()
+        cur = raw_conn.cursor()
+        psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+        raw_conn.commit()
+    except Exception as e:
+        log(f"⚠️ {table} 저장 중 오류: {e}")
+        if raw_conn: raw_conn.rollback()
+    finally:
+        if cur: cur.close()
+        if raw_conn: raw_conn.close()
+
 def process_account(engine, customer_id: str, target_date: date):
     log(f"--- [ {customer_id} ] 쇼핑검색 확장소재 전용 수집 시작 ({target_date}) ---")
     
-    # 1. 캠페인 조회 후 쇼핑검색만 필터링
     camps = request_json("GET", "/ncc/campaigns", customer_id)
     if not camps: return
     shop_camps = [c for c in camps if c.get("campaignTp") == "SHOPPING"]
     log(f"   ▶ 쇼핑검색 캠페인 {len(shop_camps)}개 발견")
     
-    ad_rows = []
+    camp_rows, ag_rows, ad_rows = [], [], []
     target_ad_ids = []
     
-    # 2. 쇼핑검색 캠페인 하위의 광고그룹 -> 확장소재 조회
+    # 1. 족보(캠페인, 그룹)와 확장소재 추출
     for c in shop_camps:
         cid = c.get("nccCampaignId")
+        camp_rows.append({
+            "customer_id": str(customer_id), "campaign_id": str(cid),
+            "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
+        })
+        
         groups = request_json("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": cid}) or []
         for g in groups:
             gid = g.get("nccAdgroupId")
-            extensions = request_json("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": gid}) or []
+            ag_rows.append({
+                "customer_id": str(customer_id), "adgroup_id": str(gid), "campaign_id": str(cid),
+                "adgroup_name": g.get("name"), "status": g.get("status")
+            })
             
+            extensions = request_json("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": gid}) or []
             for ext in extensions:
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
@@ -91,7 +125,6 @@ def process_account(engine, customer_id: str, target_date: date):
                     ext_info = ext.get("adExtension", {}) or ext
                     ext_type = ext.get("extensionType", "")
                     
-                    # 추가홍보문구, 서브링크 등의 텍스트 추출
                     ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
                     ext_title = f"[확장소재] {ext_type}"
                     
@@ -103,27 +136,15 @@ def process_account(engine, customer_id: str, target_date: date):
                         "creative_text": f"{ext_title} | {ext_text}"[:500]
                     })
 
-    # 3. DB 저장 (dim_ad)
-    if ad_rows:
-        df = pd.DataFrame(ad_rows).drop_duplicates(subset=["customer_id", "ad_id"], keep='last')
-        tuples = list(df.itertuples(index=False, name=None))
-        cols = '", "'.join(df.columns)
-        update_clause = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in df.columns if c not in ["customer_id", "ad_id"]])
-        sql = f'INSERT INTO dim_ad ("{cols}") VALUES %s ON CONFLICT (customer_id, ad_id) DO UPDATE SET {update_clause}'
-        
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-            raw_conn.commit()
-            log(f"   ▶ 쇼핑검색 확장소재 {len(ad_rows)}개 dim_ad 업데이트 완료")
-        except Exception as e:
-            log(f"DB 저장 오류: {e}")
-            if raw_conn: raw_conn.rollback()
+    # 2. 족보를 DB에 확실하게 기록 (이게 있어야 대시보드에 노출됩니다!)
+    upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+    upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+    upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+    log(f"   ▶ 캠페인({len(camp_rows)}), 광고그룹({len(ag_rows)}), 확장소재({len(ad_rows)}) 매핑 완료!")
 
-    # 4. 조회된 확장소재들의 통계 데이터 수집
+    # 3. 통계 데이터 수집
     if target_ad_ids:
-        log(f"   ▶ 확장소재 {len(target_ad_ids)}개 stats(통계) 조회 중...")
+        log(f"   ▶ 확장소재 {len(target_ad_ids)}개 실시간 통계 조회 중...")
         d_str = target_date.strftime("%Y-%m-%d")
         fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"], separators=(',', ':'))
         time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
@@ -135,7 +156,6 @@ def process_account(engine, customer_id: str, target_date: date):
             res = request_json("GET", "/stats", customer_id, params=params)
             if res and "data" in res: raw_stats.extend(res["data"])
 
-        # 5. DB 저장 (fact_ad_daily)
         fact_rows = []
         for r in raw_stats:
             cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1))
@@ -156,18 +176,22 @@ def process_account(engine, customer_id: str, target_date: date):
             except Exception: pass
             
             tuples_f = list(df_fact.itertuples(index=False, name=None))
-            # ✨ SyntaxError 해결: 문자열 합치는 부분을 밖으로 빼서 안전하게 처리
             col_names = '", "'.join(df_fact.columns)
             sql_f = f'INSERT INTO fact_ad_daily ("{col_names}") VALUES %s'
+            
+            raw_conn, cur = None, None
             try:
                 raw_conn = engine.raw_connection()
                 cur = raw_conn.cursor()
                 psycopg2.extras.execute_values(cur, sql_f, tuples_f, page_size=2000)
                 raw_conn.commit()
-                log(f"   ▶ 확장소재 통계 {len(fact_rows)}건 fact_ad_daily 적재 완료")
+                log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
             except Exception as e: log(f"통계 저장 실패: {e}")
+            finally:
+                if cur: cur.close()
+                if raw_conn: raw_conn.close()
         else:
-            log("   ▶ 조회된 쇼핑검색 확장소재 통계 데이터가 0건입니다.")
+            log("   ⚠️ 조회된 날짜에 노출/클릭이 발생한 확장소재가 없습니다.")
 
 def main():
     engine = get_engine()
