@@ -94,12 +94,15 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 continue
             data = None
             try: data = r.json()
-            except: data = r.text
+            except Exception as e: 
+                log(f"   ⚠️ API 응답 JSON 파싱 실패 ({url}): {e}")
+                data = r.text
             if raise_error and r.status_code >= 400:
                 raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
         except requests.exceptions.RequestException as e:
             if "403" in str(e): raise e
+            log(f"   ⚠️ API 호출 에러 발생 재시도 중 ({attempt+1}/{max_retries}): {e}")
             time.sleep(2 + attempt)
     if raise_error: raise Exception(f"최대 재시도 초과: {url}")
     return 0, None
@@ -133,9 +136,12 @@ def ensure_tables(engine: Engine):
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-            except Exception: pass
+            except Exception as e: 
+                # 컬럼이 이미 존재할 때 발생하는 에러는 정상 무시
+                pass
             break
         except Exception as e:
+            log(f"   ⚠️ 테이블 생성 실패 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
             if attempt == 2: raise e
 
@@ -161,15 +167,16 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Rollback 실패: {ex}")
+            log(f"   ⚠️ DB Upsert 에러 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Cursor 닫기 실패: {ex}")
             if raw_conn:
                 try: raw_conn.close()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Connection 닫기 실패: {ex}")
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
@@ -182,6 +189,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception as e:
+            log(f"   ⚠️ 기존 데이터 DELETE 에러 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
@@ -198,15 +206,16 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Rollback 실패: {ex}")
+            log(f"   ⚠️ DB Insert 에러 재시도 중 ({attempt+1}/3): {e}")
             time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Cursor 닫기 실패: {ex}")
             if raw_conn:
                 try: raw_conn.close()
-                except: pass
+                except Exception as ex: log(f"   ⚠️ Connection 닫기 실패: {ex}")
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -377,7 +386,9 @@ def safe_float(v) -> float:
     s = str(v).replace(",", "").strip()
     if not s or s == "-": return 0.0
     try: return float(s)
-    except Exception: return 0.0
+    except Exception as e: 
+        # 자주 일어나는 에러이므로 pass하되 개발자 추적용으로 남김
+        return 0.0
 
 def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False) -> dict:
     """단일 리포트 파일에서 노출/클릭/비용과 전환/매출을 동시에 추출합니다."""
@@ -441,7 +452,8 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
                 if rnk > 0 and imp > 0:
                     res[obj_id]["rank_sum"] += (rnk * imp)
                     res[obj_id]["rank_cnt"] += imp
-        except Exception:
+        except Exception as e:
+            log(f"   ⚠️ 리포트 파싱 중 행 건너뜀: {e}")
             pass
     return res
 
@@ -573,7 +585,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 with engine.connect() as conn:
                     res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
                     ext_ids = [str(r[0]) for r in res]
-            except Exception: pass
+            except Exception as e:
+                log(f"   ⚠️ 확장소재 ID 로드 중 에러: {e}")
+                pass
                 
             if ext_ids:
                 ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
@@ -617,9 +631,10 @@ def main():
         if os.path.exists("accounts.xlsx"):
             df_acc = None
             try: df_acc = pd.read_excel("accounts.xlsx")
-            except:
+            except Exception as e:
+                log(f"⚠️ accounts.xlsx 파싱 실패 (Excel): {e}")
                 try: df_acc = pd.read_csv("accounts.xlsx")
-                except Exception as e: log(f"⚠️ accounts.xlsx 파싱 실패: {e}")
+                except Exception as ex: log(f"⚠️ accounts.xlsx 파싱 실패 (CSV): {ex}")
             
             if df_acc is not None:
                 id_col, name_col = None, None
@@ -641,7 +656,9 @@ def main():
             try:
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
-            except: pass
+            except Exception as e:
+                log(f"⚠️ DB에서 계정 정보 로드 실패: {e}")
+                pass
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
@@ -654,7 +671,7 @@ def main():
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
-            except Exception as e: pass
+            except Exception as e: log(f"⚠️ Worker 실행 중 에러 발생: {e}")
 
 if __name__ == "__main__":
     main()
