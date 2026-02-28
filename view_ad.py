@@ -52,7 +52,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
-    # ✨ [핵심 조치] 비교 기능을 전용 탭으로 분리
     tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석", "⚖️ 기간 비교 분석"])
     
     fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
@@ -101,6 +100,10 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         df_shop = view[view["캠페인유형"] == "쇼핑검색"] if "캠페인유형" in view.columns else pd.DataFrame()
         if not df_shop.empty:
             df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
+            
+            # ✨ [핵심 조치] TALK(톡톡) 소재를 표에서 완전히 숨김 처리합니다.
+            df_shop = df_shop[~df_shop['소재내용'].astype(str).str.contains('TALK', na=False, case=False)]
+            
         if not df_shop.empty:
             _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
         else:
@@ -136,7 +139,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("DB 구조에 랜딩페이지 URL 정보가 아직 포함되어 있지 않습니다. (수집기를 최신 버전으로 돌려주세요)")
 
-    # ✨ [핵심 조치] 소재 기간 비교 전용 탭 구축
     with tab_cmp:
         st.markdown("### ⚖️ 기간 비교 분석")
         cmp_view_mode = st.radio("비교 대상 선택", ["🎯 파워링크 일반 소재", "🛍️ 쇼핑검색 확장소재"], horizontal=True)
@@ -151,6 +153,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_view_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
         if "쇼핑검색" in cmp_view_mode:
             df_target = df_target[df_target['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
+            
+            # ✨ [핵심 조치] 비교 탭에서도 TALK(톡톡) 소재를 숨김 처리합니다.
+            df_target = df_target[~df_target['소재내용'].astype(str).str.contains('TALK', na=False, case=False)]
 
         if df_target.empty:
             st.info("비교할 데이터가 없습니다.")
