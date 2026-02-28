@@ -11,7 +11,6 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-# ✨ [핵심] 언더스코어(_)로 시작하는 함수 명시적 불러오기
 from page_helpers import _perf_common_merge_meta
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
@@ -21,7 +20,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    tab_pl, tab_group, tab_shop, tab_neg = st.tabs(["🎯 파워링크 (키워드)", "📂 파워링크 (그룹)", "🛒 쇼핑검색", "🚫 제외 키워드 발굴기(누수 탐지)"])
+    # ✨ [명칭 수정] 제외 키워드 -> 저효율 키워드 발굴기
+    tab_pl, tab_group, tab_shop, tab_neg = st.tabs(["🎯 파워링크 (키워드)", "📂 파워링크 (그룹)", "🛒 쇼핑검색", "💸 저효율 키워드 발굴기(누수 탐지)"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
@@ -159,7 +159,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             
             for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
                 if c in disp_grp.columns: disp_grp[c] = disp_grp[c].astype(int)
-            if "CTR(%)" in disp_grp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
+            if "CTR(%)" in disp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
             
             st.markdown("#### 📊 광고그룹별 종합 성과 표")
             render_big_table(disp_grp, "pl_grp_grid", 500)
@@ -254,11 +254,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
 
     with tab_neg:
-        st.markdown("### 🚫 제외 키워드 발굴기 (돈 먹는 하마 탐지)")
-        st.caption("클릭은 지속적으로 발생하여 광고비가 새고 있지만, 전환이 전혀 없는 키워드(검색어) 목록입니다. 네이버 광고 시스템에서 **제외 키워드**로 등록할 것을 강력히 권장합니다.")
+        st.markdown("### 💸 저효율 등록 키워드 발굴기 (돈 먹는 하마 탐지)")
+        st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다. **네이버 광고 시스템에서 입찰가를 낮추거나 OFF 상태로 변경할 것**을 강력히 권장합니다.")
         
         if df_pl_raw.empty:
-            st.info("데이터가 부족하여 제외 키워드를 분석할 수 없습니다.")
+            st.info("데이터가 부족하여 저효율 키워드를 분석할 수 없습니다.")
         else:
             leak_view = df_pl_raw.rename(columns={
                 "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", 
@@ -280,10 +280,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.success(f"🎉 현재 기준(비용 {format_currency(min_leak_cost)} 이상, 전환 0)에 해당하는 비용 누수 키워드가 없습니다!")
             else:
                 target_leak["CTR(%)"] = np.where(target_leak["노출"] > 0, (target_leak["클릭"] / target_leak["노출"]) * 100, 0.0).round(2)
-                st.warning(f"🚨 총 **{len(target_leak)}개**의 키워드에서 심각한 비용 누수가 발견되었습니다! 네이버에서 즉시 제외하세요.")
+                st.warning(f"🚨 총 **{len(target_leak)}개**의 등록 키워드에서 심각한 비용 누수가 발견되었습니다! 네이버에서 입찰가를 조절하세요.")
                 
                 csv = target_leak[["키워드"]].to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 제외 키워드 목록 다운로드 (복사/붙여넣기용)", data=csv, file_name="제외키워드_추천.csv", mime="text/csv", type="primary")
+                st.download_button("📥 저효율 키워드 목록 다운로드", data=csv, file_name="저효율키워드_추천.csv", mime="text/csv", type="primary")
                 
                 disp_leak = target_leak[["캠페인", "광고그룹", "키워드", "노출", "클릭", "광고비", "CTR(%)"]].copy()
                 for c in ["노출", "클릭", "광고비"]: disp_leak[c] = disp_leak[c].astype(int)
