@@ -36,30 +36,30 @@ def main():
         st.markdown("### 📌 메뉴 이동")
         if not meta_ready: st.warning("동기화가 필요합니다.")
         
-        # ✨ [아이콘 변경] 알록달록한 이모지 대신 깔끔한 단색 UI 아이콘(Material Icon) 적용
+        # ✨ [수정] 메뉴 이름 간소화 반영
         nav_items = [
-            ":material/dashboard: 요약", 
-            ":material/account_balance_wallet: 예산/잔액", 
-            ":material/campaign: 캠페인", 
-            ":material/search: 키워드", 
-            ":material/ads_click: 소재", 
-            ":material/settings: 설정/연결"
-        ] if meta_ready else [":material/settings: 설정/연결"]
+            "📊 요약", 
+            "💰 예산 및 잔액", 
+            "🚀 캠페인 분석", 
+            "🔎 키워드 분석", 
+            "🧩 소재 분석", 
+            "⚙️ 설정 및 연결"
+        ] if meta_ready else ["⚙️ 설정 및 연결"]
         
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
     f = None
-    if nav != ":material/settings: 설정/연결":
+    if nav != "⚙️ 설정 및 연결":
         if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
-    # 선택된 메뉴에 따라 페이지 라우팅
-    if nav == ":material/dashboard: 요약": page_overview(meta, engine, f)
-    elif nav == ":material/account_balance_wallet: 예산/잔액": page_budget(meta, engine, f)
-    elif nav == ":material/campaign: 캠페인": page_perf_campaign(meta, engine, f)
-    elif nav == ":material/search: 키워드": page_perf_keyword(meta, engine, f)
-    elif nav == ":material/ads_click: 소재": page_perf_ad(meta, engine, f)
+    # ✨ [수정] 변경된 이름으로 라우팅 연결
+    if nav == "📊 요약": page_overview(meta, engine, f)
+    elif nav == "💰 예산 및 잔액": page_budget(meta, engine, f)
+    elif nav == "🚀 캠페인 분석": page_perf_campaign(meta, engine, f)
+    elif nav == "🔎 키워드 분석": page_perf_keyword(meta, engine, f)
+    elif nav == "🧩 소재 분석": page_perf_ad(meta, engine, f)
     else: page_settings(engine)
 
 if __name__ == "__main__":
