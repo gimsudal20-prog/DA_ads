@@ -13,7 +13,7 @@ from typing import Dict, List
 from data import *
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.3 (A/B테스트 고도화 및 정확한 날짜 비교)")
+BUILD_TAG = os.getenv("APP_BUILD", "v15.4 (마케터 친화적 UI/UX 적용)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -58,9 +58,12 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    with st.expander("검색조건", expanded=True):
-        r1 = st.columns([1.1, 1.2, 1.2, 2.2], gap="small")
-        period_mode = r1[0].selectbox("기간", ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"], index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")), key="f_period_mode")
+    # ✨ [UI 개선] 필터 영역을 초보자도 쉽게 이해하도록 문구와 배치를 다듬었습니다.
+    with st.expander("🔍 조회 기간 및 필터 설정 (여기를 열어주세요)", expanded=True):
+        st.caption("💡 여기서 선택한 날짜와 계정 기준으로 대시보드의 모든 데이터가 즉시 변경됩니다.")
+        
+        r1 = st.columns([1.5, 1.5, 1.5, 3], gap="medium")
+        period_mode = r1[0].selectbox("📅 기간 선택", ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"], index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")), key="f_period_mode")
         
         if period_mode == "직접 선택":
             d1 = r1[1].date_input("시작일", sv.get("d1", default_start), key="f_d1")
@@ -75,10 +78,11 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             r1[1].text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
             r1[2].text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
 
-        q = r1[3].text_input("검색", sv.get("q", ""), key="f_q", placeholder="계정/키워드/소재 검색")
+        q = r1[3].text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="찾고 싶은 키워드나 캠페인 이름을 입력하세요")
 
-        r2 = st.columns([1.2, 1.6, 1.2], gap="small")
-        manager_sel = ui_multiselect(r2[0], "담당자", managers, default=sv.get("manager", []), key="f_manager")
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        r2 = st.columns([1.5, 2, 1.5], gap="medium")
+        manager_sel = ui_multiselect(r2[0], "담당자 필터", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
 
         accounts_by_mgr = accounts
         if manager_sel:
@@ -90,8 +94,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             except Exception: pass
 
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
-        account_sel = ui_multiselect(r2[1], "계정", accounts_by_mgr, default=prev_acc, key="f_account")
-        type_sel = ui_multiselect(r2[2], "캠페인 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel")
+        account_sel = ui_multiselect(r2[1], "광고주(계정) 필터", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
+        type_sel = ui_multiselect(r2[2], "광고 유형 필터", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="모든 광고 보기")
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
     st.session_state["filters_v8"] = sv
