@@ -2,11 +2,13 @@
 """ui.py - UI components (tables/charts/downloads) for the Streamlit dashboard."""
 
 from __future__ import annotations
+
 import os
 import re
 import io
 import html
 import math
+import base64  # ✨ [NEW] 이미지 인코딩용 라이브러리 추가
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -17,6 +19,28 @@ import altair as alt
 
 from styles import apply_global_css
 
+# Optional UI components
+try:
+    import streamlit_shadcn_ui as ui
+    HAS_SHADCN_UI = True
+except Exception:
+    ui = None
+    HAS_SHADCN_UI = False
+
+# Optional AgGrid
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+    from st_aggrid.shared import GridUpdateMode, DataReturnMode
+    HAS_AGGRID = True
+except Exception:
+    AgGrid = None
+    GridOptionsBuilder = None
+    JsCode = None
+    GridUpdateMode = None
+    DataReturnMode = None
+    HAS_AGGRID = False
+
+# Optional ECharts
 try:
     from streamlit_echarts import st_echarts
     HAS_ECHARTS = True
@@ -25,38 +49,61 @@ except Exception:
     HAS_ECHARTS = False
 
 from data import (
-    format_currency, format_number_commas, format_roas,
-    finalize_ctr_col, finalize_display_cols, _period_compare_range,
-    get_entity_totals, _pct_change, _pct_to_str,
+    format_currency,
+    format_number_commas,
+    format_roas,
+    finalize_ctr_col,
+    finalize_display_cols,
+    _period_compare_range,
+    get_entity_totals,
+    _pct_change,
+    _pct_to_str,
 )
 
 try: alt.data_transformers.enable("vegafusion")
 except Exception: pass
 
+# ✨ [NEW] 상단 헤더 개편: 회사 로고를 읽어와서 밝고 세련된 카드로 띄워줍니다.
 def render_hero(latest_dates: dict | None, build_tag: str) -> None:
     dt_str = "수집 대기 중"
     if latest_dates:
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
+    # 폴더에 logo.png, logo.jpg 등이 있으면 읽어서 HTML용 이미지 태그로 만듭니다.
+    logo_html = "<span style='font-size: 32px;'>🏢</span>" # 로고가 없을 때 기본 아이콘
+    for ext in ['png', 'jpg', 'jpeg', 'webp']:
+        path = f"logo.{ext}"
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode()
+                mime = "image/jpeg" if ext in ['jpg', 'jpeg'] else f"image/{ext}"
+                logo_html = f"<img src='data:{mime};base64,{encoded}' style='max-height: 46px; object-fit: contain;' />"
+                break
+            except Exception:
+                pass
+
     html_str = f"""
-    <div style='background: linear-gradient(135deg, #0F172A 0%, #1E3A8A 100%); padding: 28px 32px; border-radius: 16px; color: #fff; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);'>
-        <div>
-            <h1 style='margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px;'>
-                🎯 퍼포먼스 마케팅 센터
-            </h1>
-            <p style='margin: 8px 0 0 0; color: #94A3B8; font-size: 14px; font-weight: 500;'>
-                데이터 기준일: <span style='background: rgba(255,255,255,0.1); padding: 4px 8px; border-radius: 6px; color: #fff; font-weight: 700; margin-left: 4px;'>{dt_str}</span>
-            </p>
+    <div style='background: #FFFFFF; border: 1px solid #E2E8F0; padding: 20px 32px; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);'>
+        <div style='display: flex; align-items: center; gap: 20px;'>
+            <div>{logo_html}</div>
+            <div style='border-left: 2px solid #F1F5F9; padding-left: 20px;'>
+                <h1 style='margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #0F172A;'>
+                    통합 퍼포먼스 마케팅 센터
+                </h1>
+                <p style='margin: 6px 0 0 0; color: #64748B; font-size: 13.5px; font-weight: 500;'>
+                    최신 데이터 기준일: <span style='color: #2563EB; font-weight: 700;'>{dt_str}</span>
+                </p>
+            </div>
         </div>
         <div style='text-align: right;'>
-            <div style='background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: #E2E8F0;'>{build_tag}</div>
+            <div style='background: #F8FAFC; border: 1px solid #E2E8F0; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: #475569;'>{build_tag}</div>
         </div>
     </div>
     """
     st.markdown(html_str, unsafe_allow_html=True)
 
-# ✨ [UI 개선] Native Streamlit metric 대신 예쁘고 통일감 있는 자체 CSS 카드로 교체
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):
     html = f"""
     <div style="background: white; padding: 20px; border-radius: 12px; border: 1px solid #E2E8F0; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 16px;">
