@@ -1,0 +1,33 @@
+name: Naver Ads Auto Collector
+
+on:
+  schedule:
+    # ✨ [핵심 변경] 매 정각마다(1시간 단위) 네이버 상태를 감시하여 꺼진 시간을 칼같이 잡아냅니다.
+    - cron: '0 * * * *'
+  workflow_dispatch: 
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 소스 코드 가져오기
+        uses: actions/checkout@v3
+
+      - name: 🐍 파이썬 환경 세팅
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 📦 필요 라이브러리 설치
+        run: |
+          pip install -r requirements.txt
+
+      - name: 🚀 데이터 수집 및 꺼짐 시간 스캔 실행
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NAVER_API_KEY: ${{ secrets.NAVER_API_KEY }}
+          NAVER_API_SECRET: ${{ secrets.NAVER_API_SECRET }}
+          CUSTOMER_ID: ${{ secrets.CUSTOMER_ID }}
+        run: |
+          python collector.py
