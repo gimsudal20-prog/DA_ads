@@ -1,0 +1,38 @@
+name: Test Shopping Extension Ads Collector
+
+on:
+  workflow_dispatch: 
+    inputs:
+      date:
+        description: '수집할 날짜 (YYYY-MM-DD 포맷), 미입력시 자동으로 어제 날짜 수집'
+        required: false
+        default: ''
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Shopping Extension Collector
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+          NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+          CUSTOMER_ID: ${{ secrets.CUSTOMER_ID }}
+        run: |
+          python collector_shop_ext.py --date "${{ github.event.inputs.date }}"
