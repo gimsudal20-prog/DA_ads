@@ -229,6 +229,19 @@ def query_budget_bundle(
     df["avg_cost"] = df["avg_sum_cost"].astype(float) / float(max(avg_days, 1))
     return df
 
+# ✨ [NEW] 캠페인 꺼짐 시간 히스토리 조회 함수
+@st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
+def query_campaign_off_log(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
+    where_cid = f"AND customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    sql = f"""
+    SELECT dt, customer_id::text as customer_id, campaign_id, off_time
+    FROM fact_campaign_off_log
+    WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    return df if df is not None else pd.DataFrame()
+
 def _safe_int(x, default: int = 0) -> int:
     try:
         if pd.isna(x) or x == "": return default
@@ -522,7 +535,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
     ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), p.ad_id)"
     
-    # ✨ [추가됨] 랜딩페이지 분석을 위해 pc_landing_url 가져오기
     pc_url_expr = "COALESCE(NULLIF(TRIM(a.pc_landing_url), ''), '')" if "pc_landing_url" in ad_cols else "''"
     
     cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
