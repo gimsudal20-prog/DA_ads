@@ -229,7 +229,6 @@ def query_budget_bundle(
     df["avg_cost"] = df["avg_sum_cost"].astype(float) / float(max(avg_days, 1))
     return df
 
-# ✨ [NEW] 캠페인 꺼짐 시간 히스토리 조회 함수
 @st.cache_data(hash_funcs=_HASH_FUNCS, ttl=60, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: Tuple[int, ...]) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
@@ -250,10 +249,12 @@ def _safe_int(x, default: int = 0) -> int:
 
 def format_currency(val) -> str: return f"{_safe_int(val):,}원"
 def format_number_commas(val) -> str: return f"{_safe_int(val):,}"
+
+# ✨ [NEW] ROAS를 소수점 첫째자리(.1f)까지 보여주도록 수정
 def format_roas(val) -> str:
     try:
         if pd.isna(val): return "-"
-        return f"{float(val):.0f}%"
+        return f"{float(val):.1f}%"
     except Exception: return "-"
 
 def parse_currency(val_str) -> int:
