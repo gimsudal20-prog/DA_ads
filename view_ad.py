@@ -51,7 +51,8 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
 
-    tab_pl, tab_shop = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)"])
+    # ✨ [신규 기능 5] 🔗 랜딩페이지(CVR) 탭 추가
+    tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
 
     def _render_ad_tab(df_tab: pd.DataFrame, title_prefix: str, ad_type_name: str):
         if df_tab.empty:
@@ -118,12 +119,40 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         if not df_shop.empty:
             df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
-
-        st.info("💡 **쇼핑검색 확장소재 전용 분석:** 오직 쇼핑검색 추가로 등록한 '확장소재(추가홍보문구 등)' 데이터만 표시됩니다. (일반 상품 소재는 '키워드' 탭으로 이동되었습니다.)")
         
         if not df_shop.empty:
-            ext_count = len(df_shop)
-            st.success(f"🎉 성공! 수집된 쇼핑검색 확장소재(추가홍보문구 등)가 **{ext_count}건** 발견되어 분석되었습니다.")
             _render_ad_tab(df_shop, "쇼핑검색", "쇼핑검색 확장소재")
         else:
             st.warning("해당 기간에 사용된 쇼핑검색 확장소재가 없습니다.")
+
+    with tab_landing:
+        st.markdown("### 🔗 랜딩페이지(URL)별 구매 전환율(CVR) 비교")
+        st.caption("어떤 상세페이지나 기획전 URL로 고객을 보냈을 때 구매 전환율(CVR)과 ROAS가 가장 높은지 분석합니다.")
+        
+        if "landing_url" in view.columns:
+            df_lp = view[view["landing_url"].astype(str) != ""].copy()
+            if df_lp.empty:
+                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (URL 정보가 포함된 소재가 존재하지 않습니다.)")
+            else:
+                # URL별로 그룹화하여 성과 합산
+                lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
+                
+                lp_grp["CTR(%)"] = np.where(lp_grp["노출"] > 0, (lp_grp["클릭"] / lp_grp["노출"]) * 100, 0)
+                lp_grp["CVR(%)"] = np.where(lp_grp["클릭"] > 0, (lp_grp["전환"] / lp_grp["클릭"]) * 100, 0)
+                lp_grp["ROAS(%)"] = np.where(lp_grp["광고비"] > 0, (lp_grp["전환매출"] / lp_grp["광고비"]) * 100, 0)
+                
+                lp_grp = lp_grp.rename(columns={"landing_url": "랜딩페이지 URL"})
+                lp_grp = lp_grp.sort_values("광고비", ascending=False).reset_index(drop=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Streamlit 네이티브 DataFrame의 강력한 그라데이션 스타일링 활용!
+                styled_df = lp_grp.style.background_gradient(cmap="Greens", subset=["CVR(%)", "ROAS(%)"]).format({
+                    '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', 
+                    '전환': '{:,.1f}', '전환매출': '{:,.0f}', 
+                    'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.0f}%'
+                })
+                
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("DB 구조에 랜딩페이지 URL 정보가 아직 포함되어 있지 않습니다. (수집기를 최신 버전으로 돌려주세요)")
