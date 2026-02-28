@@ -25,14 +25,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
     with tab_pl:
-        # ✨ [개선] 보기 모드를 토글 스위치로 변경
         is_group_view = st.toggle("📂 광고그룹 단위로 요약해서 보기", value=False, key="kw_view_toggle")
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
         if not is_group_view:
             if not df_pl_raw.empty:
                 opts_pl = get_dynamic_cmp_options(f["start"], f["end"])
-                # ✨ [개선] 기간 비교를 토글 스위치로 변경
                 is_cmp_pl = st.toggle(f"📊 기간 비교 켜기 ({opts_pl[1]})", value=False, key="kw_pl_cmp_toggle")
                 cmp_mode_pl = opts_pl[1] if is_cmp_pl else "비교 안함"
                 
@@ -55,7 +53,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
                 view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
                 view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-                view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+                # ✨ [수정] ROAS의 .round(0) 제거
+                view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
                 if "avg_rank" in view.columns:
@@ -82,9 +81,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         render_comparison_section(view, cmp_mode_pl, b1, b2, f["start"], f["end"], "선택 키워드 상세 비교")
 
                 disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
-                for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+                
+                # ✨ [수정] 전환과 ROAS는 float로 유지
+                for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
                     if c in disp.columns: disp[c] = disp[c].astype(int)
+                if "전환" in disp.columns: disp["전환"] = disp["전환"].astype(float).round(1)
                 if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
+                if "ROAS(%)" in disp.columns: disp["ROAS(%)"] = disp["ROAS(%)"].astype(float).round(1)
                 
                 if "평균순위" in view.columns:
                     all_kws = sorted([str(x) for x in view["키워드"].unique() if str(x).strip()])
@@ -101,7 +104,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                                 rank_str = "순위 미수집" if pd.isna(avg_rank) or avg_rank == 0 else f"평균 {float(avg_rank):.1f}위"
                                 roas = getattr(row, 'ROAS(%)', 0)
                                 with cols[idx % 4]:
-                                    ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas}%", key=f"kw_star_{idx}")
+                                    ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas:.1f}%", key=f"kw_star_{idx}")
                 st.divider()
                 st.markdown("#### 📊 검색어별 상세 성과 표")
                 render_big_table(disp, "pl_grid", 500)
@@ -111,7 +114,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         else:
             if not df_pl_raw.empty:
                 opts_grp = get_dynamic_cmp_options(f["start"], f["end"])
-                # ✨ [개선] 기간 비교 토글
                 is_cmp_grp = st.toggle(f"📊 기간 비교 켜기 ({opts_grp[1]})", value=False, key="kw_grp_cmp_toggle")
                 cmp_mode_grp = opts_grp[1] if is_cmp_grp else "비교 안함"
                 
@@ -133,7 +135,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_grp["CTR(%)"] = np.where(view_grp.get("노출", 0) > 0, (view_grp.get("클릭", 0) / view_grp.get("노출", 0)) * 100, 0.0).round(2)
                 view_grp["CPC(원)"] = np.where(view_grp.get("클릭", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("클릭", 0), 0.0).round(0)
                 view_grp["CPA(원)"] = np.where(view_grp.get("전환", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("전환", 0), 0.0).round(0)
-                view_grp["ROAS(%)"] = np.where(view_grp.get("광고비", 0) > 0, (view_grp.get("전환매출", 0) / view_grp.get("광고비", 0)) * 100, 0.0).round(0)
+                # ✨ [수정] ROAS의 .round(0) 제거
+                view_grp["ROAS(%)"] = np.where(view_grp.get("광고비", 0) > 0, (view_grp.get("전환매출", 0) / view_grp.get("광고비", 0)) * 100, 0.0)
                 
                 b1, b2 = None, None
                 if cmp_mode_grp != "비교 안함":
@@ -166,10 +169,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 final_cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]
                 disp_grp = view_grp[final_cols_grp].sort_values(by="광고비" if "광고비" in view_grp.columns else final_cols_grp[0], ascending=False).head(top_n)
                 
-                for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+                # ✨ [수정] 전환과 ROAS는 float로 유지
+                for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
                     if c in disp_grp.columns: disp_grp[c] = disp_grp[c].astype(int)
-                
+                if "전환" in disp_grp.columns: disp_grp["전환"] = disp_grp["전환"].astype(float).round(1)
                 if "CTR(%)" in disp_grp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
+                if "ROAS(%)" in disp_grp.columns: disp_grp["ROAS(%)"] = disp_grp["ROAS(%)"].astype(float).round(1)
                 
                 st.markdown("#### 📊 광고그룹별 종합 성과 표")
                 render_big_table(disp_grp, "pl_grp_grid", 500)
@@ -182,7 +187,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
             opts_shop = get_dynamic_cmp_options(f["start"], f["end"])
-            # ✨ [개선] 기간 비교 토글
             is_cmp_shop = st.toggle(f"📊 기간 비교 켜기 ({opts_shop[1]})", value=False, key="shop_cmp_toggle")
             cmp_mode_shop = opts_shop[1] if is_cmp_shop else "비교 안함"
             
@@ -214,7 +218,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CTR(%)"] = np.where(view_shop["노출"] > 0, (view_shop["클릭"] / view_shop["노출"]) * 100, 0.0).round(2)
                 view_shop["CPC(원)"] = np.where(view_shop["클릭"] > 0, view_shop["광고비"] / view_shop["클릭"], 0.0).round(0)
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0).round(0)
-                view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0).round(0)
+                # ✨ [수정] ROAS의 .round(0) 제거
+                view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
                 metrics_cols_shop = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
@@ -250,9 +255,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 disp_shop = view_shop[final_cols_shop].sort_values("광고비", ascending=False).head(top_n)
 
-                for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+                # ✨ [수정] 전환과 ROAS는 float로 유지
+                for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
                     if c in disp_shop.columns: disp_shop[c] = disp_shop[c].astype(int)
+                if "전환" in disp_shop.columns: disp_shop["전환"] = disp_shop["전환"].astype(float).round(1)
                 if "CTR(%)" in disp_shop.columns: disp_shop["CTR(%)"] = disp_shop["CTR(%)"].astype(float).round(2)
+                if "ROAS(%)" in disp_shop.columns: disp_shop["ROAS(%)"] = disp_shop["ROAS(%)"].astype(float).round(1)
 
                 st.markdown("#### 📊 상품/소재별 상세 성과 표")
                 render_big_table(disp_shop, "shop_general_grid", 500)
