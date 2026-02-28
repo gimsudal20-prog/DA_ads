@@ -13,7 +13,18 @@ from view_overview import page_overview
 from view_budget import page_budget
 from view_campaign import page_perf_campaign
 from view_keyword import page_perf_keyword
-from view_ad import page_perf_ad
+
+# NOTE: view_ad.py 안의 SyntaxError 등으로 앱 전체가 죽는 것을 막기 위해,
+#       소재 페이지 import를 안전하게 감쌉니다.
+try:
+    from view_ad import page_perf_ad  # type: ignore
+except Exception as _e:  # includes SyntaxError
+    def page_perf_ad(meta, engine, f):  # type: ignore
+        st.error("❌ 'view_ad.py' 로딩 실패로 소재 분석 페이지를 열 수 없습니다.")
+        st.caption("아래 오류는 view_ad.py의 문법 오류(SyntaxError) 또는 import 오류일 가능성이 큽니다.")
+        st.code(str(_e))
+        st.info("view_ad.py 파일을 이 대화에 업로드해주면, 문법 오류를 직접 고쳐서 전체 코드로 다시 드릴게요.")
+
 from view_settings import page_settings
 
 def main():
