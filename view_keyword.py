@@ -11,7 +11,7 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-# ✨ [추가] 언더스코어(_)로 시작하는 함수 명시적 불러오기
+# ✨ [핵심] 언더스코어(_)로 시작하는 함수 명시적 불러오기
 from page_helpers import _perf_common_merge_meta
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
