@@ -22,8 +22,8 @@ from page_helpers import *
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
     
-    # ✨ [핵심 기능] 캠페인 실시간 예측 탭 추가
-    tab_budget, tab_alert, tab_realtime = st.tabs(["💰 월 예산 및 집행 현황", "🚨 잔액 소진(계정) 예측", "⏱️ 실시간 캠페인 꺼짐 시간 예측"])
+    # ✨ [수정] 예측 탭의 이름을 직관적으로 변경했습니다.
+    tab_budget, tab_alert, tab_realtime = st.tabs(["💰 월 예산 및 집행 현황", "🚨 잔액 소진(계정) 예측", "🛑 실시간 캠페인 꺼짐 시간 확인"])
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
@@ -177,12 +177,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         display_df = display_df.sort_values(by="예상 광고중단일", ascending=False)
         render_big_table(display_df, key="budget_alert_table", height=500)
 
-    # ✨ [신규 기능] 네이버 실시간 통신을 통한 캠페인 꺼짐 분 단위 예측
+    # ✨ [핵심 기능 업데이트] 예측 로직을 지우고 "실제 꺼진 정확한 시간(editTm)"을 추적합니다.
     with tab_realtime:
-        st.markdown("### ⏱️ 실시간 캠페인 예산 소진(꺼짐) 시간 예측")
-        st.caption("버튼을 누르는 즉시 네이버 서버와 통신하여, 캠페인의 실시간 지출 속도를 계산하고 **정확히 오늘 몇 시 몇 분에 예산이 모두 소진될지** 예측합니다. 예산 증액 타이밍을 잡을 때 활용하세요.")
+        st.markdown("### 🛑 실시간 캠페인 예산 소진(꺼짐) 시간 확인")
+        st.caption("버튼을 누르면 네이버 시스템이 예산 부족으로 캠페인을 중단시킨 **'실제 정확한 시간(분 단위)'**을 잡아내어 보여줍니다.")
         
-        if st.button("🔄 실시간 캠페인 소진 시간 체크 (API 통신)", type="primary"):
+        if st.button("🔄 현재 꺼진 캠페인 및 중단 시간 가져오기", type="primary"):
             api_key = os.getenv("NAVER_API_KEY")
             secret = os.getenv("NAVER_API_SECRET")
             
@@ -191,13 +191,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             elif not cids:
                 st.warning("선택된 계정이 없습니다. 왼쪽 필터에서 계정을 선택해주세요.")
             else:
-                with st.spinner("🚀 네이버 실시간 서버에서 예산 데이터를 분석 중입니다..."):
+                with st.spinner("🚀 네이버 서버에서 캠페인 상태 변경 기록(Log)을 스캔 중입니다..."):
                     results = []
                     now = datetime.now()
                     today_str = now.strftime("%Y-%m-%d")
-                    # 오늘 자정부터 지금까지 몇 시간이 지났는지 소수점 계산
-                    hours_passed = now.hour + (now.minute / 60.0)
-                    if hours_passed < 0.1: hours_passed = 0.1 
 
                     for cid in cids:
                         ts = str(int(time.time() * 1000))
@@ -206,7 +203,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         headers = {"X-Timestamp": ts, "X-API-KEY": api_key, "X-Customer": str(cid), "X-Signature": sig}
                         
                         try:
-                            # 캠페인 하루 예산 가져오기
+                            # 캠페인 데이터 다이렉트 호출
                             res_camp = requests.get("https://api.searchad.naver.com/ncc/campaigns", headers=headers, timeout=5)
                             if res_camp.status_code != 200: continue
                             
@@ -221,7 +218,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                             if not target_camps: continue
                             camp_ids = [str(c[0]["nccCampaignId"]) for c in target_camps]
                             
-                            # 오늘 현재까지 쓴 비용(cost) 실시간 조회
+                            # 현재 누적 지출액 가져오기
                             stat_map = {}
                             for i in range(0, len(camp_ids), 50):
                                 chunk = camp_ids[i:i+50]
@@ -235,37 +232,35 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                                 res_stat = requests.get("https://api.searchad.naver.com/stats", headers=headers, params=params, timeout=5)
                                 if res_stat.status_code == 200:
                                     for s in res_stat.json().get("data", []):
-                                        # 부가세 포함 1.1배
                                         stat_map[str(s["id"])] = int(round(float(s.get("salesAmt", 0)) * 1.1))
                                         
-                            # 소진 속도 계산 및 예측
                             for c, budget in target_camps:
                                 camp_id = str(c["nccCampaignId"])
                                 cost = stat_map.get(camp_id, 0)
                                 status = c.get("status", "")
                                 status_reason = c.get("statusReason", "")
+                                edit_tm = c.get("editTm", "") # 네이버 시스템이 상태를 변경한 시간! (UTC)
                                 
-                                burn_rate = cost / hours_passed
-                                
+                                # 예산 소진으로 인해 꺼졌는지 검사
                                 if "EXHAUSTED" in status or "LIMIT" in status_reason or cost >= budget:
-                                    state = "🔴 예산 초과 (현재 꺼짐)"
-                                    est_time = "이미 소진됨"
+                                    state = "🔴 예산 소진 (꺼짐)"
+                                    off_time_str = "시간 확인 불가"
+                                    
+                                    # 시스템 업데이트 시간을 KST(한국시간)로 변환하여 실제 꺼진 시간 포착
+                                    if edit_tm:
+                                        try:
+                                            utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
+                                            kst_dt = utc_dt + timedelta(hours=9)
+                                            if kst_dt.date() == now.date():
+                                                off_time_str = kst_dt.strftime("오늘 %H시 %M분 🛑")
+                                            else:
+                                                off_time_str = kst_dt.strftime("%m월 %d일 %H시 %M분 🛑")
+                                        except Exception:
+                                            pass
                                 else:
-                                    if burn_rate > 0:
-                                        hours_to_deplete = budget / burn_rate
-                                        if hours_to_deplete <= 24:
-                                            est_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=hours_to_deplete)
-                                            est_time = est_dt.strftime("오늘 %H시 %M분 경")
-                                            if est_dt < now: est_time = "곧 소진 예정"
-                                            state = "🟡 소진 진행중"
-                                        else:
-                                            est_time = "오늘 자정까지 여유"
-                                            state = "🟢 여유 (느린 속도)"
-                                    else:
-                                        est_time = "소진 없음"
-                                        state = "🟢 여유"
+                                    state = "🟢 정상 노출 중"
+                                    off_time_str = "-"
                                         
-                                # 어떤 업체인지 메타 데이터에서 찾기
                                 acc_name = str(cid)
                                 if not meta.empty and 'customer_id' in meta.columns:
                                     match = meta[meta['customer_id'] == cid]
@@ -276,21 +271,21 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                                     "업체명": acc_name,
                                     "캠페인명": c.get("name", ""),
                                     "상태": state,
-                                    "예상 꺼짐 시간": est_time,
+                                    "실제 중단 시간": off_time_str,
                                     "하루 예산": budget,
-                                    "현재 소진액": cost,
+                                    "현재 누적비용": cost,
                                 })
                                 
-                        except Exception as e:
+                        except Exception:
                             continue
                     
                     if results:
                         df_res = pd.DataFrame(results)
                         df_res = df_res.sort_values(by=["상태", "업체명"], ascending=[True, True])
                         df_res["하루 예산"] = df_res["하루 예산"].apply(format_currency)
-                        df_res["현재 소진액"] = df_res["현재 소진액"].apply(format_currency)
+                        df_res["현재 누적비용"] = df_res["현재 누적비용"].apply(format_currency)
                         
-                        st.success("✅ 실시간 예측 분석이 완료되었습니다!")
-                        render_big_table(df_res, "realtime_camp_predict", 500)
+                        st.success("✅ 실시간 통신 완료! 현재 꺼져있는 캠페인과 중단 시간을 확인하세요.")
+                        render_big_table(df_res, "realtime_camp_actual", 500)
                     else:
                         st.info("예산이 설정된 활성 캠페인이 없거나 통신에 실패했습니다.")
