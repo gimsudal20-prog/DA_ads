@@ -26,8 +26,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cur_roas = cur_summary.get('roas', 0)
     cur_cost = cur_summary.get('cost', 0)
     if cur_cost > 0 and cur_roas < 100:
-        # ✨ [NEW] ROAS .1f 반영
-        alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.1f}%**로 매우 낮습니다.")
+        # ✨ [NEW] ROAS .2f 적용
+        alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.2f}%**로 매우 낮습니다.")
         
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
@@ -90,8 +90,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         ("광고비", format_currency(cur.get("cost", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost")),
         ("전환매출", format_currency(cur.get("sales", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales")),
         ("전환수", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv")),
-        # ✨ [NEW] ROAS 카드 소수점 1자리 반영
-        ("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas")),
+        # ✨ [NEW] ROAS 카드 소수점 0.01단위(.2f) 적용
+        ("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas")),
         ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
         ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
     ]
@@ -124,9 +124,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # ✨ [NEW] 스타일링 테이블 내 ROAS 소수점 1자리 반영
+                # ✨ [NEW] 스타일링 테이블 내 ROAS 소수점 0.01단위(.2f) 반영
                 styled_df = dow_disp.style.background_gradient(cmap='Reds', subset=['광고비']).background_gradient(cmap='Greens', subset=['ROAS(%)']).format({
-                    '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.1f}%'
+                    '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
                 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
