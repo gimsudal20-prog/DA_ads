@@ -50,7 +50,9 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0).round(2)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0).round(0)
+    
+    # ✨ [수정] ROAS의 .round(0) 제거
+    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
     tab_pl, tab_shop, tab_landing = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석"])
 
@@ -60,7 +62,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             return
 
         opts_ad = get_dynamic_cmp_options(f["start"], f["end"])
-        # ✨ [개선] 기간 비교를 토글 스위치로 변경
         is_cmp_ad = st.toggle(f"📊 기간 비교 켜기 ({opts_ad[1]})", value=False, key=f"ad_cmp_toggle_{ad_type_name}")
         cmp_mode_ad = opts_ad[1] if is_cmp_ad else "비교 안함"
         
@@ -105,9 +106,12 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
-        for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
+        # ✨ [수정] 전환과 ROAS는 float로 유지
+        for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
             if c in disp.columns: disp[c] = disp[c].astype(int)
+        if "전환" in disp.columns: disp["전환"] = disp["전환"].astype(float).round(1)
         if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
+        if "ROAS(%)" in disp.columns: disp["ROAS(%)"] = disp["ROAS(%)"].astype(float).round(1)
 
         st.markdown(f"#### 📊 {ad_type_name} 상세 성과 표")
         render_big_table(disp, f"ad_big_table_{ad_type_name}", 500)
@@ -134,7 +138,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "landing_url" in view.columns:
             df_lp = view[view["landing_url"].astype(str) != ""].copy()
             if df_lp.empty:
-                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (수집기를 다시 한 일 돌려 DB를 업데이트해주세요.)")
+                st.info("수집된 랜딩페이지 URL 데이터가 없습니다. (수집기를 다시 한 번 돌려 DB를 업데이트해주세요.)")
             else:
                 lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
                 
@@ -150,7 +154,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 styled_df = lp_grp.style.background_gradient(cmap="Greens", subset=["CVR(%)", "ROAS(%)"]).format({
                     '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', 
                     '전환': '{:,.1f}', '전환매출': '{:,.0f}', 
-                    'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.0f}%'
+                    'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.1f}%'
                 })
                 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
