@@ -15,7 +15,6 @@ from ui import *
 
 from data import pct_change, pct_to_arrow
 
-# ✨ [수정] 불필요한 버전 텍스트를 공백으로 삭제했습니다.
 BUILD_TAG = os.getenv("APP_BUILD", "")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
@@ -194,7 +193,10 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str,
         
         f_cost = format_currency(cost)
         f_sales = format_currency(sales)
-        f_roas = f"{roas:,.0f}%"
+        
+        # ✨ [NEW] 카드 내 ROAS 소수점 1자리로 통일
+        f_roas = f"{roas:,.1f}%"
+        
         f_imp = format_number_commas(imp)
         f_clk = format_number_commas(clk)
         f_conv = f"{conv:,.1f}"
@@ -270,7 +272,9 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
         deltas['clk'] = pct_to_arrow(pct_change(combined_row['클릭'], combined_row['p_clk']))
         
         roas_diff = combined_row['ROAS(%)'] - combined_row['p_roas']
-        deltas['roas'] = f"▲ {abs(roas_diff):.0f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.0f}%" if roas_diff < 0 else "-")
+        
+        # ✨ [NEW] 비교 배지 내 ROAS 증감율도 소수점 1자리(.1f)로 표기
+        deltas['roas'] = f"▲ {abs(roas_diff):.1f}%" if roas_diff > 0 else (f"▼ {abs(roas_diff):.1f}%" if roas_diff < 0 else "-")
         
         conv_diff = combined_row['전환'] - combined_row['p_conv']
         deltas['conv'] = f"▲ {abs(conv_diff):.1f}" if conv_diff > 0 else (f"▼ {abs(conv_diff):.1f}" if conv_diff < 0 else "-")
@@ -309,7 +313,7 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
                 <span style='color:#64748B; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.0f}%</span>
+                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.1f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
                 <span style='color:#64748B; font-size:13px;'>노출수</span>
