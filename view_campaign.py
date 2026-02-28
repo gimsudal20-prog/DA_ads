@@ -36,11 +36,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
         else: view[c] = 0
 
-    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0).round(2)
-    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0).round(0)
-    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0).round(0)
-    
-    # ✨ [수정] ROAS의 .round(0) 제거 (소수점 유지)
+    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
+    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
+    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
     opts = get_dynamic_cmp_options(f["start"], f["end"])
@@ -77,12 +75,19 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     final_cols = [c for c in base_cols + metrics_cols if c in view.columns]
     disp = view[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-    # ✨ [수정] 전환과 ROAS는 정수 변환(astype int)에서 제외하고 float 소수점 1자리로 처리
-    for c in ["노출", "클릭", "광고비", "CPC(원)", "CPA(원)", "전환매출"]:
-        if c in disp.columns: disp[c] = disp[c].astype(int)
-    if "전환" in disp.columns: disp["전환"] = disp["전환"].astype(float).round(1)
-    if "CTR(%)" in disp.columns: disp["CTR(%)"] = disp["CTR(%)"].astype(float).round(2)
-    if "ROAS(%)" in disp.columns: disp["ROAS(%)"] = disp["ROAS(%)"].astype(float).round(1)
+    # ✨ [NEW] 데이터를 억지로 자르지 않고, Styler 포맷터를 통해 예쁘게 표출합니다!
+    fmt = {}
+    if "노출" in disp.columns: fmt["노출"] = "{:,.0f}"
+    if "클릭" in disp.columns: fmt["클릭"] = "{:,.0f}"
+    if "광고비" in disp.columns: fmt["광고비"] = "{:,.0f}"
+    if "CPC(원)" in disp.columns: fmt["CPC(원)"] = "{:,.0f}"
+    if "CPA(원)" in disp.columns: fmt["CPA(원)"] = "{:,.0f}"
+    if "전환매출" in disp.columns: fmt["전환매출"] = "{:,.0f}"
+    if "전환" in disp.columns: fmt["전환"] = "{:,.1f}"
+    if "CTR(%)" in disp.columns: fmt["CTR(%)"] = "{:,.2f}%"
+    if "ROAS(%)" in disp.columns: fmt["ROAS(%)"] = "{:,.2f}%"
+
+    styled_disp = disp.style.format(fmt)
 
     st.markdown("#### 📊 캠페인 종합 성과 표")
-    render_big_table(disp, "camp_grid", 550)
+    render_big_table(styled_disp, "camp_grid", 550)
