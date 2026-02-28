@@ -23,7 +23,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 예외 추적을 위한 로거 설정
 logger = logging.getLogger(__name__)
 
 _HASH_FUNCS = {Engine: lambda e: e.url.render_as_string(hide_password=True)}
@@ -523,6 +522,9 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     ad_cols = get_table_columns(_engine, "dim_ad") if dim_ad_exists else set()
     ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), p.ad_id)"
     
+    # ✨ [추가됨] 랜딩페이지 분석을 위해 pc_landing_url 가져오기
+    pc_url_expr = "COALESCE(NULLIF(TRIM(a.pc_landing_url), ''), '')" if "pc_landing_url" in ad_cols else "''"
+    
     cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
     cp_tp_col = "campaign_tp" if "campaign_tp" in cp_cols else ("campaign_type" if "campaign_type" in cp_cols else None)
     cp_name_col = "campaign_name" if "campaign_name" in cp_cols else ("name" if "name" in cp_cols else None)
@@ -533,7 +535,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     adgroup_join_key = f"COALESCE(NULLIF(p.f_adgroup_id, ''), NULLIF({'a.adgroup_id::text' if (dim_ad_exists and 'adgroup_id' in ad_cols) else 'NULL::text'}, ''))"
     campaign_join_key = f"COALESCE(NULLIF(p.f_campaign_id, ''), NULLIF({'a.campaign_id::text' if (dim_ad_exists and 'campaign_id' in ad_cols) else 'NULL::text'}, ''), NULLIF({'g.campaign_id::text' if (dim_ag_exists and 'campaign_id' in ag_cols) else 'NULL::text'}, ''))"
 
-    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS ad_name) a ON 1=0"
+    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS ad_name, NULL::text AS pc_landing_url) a ON 1=0"
     join_ag = f"LEFT JOIN dim_adgroup g ON p.customer_id = g.customer_id::text AND g.adgroup_id::text = {adgroup_join_key}" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_name) g ON 1=0"
     join_cp = f"LEFT JOIN dim_campaign c ON p.customer_id = c.customer_id::text AND c.campaign_id::text = {campaign_join_key}" if dim_cp_exists else f"LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
 
@@ -553,7 +555,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
       {ad_text_expr} AS ad_name,
       {f"COALESCE(NULLIF(TRIM(g.{ag_name_col}),''),'')" if ag_name_col else "''"} AS adgroup_name,
       {f"COALESCE(NULLIF(TRIM(c.{cp_name_col}),''),'')" if cp_name_col else "''"} AS campaign_name,
-      {f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}),''),'')" if cp_tp_col else "''"} AS campaign_tp
+      {f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}),''),'')" if cp_tp_col else "''"} AS campaign_tp,
+      {pc_url_expr} AS landing_url
     FROM picked p {join_ad} {join_ag} {join_cp} WHERE 1=1 {type_filter_clause} ORDER BY p.cost DESC NULLS LAST
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim_cost": int(topn_cost), "lim_k": int(top_k)})
@@ -638,14 +641,11 @@ def _shift_month(d: date, months: int) -> date:
     day = min(int(d.day), (date(y + 1, 1, 1) - timedelta(days=1)).day if m == 12 else (date(y, m + 1, 1) - timedelta(days=1)).day)
     return date(int(y), int(m), int(day))
 
-# ✨ [NEW] 동적 비교 로직 지원을 위해 _period_compare_range 개선
 def _period_compare_range(d1: date, d2: date, mode: str) -> Tuple[date, date]:
     mode = str(mode or "").strip().replace(" ", "")
     if mode == "전일대비": return d1 - timedelta(days=1), d2 - timedelta(days=1)
     if mode == "전주대비": return d1 - timedelta(days=7), d2 - timedelta(days=7)
     if mode == "전월대비": return _shift_month(d1, -1), _shift_month(d2, -1)
-    
-    # "이전 같은 기간 대비" 등 커스텀 처리 (동일한 일수만큼 이전 기간 반환)
     delta = (d2 - d1).days + 1
     return d1 - timedelta(days=delta), d2 - timedelta(days=delta)
 
