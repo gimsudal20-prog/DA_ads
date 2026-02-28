@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v12.3)
-- 랜딩페이지 URL(pc, mobile) DB 자동 업데이트 기능 추가
+collector.py - 네이버 검색광고 수집기 (v13.0)
+- 일자별 캠페인 예산 소진(꺼짐) 시간 자동 Tracking 및 DB 영구 기록 기능 탑재
 """
 
 from __future__ import annotations
@@ -121,8 +121,18 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+                
+                # ✨ [NEW] 예산 소진(광고 꺼짐) 시간을 영구 기록하는 테이블 생성
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
+                        dt DATE,
+                        customer_id TEXT,
+                        campaign_id TEXT,
+                        off_time TEXT,
+                        PRIMARY KEY(dt, customer_id, campaign_id)
+                    )
+                """))
             
-            # ✨ [핵심 조치] 기존 DB에 랜딩페이지 컬럼이 없을 경우 강제로 추가 (에러 나면 이미 있는 것이므로 무시)
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
@@ -509,6 +519,37 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
             log(f"   📊 [ {account_name} ] 당일 적재: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            
+            # ✨ [핵심 기능] 오늘 날짜 수집 시, 캠페인이 꺼졌는지 감시하고 시간을 DB에 영구 기록합니다!
+            log(f"   🕒 [ {account_name} ] 당일 캠페인 예산 소진(꺼짐) 시간 기록 중...")
+            try:
+                realtime_camps = list_campaigns(customer_id)
+                off_rows = []
+                for c in realtime_camps:
+                    status = c.get("status", "")
+                    reason = c.get("statusReason", "")
+                    # 예산이 부족해서 꺼졌거나(EXHAUSTED), 제한에 걸린(LIMIT) 캠페인만 추려냅니다.
+                    if "EXHAUSTED" in status or "LIMIT" in reason:
+                        edit_tm = c.get("editTm", "")
+                        if edit_tm:
+                            # 네이버 서버 시간을 KST(한국 시간)로 변환
+                            utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
+                            kst_dt = utc_dt + timedelta(hours=9)
+                            
+                            # 오늘 꺼진 게 맞다면 기록! (어제 꺼진 건 패스)
+                            if kst_dt.date() == target_date:
+                                off_rows.append({
+                                    "dt": target_date,
+                                    "customer_id": str(customer_id),
+                                    "campaign_id": str(c["nccCampaignId"]),
+                                    "off_time": kst_dt.strftime("%H:%M")
+                                })
+                if off_rows:
+                    # UPSERT (이미 기록되어 있으면 덮어쓰기하여 가장 최근 꺼진 시간을 유지)
+                    upsert_many(engine, "fact_campaign_off_log", off_rows, ["dt", "customer_id", "campaign_id"])
+            except Exception as e:
+                log(f"   ⚠️ 꺼짐 시간 기록 실패: {e}")
+                
         else:
             report_types = ["CAMPAIGN", "KEYWORD", "AD"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
