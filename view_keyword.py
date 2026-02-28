@@ -20,13 +20,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    # ✨ [UI 개선] 번잡했던 파워링크(키워드/그룹) 탭을 '🎯 파워링크' 하나로 깔끔하게 통합했습니다!
     tab_pl, tab_shop, tab_neg = st.tabs(["🎯 파워링크", "🛒 쇼핑검색", "💸 저효율 키워드 발굴기(누수 탐지)"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
     with tab_pl:
-        # 통합 탭 안에서 뷰를 스위치할 수 있는 라디오 버튼 제공
         view_mode = st.radio("보기 기준 선택", ["🔑 키워드 단위 상세 보기", "📂 광고그룹 단위 요약 보기"], horizontal=True, label_visibility="collapsed")
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -164,7 +162,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
                     if c in disp_grp.columns: disp_grp[c] = disp_grp[c].astype(int)
-                if "CTR(%)" in disp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
+                
+                # ✨ [오류 수정] disp.columns를 disp_grp.columns로 변경 완료!
+                if "CTR(%)" in disp_grp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
                 
                 st.markdown("#### 📊 광고그룹별 종합 성과 표")
                 render_big_table(disp_grp, "pl_grp_grid", 500)
