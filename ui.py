@@ -8,7 +8,7 @@ import re
 import io
 import html
 import math
-import base64  # ✨ [NEW] 이미지 인코딩용 라이브러리 추가
+import base64
 import numpy as np
 from datetime import date, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -63,15 +63,13 @@ from data import (
 try: alt.data_transformers.enable("vegafusion")
 except Exception: pass
 
-# ✨ [NEW] 상단 헤더 개편: 회사 로고를 읽어와서 밝고 세련된 카드로 띄워줍니다.
 def render_hero(latest_dates: dict | None, build_tag: str) -> None:
     dt_str = "수집 대기 중"
     if latest_dates:
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    # 폴더에 logo.png, logo.jpg 등이 있으면 읽어서 HTML용 이미지 태그로 만듭니다.
-    logo_html = "<span style='font-size: 32px;'>🏢</span>" # 로고가 없을 때 기본 아이콘
+    logo_html = "<span style='font-size: 32px;'>🏢</span>"
     for ext in ['png', 'jpg', 'jpeg', 'webp']:
         path = f"logo.{ext}"
         if os.path.exists(path):
@@ -84,21 +82,19 @@ def render_hero(latest_dates: dict | None, build_tag: str) -> None:
             except Exception:
                 pass
 
+    # ✨ [수정] 버전 정보 박스 삭제 및 타이틀 '마케팅 대시보드'로 변경
     html_str = f"""
     <div style='background: #FFFFFF; border: 1px solid #E2E8F0; padding: 20px 32px; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);'>
         <div style='display: flex; align-items: center; gap: 20px;'>
             <div>{logo_html}</div>
             <div style='border-left: 2px solid #F1F5F9; padding-left: 20px;'>
                 <h1 style='margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #0F172A;'>
-                    통합 퍼포먼스 마케팅 센터
+                    마케팅 대시보드
                 </h1>
                 <p style='margin: 6px 0 0 0; color: #64748B; font-size: 13.5px; font-weight: 500;'>
                     최신 데이터 기준일: <span style='color: #2563EB; font-weight: 700;'>{dt_str}</span>
                 </p>
             </div>
-        </div>
-        <div style='text-align: right;'>
-            <div style='background: #F8FAFC; border: 1px solid #E2E8F0; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: #475569;'>{build_tag}</div>
         </div>
     </div>
     """
