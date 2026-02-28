@@ -5,10 +5,6 @@ from __future__ import annotations
 import re
 import os
 import time
-import hmac
-import hashlib
-import base64
-import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -22,8 +18,8 @@ from page_helpers import *
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
     
-    # ✨ [수정] 예측 탭의 이름을 직관적으로 변경했습니다.
-    tab_budget, tab_alert, tab_realtime = st.tabs(["💰 월 예산 및 집행 현황", "🚨 잔액 소진(계정) 예측", "🛑 실시간 캠페인 꺼짐 시간 확인"])
+    # ✨ [핵심 수정] 예측을 지우고 "실제 꺼짐 기록부(History)" 탭으로 바꿨습니다!
+    tab_budget, tab_alert, tab_history = st.tabs(["💰 월 예산 및 집행 현황", "🚨 잔액 소진(계정) 예측", "📅 일자별 캠페인 꺼짐(소진) 기록"])
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
@@ -177,115 +173,54 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         display_df = display_df.sort_values(by="예상 광고중단일", ascending=False)
         render_big_table(display_df, key="budget_alert_table", height=500)
 
-    # ✨ [핵심 기능 업데이트] 예측 로직을 지우고 "실제 꺼진 정확한 시간(editTm)"을 추적합니다.
-    with tab_realtime:
-        st.markdown("### 🛑 실시간 캠페인 예산 소진(꺼짐) 시간 확인")
-        st.caption("버튼을 누르면 네이버 시스템이 예산 부족으로 캠페인을 중단시킨 **'실제 정확한 시간(분 단위)'**을 잡아내어 보여줍니다.")
+    # ✨ [핵심 기능] DB에 영구 기록된 일자별 캠페인 꺼짐(EXHAUSTED) 히스토리 뷰
+    with tab_history:
+        st.markdown("### 📅 캠페인 일자별 꺼짐(소진) 시간 기록부")
+        st.caption("조회 기간 동안 각 캠페인이 정확히 몇 시 몇 분에 예산이 소진되어 노출이 중단되었는지 보여주는 달력입니다. (빈칸은 하루 종일 꺼지지 않았음을 의미합니다)")
         
-        if st.button("🔄 현재 꺼진 캠페인 및 중단 시간 가져오기", type="primary"):
-            api_key = os.getenv("NAVER_API_KEY")
-            secret = os.getenv("NAVER_API_SECRET")
-            
-            if not api_key or not secret:
-                st.error("API 연동 키(.env)가 설정되어 있지 않아 실시간 통신이 불가능합니다.")
-            elif not cids:
-                st.warning("선택된 계정이 없습니다. 왼쪽 필터에서 계정을 선택해주세요.")
+        off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
+        if off_log.empty:
+            st.success("🎉 조회 기간 동안 예산 부족으로 꺼진 캠페인 기록이 전혀 없습니다! 완벽한 예산 관리가 이루어지고 있습니다.")
+        else:
+            # 캠페인 이름 가져오기
+            dim_camp = load_dim_campaign(engine)
+            if not dim_camp.empty:
+                dim_camp["campaign_id"] = dim_camp["campaign_id"].astype(str)
+                off_log["campaign_id"] = off_log["campaign_id"].astype(str)
+                off_log = off_log.merge(dim_camp[["campaign_id", "campaign_name"]], on="campaign_id", how="left")
             else:
-                with st.spinner("🚀 네이버 서버에서 캠페인 상태 변경 기록(Log)을 스캔 중입니다..."):
-                    results = []
-                    now = datetime.now()
-                    today_str = now.strftime("%Y-%m-%d")
-
-                    for cid in cids:
-                        ts = str(int(time.time() * 1000))
-                        msg = f"{ts}.GET./ncc/campaigns".encode("utf-8")
-                        sig = base64.b64encode(hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()).decode("utf-8")
-                        headers = {"X-Timestamp": ts, "X-API-KEY": api_key, "X-Customer": str(cid), "X-Signature": sig}
-                        
-                        try:
-                            # 캠페인 데이터 다이렉트 호출
-                            res_camp = requests.get("https://api.searchad.naver.com/ncc/campaigns", headers=headers, timeout=5)
-                            if res_camp.status_code != 200: continue
-                            
-                            camps = res_camp.json()
-                            target_camps = []
-                            for c in camps:
-                                db_obj = c.get("dailyBudget", {})
-                                budget = int(db_obj.get("amount", db_obj.get("budgetAmount", 0))) if isinstance(db_obj, dict) else int(db_obj) if str(db_obj).isdigit() else 0
-                                if budget > 0:
-                                    target_camps.append((c, budget))
-                            
-                            if not target_camps: continue
-                            camp_ids = [str(c[0]["nccCampaignId"]) for c in target_camps]
-                            
-                            # 현재 누적 지출액 가져오기
-                            stat_map = {}
-                            for i in range(0, len(camp_ids), 50):
-                                chunk = camp_ids[i:i+50]
-                                ts2 = str(int(time.time() * 1000))
-                                msg_stat = f"{ts2}.GET./stats".encode("utf-8")
-                                sig_stat = base64.b64encode(hmac.new(secret.encode("utf-8"), msg_stat, hashlib.sha256).digest()).decode("utf-8")
-                                headers["X-Timestamp"] = ts2
-                                headers["X-Signature"] = sig_stat
-                                
-                                params = {"ids": ",".join(chunk), "fields": '["salesAmt"]', "timeRange": f'{{"since":"{today_str}","until":"{today_str}"}}'}
-                                res_stat = requests.get("https://api.searchad.naver.com/stats", headers=headers, params=params, timeout=5)
-                                if res_stat.status_code == 200:
-                                    for s in res_stat.json().get("data", []):
-                                        stat_map[str(s["id"])] = int(round(float(s.get("salesAmt", 0)) * 1.1))
-                                        
-                            for c, budget in target_camps:
-                                camp_id = str(c["nccCampaignId"])
-                                cost = stat_map.get(camp_id, 0)
-                                status = c.get("status", "")
-                                status_reason = c.get("statusReason", "")
-                                edit_tm = c.get("editTm", "") # 네이버 시스템이 상태를 변경한 시간! (UTC)
-                                
-                                # 예산 소진으로 인해 꺼졌는지 검사
-                                if "EXHAUSTED" in status or "LIMIT" in status_reason or cost >= budget:
-                                    state = "🔴 예산 소진 (꺼짐)"
-                                    off_time_str = "시간 확인 불가"
-                                    
-                                    # 시스템 업데이트 시간을 KST(한국시간)로 변환하여 실제 꺼진 시간 포착
-                                    if edit_tm:
-                                        try:
-                                            utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
-                                            kst_dt = utc_dt + timedelta(hours=9)
-                                            if kst_dt.date() == now.date():
-                                                off_time_str = kst_dt.strftime("오늘 %H시 %M분 🛑")
-                                            else:
-                                                off_time_str = kst_dt.strftime("%m월 %d일 %H시 %M분 🛑")
-                                        except Exception:
-                                            pass
-                                else:
-                                    state = "🟢 정상 노출 중"
-                                    off_time_str = "-"
-                                        
-                                acc_name = str(cid)
-                                if not meta.empty and 'customer_id' in meta.columns:
-                                    match = meta[meta['customer_id'] == cid]
-                                    if not match.empty:
-                                        acc_name = match.iloc[0]['account_name']
-
-                                results.append({
-                                    "업체명": acc_name,
-                                    "캠페인명": c.get("name", ""),
-                                    "상태": state,
-                                    "실제 중단 시간": off_time_str,
-                                    "하루 예산": budget,
-                                    "현재 누적비용": cost,
-                                })
-                                
-                        except Exception:
-                            continue
-                    
-                    if results:
-                        df_res = pd.DataFrame(results)
-                        df_res = df_res.sort_values(by=["상태", "업체명"], ascending=[True, True])
-                        df_res["하루 예산"] = df_res["하루 예산"].apply(format_currency)
-                        df_res["현재 누적비용"] = df_res["현재 누적비용"].apply(format_currency)
-                        
-                        st.success("✅ 실시간 통신 완료! 현재 꺼져있는 캠페인과 중단 시간을 확인하세요.")
-                        render_big_table(df_res, "realtime_camp_actual", 500)
-                    else:
-                        st.info("예산이 설정된 활성 캠페인이 없거나 통신에 실패했습니다.")
+                off_log["campaign_name"] = off_log["campaign_id"]
+                
+            # 업체명 가져오기
+            if not meta.empty:
+                meta_copy = meta.copy()
+                meta_copy["customer_id"] = meta_copy["customer_id"].astype(str)
+                off_log["customer_id"] = off_log["customer_id"].astype(str)
+                off_log = off_log.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
+            else:
+                off_log["account_name"] = off_log["customer_id"]
+            
+            off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
+            
+            # 피벗 테이블 생성 (가로: 날짜, 세로: 업체+캠페인, 값: 꺼진 시간)
+            pivot_df = off_log.pivot_table(
+                index=["account_name", "campaign_name"], 
+                columns="dt_str", 
+                values="off_time", 
+                aggfunc='first' # 꺼진 시간 텍스트 그대로 가져오기
+            ).reset_index()
+            
+            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"})
+            pivot_df = pivot_df.fillna("-") # 안 꺼진 날은 하이픈 처리
+            
+            # 스타일링: 시간이 적혀있는(꺼진) 날짜 셀에 붉은색 포인트 주기
+            def highlight_off_time(val):
+                if val != "-":
+                    return "background-color: #FEE2E2; color: #B91C1C; font-weight: bold;"
+                return ""
+            
+            cols_to_style = [c for c in pivot_df.columns if c not in ["업체명", "캠페인명"]]
+            styled_pivot = pivot_df.style.map(highlight_off_time, subset=cols_to_style)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
