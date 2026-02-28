@@ -11,7 +11,6 @@ from datetime import date, timedelta
 from data import *
 from ui import *
 from page_helpers import *
-# ✨ [추가] 언더스코어(_)로 시작하는 함수는 별도로 명시해서 불러와야 합니다.
 from page_helpers import _perf_common_merge_meta
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -57,7 +56,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-        st.caption(f"조회 기간: {f['start']} ~ {f['end']}")
+        # ✨ [UI 개선] 마케터 초보자를 위한 안내 캡션 추가
+        st.caption("선택한 전체 계정의 핵심 성과(KPI)를 이전 기간과 직관적으로 비교해 줍니다. 큰 숫자를 중심으로 흐름을 파악하세요.")
     with col2:
         with st.spinner("보고서 생성 중..."):
             df_summary = pd.DataFrame([cur_summary])
@@ -66,13 +66,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             kw_df = _perf_common_merge_meta(add_rates(kw_bndl), meta) if not kw_bndl.empty else pd.DataFrame()
             df_pl_kw = kw_df[kw_df['campaign_type_label'] == '파워링크'] if not kw_df.empty and 'campaign_type_label' in kw_df.columns else pd.DataFrame()
             excel_data = generate_full_report_excel(df_summary, camp_df, df_pl_kw)
-            st.download_button(label="📥 보고서(Excel) 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+            st.download_button(label="📥 전체 리포트 엑셀 다운로드", data=excel_data, file_name=f"광고보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
 
     cur = cur_summary
     base = base_summary
 
     def _delta_pct(key):
-        # ✨ [수정] 언더스코어를 뺀 공개 함수(pct_change)를 사용하도록 수정했습니다.
         try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
         except Exception: return None
 
@@ -90,7 +89,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
         ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
     ]
-    st.markdown("<div class='kpi-row' style='margin-top: 5px;'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
+    st.markdown("<div class='kpi-row' style='margin-top: 10px;'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
     st.divider()
 
     try:
@@ -103,7 +102,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("전체 트렌드", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
             with tab_dow:
-                st.caption("💡 어떤 요일에 수익(ROAS)이 가장 좋고 비용이 많이 나가는지 색상(히트맵)으로 직관적으로 파악하여 입찰 가중치를 조절하세요.")
+                st.caption("💡 **활용법:** 붉은색이 진할수록 광고비 지출이 많고, 녹색이 진할수록 수익성(ROAS)이 좋습니다. 녹색이 진한 요일의 예산을 늘려보세요.")
                 
                 ts_dow = ts.copy()
                 ts_dow["요일"] = ts_dow["dt"].dt.day_name()
