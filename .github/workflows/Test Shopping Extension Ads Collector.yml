@@ -10,6 +10,8 @@ on:
         description: '종료 날짜 (YYYY-MM-DD 포맷), 미입력시 자동으로 어제 날짜'
         required: false
         default: ''
+  schedule:
+    - cron: '0 1 * * *'  # 매일 오전 10시 (KST) = UTC 01:00
 
 jobs:
   run-collector:
@@ -37,16 +39,23 @@ jobs:
           YEAR=$(TZ=Asia/Seoul date +%Y)
           YESTERDAY=$(TZ=Asia/Seoul date -d 'yesterday' +%Y-%m-%d)
 
-          if [ -z "${{ github.event.inputs.start_date }}" ]; then
-            START_DATE="${YEAR}-01-01"
-          else
-            START_DATE="${{ github.event.inputs.start_date }}"
-          fi
-
-          if [ -z "${{ github.event.inputs.end_date }}" ]; then
+          # 자동 스케줄 실행이면 어제 하루치만
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            START_DATE="${YESTERDAY}"
             END_DATE="${YESTERDAY}"
           else
-            END_DATE="${{ github.event.inputs.end_date }}"
+            # 수동 실행 - 입력값 없으면 1월1일 ~ 어제
+            if [ -z "${{ github.event.inputs.start_date }}" ]; then
+              START_DATE="${YEAR}-01-01"
+            else
+              START_DATE="${{ github.event.inputs.start_date }}"
+            fi
+
+            if [ -z "${{ github.event.inputs.end_date }}" ]; then
+              END_DATE="${YESTERDAY}"
+            else
+              END_DATE="${{ github.event.inputs.end_date }}"
+            fi
           fi
 
           echo "start_date=${START_DATE}" >> $GITHUB_OUTPUT
