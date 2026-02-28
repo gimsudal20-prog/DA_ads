@@ -1,0 +1,35 @@
+name: Naver Ads Auto Collector
+
+# 언제 이 스크립트를 실행할지 설정합니다.
+on:
+  schedule:
+    # 한국 시간 기준 매일 아침 8시, 오후 2시, 저녁 8시에 자동으로 수집기를 돌립니다. (UTC 시간 기준 설정)
+    - cron: '0 23,5,11 * * *'
+  # GitHub 웹사이트에서 수동으로 실행 버튼을 누를 수 있게 해줍니다.
+  workflow_dispatch: 
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 소스 코드 가져오기
+        uses: actions/checkout@v3
+
+      - name: 🐍 파이썬 환경 세팅
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' # 파이썬 버전
+
+      - name: 📦 필요 라이브러리 설치
+        run: |
+          pip install -r requirements.txt
+
+      - name: 🚀 데이터 수집기 실행 (비밀키 사용)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NAVER_API_KEY: ${{ secrets.NAVER_API_KEY }}
+          NAVER_API_SECRET: ${{ secrets.NAVER_API_SECRET }}
+          CUSTOMER_ID: ${{ secrets.CUSTOMER_ID }}
+        run: |
+          python collector.py
