@@ -64,7 +64,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
                     if valid_keys:
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
-                        metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+                        # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
+                        metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
                 c1, c2 = st.columns([1, 3])
                 with c1:
@@ -155,7 +156,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 metrics_cols_grp = ["노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 if cmp_mode_grp != "비교 안함": 
-                    metrics_cols_grp.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+                    # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
+                    metrics_cols_grp.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                 
                 final_cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in view_grp.columns]
                 disp_grp = view_grp[final_cols_grp].sort_values(by="광고비" if "광고비" in view_grp.columns else final_cols_grp[0], ascending=False).head(top_n)
@@ -163,7 +165,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 for c in ["노출", "클릭", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]:
                     if c in disp_grp.columns: disp_grp[c] = disp_grp[c].astype(int)
                 
-                # ✨ [오류 수정] disp.columns를 disp_grp.columns로 변경 완료!
                 if "CTR(%)" in disp_grp.columns: disp_grp["CTR(%)"] = disp_grp["CTR(%)"].astype(float).round(2)
                 
                 st.markdown("#### 📊 광고그룹별 종합 성과 표")
@@ -214,7 +215,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view_shop.columns and k in base_shop_bundle.columns]
                     if valid_keys:
                         view_shop = append_comparison_data(view_shop, base_shop_bundle, valid_keys)
-                        metrics_cols_shop.extend(["광고비 증감(%)", "ROAS 증감(%p)", "전환 증감"])
+                        # ✨ [수정] ROAS 증감(%p) -> ROAS 증감(%)
+                        metrics_cols_shop.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
                 c1, c2 = st.columns([1, 1])
                 with c1:
