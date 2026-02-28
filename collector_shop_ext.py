@@ -89,6 +89,30 @@ def upsert_many(engine, table: str, rows: list, pk_cols: list):
         if cur: cur.close()
         if raw_conn: raw_conn.close()
 
+# ✨ [핵심 조치] 네이버가 어떤 이름표로 텍스트를 주든 다 긁어오는 진공청소기 로직
+def parse_ext_name(ext: dict) -> str:
+    ext_info = ext.get("adExtension", {}) or ext
+    ext_type = ext.get("extensionType") or ext.get("type") or "쇼핑확장"
+    
+    # 1차 시도: 일반적으로 알려진 텍스트 키값 탐색
+    cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text"]
+    text_val = ""
+    for c in cands:
+        if ext_info.get(c):
+            text_val = str(ext_info[c]).strip()
+            break
+            
+    # 2차 시도: 그래도 없으면, 딕셔너리 안에 있는 문자열을 싹 다 합쳐서 노출!
+    if not text_val:
+        vals = [str(v) for k, v in ext_info.items() if isinstance(v, str) and not v.startswith("http") and k not in ("extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type")]
+        if vals:
+            text_val = " / ".join(vals)
+        else:
+            # 3차 시도: 진짜 아무것도 없으면 JSON 원문을 그대로 뿌려줌 (최소한 원인 파악 가능)
+            text_val = str(ext_info)[:150]
+            
+    return f"[확장소재] {ext_type} | {text_val}"
+
 def process_account(engine, customer_id: str, target_date: date):
     log(f"--- [ {customer_id} ] 쇼핑검색 확장소재 전용 수집 시작 ({target_date}) ---")
     
@@ -107,7 +131,7 @@ def process_account(engine, customer_id: str, target_date: date):
             "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
         })
         
-        # ✨ 1. 캠페인 레벨에 달린 확장소재 수집 (ownerId 사용)
+        # 캠페인 레벨 확장소재
         camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": cid}) or []
         if camp_exts:
             ag_rows.append({
@@ -119,19 +143,17 @@ def process_account(engine, customer_id: str, target_date: date):
                 if ext_id:
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
-                    ext_type = ext.get("extensionType", "")
-                    ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                    ext_title = f"[확장소재] {ext_type}"
+                    display_name = parse_ext_name(ext) # ✨ 진공청소기 적용
                     
                     ad_rows.append({
                         "customer_id": str(customer_id), "ad_id": str(ext_id), "adgroup_id": f"CAMP_{cid}",
-                        "ad_name": ext_text, "status": ext.get("status"), "ad_title": ext_title, 
-                        "ad_desc": ext_text, "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
+                        "ad_name": display_name, "status": ext.get("status"), "ad_title": display_name, 
+                        "ad_desc": display_name, "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
                         "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
-                        "creative_text": f"{ext_title} | {ext_text}"[:500]
+                        "creative_text": display_name[:500]
                     })
         
-        # ✨ 2. 광고그룹 레벨에 달린 확장소재 수집 (ownerId 사용)
+        # 광고그룹 레벨 확장소재
         groups = request_json("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": cid}) or []
         for g in groups:
             gid = g.get("nccAdgroupId")
@@ -146,16 +168,14 @@ def process_account(engine, customer_id: str, target_date: date):
                 if ext_id:
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
-                    ext_type = ext.get("extensionType", "")
-                    ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                    ext_title = f"[확장소재] {ext_type}"
+                    display_name = parse_ext_name(ext) # ✨ 진공청소기 적용
                     
                     ad_rows.append({
                         "customer_id": str(customer_id), "ad_id": str(ext_id), "adgroup_id": str(gid),
-                        "ad_name": ext_text, "status": ext.get("status"), "ad_title": ext_title, 
-                        "ad_desc": ext_text, "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
+                        "ad_name": display_name, "status": ext.get("status"), "ad_title": display_name, 
+                        "ad_desc": display_name, "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
                         "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
-                        "creative_text": f"{ext_title} | {ext_text}"[:500]
+                        "creative_text": display_name[:500]
                     })
 
     upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
