@@ -20,19 +20,22 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    # ✨ [수정] 탭 이름에서 (누수 탐지) 제거
     tab_pl, tab_shop, tab_neg = st.tabs(["🎯 파워링크", "🛒 쇼핑검색", "💸 저효율 키워드 발굴기"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     
     with tab_pl:
-        view_mode = st.radio("보기 기준 선택", ["🔑 키워드 단위 상세 보기", "📂 광고그룹 단위 요약 보기"], horizontal=True, label_visibility="collapsed")
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        # ✨ [개선] 보기 모드를 토글 스위치로 변경
+        is_group_view = st.toggle("📂 광고그룹 단위로 요약해서 보기", value=False, key="kw_view_toggle")
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-        if view_mode == "🔑 키워드 단위 상세 보기":
+        if not is_group_view:
             if not df_pl_raw.empty:
                 opts_pl = get_dynamic_cmp_options(f["start"], f["end"])
-                cmp_mode_pl = st.radio("📊 키워드 단위 기간 비교", opts_pl, horizontal=True, key="kw_pl_cmp_mode")
+                # ✨ [개선] 기간 비교를 토글 스위치로 변경
+                is_cmp_pl = st.toggle(f"📊 기간 비교 켜기 ({opts_pl[1]})", value=False, key="kw_pl_cmp_toggle")
+                cmp_mode_pl = opts_pl[1] if is_cmp_pl else "비교 안함"
+                
                 base_kw_bundle = None
                 b1, b2 = None, None
                 if cmp_mode_pl != "비교 안함":
@@ -105,10 +108,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             else:
                 st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
 
-        elif view_mode == "📂 광고그룹 단위 요약 보기":
+        else:
             if not df_pl_raw.empty:
                 opts_grp = get_dynamic_cmp_options(f["start"], f["end"])
-                cmp_mode_grp = st.radio("📊 광고그룹 단위 기간 비교", opts_grp, horizontal=True, key="kw_grp_cmp_mode")
+                # ✨ [개선] 기간 비교 토글
+                is_cmp_grp = st.toggle(f"📊 기간 비교 켜기 ({opts_grp[1]})", value=False, key="kw_grp_cmp_toggle")
+                cmp_mode_grp = opts_grp[1] if is_cmp_grp else "비교 안함"
                 
                 grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
                 val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
@@ -177,7 +182,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
             opts_shop = get_dynamic_cmp_options(f["start"], f["end"])
-            cmp_mode_shop = st.radio("📊 상품/소재 단위 기간 비교", opts_shop, horizontal=True, key="shop_cmp_mode")
+            # ✨ [개선] 기간 비교 토글
+            is_cmp_shop = st.toggle(f"📊 기간 비교 켜기 ({opts_shop[1]})", value=False, key="shop_cmp_toggle")
+            cmp_mode_shop = opts_shop[1] if is_cmp_shop else "비교 안함"
+            
             base_shop_bundle = None
             b1, b2 = None, None
             if cmp_mode_shop != "비교 안함":
@@ -254,7 +262,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
 
     with tab_neg:
-        # ✨ [수정] 헤더에서 (돈 먹는 하마 탐지) 제거
         st.markdown("### 💸 저효율 등록 키워드 발굴기")
         st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다. **네이버 광고 시스템에서 입찰가를 낮추거나 OFF 상태로 변경할 것**을 강력히 권장합니다.")
         
