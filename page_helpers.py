@@ -13,7 +13,9 @@ from typing import Dict, List
 from data import *
 from ui import *
 
-BUILD_TAG = os.getenv("APP_BUILD", "v15.4 (마케터 친화적 UI/UX 적용)")
+from data import pct_change, pct_to_arrow
+
+BUILD_TAG = os.getenv("APP_BUILD", "v15.5 (디테일 UI/UX 및 구조 최적화)")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
@@ -58,7 +60,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    # ✨ [UI 개선] 필터 영역을 초보자도 쉽게 이해하도록 문구와 배치를 다듬었습니다.
     with st.expander("🔍 조회 기간 및 필터 설정 (여기를 열어주세요)", expanded=True):
         st.caption("💡 여기서 선택한 날짜와 계정 기준으로 대시보드의 모든 데이터가 즉시 변경됩니다.")
         
@@ -202,10 +203,25 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
-def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str):
+# ✨ [NEW] 비교 카드에 화살표 증감율 배지를 그리기 위한 렌더링 함수
+def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
+    if deltas is None: deltas = {}
     c1, c2 = st.columns(2)
     
-    def _card(title, imp, clk, cost, conv, sales, roas, is_cur=False):
+    def _badge(val_str, invert=False):
+        if not val_str or val_str == "-": return ""
+        is_up = "▲" in val_str
+        # 비용(Cost)은 증가하면 나쁜 것(빨간색), 나머지는 증가하면 좋은 것(녹색)으로 색상 반전
+        if invert:
+            color = "#B91C1C" if is_up else "#047857"
+            bg = "#FEE2E2" if is_up else "#D1FAE5"
+        else:
+            color = "#047857" if is_up else "#B91C1C"
+            bg = "#D1FAE5" if is_up else "#FEE2E2"
+        return f"<span style='color:{color}; background:{bg}; padding:2px 6px; border-radius:4px; font-size:11.5px; font-weight:700; margin-left:8px; vertical-align:middle;'>{val_str}</span>"
+    
+    def _card(title, imp, clk, cost, conv, sales, roas, is_cur=False, d=None):
+        if d is None: d = {}
         bg = "#F8FAFC" if not is_cur else "#EFF6FF"
         border = "#E2E8F0" if not is_cur else "#BFDBFE"
         color_title = "#475569" if not is_cur else "#1E40AF"
@@ -217,32 +233,40 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str)
         f_clk = format_number_commas(clk)
         f_conv = f"{conv:,.1f}"
         
+        # 현재 조회 기간 카드에만 증감율 배지(Badge) 추가
+        b_cost = _badge(d.get('cost'), invert=True) if is_cur else ""
+        b_sales = _badge(d.get('sales')) if is_cur else ""
+        b_roas = _badge(d.get('roas')) if is_cur else ""
+        b_imp = _badge(d.get('imp')) if is_cur else ""
+        b_clk = _badge(d.get('clk')) if is_cur else ""
+        b_conv = _badge(d.get('conv')) if is_cur else ""
+        
         html = f"""
         <div style='background:{bg}; padding:20px; border-radius:12px; border:1px solid {border}; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>
             <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:{color_title}; font-size:16px; font-weight:700;'>{title}</h4>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
                 <span style='color:#64748B; font-weight:600;'>광고비</span>
-                <span style='font-weight:700; color:#0F172A;'>{f_cost}</span>
+                <span><span style='font-weight:700; color:#0F172A;'>{f_cost}</span>{b_cost}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
                 <span style='color:#64748B; font-weight:600;'>전환매출</span>
-                <span style='font-weight:700; color:#0F172A;'>{f_sales}</span>
+                <span><span style='font-weight:700; color:#0F172A;'>{f_sales}</span>{b_sales}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
                 <span style='color:#64748B; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{f_roas}</span>
+                <span><span style='font-weight:800; color:#EF4444; font-size:15px;'>{f_roas}</span>{b_roas}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
                 <span style='color:#64748B; font-size:13px;'>노출수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_imp}</span>
+                <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_imp}</span>{b_imp}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
                 <span style='color:#64748B; font-size:13px;'>클릭수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_clk}</span>
+                <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_clk}</span>{b_clk}</span>
             </div>
             <div style='display:flex; justify-content:space-between;'>
                 <span style='color:#64748B; font-size:13px;'>전환수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{f_conv}</span>
+                <span><span style='color:#334155; font-size:13px; font-weight:600;'>{f_conv}</span>{b_conv}</span>
             </div>
         </div>
         """
@@ -251,8 +275,9 @@ def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str)
     with c1:
         st.markdown(_card(prev_label, row.get('p_imp',0), row.get('p_clk',0), row.get('p_cost',0), row.get('p_conv',0), row.get('p_sales',0), row.get('p_roas',0)), unsafe_allow_html=True)
     with c2:
-        st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True), unsafe_allow_html=True)
+        st.markdown(_card(cur_label, row.get('노출',0), row.get('클릭',0), row.get('광고비',0), row.get('전환',0), row.get('전환매출',0), row.get('ROAS(%)',0), True, deltas), unsafe_allow_html=True)
 
+# ✨ [NEW] 증감율(Deltas)을 계산하여 넘겨주는 로직 추가
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
     st.markdown(f"### 🔍 {section_title} (Side-by-Side)")
     agg_cur = df[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
@@ -273,10 +298,23 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
         'p_roas': (agg_prev.get('p_sales', 0) / agg_prev.get('p_cost', 0) * 100) if agg_prev is not None and agg_prev.get('p_cost', 0) > 0 else 0,
     })
     
+    deltas = {}
+    if agg_prev is not None:
+        deltas['cost'] = pct_to_arrow(pct_change(combined_row['광고비'], combined_row['p_cost']))
+        deltas['sales'] = pct_to_arrow(pct_change(combined_row['전환매출'], combined_row['p_sales']))
+        deltas['imp'] = pct_to_arrow(pct_change(combined_row['노출'], combined_row['p_imp']))
+        deltas['clk'] = pct_to_arrow(pct_change(combined_row['클릭'], combined_row['p_clk']))
+        
+        roas_diff = combined_row['ROAS(%)'] - combined_row['p_roas']
+        deltas['roas'] = f"▲ {abs(roas_diff):.0f}%p" if roas_diff > 0 else (f"▼ {abs(roas_diff):.0f}%p" if roas_diff < 0 else "-")
+        
+        conv_diff = combined_row['전환'] - combined_row['p_conv']
+        deltas['conv'] = f"▲ {abs(conv_diff):.1f}" if conv_diff > 0 else (f"▼ {abs(conv_diff):.1f}" if conv_diff < 0 else "-")
+    
     prev_label = f"비교 기간 ({cmp_mode})<br><span style='font-size:13px; font-weight:normal;'>{b1} ~ {b2}</span>"
     cur_label = f"조회 기간 (현재)<br><span style='font-size:13px; font-weight:normal;'>{d1} ~ {d2}</span>"
     
-    render_side_by_side_metrics(combined_row, prev_label, cur_label)
+    render_side_by_side_metrics(combined_row, prev_label, cur_label, deltas)
     st.divider()
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
