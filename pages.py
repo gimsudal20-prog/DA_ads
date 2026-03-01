@@ -1,66 +1,60 @@
 # -*- coding: utf-8 -*-
-"""pages.py - Main Router connecting all views."""
+"""pages.py - Page routing and navigation."""
 
 from __future__ import annotations
-
-import os
 import streamlit as st
+import pandas as pd
+from typing import Dict, Any
 
-from data import *
-from ui import render_hero
-from page_helpers import BUILD_TAG, build_filters
+from page_helpers import build_filters
 from view_overview import page_overview
 from view_budget import page_budget
 from view_campaign import page_perf_campaign
 from view_keyword import page_perf_keyword
 from view_ad import page_perf_ad
 from view_settings import page_settings
+from view_trend import page_trend  # ✨ 신규 임포트
 
-def main():
-    try: engine = get_engine(); latest = get_latest_dates(engine)
-    except Exception as e: render_hero(None, BUILD_TAG); st.error(str(e)); return
+def render_sidebar_menu() -> str:
+    st.sidebar.title("메뉴")
+    pages = {
+        "요약 (실시간 알림)": "overview",
+        "예산 및 잔액": "budget",
+        "시장 트렌드 분석": "trend", # ✨ 메뉴 추가
+        "성과 (캠페인)": "perf_campaign",
+        "성과 (그룹/키워드)": "perf_keyword",
+        "성과 (소재/랜딩)": "perf_ad",
+        "설정 및 연결": "settings"
+    }
+    
+    if "current_page" not in st.session_state:
+        st.session_state["current_page"] = "overview"
 
+    # Shadcn UI (있을 경우)
     try:
-        for ext in ['png', 'jpg', 'jpeg', 'webp']:
-            if os.path.exists(f"logo.{ext}"):
-                st.logo(f"logo.{ext}")
-                break
+        import streamlit_shadcn_ui as ui
+        labels = list(pages.keys())
+        current_label = next((k for k, v in pages.items() if v == st.session_state["current_page"]), labels[0])
+        sel_label = ui.tabs(options=labels, default_value=current_label, key="main_nav_tabs")
+        st.session_state["current_page"] = pages.get(sel_label, "overview")
     except Exception:
-        pass
-
-    render_hero(latest, BUILD_TAG)
-    meta = get_meta(engine)
-    meta_ready = (meta is not None) and (not meta.empty)
-
-    with st.sidebar:
-        st.markdown("### 📌 메뉴 이동")
-        if not meta_ready: st.warning("동기화가 필요합니다.")
+        # 일반 Radio 버튼 (Fallback)
+        sel_label = st.sidebar.radio("이동할 메뉴를 선택하세요", list(pages.keys()), index=list(pages.values()).index(st.session_state["current_page"]))
+        st.session_state["current_page"] = pages.get(sel_label, "overview")
         
-        # ✨ [수정] 메뉴 이름 간소화 반영
-        nav_items = [
-            "📊 요약", 
-            "💰 예산 및 잔액", 
-            "🚀 캠페인 분석", 
-            "🔎 키워드 분석", 
-            "🧩 소재 분석", 
-            "⚙️ 설정 및 연결"
-        ] if meta_ready else ["⚙️ 설정 및 연결"]
+    return st.session_state["current_page"]
+
+def route_page(page: str, meta: pd.DataFrame, engine: Any, type_opts: list) -> None:
+    if page == "settings":
+        page_settings(meta, engine)
+        return
         
-        nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
-
-    st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
-    f = None
-    if nav != "⚙️ 설정 및 연결":
-        if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
-        f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
-
-    # ✨ [수정] 변경된 이름으로 라우팅 연결
-    if nav == "📊 요약": page_overview(meta, engine, f)
-    elif nav == "💰 예산 및 잔액": page_budget(meta, engine, f)
-    elif nav == "🚀 캠페인 분석": page_perf_campaign(meta, engine, f)
-    elif nav == "🔎 키워드 분석": page_perf_keyword(meta, engine, f)
-    elif nav == "🧩 소재 분석": page_perf_ad(meta, engine, f)
-    else: page_settings(engine)
-
-if __name__ == "__main__":
-    main()
+    f = build_filters(meta, type_opts, engine)
+    
+    if page == "overview": page_overview(meta, engine, f)
+    elif page == "budget": page_budget(meta, engine, f)
+    elif page == "trend": page_trend(meta, engine, f) # ✨ 라우팅 추가
+    elif page == "perf_campaign": page_perf_campaign(meta, engine, f)
+    elif page == "perf_keyword": page_perf_keyword(meta, engine, f)
+    elif page == "perf_ad": page_perf_ad(meta, engine, f)
+    else: st.error("알 수 없는 페이지입니다.")
