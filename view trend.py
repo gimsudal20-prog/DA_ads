@@ -188,5 +188,5 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
                 use_container_width=True, hide_index=True
             )
         else:
-            st.warning("선택하신 기간/계정에 내부(자사) 광고 데이터가 없습니다.")
+            st.warning("선택하신 기간/계정에 내부(자사) 광고데이터가 없습니다.")
 
