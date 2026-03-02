@@ -45,26 +45,27 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
+    # ✨ [NEW] KPI 그룹 배경색을 기존 검정색에서 세련된 파란색(rgba) 계열로 변경 (인라인 스타일 오버라이드)
     kpi_groups_html = f"""
-    <div class='kpi-group-container'>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>👀 유입 지표</div>
-            <div class='kpi-row'>
+    <div class='kpi-group-container' style='display: flex; gap: 16px; flex-wrap: wrap;'>
+        <div class='kpi-group' style='flex: 1; min-width: 250px; background-color: rgba(55, 95, 255, 0.08); border-radius: 12px; padding: 16px; border: 1px solid rgba(55, 95, 255, 0.2);'>
+            <div class='kpi-group-title' style='color: #2b52ff; font-weight: 700; margin-bottom: 12px;'>👀 유입 지표</div>
+            <div class='kpi-row' style='display: flex; gap: 12px; justify-content: space-between;'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
                 {_kpi_html("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
             </div>
         </div>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>💸 비용 지표</div>
-            <div class='kpi-row'>
+        <div class='kpi-group' style='flex: 1; min-width: 250px; background-color: rgba(55, 95, 255, 0.08); border-radius: 12px; padding: 16px; border: 1px solid rgba(55, 95, 255, 0.2);'>
+            <div class='kpi-group-title' style='color: #2b52ff; font-weight: 700; margin-bottom: 12px;'>💸 비용 지표</div>
+            <div class='kpi-row' style='display: flex; gap: 12px; justify-content: space-between;'>
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"))}
             </div>
         </div>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>🎯 성과 지표</div>
-            <div class='kpi-row'>
+        <div class='kpi-group' style='flex: 1; min-width: 250px; background-color: rgba(55, 95, 255, 0.08); border-radius: 12px; padding: 16px; border: 1px solid rgba(55, 95, 255, 0.2);'>
+            <div class='kpi-group-title' style='color: #2b52ff; font-weight: 700; margin-bottom: 12px;'>🎯 성과 지표</div>
+            <div class='kpi-row' style='display: flex; gap: 12px; justify-content: space-between;'>
                 {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                 {_kpi_html("전환매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
