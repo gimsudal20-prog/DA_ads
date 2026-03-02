@@ -13,14 +13,9 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs
 
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
-
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
-    st.markdown("## 🧩 광고 소재 및 랜딩페이지 분석")
-    st.caption("어떤 카피와 랜딩페이지가 고객의 마음을 움직였는지 A/B 테스트 결과를 확인하세요.")
+    st.markdown("<div class='nv-sec-title'>광고 소재 및 랜딩페이지 분석</div>", unsafe_allow_html=True)
     
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_ad", 200))
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
@@ -57,7 +52,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
-    tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["🎯 파워링크 (일반 소재)", "🛍️ 쇼핑검색 (확장소재 전용)", "🔗 랜딩페이지(URL) 효율 분석", "⚖️ 기간 비교 분석"])
+    tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"])
     
     fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
 
@@ -66,21 +61,18 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info(f"해당 기간의 {ad_type_name} 데이터가 없습니다.")
             return
 
-        with st.container():
-            st.markdown("<div style='background-color:#F8FAFC; padding:16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:16px;'>", unsafe_allow_html=True)
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
-                sel_camp = st.selectbox("🎯 소속 캠페인 필터", camps, key=f"ad_tab_f1_{ad_type_name}")
-            with c2:
-                if sel_camp != "전체":
-                    filtered_grp = df_tab[df_tab["캠페인"] == sel_camp]
-                    grps = ["전체"] + sorted([str(x) for x in filtered_grp["광고그룹"].unique() if str(x).strip()])
-                    sel_grp = st.selectbox("📂 소속 광고그룹 필터", grps, key=f"ad_tab_f2_{ad_type_name}")
-                else:
-                    sel_grp = "전체"
-                    st.selectbox("📂 소속 광고그룹 필터", ["전체"], disabled=True, key=f"ad_tab_f2_dis_{ad_type_name}")
-            st.markdown("</div>", unsafe_allow_html=True)
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            camps = ["전체"] + sorted([str(x) for x in df_tab["캠페인"].unique() if str(x).strip()])
+            sel_camp = st.selectbox("캠페인 필터", camps, key=f"ad_tab_f1_{ad_type_name}")
+        with c2:
+            if sel_camp != "전체":
+                filtered_grp = df_tab[df_tab["캠페인"] == sel_camp]
+                grps = ["전체"] + sorted([str(x) for x in filtered_grp["광고그룹"].unique() if str(x).strip()])
+                sel_grp = st.selectbox("광고그룹 필터", grps, key=f"ad_tab_f2_{ad_type_name}")
+            else:
+                sel_grp = "전체"
+                st.selectbox("광고그룹 필터", ["전체"], disabled=True, key=f"ad_tab_f2_dis_{ad_type_name}")
 
         if sel_camp != "전체":
             df_tab = df_tab[df_tab["캠페인"] == sel_camp]
@@ -92,11 +84,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
         disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
-        # ✨ 다운로드 버튼
-        col1, col2 = st.columns([8, 2])
-        with col1: st.markdown(f"#### 📊 {ad_type_name} 상세 성과 표")
-        with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name=f'ad_performance_{ad_type_name}.csv', mime='text/csv', key=f'dl_{ad_type_name}', use_container_width=True)
-        
+        st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>{ad_type_name} 성과 표</div>", unsafe_allow_html=True)
         render_big_table(disp.style.format(fmt), f"ad_bt_{ad_type_name}", 500)
 
     with tab_pl:
@@ -121,29 +109,21 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
                 lp_grp["ROAS(%)"] = np.where(lp_grp["광고비"] > 0, (lp_grp["전환매출"]/lp_grp["광고비"])*100, 0)
                 lp_grp = lp_grp.rename(columns={"landing_url": "랜딩페이지 URL"}).sort_values("광고비", ascending=False)
                 
-                # ✨ 다운로드 버튼
-                col1, col2 = st.columns([8, 2])
-                with col1: st.markdown("### 🔗 랜딩페이지(URL)별 효율 분석")
-                with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(lp_grp), file_name='landing_page_performance.csv', mime='text/csv', use_container_width=True)
-                
-                # ✨ [NEW] URL을 클릭 가능하게 만들어 즉시 확인 가능하도록 UX 개선!
+                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>랜딩페이지(URL) 효율</div>", unsafe_allow_html=True)
                 st.dataframe(
-                    lp_grp.style.background_gradient(cmap="Greens", subset=["CVR(%)", "ROAS(%)"]).format({'노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', '전환': '{:,.1f}', '전환매출': '{:,.0f}', 'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'}), 
+                    lp_grp.style.background_gradient(cmap="Blues", subset=["CVR(%)", "ROAS(%)"]).format({'노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', '전환': '{:,.1f}', '전환매출': '{:,.0f}', 'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'}), 
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "랜딩페이지 URL": st.column_config.LinkColumn("랜딩페이지 URL (클릭 시 이동)", display_text="🔗 링크 열기")
+                        "랜딩페이지 URL": st.column_config.LinkColumn("랜딩페이지 URL (클릭 시 이동)", display_text="링크 열기")
                     }
                 )
         else: st.info("랜딩페이지 URL 컬럼이 없습니다.")
 
     with tab_cmp:
-        with st.container():
-            st.markdown("<div style='background-color:#F8FAFC; padding:16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:16px;'>", unsafe_allow_html=True)
-            cmp_sub_mode = st.radio("비교 대상", ["🎯 파워링크 일반", "🛍️ 쇼핑검색 확장"], horizontal=True, key="ad_cmp_sub")
-            opts = get_dynamic_cmp_options(f["start"], f["end"])
-            cmp_mode = st.radio("비교 기준", [o for o in opts if o != "비교 안함"], horizontal=True, key="ad_cmp_base")
-            st.markdown("</div>", unsafe_allow_html=True)
+        cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
+        opts = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_mode = st.radio("비교 기준", [o for o in opts if o != "비교 안함"], horizontal=True, key="ad_cmp_base")
             
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
@@ -169,8 +149,5 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             cols_cmp = ["업체명", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
             disp_c = df_target[[c for c in cols_cmp if c in df_target.columns]].sort_values("광고비", ascending=False).head(top_n)
             
-            col1, col2 = st.columns([8, 2])
-            with col1: st.markdown("### ⚖️ 소재 기간 비교 분석")
-            with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp_c), file_name='compare_ad_performance.csv', mime='text/csv', use_container_width=True)
-
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>소재 기간 비교 데이터</div>", unsafe_allow_html=True)
             render_big_table(disp_c.style.format(fmt), "ad_cmp_grid_final", 500)
