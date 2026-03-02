@@ -11,10 +11,6 @@ from data import query_campaign_bundle
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, render_comparison_section, _perf_common_merge_meta
 
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
-
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
@@ -46,14 +42,11 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
 
     with tab_main:
-        # ✨ 플랫한 회색 필터 패널
-        st.markdown("<div class='filter-panel'>", unsafe_allow_html=True)
         if not view.empty and "캠페인" in view.columns:
             camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
             sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
         else:
             sel_camp_main = "전체"
-        st.markdown("</div>", unsafe_allow_html=True)
 
         disp_main = view.copy()
         if sel_camp_main != "전체": disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
@@ -63,19 +56,14 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-        col1, col2 = st.columns([8, 2])
-        with col1: st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>성과 데이터</div>", unsafe_allow_html=True)
-        with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(disp_main), file_name='campaign.csv', mime='text/csv', use_container_width=True)
-
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>성과 데이터</div>", unsafe_allow_html=True)
         render_big_table(disp_main.style.format(fmt), "camp_grid_main", 550)
 
     with tab_cmp:
         opts = get_dynamic_cmp_options(f["start"], f["end"])
         cmp_opts = [o for o in opts if o != "비교 안함"]
         
-        st.markdown("<div class='filter-panel'>", unsafe_allow_html=True)
         cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
-        st.markdown("</div>", unsafe_allow_html=True)
 
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
@@ -89,8 +77,5 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols_cmp = [c for c in base_cols + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
 
-        col1, col2 = st.columns([8, 2])
-        with col1: st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>비교 데이터</div>", unsafe_allow_html=True)
-        with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(disp_cmp), file_name='campaign_compare.csv', mime='text/csv', use_container_width=True)
-
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(disp_cmp.style.format(fmt), "camp_grid_cmp", 550)
