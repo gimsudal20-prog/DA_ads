@@ -13,22 +13,29 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta
 
+@st.cache_data
+def convert_df_to_csv(df):
+    """데이터프레임을 CSV로 변환하는 캐시 함수 (다운로드용)"""
+    return df.to_csv(index=False).encode('utf-8-sig')
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
-    st.markdown("## 🔎 성과 (그룹 / 키워드 단위)")
-    cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
+    st.markdown("## 🔎 그룹 / 키워드 상세 분석")
+    st.caption("파워링크와 쇼핑검색의 세부 성과를 확인하고, 비용 누수가 발생하는 키워드를 즉각 찾아내세요.")
     
+    cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
     bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
 
-    # ✨ [핵심 조치] 비교 기능을 전용 탭으로 분리
     tab_pl, tab_shop, tab_cmp, tab_neg = st.tabs(["🎯 파워링크", "🛒 쇼핑검색", "⚖️ 기간 비교 분석", "💸 저효율 키워드 발굴기"])
     
     df_pl_raw = bundle[bundle["campaign_type_label"] == "파워링크"] if bundle is not None and not bundle.empty and "campaign_type_label" in bundle.columns else pd.DataFrame()
     fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
 
     with tab_pl:
-        is_group_view = st.toggle("📂 광고그룹 단위로 요약해서 보기", value=False, key="kw_view_toggle")
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        with st.container():
+            st.markdown("<div style='background-color:#F8FAFC; padding:12px 16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;'>", unsafe_allow_html=True)
+            is_group_view = st.toggle("📂 키워드 대신 '광고그룹' 단위로 요약해서 보기", value=False, key="kw_view_toggle")
+            st.markdown("</div>", unsafe_allow_html=True)
 
         if not is_group_view:
             if not df_pl_raw.empty:
@@ -47,11 +54,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
-                c1, c2 = st.columns([1, 3])
+                c1, c2 = st.columns([2, 2])
                 with c1:
                     view["_filter_label"] = view["캠페인"].astype(str) + " > " + view["광고그룹"].astype(str) + " > " + view["키워드"].astype(str)
                     kws = ["전체"] + sorted([str(x) for x in view["_filter_label"].unique() if str(x).strip()])
-                    sel_kw = st.selectbox("🎯 개별 키워드 검색/필터", kws, key="kw_name_filter_pl_main")
+                    sel_kw = st.selectbox("🎯 개별 키워드 검색", kws, key="kw_name_filter_pl_main")
 
                 if sel_kw != "전체": view = view[view["_filter_label"] == sel_kw]
 
@@ -60,7 +67,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 if "평균순위" in view.columns:
                     all_kws = sorted([str(x) for x in view["키워드"].unique() if str(x).strip()])
-                    selected_kws = st.multiselect("모니터링 핵심 키워드 선택", all_kws, default=all_kws[:4] if len(all_kws) >= 4 else all_kws, key="star_kws_main")
+                    selected_kws = st.multiselect("⭐ 모니터링 핵심 키워드 선택", all_kws, default=all_kws[:4] if len(all_kws) >= 4 else all_kws, key="star_kws_main")
                     if selected_kws:
                         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
                         cols = st.columns(4)
@@ -75,7 +82,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                                 with cols[idx % 4]:
                                     ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas:.2f}%", key=f"kw_star_main_{idx}")
                 st.divider()
-                st.markdown("#### 📊 검색어별 상세 성과 표")
+                
+                # ✨ 다운로드 버튼 추가
+                col1, col2 = st.columns([8, 2])
+                with col1: st.markdown("#### 📊 검색어별 상세 성과 표")
+                with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name='keyword_performance.csv', mime='text/csv', key='dl_kw_main', use_container_width=True)
+                
                 render_big_table(styled_disp, "pl_grid_main", 500)
             else:
                 st.info("해당 기간의 파워링크 키워드 데이터가 없습니다.")
@@ -94,14 +106,14 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_grp["CPA(원)"] = np.where(view_grp.get("전환", 0) > 0, view_grp.get("광고비", 0) / view_grp.get("전환", 0), 0.0)
                 view_grp["ROAS(%)"] = np.where(view_grp.get("광고비", 0) > 0, (view_grp.get("전환매출", 0) / view_grp.get("광고비", 0)) * 100, 0.0)
                         
-                c1, c2 = st.columns([1, 3])
+                c1, c2 = st.columns([2, 2])
                 with c1:
                     if not view_grp.empty and "캠페인" in view_grp.columns and "광고그룹" in view_grp.columns:
                         view_grp["_filter_label"] = view_grp["캠페인"].astype(str) + " > " + view_grp["광고그룹"].astype(str)
                         grps = ["전체"] + sorted([str(x) for x in view_grp["_filter_label"].unique() if str(x).strip()])
                     else:
                         grps = ["전체"]
-                    sel_grp = st.selectbox("🎯 개별 광고그룹 검색/필터", grps, key="grp_name_filter_main")
+                    sel_grp = st.selectbox("🎯 개별 광고그룹 검색", grps, key="grp_name_filter_main")
 
                 if sel_grp != "전체": view_grp = view_grp[view_grp["_filter_label"] == sel_grp]
                         
@@ -112,7 +124,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 disp_grp = view_grp[final_cols_grp].sort_values(by="광고비" if "광고비" in view_grp.columns else final_cols_grp[0], ascending=False).head(top_n)
                 
                 styled_disp_grp = disp_grp.style.format(fmt)
-                st.markdown("#### 📊 광고그룹별 종합 성과 표")
+                
+                # ✨ 다운로드 버튼 추가
+                col1, col2 = st.columns([8, 2])
+                with col1: st.markdown("#### 📊 광고그룹별 종합 성과 표")
+                with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp_grp), file_name='adgroup_performance.csv', mime='text/csv', key='dl_grp_main', use_container_width=True)
+
                 render_big_table(styled_disp_grp, "pl_grp_grid_main", 500)
             else:
                 st.info("파워링크 그룹 데이터가 없습니다.")
@@ -140,14 +157,14 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 metrics_cols_shop = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
-                c1, c2 = st.columns([1, 3])
+                c1, c2 = st.columns([2, 2])
                 with c1:
                     if "캠페인" in view_shop.columns and "광고그룹" in view_shop.columns and "상품/소재명" in view_shop.columns:
                         view_shop["_filter_label"] = view_shop["캠페인"].astype(str) + " > " + view_shop["광고그룹"].astype(str) + " > " + view_shop["상품/소재명"].astype(str)
                         items = ["전체"] + sorted([str(x) for x in view_shop["_filter_label"].unique() if str(x).strip()])
                     else:
                         items = ["전체"]
-                    sel_item = st.selectbox("🎯 개별 상품/소재 검색/필터", items, key="shop_item_filter_main")
+                    sel_item = st.selectbox("🎯 개별 상품/소재 검색", items, key="shop_item_filter_main")
 
                 if sel_item != "전체": view_shop = view_shop[view_shop["_filter_label"] == sel_item]
 
@@ -157,21 +174,27 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 disp_shop = view_shop[final_cols_shop].sort_values("광고비", ascending=False).head(top_n)
                 styled_disp_shop = disp_shop.style.format(fmt)
 
-                st.markdown("#### 📊 상품/소재별 상세 성과 표")
+                # ✨ 다운로드 버튼 추가
+                col1, col2 = st.columns([8, 2])
+                with col1: st.markdown("#### 📊 상품/소재별 상세 성과 표")
+                with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp_shop), file_name='shopping_performance.csv', mime='text/csv', key='dl_shop_main', use_container_width=True)
+
                 render_big_table(styled_disp_shop, "shop_general_grid_main", 500)
             else:
                 st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
         else:
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
 
-    # ✨ [핵심 조치] 비교 분석 탭 통합 구축
     with tab_cmp:
         st.markdown("### ⚖️ 기간 비교 분석")
-        cmp_view_mode = st.radio("비교 대상 선택", ["🔑 파워링크 - 키워드 단위", "📂 파워링크 - 광고그룹 단위", "🛒 쇼핑검색 - 상품 단위"], horizontal=True)
         
-        opts = get_dynamic_cmp_options(f["start"], f["end"])
-        cmp_opts = [o for o in opts if o != "비교 안함"]
-        cmp_mode = st.radio("📊 기간 비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="kw_cmp_mode")
+        with st.container():
+            st.markdown("<div style='background-color:#F8FAFC; padding:16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:16px;'>", unsafe_allow_html=True)
+            cmp_view_mode = st.radio("비교 대상 선택", ["🔑 파워링크 - 키워드 단위", "📂 파워링크 - 광고그룹 단위", "🛒 쇼핑검색 - 상품 단위"], horizontal=True)
+            opts = get_dynamic_cmp_options(f["start"], f["end"])
+            cmp_opts = [o for o in opts if o != "비교 안함"]
+            cmp_mode = st.radio("📊 기간 비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="kw_cmp_mode")
+            st.markdown("</div>", unsafe_allow_html=True)
         
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
@@ -197,19 +220,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
-                c1, c2 = st.columns([1, 3])
-                with c1:
-                    view["_filter_label"] = view["캠페인"].astype(str) + " > " + view["광고그룹"].astype(str) + " > " + view["키워드"].astype(str)
-                    kws = ["전체"] + sorted([str(x) for x in view["_filter_label"].unique() if str(x).strip()])
-                    sel_kw = st.selectbox("🎯 개별 검색/필터", kws, key="kw_cmp_filter_pl_kw")
-
-                if sel_kw != "전체":
-                    view = view[view["_filter_label"] == sel_kw]
-                    if not view.empty: render_comparison_section(view, cmp_mode, b1, b2, f["start"], f["end"], "선택 항목 상세 비교")
-
-                disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
-                st.markdown("#### 📊 파워링크 키워드 기간 비교 표")
-                render_big_table(disp.style.format(fmt), "pl_cmp_kw", 500)
+                if not view.empty:
+                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
+                    col1, col2 = st.columns([8, 2])
+                    with col1: st.markdown("#### 📊 파워링크 키워드 기간 비교 표")
+                    with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name='compare_keyword.csv', mime='text/csv', key='dl_cmp_kw', use_container_width=True)
+                    render_big_table(disp.style.format(fmt), "pl_cmp_kw", 500)
 
         elif cmp_view_mode == "📂 파워링크 - 광고그룹 단위":
             if df_pl_raw.empty:
@@ -236,19 +252,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
-                c1, c2 = st.columns([1, 3])
-                with c1:
-                    view["_filter_label"] = view["캠페인"].astype(str) + " > " + view["광고그룹"].astype(str)
-                    kws = ["전체"] + sorted([str(x) for x in view["_filter_label"].unique() if str(x).strip()])
-                    sel_kw = st.selectbox("🎯 개별 검색/필터", kws, key="kw_cmp_filter_pl_grp")
-
-                if sel_kw != "전체":
-                    view = view[view["_filter_label"] == sel_kw]
-                    if not view.empty: render_comparison_section(view, cmp_mode, b1, b2, f["start"], f["end"], "선택 항목 상세 비교")
-
-                disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                st.markdown("#### 📊 파워링크 그룹 기간 비교 표")
-                render_big_table(disp.style.format(fmt), "pl_cmp_grp", 500)
+                if not view.empty:
+                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
+                    col1, col2 = st.columns([8, 2])
+                    with col1: st.markdown("#### 📊 파워링크 그룹 기간 비교 표")
+                    with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name='compare_adgroup.csv', mime='text/csv', key='dl_cmp_grp', use_container_width=True)
+                    render_big_table(disp.style.format(fmt), "pl_cmp_grp", 500)
                 
         elif cmp_view_mode == "🛒 쇼핑검색 - 상품 단위":
             shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
@@ -281,27 +290,19 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                             view = append_comparison_data(view, base_shop_bundle, valid_keys)
                             metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                             
-                    c1, c2 = st.columns([1, 3])
-                    with c1:
-                        if "캠페인" in view.columns and "광고그룹" in view.columns and "상품/소재명" in view.columns:
-                            view["_filter_label"] = view["캠페인"].astype(str) + " > " + view["광고그룹"].astype(str) + " > " + view["상품/소재명"].astype(str)
-                            items = ["전체"] + sorted([str(x) for x in view["_filter_label"].unique() if str(x).strip()])
-                        else:
-                            items = ["전체"]
-                        sel_kw = st.selectbox("🎯 개별 검색/필터", items, key="kw_cmp_filter_shop")
-
-                    if sel_kw != "전체":
-                        view = view[view["_filter_label"] == sel_kw]
-                        if not view.empty: render_comparison_section(view, cmp_mode, b1, b2, f["start"], f["end"], "선택 항목 상세 비교")
-
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                    st.markdown("#### 📊 쇼핑검색 상품 기간 비교 표")
+                    col1, col2 = st.columns([8, 2])
+                    with col1: st.markdown("#### 📊 쇼핑검색 상품 기간 비교 표")
+                    with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name='compare_shopping.csv', mime='text/csv', key='dl_cmp_shop', use_container_width=True)
                     render_big_table(disp.style.format(fmt), "shop_cmp_grid", 500)
 
     with tab_neg:
         st.markdown("### 💸 저효율 등록 키워드 발굴기")
-        st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다. **네이버 광고 시스템에서 입찰가를 낮추거나 OFF 상태로 변경할 것**을 강력히 권장합니다.")
+        st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다.")
         
+        # ✨ 네이버 광고시스템 링크 버튼 상단 배치
+        st.markdown("<a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; margin-bottom:16px; padding:8px 16px; background:#10B981; color:#fff; text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;'>🔗 발견 즉시 조치하기 (네이버 광고 이동)</a>", unsafe_allow_html=True)
+
         if df_pl_raw.empty:
             st.info("데이터가 부족하여 저효율 키워드를 분석할 수 없습니다.")
         else:
@@ -315,9 +316,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             
             leak_df = leak_view[leak_view["전환"] == 0].copy()
             
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                min_leak_cost = st.slider("최소 누수 비용 (원)", 5000, 100000, 20000, 5000, help="이 금액 이상 소진되었으나 전환이 0건인 키워드를 찾습니다.")
+            with st.container():
+                st.markdown("<div style='background-color:#FEF2F2; padding:16px; border-radius:12px; border:1px solid #FECACA; margin-bottom:16px;'>", unsafe_allow_html=True)
+                min_leak_cost = st.slider("최소 누수 비용 기준 (원)", 5000, 100000, 20000, 5000, help="이 금액 이상 소진되었으나 전환이 0건인 키워드를 찾습니다.")
+                st.markdown("</div>", unsafe_allow_html=True)
             
             target_leak = leak_df[leak_df["광고비"] >= min_leak_cost].sort_values("광고비", ascending=False)
             
@@ -325,7 +327,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.success(f"🎉 현재 기준(비용 {format_currency(min_leak_cost)} 이상, 전환 0)에 해당하는 비용 누수 키워드가 없습니다!")
             else:
                 target_leak["CTR(%)"] = np.where(target_leak["노출"] > 0, (target_leak["클릭"] / target_leak["노출"]) * 100, 0.0)
-                st.warning(f"🚨 총 **{len(target_leak)}개**의 등록 키워드에서 심각한 비용 누수가 발견되었습니다! 네이버에서 입찰가를 조절하세요.")
+                st.warning(f"🚨 총 **{len(target_leak)}개**의 등록 키워드에서 심각한 비용 누수가 발견되었습니다! 표를 다운로드하여 네이버에서 입찰가를 조절하세요.")
                 
                 disp_leak = target_leak[["캠페인", "광고그룹", "키워드", "노출", "클릭", "광고비", "CTR(%)"]].copy()
                 
@@ -336,4 +338,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if "CTR(%)" in disp_leak.columns: fmt_leak["CTR(%)"] = "{:,.2f}%"
                 styled_disp_leak = disp_leak.style.format(fmt_leak)
                 
+                # ✨ 다운로드 버튼
+                col1, col2 = st.columns([8, 2])
+                with col2: st.download_button(label="📥 누수 키워드 CSV 다운로드", data=convert_df_to_csv(disp_leak), file_name='leak_keywords.csv', mime='text/csv', key='dl_leak', use_container_width=True)
+
                 render_big_table(styled_disp_leak, key="leak_keyword_grid", height=400)
