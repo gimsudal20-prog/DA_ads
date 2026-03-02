@@ -117,17 +117,23 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.caption("네이버 전체 유저의 '실제 검색량 추이(데이터랩)'와 우리 광고의 '노출수'를 겹쳐보며, 성과 하락의 원인이 **'시장 수요 감소'**인지 **'자사 순위 하락'**인지 판별합니다.")
     st.divider()
 
-    client_id = os.getenv("NAVER_DATALAB_CLIENT_ID", "")
-    client_secret = os.getenv("NAVER_DATALAB_CLIENT_SECRET", "")
+    # ✨ 수정된 부분: 스트림릿 전용 금고(st.secrets)를 먼저 확인하도록 업그레이드!
+    client_id = ""
+    client_secret = ""
+    try:
+        client_id = st.secrets.get("NAVER_DATALAB_CLIENT_ID", os.getenv("NAVER_DATALAB_CLIENT_ID", ""))
+        client_secret = st.secrets.get("NAVER_DATALAB_CLIENT_SECRET", os.getenv("NAVER_DATALAB_CLIENT_SECRET", ""))
+    except Exception:
+        client_id = os.getenv("NAVER_DATALAB_CLIENT_ID", "")
+        client_secret = os.getenv("NAVER_DATALAB_CLIENT_SECRET", "")
 
     if not client_id or not client_secret:
-        st.warning("⚠️ `.env` 파일에 네이버 데이터랩 API 키(`NAVER_DATALAB_CLIENT_ID`, `NAVER_DATALAB_CLIENT_SECRET`)가 설정되지 않았습니다.")
+        st.warning("⚠️ 네이버 데이터랩 API 키가 설정되지 않았습니다. Streamlit Cloud의 [Settings] -> [Secrets] 에 키를 등록해주세요.")
         return
 
     cids = tuple(f.get("selected_customer_ids", []))
     d1, d2 = f["start"], f["end"]
     
-    # 1. 비교할 키워드 입력
     c1, c2 = st.columns([1, 2])
     with c1:
         target_keyword = st.text_input("🔍 분석할 핵심 키워드 입력", value="", placeholder="예: 무지박스, 나이키운동화").strip()
@@ -141,36 +147,32 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     with st.spinner(f"'{target_keyword}' 키워드의 시장 트렌드와 내부 데이터를 조합 중입니다..."):
-        # 2. 내부 데이터 가져오기 (해당 키워드가 포함된 캠페인/소재 전체)
-        # 키워드를 직접 타겟팅하기 위해 별도 쿼리를 수행해야 하지만, 현재 구조상 
-        # get_entity_totals나 query_keyword_timeseries를 변형하여 사용합니다.
-        
-        # 임시로 '파워링크'의 전체 트렌드를 가져와서 뼈대로 삼습니다. (실제로는 해당 키워드만의 내부 데이터 쿼리가 필요함)
         type_sel = tuple(["파워링크", "쇼핑검색"])
-        internal_ts = query_keyword_timeseries(engine, d1, d2, cids, type_sel)
+        try:
+            internal_ts = query_keyword_timeseries(engine, d1, d2, cids, type_sel)
+        except Exception as e:
+            st.error(f"내부 데이터 조회 중 오류가 발생했습니다: {e}")
+            return
         
-        # 3. 데이터랩 트렌드 가져오기
         trend_df = get_datalab_trend(client_id, client_secret, target_keyword, d1, d2)
         
         if trend_df.empty:
             st.error("네이버 데이터랩에서 데이터를 가져오지 못했습니다. 키워드 검색량이 너무 적거나, API 키 설정을 확인해 주세요.")
             return
 
-        # 4. 데이터 병합 (날짜 기준)
-        if not internal_ts.empty:
+        if internal_ts is not None and not internal_ts.empty:
             internal_ts["dt"] = pd.to_datetime(internal_ts["dt"])
-            # 여기서는 편의상 전체 노출수를 가져왔지만, 실제로는 해당 키워드만의 노출수를 집계하도록 쿼리를 개선해야 완벽합니다.
-            # 지금은 UI 렌더링과 데이터랩 연동을 확인하기 위해 그룹바이로 날짜별 총합을 씁니다.
             agg_internal = internal_ts.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum()
             agg_internal = agg_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
             
             merged_df = pd.merge(trend_df, agg_internal, on="dt", how="left")
             merged_df["노출"] = merged_df["노출"].fillna(0)
+            merged_df["클릭"] = merged_df["클릭"].fillna(0)
+            merged_df["광고비"] = merged_df["광고비"].fillna(0)
             
             st.markdown(f"### 📊 [{target_keyword}] 트렌드 비교 차트")
             render_trend_chart(merged_df, target_keyword)
             
-            # 분석 코멘트
             st.markdown("""
             #### 💡 인사이트 해석 가이드
             * **초록색 선 (시장 트렌드) 하락 + 파란색 막대 (자사 노출수) 하락:** 시장 전체의 수요가 줄어들고 있습니다. (비수기 진입 등). 무리하게 입찰가를 올리지 마세요.
@@ -188,5 +190,4 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
                 use_container_width=True, hide_index=True
             )
         else:
-            st.warning("선택하신 기간/계정에 내부(자사) 광고데이터가 없습니다.")
-
+            st.warning("선택하신 기간/계정에 내부(자사) 광고 데이터가 없습니다.")
