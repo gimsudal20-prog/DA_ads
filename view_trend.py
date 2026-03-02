@@ -67,31 +67,25 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    """✨ 에러 없이 캠페인/그룹별 일일 데이터를 한 번에 가져오는 초안전 함수"""
+    """✨ 에러 로그 분석 완료: 뼈대 테이블(dim)을 완벽하게 거쳐서 가져오는 무결점 쿼리"""
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
     
-    for table in ["fact_keyword_daily", "fact_ad_daily"]:
-        if not table_exists(_engine, table): continue
-        
-        f_cols = get_table_columns(_engine, table)
+    has_camp = table_exists(_engine, "dim_campaign")
+    has_grp = table_exists(_engine, "dim_adgroup")
+    
+    # 1️⃣ 파워링크 (fact_keyword_daily -> dim_keyword 조인 필수)
+    if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
+        f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
         
-        c_join, c_name = "", "f.campaign_id::text"
-        if table_exists(_engine, "dim_campaign"):
-            dc_cols = get_table_columns(_engine, "dim_campaign")
-            if "campaign_name" in dc_cols:
-                c_join = "LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text"
-                c_name = "COALESCE(c.campaign_name, f.campaign_id::text)"
+        c_join = "LEFT JOIN dim_campaign c ON dk.customer_id::text = c.customer_id::text AND dk.campaign_id::text = c.campaign_id::text" if has_camp else ""
+        c_name = "COALESCE(c.campaign_name, dk.campaign_id::text)" if has_camp else "dk.campaign_id::text"
         
-        g_join, g_name = "", "f.adgroup_id::text"
-        if table_exists(_engine, "dim_adgroup"):
-            dg_cols = get_table_columns(_engine, "dim_adgroup")
-            if "adgroup_name" in dg_cols:
-                g_join = "LEFT JOIN dim_adgroup g ON f.customer_id::text = g.customer_id::text AND f.adgroup_id::text = g.adgroup_id::text"
-                g_name = "COALESCE(g.adgroup_name, f.adgroup_id::text)"
-                
+        g_join = "LEFT JOIN dim_adgroup g ON dk.customer_id::text = g.customer_id::text AND dk.adgroup_id::text = g.adgroup_id::text" if has_grp else ""
+        g_name = "COALESCE(g.adgroup_name, dk.adgroup_id::text)" if has_grp else "dk.adgroup_id::text"
+
         sql = f"""
         SELECT 
             f.dt::date AS dt,
@@ -101,7 +95,8 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
             SUM(f.clk) AS clk,
             SUM(f.cost) AS cost,
             SUM(COALESCE({sales_col}, 0)) AS sales
-        FROM {table} f
+        FROM fact_keyword_daily f
+        JOIN dim_keyword dk ON f.customer_id::text = dk.customer_id::text AND f.keyword_id::text = dk.keyword_id::text
         {c_join}
         {g_join}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
@@ -110,11 +105,46 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
         try:
             df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
             if df is not None and not df.empty: df_list.append(df)
-        except Exception: pass
+        except Exception as e:
+            st.error(f"파워링크 데이터 로딩 에러: {e}")
+
+    # 2️⃣ 쇼핑검색 (fact_ad_daily -> dim_ad 조인 필수)
+    if table_exists(_engine, "fact_ad_daily") and table_exists(_engine, "dim_ad"):
+        f_cols = get_table_columns(_engine, "fact_ad_daily")
+        sales_col = "f.sales" if "sales" in f_cols else "0"
+        
+        c_join = "LEFT JOIN dim_campaign c ON da.customer_id::text = c.customer_id::text AND da.campaign_id::text = c.campaign_id::text" if has_camp else ""
+        c_name = "COALESCE(c.campaign_name, da.campaign_id::text)" if has_camp else "da.campaign_id::text"
+        
+        g_join = "LEFT JOIN dim_adgroup g ON da.customer_id::text = g.customer_id::text AND da.adgroup_id::text = g.adgroup_id::text" if has_grp else ""
+        g_name = "COALESCE(g.adgroup_name, da.adgroup_id::text)" if has_grp else "da.adgroup_id::text"
+
+        sql = f"""
+        SELECT 
+            f.dt::date AS dt,
+            {c_name} AS campaign_name,
+            {g_name} AS adgroup_name,
+            SUM(f.imp) AS imp,
+            SUM(f.clk) AS clk,
+            SUM(f.cost) AS cost,
+            SUM(COALESCE({sales_col}, 0)) AS sales
+        FROM fact_ad_daily f
+        JOIN dim_ad da ON f.customer_id::text = da.customer_id::text AND f.ad_id::text = da.ad_id::text
+        {c_join}
+        {g_join}
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY 1, 2, 3
+        """
+        try:
+            df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+            if df is not None and not df.empty: df_list.append(df)
+        except Exception as e:
+            st.error(f"쇼핑검색 데이터 로딩 에러: {e}")
             
     if df_list:
         res = pd.concat(df_list, ignore_index=True)
         return res.groupby(["dt", "campaign_name", "adgroup_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
+    
     return pd.DataFrame()
 
 def render_trend_chart(df: pd.DataFrame, datalab_name: str, ad_type_label: str):
@@ -174,12 +204,12 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("최소 3일 이상의 기간을 선택해야 유의미한 차트가 그려집니다. 좌측 필터에서 기간을 늘려주세요.")
         return
 
-    # 1. 내부 데이터 먼저 싹 다 불러오기 (에러 절대 안나는 쿼리로 설계)
+    # 1. 내부 데이터 먼저 싹 다 불러오기
     with st.spinner("내부 캠페인/그룹 목록을 불러오는 중..."):
         df_raw = get_internal_daily_detail(engine, d1, d2, cids)
 
     if df_raw.empty:
-        st.warning("선택하신 기간/계정에 내부 광고 데이터가 없습니다.")
+        st.warning("선택하신 기간/계정에 내부 광고 데이터가 없습니다. (왼쪽에서 업체나 기간을 변경해 보세요)")
         return
 
     # 2. 아주 직관적인 3단계 선택 UI
@@ -189,14 +219,14 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         datalab_kw = st.text_input("🔍 데이터랩 트렌드 검색어", placeholder="예: 나이키운동화").strip()
     
     with c2:
-        camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip()])
+        camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
         sel_camp = st.selectbox("🎯 비교할 캠페인 선택", camps)
         
     with c3:
         if sel_camp == "전체":
-            grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip()])
+            grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
         else:
-            grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip()])
+            grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
         sel_grp = st.selectbox("🎯 비교할 광고그룹 선택", grps)
 
     if not datalab_kw:
