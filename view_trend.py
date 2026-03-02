@@ -69,56 +69,67 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     
     return pd.DataFrame()
 
-def get_specific_keyword_timeseries(engine, d1: date, d2: date, cids: tuple, target_keyword: str) -> pd.DataFrame:
-    """✨ 입력한 키워드와 '일치하거나 포함하는' 내부 광고 데이터만 핀셋처럼 뽑아오는 함수"""
-    if not table_exists(engine, "fact_keyword_daily"): 
-        return pd.DataFrame()
-    
-    fk_cols = get_table_columns(engine, "fact_keyword_daily")
-    has_sales = "sales" in fk_cols
-    sales_expr = "SUM(COALESCE(fk.sales, 0))" if has_sales else "0::numeric"
-    where_cid = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    
-    # 검색용 키워드 (띄어쓰기 무시하고 검색)
+def get_specific_keyword_timeseries(engine, d1: date, d2: date, cids: tuple, target_keyword: str, ad_type: str) -> pd.DataFrame:
+    """✨ 파워링크(키워드)와 쇼핑검색(소재/상품) 테이블을 선택적으로 뒤져서 합쳐주는 함수"""
+    df_list = []
     search_kw = f"%{target_keyword.replace(' ', '')}%"
-
-    dim_kw_exists = table_exists(engine, "dim_keyword")
-    if dim_kw_exists:
-        dk_cols = get_table_columns(engine, "dim_keyword")
-        kw_col = next((c for c in ("keyword_name", "keyword", "rel_keyword", "rel_keyword_name", "name") if c in dk_cols), None)
-        
-        if kw_col:
-            sql = f"""
-            SELECT fk.dt::date AS dt, SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
-            FROM fact_keyword_daily fk
-            JOIN dim_keyword dk ON fk.customer_id::text = dk.customer_id::text AND fk.keyword_id::text = dk.keyword_id::text
-            WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid}
-            AND REPLACE(dk.{kw_col}, ' ', '') ILIKE :kw
-            GROUP BY fk.dt::date
-            ORDER BY fk.dt::date
-            """
-            df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
-            if df is not None and not df.empty:
-                return df
     
-    # dim_keyword 조인이 실패하거나 컬럼이 없으면 fact_keyword_daily 자체에서 찾기
-    kw_col_fk = next((c for c in ("keyword", "keyword_name", "kw", "query", "keyword_text") if c in fk_cols), None)
-    if kw_col_fk:
-        sql = f"""
-        SELECT fk.dt::date AS dt, SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
-        FROM fact_keyword_daily fk
-        WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid}
-        AND REPLACE(fk.{kw_col_fk}, ' ', '') ILIKE :kw
-        GROUP BY fk.dt::date
-        ORDER BY fk.dt::date
-        """
-        df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
-        if df is not None and not df.empty:
-            return df
+    where_cid_fk = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    where_cid_fa = f"AND fa.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
 
-    return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "sales"])
+    # 1️⃣ 파워링크 (키워드 테이블 검색)
+    if ad_type in ["전체", "파워링크"]:
+        if table_exists(engine, "fact_keyword_daily"):
+            fk_cols = get_table_columns(engine, "fact_keyword_daily")
+            has_sales = "sales" in fk_cols
+            sales_expr = "SUM(COALESCE(fk.sales, 0))" if has_sales else "0::numeric"
 
-def render_trend_chart(df: pd.DataFrame, keyword: str):
+            if table_exists(engine, "dim_keyword"):
+                dk_cols = get_table_columns(engine, "dim_keyword")
+                kw_col = next((c for c in ("keyword_name", "keyword", "rel_keyword", "name") if c in dk_cols), None)
+                if kw_col:
+                    sql = f"""
+                    SELECT fk.dt::date AS dt, SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
+                    FROM fact_keyword_daily fk
+                    JOIN dim_keyword dk ON fk.customer_id::text = dk.customer_id::text AND fk.keyword_id::text = dk.keyword_id::text
+                    WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid_fk}
+                    AND REPLACE(dk.{kw_col}, ' ', '') ILIKE :kw
+                    GROUP BY fk.dt::date
+                    """
+                    df_kw = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
+                    if df_kw is not None and not df_kw.empty: df_list.append(df_kw)
+
+    # 2️⃣ 쇼핑검색 (소재/상품 테이블 검색)
+    if ad_type in ["전체", "쇼핑검색"]:
+        if table_exists(engine, "fact_ad_daily"):
+            fa_cols = get_table_columns(engine, "fact_ad_daily")
+            has_sales = "sales" in fa_cols
+            sales_expr = "SUM(COALESCE(fa.sales, 0))" if has_sales else "0::numeric"
+
+            if table_exists(engine, "dim_ad"):
+                da_cols = get_table_columns(engine, "dim_ad")
+                ad_col = next((c for c in ("ad_name", "name", "product_name") if c in da_cols), None)
+                if ad_col:
+                    sql = f"""
+                    SELECT fa.dt::date AS dt, SUM(fa.imp) AS imp, SUM(fa.clk) AS clk, SUM(fa.cost) AS cost, {sales_expr} AS sales
+                    FROM fact_ad_daily fa
+                    JOIN dim_ad da ON fa.customer_id::text = da.customer_id::text AND fa.ad_id::text = da.ad_id::text
+                    WHERE fa.dt BETWEEN :d1 AND :d2 {where_cid_fa}
+                    AND REPLACE(da.{ad_col}, ' ', '') ILIKE :kw
+                    GROUP BY fa.dt::date
+                    """
+                    df_ad = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
+                    if df_ad is not None and not df_ad.empty: df_list.append(df_ad)
+
+    if not df_list:
+        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "sales"])
+    
+    # 두 테이블(파워링크+쇼핑검색)에서 나온 결과를 합치고 날짜별로 다시 묶어줌
+    combined = pd.concat(df_list, ignore_index=True)
+    final_df = combined.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum().sort_values("dt")
+    return final_df
+
+def render_trend_chart(df: pd.DataFrame, keyword: str, ad_type_label: str):
     """ECharts를 이용한 듀얼 축 차트 렌더링"""
     if df.empty or not HAS_ECHARTS:
         st.info("차트를 그릴 데이터가 없거나 ECharts 모듈이 없습니다.")
@@ -127,10 +138,12 @@ def render_trend_chart(df: pd.DataFrame, keyword: str):
     x_data = df["dt"].dt.strftime('%m-%d').tolist()
     imp_data = df["노출"].fillna(0).tolist()
     trend_data = df["트렌드지수(%)"].fillna(0).round(1).tolist()
+    
+    legend_name = f"내부 노출수 ({ad_type_label})"
 
     options = {
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
-        "legend": {"data": [f"'{keyword}' 내부 노출수", "네이버 시장 트렌드 지수"], "bottom": 0},
+        "legend": {"data": [legend_name, "네이버 시장 트렌드 지수"], "bottom": 0},
         "grid": {"left": "3%", "right": "3%", "bottom": "15%", "top": "15%", "containLabel": True},
         "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}}],
         "yAxis": [
@@ -139,7 +152,7 @@ def render_trend_chart(df: pd.DataFrame, keyword: str):
         ],
         "series": [
             {
-                "name": f"'{keyword}' 내부 노출수", 
+                "name": legend_name, 
                 "type": "bar", 
                 "data": imp_data, 
                 "itemStyle": {"color": "#3B82F6", "borderRadius": [4,4,0,0]}
@@ -162,7 +175,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     
     st.markdown("## 📈 시장 트렌드 vs 자사 노출 분석 (1:1 매칭)")
-    st.caption("네이버 전체 유저의 '실제 검색량 추이'와 **우리 광고의 특정 키워드 노출수**를 1:1로 겹쳐보며 인사이트를 발굴합니다.")
+    st.caption("네이버 전체 유저의 '실제 검색량 추이'와 **우리 광고(파워링크/쇼핑검색) 노출수**를 1:1로 겹쳐보며 인사이트를 발굴합니다.")
     st.divider()
 
     client_id = ""
@@ -181,12 +194,19 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     d1, d2 = f["start"], f["end"]
     
-    c1, c2 = st.columns([1, 2])
+    # ✨ UI 컨트롤 추가: 키워드 입력칸 옆에 '광고 유형 선택' 옵션 생성
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        target_keyword = st.text_input("🔍 분석할 주력 키워드 입력", value="", placeholder="예: 나이키운동화").strip()
+        target_keyword = st.text_input("🔍 분석할 키워드 또는 상품명 입력", value="", placeholder="예: 나이키운동화").strip()
+    with c2:
+        ad_type_sel = st.selectbox("🎯 분석할 광고 영역", ["전체 (파워링크+쇼핑검색)", "파워링크 (키워드 매칭)", "쇼핑검색 (상품명 매칭)"])
     
+    # 내부 로직에 넘길 짧은 변수명 정리
+    ad_type_mapper = {"전체 (파워링크+쇼핑검색)": "전체", "파워링크 (키워드 매칭)": "파워링크", "쇼핑검색 (상품명 매칭)": "쇼핑검색"}
+    mapped_type = ad_type_mapper[ad_type_sel]
+
     if not target_keyword:
-        st.info("분석을 원하시는 주력 키워드를 위에 입력해 주세요.")
+        st.info("분석을 원하시는 주력 키워드나 상품명을 위에 입력해 주세요.")
         return
 
     if (d2 - d1).days < 2:
@@ -194,9 +214,9 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     with st.spinner(f"'{target_keyword}' 관련 시장 트렌드와 내부 데이터를 가져오는 중입니다..."):
-        # ✨ 업그레이드: 입력한 키워드와 연관된 내부 데이터만 정확하게 필터링해서 가져옴!
         try:
-            internal_ts = get_specific_keyword_timeseries(engine, d1, d2, cids, target_keyword)
+            # ✨ 업그레이드된 함수 호출 (선택한 영역에 맞춰 파워링크, 쇼핑검색 테이블 자동 분류 검색)
+            internal_ts = get_specific_keyword_timeseries(engine, d1, d2, cids, target_keyword, mapped_type)
         except Exception as e:
             st.error(f"내부 데이터 조회 중 오류가 발생했습니다: {e}")
             return
@@ -209,7 +229,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         if internal_ts is not None and not internal_ts.empty:
             internal_ts["dt"] = pd.to_datetime(internal_ts["dt"])
-            # 여기서는 이미 get_specific_keyword_timeseries에서 날짜별로 그룹화해서 넘어옵니다.
             agg_internal = internal_ts.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
             
             merged_df = pd.merge(trend_df, agg_internal, on="dt", how="left")
@@ -217,8 +236,8 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             merged_df["클릭"] = merged_df["클릭"].fillna(0)
             merged_df["광고비"] = merged_df["광고비"].fillna(0)
             
-            st.markdown(f"### 📊 [{target_keyword}] 키워드 1:1 비교 차트")
-            render_trend_chart(merged_df, target_keyword)
+            st.markdown(f"### 📊 [{target_keyword}] 트렌드 비교 차트 ({mapped_type})")
+            render_trend_chart(merged_df, target_keyword, mapped_type)
             
             st.markdown("""
             #### 💡 인사이트 해석 가이드
@@ -237,4 +256,4 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
                 use_container_width=True, hide_index=True
             )
         else:
-            st.warning(f"선택하신 기간 동안 우리 계정 내에서 '{target_keyword}' 키워드로 광고가 노출된 기록이 없습니다.")
+            st.warning(f"선택하신 기간 동안 우리 계정 내에서 '{target_keyword}' ({mapped_type}) 광고가 노출된 기록이 없습니다.")
