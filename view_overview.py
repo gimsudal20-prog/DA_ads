@@ -13,10 +13,6 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta
 
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
-
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -49,7 +45,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    # ✨ [NEW] 이전처럼 유입/비용/성과 3섹션으로 나누어 한눈에 보이게 배치 (그리드 레이아웃)
     kpi_groups_html = f"""
     <div class='kpi-group-container'>
         <div class='kpi-group'>
@@ -79,9 +74,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
     
-    # ---------------------------------------------------------
-    # 진단 리포트
-    # ---------------------------------------------------------
     alerts = []
     cur_roas = cur_summary.get('roas', 0)
     cur_cost = cur_summary.get('cost', 0)
@@ -99,7 +91,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if alerts:
         with st.expander(f"🚨 계정 내 점검이 필요한 {len(alerts)}건의 알림이 있습니다.", expanded=True):
             for a in alerts: st.markdown(f"- {a}")
-            st.markdown("<br><a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; padding:8px 14px; background:#19191A; color:#FFFFFF; text-decoration:none; border-radius:4px; font-weight:600; font-size:12px;'>네이버 광고시스템으로 이동</a>", unsafe_allow_html=True)
             
             if not hippos.empty:
                 disp_hippos = _perf_common_merge_meta(hippos, meta)
@@ -109,7 +100,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 for c in ["광고비", "클릭수"]:
                     if c in df_show.columns: df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
                 
-                st.markdown("<div style='margin-top: 24px; font-weight: 700; color: #FC503D; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-top: 16px; font-weight: 700; color: #FC503D; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
                 st.dataframe(df_show, use_container_width=True, hide_index=True)
     else:
         st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 있습니다!")
@@ -126,9 +117,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("일자별 광고비 및 ROAS", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
                 
-                col1, col2 = st.columns([8, 2])
-                with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(ts), file_name=f'{account_name}_trend_data.csv', mime='text/csv', use_container_width=True)
-
             with tab_dow:
                 ts_dow = ts.copy()
                 ts_dow["요일"] = ts_dow["dt"].dt.day_name()
@@ -144,13 +132,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # ✨ [NEW] 블루(광고비) & 퍼플(ROAS) 조합의 쿨톤 히트맵
                 styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Purples', subset=['ROAS(%)']).format({
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
                 
-                col1, col2 = st.columns([8, 2])
-                with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(dow_disp), file_name=f'{account_name}_dow_data.csv', mime='text/csv', use_container_width=True)
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
     except Exception as e:
         pass
