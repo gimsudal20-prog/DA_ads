@@ -13,65 +13,34 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta
 
+@st.cache_data
+def convert_df_to_csv(df):
+    """데이터프레임을 CSV로 변환하는 캐시 함수 (다운로드용)"""
+    return df.to_csv(index=False).encode('utf-8-sig')
+
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
     cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
     cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     camp_bndl = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=5000)
-    
-    st.markdown("<div class='nv-sec-title'>🚨 실시간 AI 알림 보드</div>", unsafe_allow_html=True)
-    alerts = []
-    
-    cur_roas = cur_summary.get('roas', 0)
-    cur_cost = cur_summary.get('cost', 0)
-    if cur_cost > 0 and cur_roas < 100:
-        # ✨ [NEW] ROAS .2f 적용
-        alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.2f}%**로 매우 낮습니다.")
-        
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
-    
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
     base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
-    
-    if base_summary.get('cost', 0) > 0:
-        cost_surge = (cur_cost - base_summary['cost']) / base_summary['cost'] * 100
-        if cost_surge >= 150:
-            alerts.append(f"🔥 **비용 폭증 알림:** 이전 기간 대비 전체 광고비 소진율이 **{cost_surge:.0f}% 폭증**했습니다. 입찰가를 확인하세요!")
-    
-    hippos = pd.DataFrame()
-    if not camp_bndl.empty:
-        hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)].sort_values('cost', ascending=False)
-        if not hippos.empty:
-            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 발견되었습니다! (아래 표 참조)")
 
-    if alerts:
-        for a in alerts: st.warning(a)
-    else:
-        st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
+    # ✨ [NEW] 1 & 2: 컨텍스트 인식 - 현재 보고 있는 계정(업체) 이름 가져오기
+    account_name = "전체 계정"
+    if cids and not meta.empty:
+        acc_names = meta[meta['customer_id'].isin(cids)]['account_name'].dropna().unique()
+        if len(acc_names) == 1:
+            account_name = f"{acc_names[0]}"
+        elif len(acc_names) > 1:
+            account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
     
-    if not hippos.empty:
-        disp_hippos = _perf_common_merge_meta(hippos, meta)
-        disp_hippos = disp_hippos.rename(columns={
-            "account_name": "업체명", "campaign_name": "캠페인명", "cost": "광고비", "clk": "클릭수"
-        })
-        
-        cols_to_show = [c for c in ["업체명", "캠페인명", "광고비", "클릭수"] if c in disp_hippos.columns]
-        df_show = disp_hippos[cols_to_show].copy()
-        
-        for c in ["광고비", "클릭수"]:
-            if c in df_show.columns:
-                df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
-        
-        st.markdown("<div style='margin-top: 12px; margin-bottom: 8px; font-weight: 700; color: #B91C1C;'>🚨 [긴급 조치 필요] 비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
-    
-    st.divider()
-
-    st.markdown("<div class='nv-sec-title'>📊 종합 성과 요약</div>", unsafe_allow_html=True)
-    st.caption("선택한 전체 계정의 핵심 성과(KPI)를 직관적으로 요약합니다.")
-    st.markdown(f"<div style='font-size:13px; font-weight:600; color:#475569; margin-bottom:12px;'>📊 자동 비교 기준: <span style='color:#2563EB;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
+    st.caption("가장 중요한 핵심 성과(KPI)를 직관적으로 확인하세요.")
+    st.markdown(f"<div style='font-size:13px; font-weight:600; color:#475569; margin-bottom:12px;'>🔄 자동 비교 기준: <span style='color:#2563EB;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
     base = base_summary
@@ -80,22 +49,91 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
         except Exception: return None
 
-    def _kpi_html(label, value, delta_text, delta_val):
-        cls = "pos" if delta_val and float(delta_val) > 0 else ("neg" if delta_val and float(delta_val) < 0 else "neu")
-        return f"<div class='kpi'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls}'>{delta_text}</div></div>"
+    def _kpi_html(label, value, delta_text, delta_val, highlight=False):
+        cls_delta = "pos" if delta_val and float(delta_val) > 0 else ("neg" if delta_val and float(delta_val) < 0 else "neu")
+        cls_hl = " highlight" if highlight else ""
+        return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    items = [
-        ("노출수", format_number_commas(cur.get("imp", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp")),
-        ("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk")),
-        ("광고비", format_currency(cur.get("cost", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost")),
-        ("전환매출", format_currency(cur.get("sales", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales")),
-        ("전환수", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv")),
-        # ✨ [NEW] ROAS 카드 소수점 0.01단위(.2f) 적용
-        ("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas")),
-        ("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr")),
-        ("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc")),
-    ]
-    st.markdown("<div class='kpi-row' style='margin-top: 10px;'>" + "".join(_kpi_html(*i) for i in items) + "</div>", unsafe_allow_html=True)
+    # ✨ [NEW] 4: KPI 지표의 논리적 그룹화 (유입/비용/성과)
+    kpi_groups_html = f"""
+    <div class='kpi-group-container'>
+        <div class='kpi-group'>
+            <div class='kpi-group-title'>👀 유입 지표</div>
+            <div class='kpi-row'>
+                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+                {_kpi_html("CTR", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+            </div>
+        </div>
+        <div class='kpi-group'>
+            <div class='kpi-group-title'>💸 비용 지표</div>
+            <div class='kpi-row'>
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"))}
+            </div>
+        </div>
+        <div class='kpi-group'>
+            <div class='kpi-group-title'>🎯 성과 지표</div>
+            <div class='kpi-row'>
+                {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{cmp_mode} {pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                {_kpi_html("전환매출", format_currency(cur.get("sales", 0.0)), f"{cmp_mode} {pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
+            </div>
+        </div>
+    </div>
+    """
+    st.markdown(kpi_groups_html, unsafe_allow_html=True)
+    
+    # ---------------------------------------------------------
+    # ✨ [NEW] 3: 알림 피로도 감소 및 액션 유도 (배지 및 진단 리포트 묶음)
+    # ---------------------------------------------------------
+    alerts = []
+    cur_roas = cur_summary.get('roas', 0)
+    cur_cost = cur_summary.get('cost', 0)
+    
+    if cur_cost > 0 and cur_roas < 100:
+        alerts.append(f"⚠️ **수익성 적자 경고:** 현재 조회 기간의 평균 ROAS가 **{cur_roas:.2f}%**로 낮습니다.")
+        
+    if base_summary.get('cost', 0) > 0:
+        cost_surge = (cur_cost - base_summary['cost']) / base_summary['cost'] * 100
+        if cost_surge >= 150:
+            alerts.append(f"🔥 **비용 폭증 알림:** 이전 기간 대비 전체 광고비 소진율이 **{cost_surge:.0f}% 폭증**했습니다.")
+    
+    hippos = pd.DataFrame()
+    if not camp_bndl.empty:
+        hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)].sort_values('cost', ascending=False)
+        if not hippos.empty:
+            alerts.append(f"💸 **비용 누수 경고:** 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 **{len(hippos)}개** 발견되었습니다.")
+
+    st.markdown("<div class='nv-sec-title'>🚨 실시간 AI 진단 리포트</div>", unsafe_allow_html=True)
+    if alerts:
+        # 경고 요약 배지
+        st.error(f"⚠️ **주의 필요!** 계정 내 점검이 필요한 **{len(alerts)}건**의 중요 알림이 있습니다.")
+        
+        # 상세 내용은 Expander로 감추어 인지 부하 감소
+        with st.expander("상세 진단 리포트 및 조치하기 열기", expanded=True):
+            for a in alerts:
+                st.markdown(f"- {a}")
+            
+            # 액션 유도 버튼 (네이버 광고 시스템으로 이동)
+            st.markdown("<br><a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; padding:8px 16px; background:#2563EB; color:#fff; text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;'>🔗 네이버 광고시스템에서 수정하기</a>", unsafe_allow_html=True)
+            
+            if not hippos.empty:
+                disp_hippos = _perf_common_merge_meta(hippos, meta)
+                disp_hippos = disp_hippos.rename(columns={
+                    "account_name": "업체명", "campaign_name": "캠페인명", "cost": "광고비", "clk": "클릭수"
+                })
+                cols_to_show = [c for c in ["업체명", "캠페인명", "광고비", "클릭수"] if c in disp_hippos.columns]
+                df_show = disp_hippos[cols_to_show].copy()
+                for c in ["광고비", "클릭수"]:
+                    if c in df_show.columns:
+                        df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
+                
+                st.markdown("<div style='margin-top: 20px; font-weight: 700; color: #B91C1C;'>🚨 비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
+                st.dataframe(df_show, use_container_width=True, hide_index=True)
+    else:
+        st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 매우 건강하게 운영되고 있습니다!")
+    
     st.divider()
 
     try:
@@ -107,6 +145,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             with tab_trend:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("전체 트렌드", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
+                
+                # ✨ [NEW] 5: 보고서 작성을 위한 다운로드 버튼 추가
+                st.download_button(
+                    label="📥 트렌드 데이터 CSV 다운로드",
+                    data=convert_df_to_csv(ts),
+                    file_name=f'{account_name}_trend_data.csv',
+                    mime='text/csv',
+                    key='dl_trend'
+                )
+
             with tab_dow:
                 st.caption("💡 **활용법:** 붉은색이 진할수록 광고비 지출이 많고, 녹색이 진할수록 수익성(ROAS)이 좋습니다. 녹색이 진한 요일의 예산을 늘려보세요.")
                 
@@ -124,7 +172,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # ✨ [NEW] 스타일링 테이블 내 ROAS 소수점 0.01단위(.2f) 반영
+                # 우측 상단 배치 느낌으로 다운로드 버튼
+                col1, col2 = st.columns([8, 2])
+                with col2:
+                    st.download_button(
+                        label="📥 히트맵 CSV 다운로드",
+                        data=convert_df_to_csv(dow_disp),
+                        file_name=f'{account_name}_dow_data.csv',
+                        mime='text/csv',
+                        key='dl_dow'
+                    )
+
                 styled_df = dow_disp.style.background_gradient(cmap='Reds', subset=['광고비']).background_gradient(cmap='Greens', subset=['ROAS(%)']).format({
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
