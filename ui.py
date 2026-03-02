@@ -50,7 +50,8 @@ from data import (
 try: alt.data_transformers.enable("vegafusion")
 except Exception: pass
 
-def render_hero(latest_dates: dict | None, build_tag: str) -> None:
+# ✨ [NEW] dashboard_title 파라미터 추가 (기본값 설정으로 호환성 유지)
+def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str = "마케팅 통합 대시보드") -> None:
     dt_str = "수집 대기 중"
     if latest_dates:
         cd = latest_dates.get("campaign")
@@ -75,7 +76,7 @@ def render_hero(latest_dates: dict | None, build_tag: str) -> None:
             <div>{logo_html}</div>
             <div style='border-left: 2px solid #F1F5F9; padding-left: 20px;'>
                 <h1 style='margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #0F172A;'>
-                    마케팅 대시보드
+                    {dashboard_title}
                 </h1>
                 <p style='margin: 6px 0 0 0; color: #64748B; font-size: 13.5px; font-weight: 500;'>
                     최신 데이터 기준일: <span style='color: #2563EB; font-weight: 700;'>{dt_str}</span>
@@ -96,7 +97,6 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
     """
     st.markdown(html, unsafe_allow_html=True)
 
-# ✨ [NEW] Styler 포맷(소수점 유지)을 지원하도록 테이블 렌더링 함수 수정
 def render_big_table(df, key: str, height: int = 400) -> None:
     if df is None:
         st.info("데이터가 없습니다.")
