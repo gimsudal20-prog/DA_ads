@@ -49,7 +49,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    # ✨ [레이아웃 원복] 이전처럼 유입/비용/성과 3섹션으로 나누어 한눈에 보이게 배치
+    # ✨ [NEW] 이전처럼 유입/비용/성과 3섹션으로 나누어 한눈에 보이게 배치 (그리드 레이아웃)
     kpi_groups_html = f"""
     <div class='kpi-group-container'>
         <div class='kpi-group'>
@@ -144,8 +144,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # 깔끔한 블루 & 모노톤 히트맵
-                styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Greys', subset=['ROAS(%)']).format({
+                # ✨ [NEW] 블루(광고비) & 퍼플(ROAS) 조합의 쿨톤 히트맵
+                styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Purples', subset=['ROAS(%)']).format({
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
                 
