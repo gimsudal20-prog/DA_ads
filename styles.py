@@ -6,7 +6,7 @@ import streamlit as st
 
 GLOBAL_UI_CSS = """
 <style>
-/* 모노톤 기반의 세련된 플랫 디자인 (그림자 제거, 라인 강조) */
+/* 29CM 감성의 모노톤 기반 플랫 디자인 (그림자 제거, 라인 강조) */
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 
 :root {
@@ -17,10 +17,10 @@ GLOBAL_UI_CSS = """
   --nv-text: #19191A; 
   --nv-muted: #474747; 
   --nv-muted-light: #A0A0A0; 
-  --nv-primary: #375FFF; /* 강조용 블루 */
+  --nv-primary: #375FFF; /* 강조용 쨍한 블루 */
   --nv-green: #3CD333; 
   --nv-red: #FC503D; 
-  --nv-radius: 8px; /* 모던한 곡률 */
+  --nv-radius: 8px; 
 }
 
 /* Base Typography */
@@ -38,6 +38,7 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi-group { flex: 1; min-width: 250px; background: var(--nv-panel); border: 1px solid var(--nv-line); border-radius: var(--nv-radius); padding: 16px; }
 .kpi-group-title { font-size: 14px; font-weight: 700; color: var(--nv-muted); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
 
+/* 격자(Grid) 구조로 KPI 나열 */
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
 
 /* 플랫한 KPI 카드 */
@@ -53,7 +54,7 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .v { font-size: 18px; font-weight: 800; color: var(--nv-text); letter-spacing: -0.02em; }
 .kpi .d { font-size: 11px; font-weight: 600; margin-top: 6px; display: inline-block; padding: 2px 6px; border-radius: 4px; }
 
-/* 핵심 지표 강조 */
+/* 핵심 지표 강조 (ROAS, 광고비) */
 .kpi.highlight { border-color: var(--nv-primary); background: #F5F8FF; }
 .kpi.highlight .v { color: var(--nv-primary); font-size: 22px; }
 
@@ -61,21 +62,19 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .d.neg { background: #FFF0EE; color: var(--nv-red); }
 .kpi .d.neu { background: #F4F4F4; color: var(--nv-muted); }
 
-/* Table Styling - 세련된 파스텔 호버 및 라인 정리 */
-table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left;}
-table.nv-table th { background: #F8FAFC; padding: 14px 16px; font-weight: 600; color: #474747; border-bottom: 1px solid #E4E4E4; border-top: 2px solid #19191A; }
-table.nv-table td { padding: 14px 16px; border-bottom: 1px solid #F4F4F4; vertical-align: middle; color: #19191A; transition: all 0.2s ease; }
+/* ✨ [NEW] Table Styling - 세련된 파스텔 호버 및 라인 정리 */
+table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left; }
+table.nv-table th { background: #F8FAFC; padding: 14px 16px; font-weight: 600; color: var(--nv-muted); border-bottom: 1px solid var(--nv-line); border-top: 2px solid var(--nv-text); }
+table.nv-table td { padding: 14px 16px; border-bottom: 1px solid #F4F4F4; vertical-align: middle; color: var(--nv-text); transition: all 0.2s ease; }
+table.nv-table tr:hover td { background: #F5F8FF; color: var(--nv-primary); } /* 호버 액션 */
 
-/* ✨ [NEW] 호버 시 은은한 파란 배경과 텍스트 포인트 */
-table.nv-table tr:hover td { background: #F5F8FF; color: #375FFF; } 
-
-/* Progress Bar - 예산 뱃지에 어울리는 플랫 디자인 */
+/* Progress Bar */
 .nv-pbar { display: flex; align-items: center; gap: 10px; min-width: 160px; }
 .nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: #EDF2F7; overflow: hidden; }
 .nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.5s ease; border-radius: 3px; }
-.nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: #19191A; font-size: 12px; }
+.nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: var(--nv-text); font-size: 12px; }
 
-/* Streamlit Tabs Styling - 모던 라인 탭 */
+/* Streamlit Tabs Styling */
 [data-baseweb="tab-list"] { gap: 16px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 500; padding: 12px 4px !important; margin: 0 !important; color: var(--nv-muted-light) !important; font-size: 15px; border-radius: 0 !important; }
 [aria-selected="true"] { color: var(--nv-text) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-text) !important; box-shadow: none !important; }
