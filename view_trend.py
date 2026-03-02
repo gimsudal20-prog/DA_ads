@@ -11,7 +11,6 @@ import streamlit as st
 from datetime import date, timedelta
 from typing import Dict
 
-# ✨ data.py에서 캠페인 이름 가져오는 함수(load_dim_campaign) 추가
 from data import sql_read, get_table_columns, table_exists, _sql_in_str_list, load_dim_campaign
 
 # Optional ECharts
@@ -69,53 +68,63 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     return pd.DataFrame()
 
 def get_specific_keyword_timeseries(engine, d1: date, d2: date, cids: tuple, target_keyword: str, ad_type: str) -> pd.DataFrame:
-    """파워링크(키워드)와 쇼핑검색(소재/상품) 데이터를 업체/캠페인 정보와 함께 가져옴"""
+    """파워링크(키워드)와 쇼핑검색(소재/상품) 데이터를 업체/캠페인 정보와 함께 가져옴 (자동 컬럼 탐색 적용)"""
     df_list = []
     search_kw = f"%{target_keyword.replace(' ', '')}%"
     
     where_cid_fk = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
     where_cid_fa = f"AND fa.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
 
+    # 1️⃣ 파워링크 (키워드 매칭)
     if ad_type in ["전체", "파워링크"]:
         if table_exists(engine, "fact_keyword_daily") and table_exists(engine, "dim_keyword"):
             fk_cols = get_table_columns(engine, "fact_keyword_daily")
+            dk_cols = get_table_columns(engine, "dim_keyword")
+            
             has_sales = "sales" in fk_cols
             sales_expr = "SUM(COALESCE(fk.sales, 0))" if has_sales else "0::numeric"
             
-            dk_cols = get_table_columns(engine, "dim_keyword")
+            # ✨ 핵심 수정: campaign_id가 어느 테이블에 있는지 자동으로 찾아서 쿼리에 넣음
+            camp_expr = "fk.campaign_id" if "campaign_id" in fk_cols else ("dk.campaign_id" if "campaign_id" in dk_cols else "''")
+            
             kw_col = next((c for c in ("keyword_name", "keyword", "rel_keyword", "name") if c in dk_cols), None)
             if kw_col:
                 sql = f"""
-                SELECT fk.dt::date AS dt, fk.customer_id::text AS customer_id, fk.campaign_id::text AS campaign_id,
+                SELECT fk.dt::date AS dt, fk.customer_id::text AS customer_id, {camp_expr}::text AS campaign_id,
                        dk.{kw_col} AS matched_name, '파워링크' AS ad_type,
                        SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
                 FROM fact_keyword_daily fk
                 JOIN dim_keyword dk ON fk.customer_id::text = dk.customer_id::text AND fk.keyword_id::text = dk.keyword_id::text
                 WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid_fk}
                 AND REPLACE(dk.{kw_col}, ' ', '') ILIKE :kw
-                GROUP BY fk.dt::date, fk.customer_id, fk.campaign_id, dk.{kw_col}
+                GROUP BY fk.dt::date, fk.customer_id, {camp_expr}, dk.{kw_col}
                 """
                 df_kw = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
                 if df_kw is not None and not df_kw.empty: df_list.append(df_kw)
 
+    # 2️⃣ 쇼핑검색 (상품명 매칭)
     if ad_type in ["전체", "쇼핑검색"]:
         if table_exists(engine, "fact_ad_daily") and table_exists(engine, "dim_ad"):
             fa_cols = get_table_columns(engine, "fact_ad_daily")
+            da_cols = get_table_columns(engine, "dim_ad")
+            
             has_sales = "sales" in fa_cols
             sales_expr = "SUM(COALESCE(fa.sales, 0))" if has_sales else "0::numeric"
             
-            da_cols = get_table_columns(engine, "dim_ad")
+            # ✨ 핵심 수정: ad 테이블도 마찬가지로 campaign_id 위치 자동 탐색
+            camp_expr_ad = "fa.campaign_id" if "campaign_id" in fa_cols else ("da.campaign_id" if "campaign_id" in da_cols else "''")
+            
             ad_col = next((c for c in ("ad_name", "name", "product_name") if c in da_cols), None)
             if ad_col:
                 sql = f"""
-                SELECT fa.dt::date AS dt, fa.customer_id::text AS customer_id, fa.campaign_id::text AS campaign_id,
+                SELECT fa.dt::date AS dt, fa.customer_id::text AS customer_id, {camp_expr_ad}::text AS campaign_id,
                        da.{ad_col} AS matched_name, '쇼핑검색' AS ad_type,
                        SUM(fa.imp) AS imp, SUM(fa.clk) AS clk, SUM(fa.cost) AS cost, {sales_expr} AS sales
                 FROM fact_ad_daily fa
                 JOIN dim_ad da ON fa.customer_id::text = da.customer_id::text AND fa.ad_id::text = da.ad_id::text
                 WHERE fa.dt BETWEEN :d1 AND :d2 {where_cid_fa}
                 AND REPLACE(da.{ad_col}, ' ', '') ILIKE :kw
-                GROUP BY fa.dt::date, fa.customer_id, fa.campaign_id, da.{ad_col}
+                GROUP BY fa.dt::date, fa.customer_id, {camp_expr_ad}, da.{ad_col}
                 """
                 df_ad = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
                 if df_ad is not None and not df_ad.empty: df_list.append(df_ad)
@@ -126,7 +135,6 @@ def get_specific_keyword_timeseries(engine, d1: date, d2: date, cids: tuple, tar
     return pd.concat(df_list, ignore_index=True)
 
 def render_trend_chart(df: pd.DataFrame, keyword: str, ad_type_label: str):
-    """ECharts를 이용한 듀얼 축 차트 렌더링"""
     if df.empty or not HAS_ECHARTS:
         st.info("차트를 그릴 데이터가 없거나 ECharts 모듈이 없습니다.")
         return
@@ -221,7 +229,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             return
 
         if raw_internal is not None and not raw_internal.empty:
-            # 1. 차트용 일자별 집계 데이터 생성
+            # 1. 차트용 집계
             raw_internal["dt"] = pd.to_datetime(raw_internal["dt"])
             agg_internal = raw_internal.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum().sort_values("dt")
             agg_internal = agg_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
@@ -234,7 +242,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown(f"### 📊 [{target_keyword}] 트렌드 비교 차트 ({mapped_type})")
             render_trend_chart(merged_df, target_keyword, mapped_type)
             
-            # 2. ✨ [NEW] 출처(Source) 표시용 데이터 가공 (업체명, 캠페인명 조인)
+            # 2. 출처 추적 표
             st.markdown("### 🗂️ 내부 데이터 출처 (어느 캠페인에서 노출되었을까?)")
             
             source_df = raw_internal.groupby(["customer_id", "campaign_id", "ad_type", "matched_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
@@ -257,7 +265,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             except Exception:
                 source_df["캠페인명"] = source_df["campaign_id"]
                 
-            # 예쁘게 컬럼 정리 후 출력
             disp_source = source_df[["업체명", "캠페인명", "ad_type", "matched_name", "imp", "clk", "cost"]].sort_values("imp", ascending=False)
             disp_source = disp_source.rename(columns={"ad_type": "광고유형", "matched_name": "매칭된 키워드/상품명", "imp": "노출", "clk": "클릭", "cost": "광고비"})
             
