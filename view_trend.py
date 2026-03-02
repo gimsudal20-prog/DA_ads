@@ -65,9 +65,9 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     
     return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
+# ✨ [수정 1] 악의 축이었던 @st.cache_data 완전 삭제! (이제 매번 신선하게 새 코드로 DB를 조회합니다)
 def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    """✨ 에러 로그 분석 완료: 뼈대 테이블(dim)을 완벽하게 거쳐서 가져오는 무결점 쿼리"""
+    """에러를 뱉던 구조적 결함 완벽 해결 + 캐시 삭제"""
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
@@ -75,22 +75,19 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
     has_camp = table_exists(_engine, "dim_campaign")
     has_grp = table_exists(_engine, "dim_adgroup")
     
-    # 1️⃣ 파워링크 (fact_keyword_daily -> dim_keyword 조인 필수)
+    # 1️⃣ 파워링크 (fact 테이블에는 캠페인 ID가 없으므로 무조건 dim 테이블에서 가져옴)
     if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
         f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
         
         c_join = "LEFT JOIN dim_campaign c ON dk.customer_id::text = c.customer_id::text AND dk.campaign_id::text = c.campaign_id::text" if has_camp else ""
-        c_name = "COALESCE(c.campaign_name, dk.campaign_id::text)" if has_camp else "dk.campaign_id::text"
-        
         g_join = "LEFT JOIN dim_adgroup g ON dk.customer_id::text = g.customer_id::text AND dk.adgroup_id::text = g.adgroup_id::text" if has_grp else ""
-        g_name = "COALESCE(g.adgroup_name, dk.adgroup_id::text)" if has_grp else "dk.adgroup_id::text"
 
         sql = f"""
         SELECT 
             f.dt::date AS dt,
-            {c_name} AS campaign_name,
-            {g_name} AS adgroup_name,
+            COALESCE(c.campaign_name, dk.campaign_id::text, '알 수 없음') AS campaign_name,
+            COALESCE(g.adgroup_name, dk.adgroup_id::text, '알 수 없음') AS adgroup_name,
             SUM(f.imp) AS imp,
             SUM(f.clk) AS clk,
             SUM(f.cost) AS cost,
@@ -106,24 +103,21 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
             df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
             if df is not None and not df.empty: df_list.append(df)
         except Exception as e:
-            st.error(f"파워링크 데이터 로딩 에러: {e}")
+            st.error(f"파워링크 데이터 로딩 중 에러 발생: {e}")
 
-    # 2️⃣ 쇼핑검색 (fact_ad_daily -> dim_ad 조인 필수)
+    # 2️⃣ 쇼핑검색 (fact 테이블에는 캠페인 ID가 없으므로 무조건 dim 테이블에서 가져옴)
     if table_exists(_engine, "fact_ad_daily") and table_exists(_engine, "dim_ad"):
         f_cols = get_table_columns(_engine, "fact_ad_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
         
         c_join = "LEFT JOIN dim_campaign c ON da.customer_id::text = c.customer_id::text AND da.campaign_id::text = c.campaign_id::text" if has_camp else ""
-        c_name = "COALESCE(c.campaign_name, da.campaign_id::text)" if has_camp else "da.campaign_id::text"
-        
         g_join = "LEFT JOIN dim_adgroup g ON da.customer_id::text = g.customer_id::text AND da.adgroup_id::text = g.adgroup_id::text" if has_grp else ""
-        g_name = "COALESCE(g.adgroup_name, da.adgroup_id::text)" if has_grp else "da.adgroup_id::text"
 
         sql = f"""
         SELECT 
             f.dt::date AS dt,
-            {c_name} AS campaign_name,
-            {g_name} AS adgroup_name,
+            COALESCE(c.campaign_name, da.campaign_id::text, '알 수 없음') AS campaign_name,
+            COALESCE(g.adgroup_name, da.adgroup_id::text, '알 수 없음') AS adgroup_name,
             SUM(f.imp) AS imp,
             SUM(f.clk) AS clk,
             SUM(f.cost) AS cost,
@@ -139,7 +133,7 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
             df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
             if df is not None and not df.empty: df_list.append(df)
         except Exception as e:
-            st.error(f"쇼핑검색 데이터 로딩 에러: {e}")
+            st.error(f"쇼핑검색 데이터 로딩 중 에러 발생: {e}")
             
     if df_list:
         res = pd.concat(df_list, ignore_index=True)
@@ -205,7 +199,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     # 1. 내부 데이터 먼저 싹 다 불러오기
-    with st.spinner("내부 캠페인/그룹 목록을 불러오는 중..."):
+    with st.spinner("내부 캠페인/그룹 목록을 실시간으로 가져오는 중..."):
         df_raw = get_internal_daily_detail(engine, d1, d2, cids)
 
     if df_raw.empty:
