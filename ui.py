@@ -27,31 +27,43 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    # 그림자 제거, 플랫한 타이포그래피 강조 헤더
+    logo_html = "<span style='font-size: 32px;'>🏢</span>"
+    for ext in ['png', 'jpg', 'jpeg', 'webp']:
+        path = f"logo.{ext}"
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode()
+                mime = "image/jpeg" if ext in ['jpg', 'jpeg'] else f"image/{ext}"
+                logo_html = f"<img src='data:{mime};base64,{encoded}' style='max-height: 46px; object-fit: contain;' />"
+                break
+            except Exception:
+                pass
+
+    # ✨ [레이아웃 원복] 이전의 직관적이고 꽉 찬 헤더 레이아웃 유지 + 플랫 스킨
     html_str = f"""
-    <div style='padding: 24px 0 32px 0; display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #19191A; margin-bottom: 32px;'>
-        <div>
-            <p style='margin: 0 0 8px 0; color: #375FFF; font-size: 13px; font-weight: 700; letter-spacing: 0.5px;'>OVERVIEW</p>
-            <h1 style='margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; color: #19191A;'>
-                {dashboard_title}
-            </h1>
-        </div>
-        <div>
-            <p style='margin: 0; color: #A0A0A0; font-size: 12px; font-weight: 500; text-align: right;'>
-                최신 동기화 <br><span style='color: #19191A; font-weight: 600; font-size: 14px;'>{dt_str}</span>
-            </p>
+    <div style='background: #FFFFFF; border: 1px solid #E4E4E4; padding: 20px 32px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;'>
+        <div style='display: flex; align-items: center; gap: 20px;'>
+            <div>{logo_html}</div>
+            <div style='border-left: 1px solid #E4E4E4; padding-left: 20px;'>
+                <h1 style='margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #19191A;'>
+                    {dashboard_title}
+                </h1>
+                <p style='margin: 6px 0 0 0; color: #474747; font-size: 13.5px; font-weight: 500;'>
+                    최신 데이터 기준일: <span style='color: #375FFF; font-weight: 700;'>{dt_str}</span>
+                </p>
+            </div>
         </div>
     </div>
     """
     st.markdown(html_str, unsafe_allow_html=True)
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):
-    # 29CM 무드의 깔끔한 라인 메트릭 카드
     html = f"""
-    <div style="background: #FFFFFF; padding: 20px; border-radius: 6px; border: 1px solid #E4E4E4; margin-bottom: 16px;">
+    <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #E4E4E4; margin-bottom: 16px;">
         <div style="color: #474747; font-size: 13px; font-weight: 600; margin-bottom: 8px;">{title}</div>
-        <div style="color: #19191A; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">{value}</div>
-        <div style="color: #A0A0A0; font-size: 12px; font-weight: 500; margin-top: 8px;">{desc}</div>
+        <div style="color: #19191A; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">{value}</div>
+        <div style="color: #375FFF; font-size: 12px; font-weight: 600; margin-top: 6px; background: #F5F8FF; display: inline-block; padding: 2px 8px; border-radius: 4px;">{desc}</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
@@ -71,8 +83,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        # 플랫한 블랙 바
-        c = "#19191A" 
+        c = "#375FFF" 
         if v >= 100: c = "#FC503D"
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
@@ -103,6 +114,7 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y1_data = df[y1_col].fillna(0).tolist()
     y2_data = df[y2_col].fillna(0).tolist()
 
+    # ✨ [차트 색상 변경] 막대는 블루(#375FFF), 라인은 세련된 다크그레이(#19191A)
     options = {
         "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#19191A", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
@@ -114,8 +126,8 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#E4E4E4"}}, # 배경 같은 느낌의 막대
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#19191A"}, "lineStyle": {"width": 2}, "symbol": "circle", "symbolSize": 6}
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#375FFF", "borderRadius": [2,2,0,0]}}, 
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#19191A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
