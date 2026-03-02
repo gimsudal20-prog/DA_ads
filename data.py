@@ -250,7 +250,6 @@ def _safe_int(x, default: int = 0) -> int:
 def format_currency(val) -> str: return f"{_safe_int(val):,}원"
 def format_number_commas(val) -> str: return f"{_safe_int(val):,}"
 
-# ✨ [NEW] ROAS를 소수점 첫째자리(.1f)까지 보여주도록 수정
 def format_roas(val) -> str:
     try:
         if pd.isna(val): return "-"
@@ -537,6 +536,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), p.ad_id)"
     
     pc_url_expr = "COALESCE(NULLIF(TRIM(a.pc_landing_url), ''), '')" if "pc_landing_url" in ad_cols else "''"
+    # ✨ [NEW] 이미지 추출 구문
+    image_url_expr = "COALESCE(NULLIF(TRIM(a.image_url), ''), '')" if "image_url" in ad_cols else "''"
     
     cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
     cp_tp_col = "campaign_tp" if "campaign_tp" in cp_cols else ("campaign_type" if "campaign_type" in cp_cols else None)
@@ -548,7 +549,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     adgroup_join_key = f"COALESCE(NULLIF(p.f_adgroup_id, ''), NULLIF({'a.adgroup_id::text' if (dim_ad_exists and 'adgroup_id' in ad_cols) else 'NULL::text'}, ''))"
     campaign_join_key = f"COALESCE(NULLIF(p.f_campaign_id, ''), NULLIF({'a.campaign_id::text' if (dim_ad_exists and 'campaign_id' in ad_cols) else 'NULL::text'}, ''), NULLIF({'g.campaign_id::text' if (dim_ag_exists and 'campaign_id' in ag_cols) else 'NULL::text'}, ''))"
 
-    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS ad_name, NULL::text AS pc_landing_url) a ON 1=0"
+    join_ad = "LEFT JOIN dim_ad a ON p.customer_id = a.customer_id::text AND p.ad_id = a.ad_id::text" if dim_ad_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS ad_id, NULL::text AS ad_name, NULL::text AS pc_landing_url, NULL::text AS image_url) a ON 1=0"
     join_ag = f"LEFT JOIN dim_adgroup g ON p.customer_id = g.customer_id::text AND g.adgroup_id::text = {adgroup_join_key}" if dim_ag_exists else "LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS adgroup_name) g ON 1=0"
     join_cp = f"LEFT JOIN dim_campaign c ON p.customer_id = c.customer_id::text AND c.campaign_id::text = {campaign_join_key}" if dim_cp_exists else f"LEFT JOIN (SELECT NULL::text AS customer_id, NULL::text AS campaign_name, NULL::text AS campaign_tp) c ON 1=0"
 
@@ -569,7 +570,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
       {f"COALESCE(NULLIF(TRIM(g.{ag_name_col}),''),'')" if ag_name_col else "''"} AS adgroup_name,
       {f"COALESCE(NULLIF(TRIM(c.{cp_name_col}),''),'')" if cp_name_col else "''"} AS campaign_name,
       {f"COALESCE(NULLIF(TRIM(c.{cp_tp_col}),''),'')" if cp_tp_col else "''"} AS campaign_tp,
-      {pc_url_expr} AS landing_url
+      {pc_url_expr} AS landing_url,
+      {image_url_expr} AS image_url
     FROM picked p {join_ad} {join_ag} {join_cp} WHERE 1=1 {type_filter_clause} ORDER BY p.cost DESC NULLS LAST
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), "lim_cost": int(topn_cost), "lim_k": int(top_k)})
