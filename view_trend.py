@@ -14,7 +14,10 @@ import altair as alt
 
 from data import sql_read, get_table_columns, table_exists, _sql_in_str_list
 
-# Optional ECharts
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8-sig')
+
 try:
     from streamlit_echarts import st_echarts
     HAS_ECHARTS = True
@@ -23,7 +26,6 @@ except Exception:
     HAS_ECHARTS = False
 
 def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date) -> pd.DataFrame:
-    """네이버 데이터랩 통합검색어 트렌드 API 호출"""
     if not client_id or not client_secret: return pd.DataFrame()
 
     client_id = client_id.replace('"', '').replace("'", "").strip()
@@ -66,7 +68,6 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     return pd.DataFrame()
 
 def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    """키워드 -> 그룹 -> 캠페인 순서로 완벽하게 다리를 건너는 무결점 쿼리"""
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
@@ -74,7 +75,6 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
     has_camp = table_exists(_engine, "dim_campaign")
     has_grp = table_exists(_engine, "dim_adgroup")
     
-    # 1️⃣ 파워링크
     if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
         f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
@@ -102,9 +102,8 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
             df1 = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
             if df1 is not None and not df1.empty: df_list.append(df1)
         except Exception as e:
-            st.error(f"파워링크(Keyword) 데이터 로딩 에러: {e}")
+            st.error(f"파워링크 데이터 로딩 에러: {e}")
 
-    # 2️⃣ 쇼핑검색
     if table_exists(_engine, "fact_ad_daily") and table_exists(_engine, "dim_ad"):
         f_cols = get_table_columns(_engine, "fact_ad_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
@@ -132,7 +131,7 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
             df2 = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
             if df2 is not None and not df2.empty: df_list.append(df2)
         except Exception as e:
-            st.error(f"쇼핑검색(Ad) 데이터 로딩 에러: {e}")
+            st.error(f"쇼핑검색 데이터 로딩 에러: {e}")
 
     if df_list:
         res = pd.concat(df_list, ignore_index=True)
@@ -204,24 +203,27 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("선택하신 기간/계정에 내부 광고 데이터가 없습니다. (왼쪽에서 업체나 기간을 변경해 보세요)")
         return
 
-    c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
-    
-    with c1:
-        datalab_kw = st.text_input("🔍 데이터랩 트렌드 검색어", placeholder="예: 나이키운동화").strip()
-    
-    with c2:
-        camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_camp = st.selectbox("🎯 비교할 캠페인 선택", camps)
+    with st.container():
+        st.markdown("<div style='background-color:#F8FAFC; padding:16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:16px;'>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
         
-    with c3:
-        if sel_camp == "전체":
-            grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        else:
-            grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_grp = st.selectbox("🎯 비교할 광고그룹 선택", grps)
+        with c1:
+            datalab_kw = st.text_input("🔍 데이터랩 트렌드 검색어", placeholder="예: 나이키운동화").strip()
+        
+        with c2:
+            camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+            sel_camp = st.selectbox("🎯 비교할 캠페인 선택", camps)
+            
+        with c3:
+            if sel_camp == "전체":
+                grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+            else:
+                grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+            sel_grp = st.selectbox("🎯 비교할 광고그룹 선택", grps)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     if not datalab_kw:
-        st.info("👈 데이터랩 검색어를 입력하시면 비교 차트가 나타납니다.")
+        st.info("👈 비교할 트렌드 검색어를 입력해주세요.")
         return
 
     df_filtered = df_raw.copy()
@@ -247,7 +249,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown(f"### 📊 '{datalab_kw}' 트렌드 vs 선택 영역 노출 비교")
     
-    # ✨ [NEW] 마케터님을 위한 깔끔한 실무 해석 가이드 박스!
     st.info("""
     **💡 차트 해석 가이드 (어떻게 읽어야 할까요?)**
     
@@ -260,7 +261,11 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     render_trend_chart(merged_df, datalab_kw, "전체")
     
-    st.markdown("#### 📅 일자별 상세 데이터")
+    # ✨ 다운로드 버튼 추가
+    col1, col2 = st.columns([8, 2])
+    with col1: st.markdown("#### 📅 일자별 상세 데이터")
+    with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(merged_df), file_name=f'trend_comparison_{datalab_kw}.csv', mime='text/csv', use_container_width=True)
+    
     st.dataframe(
         merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).style.format({
             "트렌드지수(%)": "{:.1f}", "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}"
