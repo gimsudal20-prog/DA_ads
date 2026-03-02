@@ -10,6 +10,7 @@ import numpy as np
 import streamlit as st
 from datetime import date, timedelta
 from typing import Dict
+import altair as alt  # ✨ 스트림릿 내장 차트 라이브러리 추가 (무조건 작동 보장)
 
 from data import sql_read, get_table_columns, _sql_in_str_list, query_keyword_bundle, query_ad_bundle
 from page_helpers import _perf_common_merge_meta
@@ -26,6 +27,10 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     """네이버 데이터랩 통합검색어 트렌드 API 호출"""
     if not client_id or not client_secret:
         return pd.DataFrame()
+
+    # ✨ API 키에 섞여 들어간 따옴표(')나 쌍따옴표(") 자동 제거
+    client_id = client_id.replace('"', '').replace("'", "").strip()
+    client_secret = client_secret.replace('"', '').replace("'", "").strip()
 
     url = "https://openapi.naver.com/v1/datalab/search"
     s_date = start_date
@@ -64,50 +69,85 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
                 df["dt"] = pd.to_datetime(df["dt"])
                 return df
     except Exception as e:
-        pass
+        # ✨ 에러 발생 시 숨기지 않고 명확하게 원인을 화면에 출력
+        err_msg = str(e)
+        if hasattr(e, 'read'):
+            try:
+                err_msg += " | " + e.read().decode('utf-8')
+            except: pass
+        st.error(f"🚨 네이버 데이터랩 API 통신 에러: {err_msg}")
     
     return pd.DataFrame()
 
 def render_trend_chart(df: pd.DataFrame, internal_name: str, datalab_name: str, ad_type_label: str):
-    if df.empty or not HAS_ECHARTS:
-        st.info("차트를 그릴 데이터가 없거나 ECharts 모듈이 없습니다.")
+    if df.empty:
         return
 
-    x_data = df["dt"].dt.strftime('%m-%d').tolist()
-    imp_data = df["노출"].fillna(0).tolist()
-    trend_data = df["트렌드지수(%)"].fillna(0).round(1).tolist()
-    
     legend_name = f"자사 노출수 ({ad_type_label})"
 
-    options = {
-        "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
-        "legend": {"data": [legend_name, f"네이버 트렌드 ('{datalab_name}')"], "bottom": 0},
-        "grid": {"left": "3%", "right": "3%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}}],
-        "yAxis": [
-            {"type": "value", "name": "내부 노출수", "splitLine": {"lineStyle": {"type": "dashed", "color": "#f3f4f6"}}},
-            {"type": "value", "name": "트렌드 지수(0~100)", "min": 0, "max": 100, "splitLine": {"show": False}}
-        ],
-        "series": [
-            {
-                "name": legend_name, 
-                "type": "bar", 
-                "data": imp_data, 
-                "itemStyle": {"color": "#3B82F6", "borderRadius": [4,4,0,0]}
-            },
-            {
-                "name": f"네이버 트렌드 ('{datalab_name}')", 
-                "type": "line", 
-                "yAxisIndex": 1, 
-                "data": trend_data, 
-                "itemStyle": {"color": "#10B981"}, 
-                "lineStyle": {"width": 3}, 
-                "symbol": "circle", 
-                "symbolSize": 8
-            }
-        ]
-    }
-    st_echarts(options=options, height="400px")
+    # 1. ECharts가 설치되어 있으면 고급 차트로 렌더링
+    if HAS_ECHARTS:
+        x_data = df["dt"].dt.strftime('%m-%d').tolist()
+        imp_data = df["노출"].fillna(0).tolist()
+        trend_data = df["트렌드지수(%)"].fillna(0).round(1).tolist()
+        
+        options = {
+            "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
+            "legend": {"data": [legend_name, f"네이버 트렌드 ('{datalab_name}')"], "bottom": 0},
+            "grid": {"left": "3%", "right": "3%", "bottom": "15%", "top": "15%", "containLabel": True},
+            "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}}],
+            "yAxis": [
+                {"type": "value", "name": "내부 노출수", "splitLine": {"lineStyle": {"type": "dashed", "color": "#f3f4f6"}}},
+                {"type": "value", "name": "트렌드 지수(0~100)", "min": 0, "max": 100, "splitLine": {"show": False}}
+            ],
+            "series": [
+                {
+                    "name": legend_name, 
+                    "type": "bar", 
+                    "data": imp_data, 
+                    "itemStyle": {"color": "#3B82F6", "borderRadius": [4,4,0,0]}
+                },
+                {
+                    "name": f"네이버 트렌드 ('{datalab_name}')", 
+                    "type": "line", 
+                    "yAxisIndex": 1, 
+                    "data": trend_data, 
+                    "itemStyle": {"color": "#10B981"}, 
+                    "lineStyle": {"width": 3}, 
+                    "symbol": "circle", 
+                    "symbolSize": 8
+                }
+            ]
+        }
+        st_echarts(options=options, height="400px")
+    
+    # 2. ✨ ECharts 모듈이 없을 때(가장 유력한 원인) 무조건 작동하는 안전한 내장 차트(Altair)로 우회 렌더링!
+    else:
+        base = alt.Chart(df).encode(x=alt.X("dt:T", axis=alt.Axis(title="날짜", format="%m-%d")))
+        
+        # 파란색 막대 (노출수)
+        bar = base.mark_bar(color="#3B82F6", opacity=0.7, cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+            y=alt.Y("노출:Q", axis=alt.Axis(title="자사 노출수", titleColor="#3B82F6"))
+        )
+        
+        # 초록색 선 (트렌드지수)
+        line = base.mark_line(color="#10B981", strokeWidth=3).encode(
+            y=alt.Y("트렌드지수(%):Q", axis=alt.Axis(title="네이버 트렌드 지수(0~100)", titleColor="#10B981"))
+        )
+        points = line.mark_circle(size=70, color="#10B981")
+        
+        # 듀얼 축 결합
+        chart = alt.layer(bar, line + points).resolve_scale(
+            y='independent'
+        ).properties(
+            height=400
+        ).configure_axis(
+            labelFontSize=11,
+            titleFontSize=13
+        ).configure_legend(
+            orient='bottom'
+        )
+        st.altair_chart(chart, use_container_width=True)
 
 def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -116,8 +156,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.caption("내부 광고 데이터에서 실제 등록된 키워드나 상품을 선택하고, 해당 검색어의 네이버 시장 트렌드(데이터랩)와 1:1로 겹쳐봅니다.")
     st.divider()
 
-    client_id = ""
-    client_secret = ""
     try:
         client_id = st.secrets.get("NAVER_DATALAB_CLIENT_ID", os.getenv("NAVER_DATALAB_CLIENT_ID", ""))
         client_secret = st.secrets.get("NAVER_DATALAB_CLIENT_SECRET", os.getenv("NAVER_DATALAB_CLIENT_SECRET", ""))
@@ -191,7 +229,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         use_container_width=True, hide_index=True
     )
 
-    # ✨ [수정 1] 파이썬이 자기 맘대로 .0을 붙이는 현상(Float Cast) 완벽 방어!
     id_col = "keyword_id" if is_powerlink else "ad_id"
     if id_col not in source_df.columns:
         st.error(f"내부 에러: '{id_col}' 고유 식별 컬럼을 찾을 수 없습니다.")
@@ -200,7 +237,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     clean_ids = set()
     for x in source_df[id_col].dropna():
         sx = str(x).strip()
-        if sx.endswith(".0"): sx = sx[:-2]  # .0 이 붙어있으면 싹둑 자르기!
+        if sx.endswith(".0"): sx = sx[:-2]
         if sx: clean_ids.add(sx)
         
     target_ids = list(clean_ids)
@@ -229,9 +266,8 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_internal = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
         trend_df = get_datalab_trend(client_id, client_secret, selected_datalab, d1, d2)
 
-    # ✨ [수정 2] 화면이 그냥 사라지지 않도록 예외 처리(경고창) 촘촘하게 추가!
     if trend_df.empty:
-        st.error(f"⚠️ 네이버 데이터랩에서 '{selected_datalab}' 검색어의 트렌드를 가져오지 못했습니다. 검색량이 너무 적거나, 일시적인 네이버 서버 오류일 수 있습니다.")
+        st.error(f"⚠️ 네이버 데이터랩에서 '{selected_datalab}' 검색어의 트렌드를 가져오지 못했습니다. 검색어가 너무 길거나, 데이터랩 API 오류일 수 있습니다.")
         return
 
     if daily_internal is None:
@@ -242,7 +278,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning(f"⚠️ 선택하신 기간({d1}~{d2}) 동안 '{selected_internal}' 검색어가 노출된 일자별 데이터 기록이 없습니다.")
         return
 
-    # 정상 렌더링
     daily_internal["dt"] = pd.to_datetime(daily_internal["dt"])
     daily_internal = daily_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
     
