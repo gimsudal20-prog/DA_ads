@@ -3,27 +3,21 @@
 
 from __future__ import annotations
 import re
-import os
 import time
 import pandas as pd
 import numpy as np
 import streamlit as st
 from typing import Dict
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 
 from data import *
 from ui import *
 from page_helpers import *
 
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
-
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
-    st.markdown("## 💰 전체 예산 및 목표 KPI 관리")
-    st.caption("계정별 잔액을 모니터링하고, 예산 소진으로 인한 광고 중단(꺼짐)을 사전에 방지하세요.")
+    st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
     
-    tab_budget, tab_alert, tab_history = st.tabs(["💰 월 예산 및 집행 현황", "🚨 잔액 소진 예상일 캘린더", "📅 일자별 캠페인 꺼짐(소진) 기록"])
+    tab_budget, tab_alert, tab_history = st.tabs(["월 예산 현황", "소진 예상일", "꺼짐 기록"])
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
@@ -36,21 +30,17 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
     
     with tab_budget:
-        if bundle is None or bundle.empty:
-            st.warning("예산/잔액 데이터를 불러올 수 없습니다.")
-            return
+        if bundle is None or bundle.empty: return
 
         biz_view = bundle.copy()
         m = biz_view["avg_cost"].astype(float) > 0
         biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
         biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
         biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
-        biz_view["잔액상태"] = "🟢 여유"
-        biz_view.loc[biz_view["bizmoney_balance"].astype(float) < biz_view["threshold"].astype(float), "잔액상태"] = "🔴 충전요망"
 
         biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
         
-        target_roas = st.slider("🎯 전사 목표 ROAS (%) 설정", min_value=100, max_value=1000, value=300, step=50, help="이 목표치에 따라 아래 표의 기상도가 동적으로 변합니다.")
+        target_roas = st.slider("전사 목표 ROAS (%)", min_value=100, max_value=1000, value=300, step=50)
         
         def get_weather(roas, target):
             if roas >= target: return "☀️ 맑음"
@@ -58,18 +48,15 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             else: return "☔ 비상"
             
         biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
-        biz_view["당월 ROAS"] = biz_view["current_roas"].apply(format_roas)
-        biz_view["비즈머니 잔액"] = biz_view["bizmoney_balance"].map(format_currency)
-        biz_view[f"최근{TOPUP_AVG_DAYS}일 평균소진"] = biz_view["avg_cost"].map(format_currency)
-
+        
         total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
         total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
         count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
 
         c1, c2, c3 = st.columns(3)
-        with c1: ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), '전체 합산', key='m_total_balance')
-        with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), f"{end_dt.strftime('%Y-%m')} 누적", key='m_month_cost')
-        with c3: ui_metric_or_stmetric('효율 ☔ 비상 계정', f"{count_rain}건", f'목표 ROAS {target_roas}% 미달', key='m_need_opt')
+        with c1: ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), key='m_total_balance')
+        with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), key='m_month_cost')
+        with c3: ui_metric_or_stmetric('효율 비상 계정', f"{count_rain}건", key='m_need_opt')
 
         st.divider()
 
@@ -83,14 +70,14 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
 
         def _status(rate: float, budget: int):
-            if budget == 0: return ("⚪ 미설정", "미설정", 3)
-            if rate >= 1.0: return ("🔴 초과", "초과", 0)
-            if rate >= 0.9: return ("🟡 주의", "주의", 1)
-            return ("🟢 적정", "적정", 2)
+            if budget == 0: return ("미설정", 3)
+            if rate >= 1.0: return ("초과", 0)
+            if rate >= 0.9: return ("주의", 1)
+            return ("적정", 2)
 
         tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
         budget_view["상태"] = tmp[0]
-        budget_view["_rank"] = tmp[2].astype(int)
+        budget_view["_rank"] = tmp[1].astype(int)
 
         budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
@@ -102,20 +89,13 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
         table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
 
-        c_table, c_form = st.columns([3, 1.2]) # 폼 영역을 약간 넓힘
+        c_table, c_form = st.columns([3, 1.2]) 
         with c_table:
-            # ✨ 다운로드 버튼 추가
-            col1, col2 = st.columns([8, 2])
-            with col1: st.markdown(f"#### 📅 {end_dt.strftime('%Y년 %m월')} 예산 집행률")
-            with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(table_df), file_name='budget_status.csv', mime='text/csv', use_container_width=True)
+            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률</div>", unsafe_allow_html=True)
             render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
 
         with c_form:
-            # ✨ [NEW] 예산 설정 폼을 깔끔한 카드 UI로 분리
-            st.markdown("<div style='background-color:#F8FAFC; padding:20px; border-radius:12px; border:1px solid #E2E8F0; height: 100%;'>", unsafe_allow_html=True)
-            st.markdown("<h4 style='margin-top:0;'>✍️ 월 예산 설정</h4>", unsafe_allow_html=True)
-            st.caption("선택한 업체의 예산을 빠르게 수정합니다.")
-            
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>월 예산 설정</div>", unsafe_allow_html=True)
             opts = budget_view_disp[["customer_id", "account_name"]].copy()
             opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
             labels = opts["label"].tolist()
@@ -144,57 +124,49 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 def reset_amount_callback(key_name):
                     st.session_state[key_name] = "0"
 
-                st.text_input("새 월 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
+                st.text_input("새 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
                 raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
                 
                 b1, b2, b3, b4 = st.columns(4)
-                b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000), use_container_width=True)
-                b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000), use_container_width=True)
-                b3.button("+1000만", key=f"btn_1000_{cid}", on_click=add_amount_callback, args=(sk, 10000000), use_container_width=True)
-                b4.button("초기화", key=f"btn_0_{cid}", on_click=reset_amount_callback, args=(sk,), use_container_width=True)
+                b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000))
+                b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000))
+                b3.button("+1000만", key=f"btn_1000_{cid}", on_click=add_amount_callback, args=(sk, 10000000))
+                b4.button("초기화", key=f"btn_0_{cid}", on_click=reset_amount_callback, args=(sk,))
                 
-                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-                if st.button("💾 예산 저장하기", type="primary", use_container_width=True):
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                if st.button("저장하기", type="primary", use_container_width=True):
                     update_monthly_budget(engine, cid, raw_val)
-                    st.success("✅ 저장 완료!")
+                    st.success("저장 완료!")
                     if sk in st.session_state: del st.session_state[sk]
                     st.cache_data.clear()
                     time.sleep(0.5)
                     st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
     with tab_alert:
         if bundle is None or bundle.empty: return
         
         def get_depletion_date(days_left):
-            if pd.isna(days_left) or float(days_left) >= 99:
-                return "🟢 여유 (한 달 이상)"
+            if pd.isna(days_left) or float(days_left) >= 99: return "여유"
             days = float(days_left)
-            if days <= 0: return "🔴 즉시 충전 필요"
-                
+            if days <= 0: return "즉시 충전"
             deplete_date = date.today() + timedelta(days=int(days))
-            date_str = deplete_date.strftime("%m월 %d일")
-            
-            if days <= 3: return f"🚨 {date_str} (위험)"
-            elif days <= 7: return f"🟡 {date_str} (주의)"
-            else: return f"🟢 {date_str}"
+            return deplete_date.strftime("%m월 %d일")
 
-        biz_view["예상 광고중단일"] = biz_view["days_cover"].apply(get_depletion_date)
+        biz_view["예상 중단일"] = biz_view["days_cover"].apply(get_depletion_date)
         
-        display_df = biz_view[["account_name", "manager", "비즈머니 잔액", f"최근{TOPUP_AVG_DAYS}일 평균소진", "예상 광고중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
-        display_df = display_df.sort_values(by="예상 광고중단일", ascending=False)
+        display_df = biz_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
+        display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
+        display_df["최근 평균소진"] = display_df["avg_cost"].apply(lambda x: format_currency(x))
         
-        # ✨ 다운로드 버튼 추가
-        col1, col2 = st.columns([8, 2])
-        with col1: st.markdown("### 🚨 잔액 소진(광고 중단) 예상 계정")
-        with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(display_df), file_name='depletion_alert.csv', mime='text/csv', use_container_width=True)
+        display_df = display_df[["account_name", "manager", "비즈머니 잔액", "최근 평균소진", "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
         
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>잔액 소진 예상 계정</div>", unsafe_allow_html=True)
         render_big_table(display_df, key="budget_alert_table", height=500)
 
     with tab_history:
         off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
         if off_log.empty:
-            st.success("🎉 조회 기간 동안 예산 부족으로 꺼진 캠페인 기록이 전혀 없습니다! 완벽한 예산 관리가 이루어지고 있습니다.")
+            st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
         else:
             dim_camp = load_dim_campaign(engine)
             if not dim_camp.empty:
@@ -221,23 +193,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 aggfunc='first'
             ).reset_index()
             
-            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"})
-            pivot_df = pivot_df.fillna("-")
+            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"}).fillna("-")
             
-            def highlight_off_time(val):
-                if val != "-":
-                    return "background-color: #FEE2E2; color: #B91C1C; font-weight: bold;"
-                return ""
-            
-            cols_to_style = [c for c in pivot_df.columns if c not in ["업체명", "캠페인명"]]
-            styled_pivot = pivot_df.style.map(highlight_off_time, subset=cols_to_style)
-            
-            # ✨ 다운로드 버튼 추가
-            col1, col2 = st.columns([8, 2])
-            with col1: 
-                st.markdown("### 📅 캠페인 일자별 꺼짐(소진) 시간 기록부")
-                st.caption("조회 기간 동안 예산 소진으로 노출이 중단된 시간을 보여줍니다.")
-            with col2: 
-                st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(pivot_df), file_name='campaign_off_history.csv', mime='text/csv', use_container_width=True)
-                
-            st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록</div>", unsafe_allow_html=True)
+            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
