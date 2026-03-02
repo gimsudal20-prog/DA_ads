@@ -7,7 +7,7 @@ import pandas as pd
 from typing import Dict, Any
 
 # 필요한 모듈 및 각 탭 화면 불러오기
-from data import get_engine, query_account_meta  
+from data import get_engine, get_meta  # ✨ query_account_meta -> get_meta 로 수정 완료!
 from page_helpers import build_filters
 from view_overview import page_overview
 from view_budget import page_budget
@@ -55,17 +55,17 @@ def route_page(page: str, meta: pd.DataFrame, engine: Any, type_opts: list) -> N
     
     if page == "overview": page_overview(meta, engine, f)
     elif page == "budget": page_budget(meta, engine, f)
-    elif page == "trend": page_trend(meta, engine, f) # ✨ 라우팅 추가 완료
+    elif page == "trend": page_trend(meta, engine, f)
     elif page == "perf_campaign": page_perf_campaign(meta, engine, f)
     elif page == "perf_keyword": page_perf_keyword(meta, engine, f)
     elif page == "perf_ad": page_perf_ad(meta, engine, f)
     else: st.error("알 수 없는 페이지입니다.")
 
-# 🚨 app.py에서 호출하는 핵심 메인 함수 (복구 완료)
+# 🚨 app.py에서 호출하는 핵심 메인 함수
 def main():
     # 1. DB 연결 및 업체 메타데이터 불러오기
     engine = get_engine()
-    meta = query_account_meta(engine)
+    meta = get_meta(engine) # ✨ 여기도 get_meta 로 변경 완료!
     
     # 2. 필터에 들어갈 캠페인 유형 옵션 설정
     type_opts = ["파워링크", "쇼핑검색", "파워콘텐츠", "브랜드검색", "플레이스"]
