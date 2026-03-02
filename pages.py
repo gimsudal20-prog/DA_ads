@@ -1,77 +1,66 @@
 # -*- coding: utf-8 -*-
-"""pages.py - Page routing and navigation."""
+"""pages.py - Main Router connecting all views."""
 
 from __future__ import annotations
-import streamlit as st
-import pandas as pd
-from typing import Dict, Any
 
-# ✨ data.py의 실제 함수명으로 정확히 임포트
-from data import get_engine, get_meta
-from page_helpers import build_filters
+import os
+import streamlit as st
+
+from data import *
+from ui import render_hero
+from page_helpers import BUILD_TAG, build_filters
 from view_overview import page_overview
 from view_budget import page_budget
 from view_campaign import page_perf_campaign
 from view_keyword import page_perf_keyword
 from view_ad import page_perf_ad
 from view_settings import page_settings
-from view_trend import page_trend  # ✨ 신규 트렌드 탭
 
-def render_sidebar_menu() -> str:
-    st.sidebar.title("메뉴")
-    pages = {
-        "요약 (실시간 알림)": "overview",
-        "예산 및 잔액": "budget",
-        "시장 트렌드 분석": "trend", # ✨ 메뉴 추가
-        "성과 (캠페인)": "perf_campaign",
-        "성과 (그룹/키워드)": "perf_keyword",
-        "성과 (소재/랜딩)": "perf_ad",
-        "설정 및 연결": "settings"
-    }
-    
-    if "current_page" not in st.session_state:
-        st.session_state["current_page"] = "overview"
-
-    # Shadcn UI (있을 경우)
-    try:
-        import streamlit_shadcn_ui as ui
-        labels = list(pages.keys())
-        current_label = next((k for k, v in pages.items() if v == st.session_state["current_page"]), labels[0])
-        sel_label = ui.tabs(options=labels, default_value=current_label, key="main_nav_tabs")
-        st.session_state["current_page"] = pages.get(sel_label, "overview")
-    except Exception:
-        # 일반 Radio 버튼 (Fallback)
-        sel_label = st.sidebar.radio("이동할 메뉴를 선택하세요", list(pages.keys()), index=list(pages.values()).index(st.session_state["current_page"]))
-        st.session_state["current_page"] = pages.get(sel_label, "overview")
-        
-    return st.session_state["current_page"]
-
-def route_page(page: str, meta: pd.DataFrame, engine: Any, type_opts: list) -> None:
-    if page == "settings":
-        page_settings(meta, engine)
-        return
-        
-    f = build_filters(meta, type_opts, engine)
-    
-    if page == "overview": page_overview(meta, engine, f)
-    elif page == "budget": page_budget(meta, engine, f)
-    elif page == "trend": page_trend(meta, engine, f) # ✨ 라우팅 추가
-    elif page == "perf_campaign": page_perf_campaign(meta, engine, f)
-    elif page == "perf_keyword": page_perf_keyword(meta, engine, f)
-    elif page == "perf_ad": page_perf_ad(meta, engine, f)
-    else: st.error("알 수 없는 페이지입니다.")
-
-# 🚨 app.py에서 호출할 수 있도록 추가된 핵심 메인 함수
 def main():
-    engine = get_engine()
+    try: engine = get_engine(); latest = get_latest_dates(engine)
+    except Exception as e: render_hero(None, BUILD_TAG); st.error(str(e)); return
+
+    try:
+        for ext in ['png', 'jpg', 'jpeg', 'webp']:
+            if os.path.exists(f"logo.{ext}"):
+                st.logo(f"logo.{ext}")
+                break
+    except Exception:
+        pass
+
+    render_hero(latest, BUILD_TAG)
     meta = get_meta(engine)
-    
-    # 탭 필터 옵션
-    type_opts = ["파워링크", "쇼핑검색", "파워콘텐츠", "브랜드검색", "플레이스"]
-    
-    # 사이드바 메뉴 렌더링 후 선택된 페이지로 이동
-    current_page = render_sidebar_menu()
-    route_page(current_page, meta, engine, type_opts)
+    meta_ready = (meta is not None) and (not meta.empty)
+
+    with st.sidebar:
+        st.markdown("### 📌 메뉴 이동")
+        if not meta_ready: st.warning("동기화가 필요합니다.")
+        
+        # ✨ [아이콘 변경] 알록달록한 이모지 대신 깔끔한 단색 UI 아이콘(Material Icon) 적용
+        nav_items = [
+            ":material/dashboard: 요약", 
+            ":material/account_balance_wallet: 예산/잔액", 
+            ":material/campaign: 캠페인", 
+            ":material/search: 키워드", 
+            ":material/ads_click: 소재", 
+            ":material/settings: 설정/연결"
+        ] if meta_ready else [":material/settings: 설정/연결"]
+        
+        nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
+
+    st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
+    f = None
+    if nav != ":material/settings: 설정/연결":
+        if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
+        f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
+
+    # 선택된 메뉴에 따라 페이지 라우팅
+    if nav == ":material/dashboard: 요약": page_overview(meta, engine, f)
+    elif nav == ":material/account_balance_wallet: 예산/잔액": page_budget(meta, engine, f)
+    elif nav == ":material/campaign: 캠페인": page_perf_campaign(meta, engine, f)
+    elif nav == ":material/search: 키워드": page_perf_keyword(meta, engine, f)
+    elif nav == ":material/ads_click: 소재": page_perf_ad(meta, engine, f)
+    else: page_settings(engine)
 
 if __name__ == "__main__":
     main()
