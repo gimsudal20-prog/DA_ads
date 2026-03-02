@@ -61,17 +61,19 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .d.neg { background: #FFF0EE; color: var(--nv-red); }
 .kpi .d.neu { background: #F4F4F4; color: var(--nv-muted); }
 
-/* Table Styling - 플랫 스타일 유지 */
+/* Table Styling - 세련된 파스텔 호버 및 라인 정리 */
 table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left;}
-table.nv-table th { background: var(--nv-panel); padding: 12px 16px; font-weight: 600; color: var(--nv-muted); border-bottom: 1px solid var(--nv-line); border-top: 1px solid var(--nv-text); }
-table.nv-table td { padding: 12px 16px; border-bottom: 1px solid var(--nv-line); vertical-align: middle; color: var(--nv-text); font-weight: 400; }
-table.nv-table tr:hover td { background: #FAFAFA; }
+table.nv-table th { background: #F8FAFC; padding: 14px 16px; font-weight: 600; color: #474747; border-bottom: 1px solid #E4E4E4; border-top: 2px solid #19191A; }
+table.nv-table td { padding: 14px 16px; border-bottom: 1px solid #F4F4F4; vertical-align: middle; color: #19191A; transition: all 0.2s ease; }
 
-/* Progress Bar */
+/* ✨ [NEW] 호버 시 은은한 파란 배경과 텍스트 포인트 */
+table.nv-table tr:hover td { background: #F5F8FF; color: #375FFF; } 
+
+/* Progress Bar - 예산 뱃지에 어울리는 플랫 디자인 */
 .nv-pbar { display: flex; align-items: center; gap: 10px; min-width: 160px; }
-.nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--nv-line); overflow: hidden; }
-.nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.5s ease; background: var(--nv-text); }
-.nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 600; color: var(--nv-text); font-size: 12px; }
+.nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: #EDF2F7; overflow: hidden; }
+.nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.5s ease; border-radius: 3px; }
+.nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: #19191A; font-size: 12px; }
 
 /* Streamlit Tabs Styling - 모던 라인 탭 */
 [data-baseweb="tab-list"] { gap: 16px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
