@@ -15,6 +15,7 @@ from view_campaign import page_perf_campaign
 from view_keyword import page_perf_keyword
 from view_ad import page_perf_ad
 from view_settings import page_settings
+from view_trend import page_trend  # ✨ 신규 임포트: 시장 트렌드 분석
 
 def main():
     try: engine = get_engine(); latest = get_latest_dates(engine)
@@ -36,10 +37,11 @@ def main():
         st.markdown("### 📌 메뉴 이동")
         if not meta_ready: st.warning("동기화가 필요합니다.")
         
-        # ✨ [아이콘 변경 구간] 여기서 원하시는 이모지로 마음껏 커스텀하세요!
+        # ✨ [아이콘 변경 구간] "📊 시장 트렌드 분석" 메뉴를 추가했습니다!
         nav_items = [
             "📋 요약", 
             "💳 예산 및 잔액", 
+            "📊 시장 트렌드 분석",  # ✨ 신규 탭 
             "📈 캠페인 분석", 
             "🔍 키워드 분석", 
             "🎨 소재 분석", 
@@ -54,9 +56,10 @@ def main():
         if not meta_ready: st.error("설정 메뉴에서 동기화를 진행해주세요."); return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
-    # ✨ [주의] 위에서 메뉴 이름(아이콘)을 바꿨다면, 반드시 아래 조건문 글자도 똑같이 맞춰주셔야 페이지가 열립니다!
+    # ✨ [라우팅 연결] 메뉴 선택 시 해당 화면으로 이동하도록 연결 완료!
     if nav == "📋 요약": page_overview(meta, engine, f)
     elif nav == "💳 예산 및 잔액": page_budget(meta, engine, f)
+    elif nav == "📊 시장 트렌드 분석": page_trend(meta, engine, f) # ✨ 신규 라우팅 연결
     elif nav == "📈 캠페인 분석": page_perf_campaign(meta, engine, f)
     elif nav == "🔍 키워드 분석": page_perf_keyword(meta, engine, f)
     elif nav == "🎨 소재 분석": page_perf_ad(meta, engine, f)
