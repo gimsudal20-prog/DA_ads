@@ -34,8 +34,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if len(acc_names) == 1: account_name = f"{acc_names[0]}"
         elif len(acc_names) > 1: account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
     
-    st.markdown(f"<div class='nv-sec-title'>종합 성과 요약</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='font-size:13px; color:#474747; margin-bottom:24px;'>선택된 기간의 {account_name} 데이터입니다. (비교: {cmp_mode})</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
     base = base_summary
@@ -49,11 +49,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    # ✨ [NEW] 모바일 친화적 가로 스와이프 UI 적용 (.kpi-row)
+    # ✨ [레이아웃 원복] 이전처럼 유입/비용/성과 3섹션으로 나누어 한눈에 보이게 배치
     kpi_groups_html = f"""
     <div class='kpi-group-container'>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>유입 지표</div>
+            <div class='kpi-group-title'>👀 유입 지표</div>
             <div class='kpi-row'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
@@ -61,11 +61,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             </div>
         </div>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>비용 및 성과 지표</div>
+            <div class='kpi-group-title'>💸 비용 지표</div>
             <div class='kpi-row'>
-                {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"))}
+            </div>
+        </div>
+        <div class='kpi-group'>
+            <div class='kpi-group-title'>🎯 성과 지표</div>
+            <div class='kpi-row'>
+                {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                 {_kpi_html("전환매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
             </div>
@@ -75,27 +80,26 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
     
     # ---------------------------------------------------------
-    # 진단 리포트 (미니멀 아코디언 스타일)
+    # 진단 리포트
     # ---------------------------------------------------------
     alerts = []
     cur_roas = cur_summary.get('roas', 0)
     cur_cost = cur_summary.get('cost', 0)
     
-    if cur_cost > 0 and cur_roas < 100: alerts.append(f"수익성 적자: 조회 기간 평균 ROAS가 {cur_roas:.2f}%로 낮습니다.")
+    if cur_cost > 0 and cur_roas < 100: alerts.append(f"⚠️ 수익성 적자: 현재 조회 기간의 평균 ROAS가 {cur_roas:.2f}%로 낮습니다.")
     if base_summary.get('cost', 0) > 0:
         cost_surge = (cur_cost - base_summary['cost']) / base_summary['cost'] * 100
-        if cost_surge >= 150: alerts.append(f"비용 폭증: 이전 대비 소진율이 {cost_surge:.0f}% 증가했습니다.")
+        if cost_surge >= 150: alerts.append(f"🔥 비용 폭증: 이전 기간 대비 전체 광고비 소진율이 {cost_surge:.0f}% 증가했습니다.")
     
     hippos = pd.DataFrame()
     if not camp_bndl.empty:
         hippos = camp_bndl[(camp_bndl['cost'] >= 50000) & (camp_bndl['conv'] == 0)].sort_values('cost', ascending=False)
-        if not hippos.empty: alerts.append(f"비용 누수: 5만원 이상 소진 중이나 전환 없는 캠페인 {len(hippos)}개 발견.")
+        if not hippos.empty: alerts.append(f"💸 비용 누수: 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 {len(hippos)}개 발견되었습니다.")
 
     if alerts:
-        # st.expander CSS가 styles.py에 의해 보더리스로 적용됨
-        with st.expander(f"⚠️ 진단 리포트 열기 ({len(alerts)}건의 알림)", expanded=False):
+        with st.expander(f"🚨 계정 내 점검이 필요한 {len(alerts)}건의 알림이 있습니다.", expanded=True):
             for a in alerts: st.markdown(f"- {a}")
-            st.markdown("<br><a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; padding:8px 14px; border:1px solid #19191A; color:#19191A; text-decoration:none; border-radius:4px; font-weight:600; font-size:12px;'>네이버 광고시스템으로 이동</a>", unsafe_allow_html=True)
+            st.markdown("<br><a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; padding:8px 14px; background:#19191A; color:#FFFFFF; text-decoration:none; border-radius:4px; font-weight:600; font-size:12px;'>네이버 광고시스템으로 이동</a>", unsafe_allow_html=True)
             
             if not hippos.empty:
                 disp_hippos = _perf_common_merge_meta(hippos, meta)
@@ -105,22 +109,25 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 for c in ["광고비", "클릭수"]:
                     if c in df_show.columns: df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
                 
-                st.markdown("<div style='margin-top: 24px; font-weight: 700; color: #19191A; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-top: 24px; font-weight: 700; color: #FC503D; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
                 st.dataframe(df_show, use_container_width=True, hide_index=True)
+    else:
+        st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 있습니다!")
     
-    st.markdown("<hr style='margin: 40px 0; border: none; border-top: 1px solid #E4E4E4;'>", unsafe_allow_html=True)
+    st.divider()
 
     try:
         trend_d1 = min(f["start"], date.today() - timedelta(days=7))
         ts = query_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
         if ts is not None and not ts.empty:
-            st.markdown("<div class='nv-sec-title'>트렌드 분석</div>", unsafe_allow_html=True)
+            st.markdown("<div class='nv-sec-title'>트렌드 및 요일별 효율 분석</div>", unsafe_allow_html=True)
             tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 히트맵"])
             with tab_trend:
                 ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
                 if HAS_ECHARTS: render_echarts_dual_axis("일자별 광고비 및 ROAS", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
                 
-                st.download_button(label="CSV 다운로드", data=convert_df_to_csv(ts), file_name=f'{account_name}_trend_data.csv', mime='text/csv')
+                col1, col2 = st.columns([8, 2])
+                with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(ts), file_name=f'{account_name}_trend_data.csv', mime='text/csv', use_container_width=True)
 
             with tab_dow:
                 ts_dow = ts.copy()
@@ -137,12 +144,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
                 
-                # 흑백/그레이톤 히트맵
-                styled_df = dow_disp.style.background_gradient(cmap='Greys', subset=['광고비']).format({
+                # 깔끔한 블루 & 모노톤 히트맵
+                styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Greys', subset=['ROAS(%)']).format({
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
                 
-                st.download_button(label="CSV 다운로드", data=convert_df_to_csv(dow_disp), file_name=f'{account_name}_dow_data.csv', mime='text/csv')
+                col1, col2 = st.columns([8, 2])
+                with col2: st.download_button(label="CSV 다운로드", data=convert_df_to_csv(dow_disp), file_name=f'{account_name}_dow_data.csv', mime='text/csv', use_container_width=True)
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
     except Exception as e:
         pass
