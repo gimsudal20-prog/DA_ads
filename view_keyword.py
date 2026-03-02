@@ -83,7 +83,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                                     ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas:.2f}%", key=f"kw_star_main_{idx}")
                 st.divider()
                 
-                # ✨ 다운로드 버튼 추가
                 col1, col2 = st.columns([8, 2])
                 with col1: st.markdown("#### 📊 검색어별 상세 성과 표")
                 with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp), file_name='keyword_performance.csv', mime='text/csv', key='dl_kw_main', use_container_width=True)
@@ -125,7 +124,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 styled_disp_grp = disp_grp.style.format(fmt)
                 
-                # ✨ 다운로드 버튼 추가
                 col1, col2 = st.columns([8, 2])
                 with col1: st.markdown("#### 📊 광고그룹별 종합 성과 표")
                 with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp_grp), file_name='adgroup_performance.csv', mime='text/csv', key='dl_grp_main', use_container_width=True)
@@ -174,7 +172,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 disp_shop = view_shop[final_cols_shop].sort_values("광고비", ascending=False).head(top_n)
                 styled_disp_shop = disp_shop.style.format(fmt)
 
-                # ✨ 다운로드 버튼 추가
                 col1, col2 = st.columns([8, 2])
                 with col1: st.markdown("#### 📊 상품/소재별 상세 성과 표")
                 with col2: st.download_button(label="📥 CSV 다운로드", data=convert_df_to_csv(disp_shop), file_name='shopping_performance.csv', mime='text/csv', key='dl_shop_main', use_container_width=True)
@@ -300,9 +297,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         st.markdown("### 💸 저효율 등록 키워드 발굴기")
         st.caption("내가 등록하여 입찰 중인 키워드 중에서 클릭(비용)은 지속적으로 발생하지만 전환이 전혀 없는 키워드 목록입니다.")
         
-        # ✨ 네이버 광고시스템 링크 버튼 상단 배치
-        st.markdown("<a href='https://searchad.naver.com/' target='_blank' style='display:inline-block; margin-bottom:16px; padding:8px 16px; background:#10B981; color:#fff; text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;'>🔗 발견 즉시 조치하기 (네이버 광고 이동)</a>", unsafe_allow_html=True)
-
         if df_pl_raw.empty:
             st.info("데이터가 부족하여 저효율 키워드를 분석할 수 없습니다.")
         else:
