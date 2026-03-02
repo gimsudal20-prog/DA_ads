@@ -11,9 +11,8 @@ import streamlit as st
 from datetime import date, timedelta
 from typing import Dict
 
-# ✨ data.py에서 필요한 도구들 가져오기
-from data import sql_read, get_table_columns, table_exists, _sql_in_str_list
-from page_helpers import get_dynamic_cmp_options
+# ✨ data.py에서 캠페인 이름 가져오는 함수(load_dim_campaign) 추가
+from data import sql_read, get_table_columns, table_exists, _sql_in_str_list, load_dim_campaign
 
 # Optional ECharts
 try:
@@ -70,64 +69,61 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     return pd.DataFrame()
 
 def get_specific_keyword_timeseries(engine, d1: date, d2: date, cids: tuple, target_keyword: str, ad_type: str) -> pd.DataFrame:
-    """✨ 파워링크(키워드)와 쇼핑검색(소재/상품) 테이블을 선택적으로 뒤져서 합쳐주는 함수"""
+    """파워링크(키워드)와 쇼핑검색(소재/상품) 데이터를 업체/캠페인 정보와 함께 가져옴"""
     df_list = []
     search_kw = f"%{target_keyword.replace(' ', '')}%"
     
     where_cid_fk = f"AND fk.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
     where_cid_fa = f"AND fa.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
 
-    # 1️⃣ 파워링크 (키워드 테이블 검색)
     if ad_type in ["전체", "파워링크"]:
-        if table_exists(engine, "fact_keyword_daily"):
+        if table_exists(engine, "fact_keyword_daily") and table_exists(engine, "dim_keyword"):
             fk_cols = get_table_columns(engine, "fact_keyword_daily")
             has_sales = "sales" in fk_cols
             sales_expr = "SUM(COALESCE(fk.sales, 0))" if has_sales else "0::numeric"
+            
+            dk_cols = get_table_columns(engine, "dim_keyword")
+            kw_col = next((c for c in ("keyword_name", "keyword", "rel_keyword", "name") if c in dk_cols), None)
+            if kw_col:
+                sql = f"""
+                SELECT fk.dt::date AS dt, fk.customer_id::text AS customer_id, fk.campaign_id::text AS campaign_id,
+                       dk.{kw_col} AS matched_name, '파워링크' AS ad_type,
+                       SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
+                FROM fact_keyword_daily fk
+                JOIN dim_keyword dk ON fk.customer_id::text = dk.customer_id::text AND fk.keyword_id::text = dk.keyword_id::text
+                WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid_fk}
+                AND REPLACE(dk.{kw_col}, ' ', '') ILIKE :kw
+                GROUP BY fk.dt::date, fk.customer_id, fk.campaign_id, dk.{kw_col}
+                """
+                df_kw = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
+                if df_kw is not None and not df_kw.empty: df_list.append(df_kw)
 
-            if table_exists(engine, "dim_keyword"):
-                dk_cols = get_table_columns(engine, "dim_keyword")
-                kw_col = next((c for c in ("keyword_name", "keyword", "rel_keyword", "name") if c in dk_cols), None)
-                if kw_col:
-                    sql = f"""
-                    SELECT fk.dt::date AS dt, SUM(fk.imp) AS imp, SUM(fk.clk) AS clk, SUM(fk.cost) AS cost, {sales_expr} AS sales
-                    FROM fact_keyword_daily fk
-                    JOIN dim_keyword dk ON fk.customer_id::text = dk.customer_id::text AND fk.keyword_id::text = dk.keyword_id::text
-                    WHERE fk.dt BETWEEN :d1 AND :d2 {where_cid_fk}
-                    AND REPLACE(dk.{kw_col}, ' ', '') ILIKE :kw
-                    GROUP BY fk.dt::date
-                    """
-                    df_kw = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
-                    if df_kw is not None and not df_kw.empty: df_list.append(df_kw)
-
-    # 2️⃣ 쇼핑검색 (소재/상품 테이블 검색)
     if ad_type in ["전체", "쇼핑검색"]:
-        if table_exists(engine, "fact_ad_daily"):
+        if table_exists(engine, "fact_ad_daily") and table_exists(engine, "dim_ad"):
             fa_cols = get_table_columns(engine, "fact_ad_daily")
             has_sales = "sales" in fa_cols
             sales_expr = "SUM(COALESCE(fa.sales, 0))" if has_sales else "0::numeric"
-
-            if table_exists(engine, "dim_ad"):
-                da_cols = get_table_columns(engine, "dim_ad")
-                ad_col = next((c for c in ("ad_name", "name", "product_name") if c in da_cols), None)
-                if ad_col:
-                    sql = f"""
-                    SELECT fa.dt::date AS dt, SUM(fa.imp) AS imp, SUM(fa.clk) AS clk, SUM(fa.cost) AS cost, {sales_expr} AS sales
-                    FROM fact_ad_daily fa
-                    JOIN dim_ad da ON fa.customer_id::text = da.customer_id::text AND fa.ad_id::text = da.ad_id::text
-                    WHERE fa.dt BETWEEN :d1 AND :d2 {where_cid_fa}
-                    AND REPLACE(da.{ad_col}, ' ', '') ILIKE :kw
-                    GROUP BY fa.dt::date
-                    """
-                    df_ad = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
-                    if df_ad is not None and not df_ad.empty: df_list.append(df_ad)
+            
+            da_cols = get_table_columns(engine, "dim_ad")
+            ad_col = next((c for c in ("ad_name", "name", "product_name") if c in da_cols), None)
+            if ad_col:
+                sql = f"""
+                SELECT fa.dt::date AS dt, fa.customer_id::text AS customer_id, fa.campaign_id::text AS campaign_id,
+                       da.{ad_col} AS matched_name, '쇼핑검색' AS ad_type,
+                       SUM(fa.imp) AS imp, SUM(fa.clk) AS clk, SUM(fa.cost) AS cost, {sales_expr} AS sales
+                FROM fact_ad_daily fa
+                JOIN dim_ad da ON fa.customer_id::text = da.customer_id::text AND fa.ad_id::text = da.ad_id::text
+                WHERE fa.dt BETWEEN :d1 AND :d2 {where_cid_fa}
+                AND REPLACE(da.{ad_col}, ' ', '') ILIKE :kw
+                GROUP BY fa.dt::date, fa.customer_id, fa.campaign_id, da.{ad_col}
+                """
+                df_ad = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "kw": search_kw})
+                if df_ad is not None and not df_ad.empty: df_list.append(df_ad)
 
     if not df_list:
-        return pd.DataFrame(columns=["dt", "imp", "clk", "cost", "sales"])
+        return pd.DataFrame()
     
-    # 두 테이블(파워링크+쇼핑검색)에서 나온 결과를 합치고 날짜별로 다시 묶어줌
-    combined = pd.concat(df_list, ignore_index=True)
-    final_df = combined.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum().sort_values("dt")
-    return final_df
+    return pd.concat(df_list, ignore_index=True)
 
 def render_trend_chart(df: pd.DataFrame, keyword: str, ad_type_label: str):
     """ECharts를 이용한 듀얼 축 차트 렌더링"""
@@ -194,14 +190,12 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     d1, d2 = f["start"], f["end"]
     
-    # ✨ UI 컨트롤 추가: 키워드 입력칸 옆에 '광고 유형 선택' 옵션 생성
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         target_keyword = st.text_input("🔍 분석할 키워드 또는 상품명 입력", value="", placeholder="예: 나이키운동화").strip()
     with c2:
         ad_type_sel = st.selectbox("🎯 분석할 광고 영역", ["전체 (파워링크+쇼핑검색)", "파워링크 (키워드 매칭)", "쇼핑검색 (상품명 매칭)"])
     
-    # 내부 로직에 넘길 짧은 변수명 정리
     ad_type_mapper = {"전체 (파워링크+쇼핑검색)": "전체", "파워링크 (키워드 매칭)": "파워링크", "쇼핑검색 (상품명 매칭)": "쇼핑검색"}
     mapped_type = ad_type_mapper[ad_type_sel]
 
@@ -215,8 +209,7 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     with st.spinner(f"'{target_keyword}' 관련 시장 트렌드와 내부 데이터를 가져오는 중입니다..."):
         try:
-            # ✨ 업그레이드된 함수 호출 (선택한 영역에 맞춰 파워링크, 쇼핑검색 테이블 자동 분류 검색)
-            internal_ts = get_specific_keyword_timeseries(engine, d1, d2, cids, target_keyword, mapped_type)
+            raw_internal = get_specific_keyword_timeseries(engine, d1, d2, cids, target_keyword, mapped_type)
         except Exception as e:
             st.error(f"내부 데이터 조회 중 오류가 발생했습니다: {e}")
             return
@@ -227,9 +220,11 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.error("네이버 데이터랩에서 데이터를 가져오지 못했습니다. 키워드 검색량이 너무 적거나, API 키 설정을 확인해 주세요.")
             return
 
-        if internal_ts is not None and not internal_ts.empty:
-            internal_ts["dt"] = pd.to_datetime(internal_ts["dt"])
-            agg_internal = internal_ts.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
+        if raw_internal is not None and not raw_internal.empty:
+            # 1. 차트용 일자별 집계 데이터 생성
+            raw_internal["dt"] = pd.to_datetime(raw_internal["dt"])
+            agg_internal = raw_internal.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum().sort_values("dt")
+            agg_internal = agg_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
             
             merged_df = pd.merge(trend_df, agg_internal, on="dt", how="left")
             merged_df["노출"] = merged_df["노출"].fillna(0)
@@ -239,11 +234,37 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown(f"### 📊 [{target_keyword}] 트렌드 비교 차트 ({mapped_type})")
             render_trend_chart(merged_df, target_keyword, mapped_type)
             
-            st.markdown("""
-            #### 💡 인사이트 해석 가이드
-            * **초록색 선(시장 트렌드) 하락 + 파란색 막대(자사 노출수) 하락:** 시장 수요 감소. 무리하게 입찰가를 올리지 마세요.
-            * **초록색 선(시장 트렌드) 유지/상승 + 파란색 막대(자사 노출수) 하락:** 🚨경쟁사 입찰가 상승으로 자사 순위가 밀린 상황! 즉시 입찰가를 방어하세요.
-            """)
+            # 2. ✨ [NEW] 출처(Source) 표시용 데이터 가공 (업체명, 캠페인명 조인)
+            st.markdown("### 🗂️ 내부 데이터 출처 (어느 캠페인에서 노출되었을까?)")
+            
+            source_df = raw_internal.groupby(["customer_id", "campaign_id", "ad_type", "matched_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
+            
+            # 업체명 매칭
+            source_df["customer_id"] = source_df["customer_id"].astype(str)
+            meta_copy = meta.copy()
+            meta_copy["customer_id"] = meta_copy["customer_id"].astype(str)
+            source_df = source_df.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
+            source_df["업체명"] = source_df["account_name"].fillna(source_df["customer_id"])
+            
+            # 캠페인명 매칭
+            try:
+                dim_camp = load_dim_campaign(engine)
+                dim_camp["customer_id"] = dim_camp["customer_id"].astype(str)
+                dim_camp["campaign_id"] = dim_camp["campaign_id"].astype(str)
+                camp_col = next((c for c in ["campaign_name", "name"] if c in dim_camp.columns), "campaign_name")
+                source_df = source_df.merge(dim_camp[["customer_id", "campaign_id", camp_col]], on=["customer_id", "campaign_id"], how="left")
+                source_df["캠페인명"] = source_df[camp_col].fillna(source_df["campaign_id"])
+            except Exception:
+                source_df["캠페인명"] = source_df["campaign_id"]
+                
+            # 예쁘게 컬럼 정리 후 출력
+            disp_source = source_df[["업체명", "캠페인명", "ad_type", "matched_name", "imp", "clk", "cost"]].sort_values("imp", ascending=False)
+            disp_source = disp_source.rename(columns={"ad_type": "광고유형", "matched_name": "매칭된 키워드/상품명", "imp": "노출", "clk": "클릭", "cost": "광고비"})
+            
+            st.dataframe(
+                disp_source.style.format({"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}"}),
+                use_container_width=True, hide_index=True
+            )
             
             st.markdown("#### 📅 일자별 상세 데이터")
             st.dataframe(
