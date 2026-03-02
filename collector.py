@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v13.0)
-- 일자별 캠페인 예산 소진(꺼짐) 시간 자동 Tracking 및 DB 영구 기록 기능 탑재
+collector.py - 네이버 검색광고 수집기 (v13.1)
+- 쇼핑검색 상품명 및 썸네일(이미지 URL) 수집 기능 강화
+- 확장소재 불필요한 '[확장소재] PROMOTION |' 접두어 노출 제거
 """
 
 from __future__ import annotations
@@ -117,12 +118,11 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, PRIMARY KEY(customer_id, ad_id))"""))
+                # ✨ [NEW] image_url 컬럼 최초 생성 스키마 반영
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-                
-                # ✨ [NEW] 예산 소진(광고 꺼짐) 시간을 영구 기록하는 테이블 생성
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
                         dt DATE,
@@ -138,6 +138,8 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN mobile_landing_url TEXT"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN creative_text TEXT"))
+                    # ✨ [NEW] 기존 테이블에도 image_url 컬럼 안전하게 추가
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN image_url TEXT"))
             except Exception: pass
             
             try:
@@ -238,13 +240,32 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+# ✨ [NEW] 쇼핑검색 상품명 및 이미지 추출 로직 대폭 강화
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
+    
+    # 1. 이미지 URL 추출 (쇼핑검색 및 일반소재 썸네일)
+    image_url = ""
+    if "image" in ad_inner and isinstance(ad_inner["image"], dict):
+        image_url = ad_inner["image"].get("imageUrl", "")
+    if not image_url:
+        image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
+
+    # 2. 텍스트 추출
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
+    # 쇼핑 카탈로그/상품명 추출 강화
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
-        title = title or ad_inner["shoppingProduct"].get("name") or ad_inner["shoppingProduct"].get("productName") or ""
+        sp = ad_inner["shoppingProduct"]
+        title = title or sp.get("name") or sp.get("productName") or ""
+        if not image_url:
+            image_url = sp.get("imageUrl", "")
+            
+    # valData 형식 대비
+    if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
+        title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
+
     if "addPromoText" in ad_inner:
         desc = desc or ad_inner["addPromoText"]
         
@@ -257,7 +278,7 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
                 title = v.get("name")
                 break
     if not title: 
-        title = f"쇼핑/일반소재 ({ad_obj.get('nccAdId', '확인불가')})"
+        title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
     
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
@@ -268,12 +289,13 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     return {
         "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
         "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
-        "creative_text": str(creative_text)[:500]
+        "creative_text": str(creative_text)[:500],
+        "image_url": str(image_url)[:1000]
     }
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
-    out, d_str = [], d1.strftime("%Y-%m-%d")
+    out, d_str = d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
     for i in range(0, len(ids), 50):
@@ -487,7 +509,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         for a in list_ads(customer_id, gid):
                             if aid := a.get("nccAdId"): 
                                 target_ad_ids.append(aid)
-                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extract_ad_creative_fields(a)["ad_title"], "status": a.get("status"), **extract_ad_creative_fields(a)})
+                                extracted = extract_ad_creative_fields(a)
+                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
                         
                         for ext in list_ad_extensions(customer_id, gid):
                             if ext_id := ext.get("nccAdExtensionId"):
@@ -495,12 +518,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                                 ext_info = ext.get("adExtension", {}) or ext
                                 ext_type = ext.get("extensionType", "")
                                 ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                                ext_title = f"[확장소재] {ext_type}"
+                                
+                                # ✨ [NEW] '[확장소재] PROMOTION | ' 등 거추장스러운 텍스트를 모두 날리고 텍스트만 보이게 개선
                                 ad_rows.append({
                                     "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
-                                    "status": ext.get("status"), "ad_title": ext_title, "ad_desc": ext_text, 
+                                    "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, 
                                     "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
-                                    "creative_text": f"{ext_title} | {ext_text}"[:500]
+                                    "creative_text": str(ext_text)[:500], 
+                                    "image_url": ""
                                 })
 
             upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
@@ -520,7 +545,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
             log(f"   📊 [ {account_name} ] 당일 적재: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
-            # ✨ [핵심 기능] 오늘 날짜 수집 시, 캠페인이 꺼졌는지 감시하고 시간을 DB에 영구 기록합니다!
             log(f"   🕒 [ {account_name} ] 당일 캠페인 예산 소진(꺼짐) 시간 기록 중...")
             try:
                 realtime_camps = list_campaigns(customer_id)
@@ -528,15 +552,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 for c in realtime_camps:
                     status = c.get("status", "")
                     reason = c.get("statusReason", "")
-                    # 예산이 부족해서 꺼졌거나(EXHAUSTED), 제한에 걸린(LIMIT) 캠페인만 추려냅니다.
                     if "EXHAUSTED" in status or "LIMIT" in reason:
                         edit_tm = c.get("editTm", "")
                         if edit_tm:
-                            # 네이버 서버 시간을 KST(한국 시간)로 변환
                             utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
                             kst_dt = utc_dt + timedelta(hours=9)
                             
-                            # 오늘 꺼진 게 맞다면 기록! (어제 꺼진 건 패스)
                             if kst_dt.date() == target_date:
                                 off_rows.append({
                                     "dt": target_date,
@@ -545,7 +566,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                                     "off_time": kst_dt.strftime("%H:%M")
                                 })
                 if off_rows:
-                    # UPSERT (이미 기록되어 있으면 덮어쓰기하여 가장 최근 꺼진 시간을 유지)
                     upsert_many(engine, "fact_campaign_off_log", off_rows, ["dt", "customer_id", "campaign_id"])
             except Exception as e:
                 log(f"   ⚠️ 꺼짐 시간 기록 실패: {e}")
@@ -590,7 +610,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             ext_ids = []
             try:
                 with engine.connect() as conn:
-                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[확장소재]%'"), {"cid": customer_id})
+                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
                     ext_ids = [str(r[0]) for r in res]
             except Exception: pass
                 
