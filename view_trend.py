@@ -66,7 +66,7 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
     return pd.DataFrame()
 
 def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    """✨ 키워드 -> 그룹 -> 캠페인 순서로 완벽하게 다리를 건너는 무결점 쿼리"""
+    """키워드 -> 그룹 -> 캠페인 순서로 완벽하게 다리를 건너는 무결점 쿼리"""
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
@@ -74,7 +74,7 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
     has_camp = table_exists(_engine, "dim_campaign")
     has_grp = table_exists(_engine, "dim_adgroup")
     
-    # 1️⃣ 파워링크 (fact -> dim_keyword -> dim_adgroup -> dim_campaign 순서로 조인!)
+    # 1️⃣ 파워링크
     if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
         f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
@@ -104,7 +104,7 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
         except Exception as e:
             st.error(f"파워링크(Keyword) 데이터 로딩 에러: {e}")
 
-    # 2️⃣ 쇼핑검색 (fact -> dim_ad -> dim_adgroup -> dim_campaign 순서로 조인!)
+    # 2️⃣ 쇼핑검색
     if table_exists(_engine, "fact_ad_daily") and table_exists(_engine, "dim_ad"):
         f_cols = get_table_columns(_engine, "fact_ad_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
@@ -197,15 +197,13 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("최소 3일 이상의 기간을 선택해야 유의미한 차트가 그려집니다. 좌측 필터에서 기간을 늘려주세요.")
         return
 
-    # 1. 내부 데이터 먼저 싹 다 불러오기 (캐시 완전히 삭제하여 항상 최신 쿼리 사용)
-    with st.spinner("내부 캠페인/그룹 목록을 가져오는 중..."):
+    with st.spinner("내부 캠페인/그룹 목록을 실시간으로 가져오는 중..."):
         df_raw = get_internal_daily_detail(engine, d1, d2, cids)
 
     if df_raw.empty:
         st.warning("선택하신 기간/계정에 내부 광고 데이터가 없습니다. (왼쪽에서 업체나 기간을 변경해 보세요)")
         return
 
-    # 2. 아주 직관적인 3단계 선택 UI
     c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
     
     with c1:
@@ -226,7 +224,6 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("👈 데이터랩 검색어를 입력하시면 비교 차트가 나타납니다.")
         return
 
-    # 3. 데이터 필터링
     df_filtered = df_raw.copy()
     if sel_camp != "전체": df_filtered = df_filtered[df_filtered["campaign_name"] == sel_camp]
     if sel_grp != "전체": df_filtered = df_filtered[df_filtered["adgroup_name"] == sel_grp]
@@ -235,12 +232,10 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning(f"선택하신 캠페인/그룹에 해당하는 기간 내 데이터가 없습니다.")
         return
 
-    # 날짜별로 최종 합산
     df_daily = df_filtered.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum()
     df_daily["dt"] = pd.to_datetime(df_daily["dt"])
     df_daily = df_daily.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
 
-    # 4. 데이터랩 트렌드 가져와서 렌더링
     with st.spinner("네이버 데이터랩 트렌드를 가져오는 중..."):
         trend_df = get_datalab_trend(client_id, client_secret, datalab_kw, d1, d2)
 
@@ -251,6 +246,19 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     merged_df = pd.merge(trend_df, df_daily, on="dt", how="left").fillna(0)
 
     st.markdown(f"### 📊 '{datalab_kw}' 트렌드 vs 선택 영역 노출 비교")
+    
+    # ✨ [NEW] 마케터님을 위한 깔끔한 실무 해석 가이드 박스!
+    st.info("""
+    **💡 차트 해석 가이드 (어떻게 읽어야 할까요?)**
+    
+    차트는 시장 전체의 관심도(초록색 선)와 우리 광고의 노출 성과(파란색 막대)를 동시에 보여줍니다. 
+    이 두 가지 지표가 어떻게 겹치는지 보면 **'시장 탓'**인지 **'우리 탓'**인지 정확히 알 수 있습니다.
+    
+    * 📉 **초록선(시장) 하락 + 📉 파란막대(우리) 하락:** 시장 전체의 수요가 줄어드는 비수기입니다. 무리하게 입찰가를 올리지 마세요!
+    * 📈 **초록선(시장) 상승/유지 + 📉 파란막대(우리) 하락:** **🚨 즉시 대응 필요!** 시장은 여전히 좋은데 우리만 안 보이고 있습니다. 경쟁사에 순위가 밀렸으니 입찰가를 바로 올려서 방어하세요.
+    * 📈 **초록선(시장) 상승 + 📈 파란막대(우리) 상승:** 가장 완벽한 성수기입니다. 예산이 중간에 꺼지지 않도록 일일 한도를 넉넉하게 열어두세요.
+    """)
+    
     render_trend_chart(merged_df, datalab_kw, "전체")
     
     st.markdown("#### 📅 일자별 상세 데이터")
