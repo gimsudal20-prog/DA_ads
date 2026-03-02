@@ -11,7 +11,6 @@ import streamlit as st
 from datetime import date, timedelta
 from typing import Dict
 
-# ✨ 마케터님 아이디어 적용: 기존에 잘 돌아가는 번들 함수를 활용하여 목록 생성!
 from data import sql_read, get_table_columns, _sql_in_str_list, query_keyword_bundle, query_ad_bundle
 from page_helpers import _perf_common_merge_meta
 
@@ -137,11 +136,9 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.warning("트렌드 비교는 최소 3일 이상의 기간을 선택해야 유의미한 차트가 그려집니다. 좌측 필터에서 기간을 더 길게 잡아주세요.")
         return
 
-    # 1. 어떤 영역을 볼지 먼저 선택
     ad_type_sel = st.radio("🎯 분석할 광고 영역 선택", ["파워링크 (키워드)", "쇼핑검색 (상품명)"], horizontal=True)
     is_powerlink = "파워링크" in ad_type_sel
 
-    # 2. 선택된 영역에 따라 내부 데이터 목록을 불러와서 드롭다운으로 제공
     with st.spinner("내부 광고 목록을 불러오는 중..."):
         if is_powerlink:
             bundle = query_keyword_bundle(engine, d1, d2, list(cids), ["파워링크"], topn_cost=20000)
@@ -154,10 +151,8 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("선택하신 기간/계정에 분석할 수 있는 내부 광고 데이터(비용 소진 기록)가 없습니다.")
         return
 
-    # 업체명 등 메타 정보 조인
     bundle = _perf_common_merge_meta(bundle, meta)
     
-    # 드롭다운 리스트 고유값 추출
     item_list = bundle[name_col].dropna().astype(str).unique().tolist()
     item_list = sorted([x for x in item_list if x.strip()])
     
@@ -168,18 +163,15 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("### 🔍 분석 대상 선택")
     c1, c2 = st.columns(2)
     with c1:
-        # ✨ 마케터님 아이디어: 사용자가 직접 텍스트를 치는 게 아니라 있는 것 중에서 선택!
         selected_internal = st.selectbox("1️⃣ 자사 키워드/상품명 선택 (내부 데이터)", item_list)
     
     with c2:
-        # 쇼핑검색의 경우 상품명이 너무 길면 데이터랩 조회가 안되므로, 핵심 단어로 수정할 수 있게 제공
         st.caption("※ 네이버 데이터랩은 검색어가 길면(상품명 등) 조회가 안 됩니다. 핵심 키워드만 남겨주세요.")
         selected_datalab = st.text_input("2️⃣ 데이터랩 트렌드 검색어 (수정 가능)", value=selected_internal)
 
     if not selected_internal or not selected_datalab:
         return
 
-    # 3. 내부 데이터 출처 표시 (에러 없이 번들 데이터에서 바로 추출!)
     st.markdown(f"### 🗂️ 내부 데이터 출처: `{selected_internal}`")
     source_df = bundle[bundle[name_col] == selected_internal].copy()
     
@@ -199,26 +191,35 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         use_container_width=True, hide_index=True
     )
 
-    # 4. 차트용 일자별 데이터 추출
+    # ✨ [수정 1] 파이썬이 자기 맘대로 .0을 붙이는 현상(Float Cast) 완벽 방어!
     id_col = "keyword_id" if is_powerlink else "ad_id"
-    table_name = "fact_keyword_daily" if is_powerlink else "fact_ad_daily"
-    
     if id_col not in source_df.columns:
+        st.error(f"내부 에러: '{id_col}' 고유 식별 컬럼을 찾을 수 없습니다.")
         return
         
-    target_ids = source_df[id_col].dropna().astype(str).unique().tolist()
+    clean_ids = set()
+    for x in source_df[id_col].dropna():
+        sx = str(x).strip()
+        if sx.endswith(".0"): sx = sx[:-2]  # .0 이 붙어있으면 싹둑 자르기!
+        if sx: clean_ids.add(sx)
+        
+    target_ids = list(clean_ids)
     if not target_ids:
+        st.warning("선택된 검색어에 해당하는 고유 ID가 없습니다.")
         return
 
-    # 안전하고 확실한 SQL: 에러 유발하는 JOIN을 빼고 ID로만 조회
+    table_name = "fact_keyword_daily" if is_powerlink else "fact_ad_daily"
     cols = get_table_columns(engine, table_name)
     sales_expr = "sales" if "sales" in cols else "0::numeric"
     
     ids_sql = _sql_in_str_list(target_ids)
+    cid_where = f"AND customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    
     sql = f"""
     SELECT dt::date AS dt, SUM(imp) AS imp, SUM(clk) AS clk, SUM(cost) AS cost, SUM(COALESCE({sales_expr}, 0)) AS sales
     FROM {table_name}
     WHERE dt BETWEEN :d1 AND :d2
+      {cid_where}
       AND {id_col}::text IN ({ids_sql})
     GROUP BY dt::date
     ORDER BY dt::date
@@ -228,31 +229,40 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_internal = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
         trend_df = get_datalab_trend(client_id, client_secret, selected_datalab, d1, d2)
 
+    # ✨ [수정 2] 화면이 그냥 사라지지 않도록 예외 처리(경고창) 촘촘하게 추가!
     if trend_df.empty:
-        st.error(f"네이버 데이터랩에서 '{selected_datalab}' 키워드 트렌드를 가져오지 못했습니다. 검색량이 너무 적거나 키워드가 너무 깁니다.")
+        st.error(f"⚠️ 네이버 데이터랩에서 '{selected_datalab}' 검색어의 트렌드를 가져오지 못했습니다. 검색량이 너무 적거나, 일시적인 네이버 서버 오류일 수 있습니다.")
         return
 
-    if daily_internal is not None and not daily_internal.empty:
-        daily_internal["dt"] = pd.to_datetime(daily_internal["dt"])
-        daily_internal = daily_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
+    if daily_internal is None:
+        st.error("⚠️ 내부 일자별 데이터를 조회하는 중 오류가 발생했습니다.")
+        return
         
-        merged_df = pd.merge(trend_df, daily_internal, on="dt", how="left")
-        for c in ["노출", "클릭", "광고비"]:
-            merged_df[c] = merged_df[c].fillna(0)
-            
-        st.markdown(f"### 📊 트렌드 비교 차트")
-        render_trend_chart(merged_df, selected_internal, selected_datalab, "파워링크" if is_powerlink else "쇼핑검색")
+    if daily_internal.empty:
+        st.warning(f"⚠️ 선택하신 기간({d1}~{d2}) 동안 '{selected_internal}' 검색어가 노출된 일자별 데이터 기록이 없습니다.")
+        return
+
+    # 정상 렌더링
+    daily_internal["dt"] = pd.to_datetime(daily_internal["dt"])
+    daily_internal = daily_internal.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
+    
+    merged_df = pd.merge(trend_df, daily_internal, on="dt", how="left")
+    for c in ["노출", "클릭", "광고비"]:
+        merged_df[c] = merged_df[c].fillna(0)
         
-        st.markdown("""
-        #### 💡 인사이트 해석 가이드
-        * **초록선 상승 + 파란막대 하락:** 🚨 시장은 커지는데 우리만 노출이 떨어집니다. **경쟁사에 순위를 뺏겼으니 입찰가를 올리세요!**
-        * **초록선 하락 + 파란막대 하락:** 📉 비수기나 시장 수요 감소입니다. 무리하게 입찰가를 올리지 마세요.
-        """)
-        
-        st.markdown("#### 📅 일자별 상세 데이터")
-        st.dataframe(
-            merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).style.format({
-                "트렌드지수(%)": "{:.1f}", "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}"
-            }),
-            use_container_width=True, hide_index=True
-        )
+    st.markdown(f"### 📊 트렌드 비교 차트")
+    render_trend_chart(merged_df, selected_internal, selected_datalab, "파워링크" if is_powerlink else "쇼핑검색")
+    
+    st.markdown("""
+    #### 💡 인사이트 해석 가이드
+    * **초록선 상승 + 파란막대 하락:** 🚨 시장은 커지는데 우리만 노출이 떨어집니다. **경쟁사에 순위를 뺏겼으니 입찰가를 올리세요!**
+    * **초록선 하락 + 파란막대 하락:** 📉 비수기나 시장 수요 감소입니다. 무리하게 입찰가를 올리지 마세요.
+    """)
+    
+    st.markdown("#### 📅 일자별 상세 데이터")
+    st.dataframe(
+        merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).style.format({
+            "트렌드지수(%)": "{:.1f}", "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}"
+        }),
+        use_container_width=True, hide_index=True
+    )
