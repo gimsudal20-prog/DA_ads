@@ -11,7 +11,7 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_item_comparison_search
+from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -145,10 +145,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             if sel_c != "전체":
                 df_target = df_target[df_target["캠페인"] == sel_c]
                 render_comparison_section(df_target, cmp_mode, b1, b2, f["start"], f["end"], "상세 비교 결과")
-
-            # ✨ [NEW] 소재 검색형 대조표 렌더링
-            base_for_search = base_ad_bundle.rename(columns={"ad_name": "소재내용"}) if not base_ad_bundle.empty else pd.DataFrame()
-            render_item_comparison_search("소재", df_target, base_for_search, "소재내용", f["start"], f["end"], b1, b2)
 
             cols_cmp = ["업체명", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
             disp_c = df_target[[c for c in cols_cmp if c in df_target.columns]].sort_values("광고비", ascending=False).head(top_n)
