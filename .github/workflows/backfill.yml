@@ -1,24 +1,24 @@
 name: Super Fast Backfill (10 Days Chunk)
 
 on:
-  workflow_dispatch: # 수동 실행 버튼
+  workflow_dispatch:
 
 jobs:
   run-backfill:
     runs-on: ubuntu-latest
     
     strategy:
-      max-parallel: 1 # DB 과부하를 막기 위해 1개 묶음씩 차례대로 안전하게 실행
+      # ✨ [핵심 최적화 1] 1개씩 순서대로 하던 작업을 4개 덩어리 동시 실행으로 변경!
+      max-parallel: 4 
       fail-fast: false
       matrix:
         period:
-          # 1월 1일 ~ 3월 2일까지 10~12일 단위로 쪼갬
-          - {start: "2026-01-01", end: "2026-01-11"}
+          # - {start: "2026-01-01", end: "2026-01-11"} # ✅ 이미 완료되었으므로 주석 처리(제외)
           - {start: "2026-01-12", end: "2026-01-22"}
           - {start: "2026-01-23", end: "2026-02-03"}
           - {start: "2026-02-04", end: "2026-02-15"}
           - {start: "2026-02-16", end: "2026-02-27"}
-          - {start: "2026-02-28", end: "2026-03-02"} # ✨ [추가됨] 3월 2일까지 완벽 복구
+          - {start: "2026-02-28", end: "2026-03-02"}
   
     env:
       TZ: Asia/Seoul
@@ -63,8 +63,8 @@ jobs:
               d_str = current.strftime("%Y-%m-%d")
               
               try:
-                  # 🌟 핵심: 10배속 덤프트럭 유지 + 에러 없이 완벽히 꽂아넣기
-                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "10"], check=True)
+                  # ✨ [핵심 최적화 2] 워커를 5로 줄여서 네이버 API 차단을 피하고 안정적으로 스무스하게 수집
+                  subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "5"], check=True)
               except subprocess.CalledProcessError:
                   print(f"❌ 실패: {d_str}")
               
