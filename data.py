@@ -52,11 +52,12 @@ def get_database_url() -> str:
         db_url = db_url + f"{joiner}sslmode=require"
     return db_url
 
+# ✨ [FIX] SSL 커넥션 끊김 에러 방지 (NullPool 적용)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     url = get_database_url()
     connect_args = {"sslmode": "require", "connect_timeout": 10, "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
-    return create_engine(url, connect_args=connect_args, pool_pre_ping=True, pool_size=2, max_overflow=2, pool_timeout=30, pool_recycle=300, pool_use_lifo=True, future=True)
+    return create_engine(url, connect_args=connect_args, poolclass=NullPool, future=True)
 
 def _reset_engine_cache() -> None:
     try: get_engine.clear()
@@ -121,34 +122,44 @@ def db_ping(engine, retries: int = 2) -> None:
             logger.error(f"DB Ping failed: {e}")
             raise last_err
 
+# ✨ [FIX] 메타데이터 검사 재시도 로직 추가 (일시적 연결 실패 대비)
 def _get_table_names_cached(engine, schema: str = "public") -> set:
     cache = st.session_state.setdefault("_table_names_cache", {})
     if schema in cache: return cache[schema]
-    try:
-        insp = inspect(engine)
-        names = set(insp.get_table_names(schema=schema))
-    except Exception as e: 
-        logger.warning(f"Error inspecting table names: {e}")
-        names = set()
-    cache[schema] = names
-    return names
+    
+    for attempt in range(2):
+        try:
+            insp = inspect(engine)
+            names = set(insp.get_table_names(schema=schema))
+            cache[schema] = names
+            return names
+        except Exception as e: 
+            logger.warning(f"Error inspecting table names (attempt {attempt+1}): {e}")
+            time.sleep(0.5)
+            
+    return set()
 
 def table_exists(engine, table: str, schema: str = "public") -> bool:
     return table in _get_table_names_cached(engine, schema=schema)
 
+# ✨ [FIX] 메타데이터 검사 재시도 로직 추가 (일시적 연결 실패 대비)
 def get_table_columns(engine, table: str, schema: str = "public") -> set:
     cache = st.session_state.setdefault("_table_cols_cache", {})
     key = f"{schema}.{table}"
     if key in cache: return cache[key]
-    try:
-        insp = inspect(engine)
-        cols = insp.get_columns(table, schema=schema)
-        out = {str(c.get("name", "")).lower() for c in cols}
-    except Exception as e: 
-        logger.warning(f"Error inspecting columns for {table}: {e}")
-        out = set()
-    cache[key] = out
-    return out
+    
+    for attempt in range(2):
+        try:
+            insp = inspect(engine)
+            cols = insp.get_columns(table, schema=schema)
+            out = {str(c.get("name", "")).lower() for c in cols}
+            cache[key] = out
+            return out
+        except Exception as e: 
+            logger.warning(f"Error inspecting columns for {table} (attempt {attempt+1}): {e}")
+            time.sleep(0.5)
+            
+    return set()
 
 def _sql_in_str_list(values: List[int]) -> str:
     safe = []
@@ -536,7 +547,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: Tuple[int, ...], type_sel
     ad_text_expr = "COALESCE(NULLIF(TRIM(a.creative_text),''), NULLIF(TRIM(a.ad_name),''), p.ad_id)" if "creative_text" in ad_cols else "COALESCE(NULLIF(TRIM(a.ad_name),''), p.ad_id)"
     
     pc_url_expr = "COALESCE(NULLIF(TRIM(a.pc_landing_url), ''), '')" if "pc_landing_url" in ad_cols else "''"
-    # ✨ [NEW] 이미지 추출 구문
     image_url_expr = "COALESCE(NULLIF(TRIM(a.image_url), ''), '')" if "image_url" in ad_cols else "''"
     
     cp_cols = get_table_columns(_engine, "dim_campaign") if dim_cp_exists else set()
