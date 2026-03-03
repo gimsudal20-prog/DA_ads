@@ -23,7 +23,6 @@ def page_media(engine, f):
             st.warning("먼저 '설정' 메뉴에서 업체를 동기화해주세요.")
             return
             
-        # ✨ [NEW] 담당자 -> 업체 2단계 선택 레이아웃
         c1, c2 = st.columns(2)
         
         with c1:
@@ -55,10 +54,23 @@ def page_media(engine, f):
                         try:
                             # CSV 파싱
                             df_csv = pd.read_csv(uploaded_file, skiprows=1)
+                            
+                            # ✨ [FIX] 네이버 리포트 양식 호환성 패치 (총 전환수, 비용 등 이름 자동 보정)
+                            df_csv = df_csv.rename(columns={
+                                '총 전환수': '전환수',
+                                '총 전환매출액(원)': '전환매출액(원)',
+                                '비용(VAT포함,원)': '총비용(VAT포함,원)',
+                                '총 비용(VAT포함,원)': '총비용(VAT포함,원)'
+                            })
+                            
+                            # 만약 누락된 필수 컬럼이 있다면 0으로 채워서 에러 방지
+                            for required_col in ['전환수', '전환매출액(원)', '총비용(VAT포함,원)', '노출수', '클릭수']:
+                                if required_col not in df_csv.columns:
+                                    df_csv[required_col] = 0
+                            
                             cols_to_sum = ['노출수', '클릭수', '총비용(VAT포함,원)', '전환수', '전환매출액(원)']
                             for c in cols_to_sum:
-                                if c in df_csv.columns:
-                                    df_csv[c] = pd.to_numeric(df_csv[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                                df_csv[c] = pd.to_numeric(df_csv[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                             
                             # 일별 날짜 파싱 (yyyy.mm.dd. 형식 제거)
                             df_csv['dt'] = pd.to_datetime(df_csv['일별'].astype(str).str.replace(r'\.$', '', regex=True).str.replace('.', '-'), errors='coerce').dt.date
@@ -87,7 +99,6 @@ def page_media(engine, f):
                                 })
                             
                             with engine.begin() as conn:
-                                # 이전 테이블 구조 초기화 대응
                                 res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fact_media_daily'"))
                                 cols = [r[0] for r in res]
                                 if cols and 'customer_id' not in cols:
