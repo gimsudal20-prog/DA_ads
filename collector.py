@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v13.2)
+collector.py - 네이버 검색광고 수집기 (v13.3)
 - 쇼핑검색 상품명 및 썸네일(이미지 URL) 수집 기능 강화
 - 확장소재 불필요한 '[확장소재] PROMOTION |' 접두어 노출 제거
-- 변수 언패킹(too many values to unpack) 버그 핫픽스
+- 변수 언패킹 핫픽스
+- ✨ [FIX] 부가세(* 1.1) 가산 로직 전면 제거 (원천 데이터 일치 및 ROAS 정확도 개선)
 """
 
 from __future__ import annotations
@@ -287,7 +288,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         "image_url": str(image_url)[:1000]
     }
 
-# ✨ [FIX] unpack 에러 수정 (리스트와 문자열 분리)
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
     out = []
@@ -308,7 +308,8 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
     
     rows = []
     for r in raw_stats:
-        cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1))
+        # ✨ [FIX] 부가세 1.1 곱셈 제거 (원천 데이터 그대로 활용)
+        cost = int(float(r.get("salesAmt", 0) or 0))
         sales = int(float(r.get("convAmt", 0) or 0))
         imp = int(r.get("impCnt", 0) or 0)
         clk = int(r.get("clkCnt", 0) or 0)
@@ -446,7 +447,8 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             if clk_idx != -1 and len(r) > clk_idx: 
                 res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
             if cost_idx != -1 and len(r) > cost_idx: 
-                res[obj_id]["cost"] += int(round(safe_float(r.iloc[cost_idx]) * 1.1)) # VAT
+                # ✨ [FIX] 부가세 1.1 곱셈 제거 (원천 데이터 그대로 활용)
+                res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             if conv_idx != -1 and len(r) > conv_idx: 
                 res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
             if sales_idx != -1 and len(r) > sales_idx: 
@@ -591,7 +593,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
                     for r in raw_ad_stats:
                         eid = str(r.get("id"))
-                        cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1))
+                        # ✨ [FIX] 부가세 1.1 곱셈 제거 (원천 데이터 그대로 활용)
+                        cost = int(float(r.get("salesAmt", 0) or 0))
                         sales = int(float(r.get("convAmt", 0) or 0))
                         ad_stat[eid] = {
                             "imp": int(r.get("impCnt", 0) or 0),
@@ -616,7 +619,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
                     ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
                     ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
-                    ad_stat[eid]["cost"] += int(round(float(r.get("salesAmt", 0) or 0) * 1.1))
+                    # ✨ [FIX] 부가세 1.1 곱셈 제거 (원천 데이터 그대로 활용)
+                    ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
                     ad_stat[eid]["conv"] += float(r.get("ccnt", 0) or 0)
                     ad_stat[eid]["sales"] += int(float(r.get("convAmt", 0) or 0))
 
