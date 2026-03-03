@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """view_media.py - Media/Placement performance analysis and CSV ingestion."""
 
+import time
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -20,7 +21,7 @@ def page_media(engine, f):
         
         if uploaded_file is not None:
             if st.button("🚀 데이터 적재 및 분석 시작", type="primary"):
-                with st.spinner("데이터를 DB에 적재하는 중입니다..."):
+                with st.spinner("데이터를 분석하고 DB에 적재하는 중입니다..."):
                     try:
                         # CSV 파싱
                         df_csv = pd.read_csv(uploaded_file, skiprows=1)
@@ -75,14 +76,21 @@ def page_media(engine, f):
                                 sales = fact_media_daily.sales + EXCLUDED.sales
                                 """
                                 conn.execute(text(sql), rows)
+                        
+                        # ✨ [FIX] DB에 테이블이 새로 생겼으므로 캐시를 강제 초기화하여 즉시 인식하게 함
+                        if "_table_names_cache" in st.session_state:
+                            del st.session_state["_table_names_cache"]
                                 
-                        st.success(f"🎉 총 {len(rows)}건의 지면 데이터가 완벽하게 적재되었습니다! 아래 분석 결과를 확인하세요.")
+                        st.success(f"🎉 총 {len(rows)}건의 지면 데이터가 완벽하게 적재되었습니다! 1초 뒤 화면이 새로고침됩니다.")
+                        time.sleep(1.5)
+                        st.rerun() # 업로드 즉시 화면 갱신
+                        
                     except Exception as e:
                         st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
     # --- 2. DB 데이터 불러오기 및 대시보드 렌더링 ---
     if not table_exists(engine, "fact_media_daily"):
-        st.warning("🚨 데이터베이스에 매체(지면) 데이터가 없습니다. 위의 업로드 창을 통해 CSV 파일을 적재해주세요.")
+        st.warning("🚨 데이터베이스에 매체(지면) 데이터가 없습니다. 위의 업로드 창을 통해 CSV 파일을 1회 적재해주세요.")
         return
         
     d1, d2 = f["start"], f["end"]
@@ -93,10 +101,22 @@ def page_media(engine, f):
     WHERE dt BETWEEN :d1 AND :d2
     GROUP BY media_name
     """
-    df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+    
+    try:
+        df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+    except Exception:
+        df = pd.DataFrame()
     
     if df.empty:
-        st.info(f"{d1} ~ {d2} 기간에 해당하는 지면 데이터가 없습니다.")
+        # ✨ [FIX] 현재 조회 기간에 데이터가 없을 경우, DB에 있는 실제 날짜 구간을 찾아 친절하게 안내
+        try:
+            minmax = sql_read(engine, "SELECT MIN(dt) as min_dt, MAX(dt) as max_dt FROM fact_media_daily")
+            min_dt = minmax.iloc[0]['min_dt']
+            max_dt = minmax.iloc[0]['max_dt']
+            st.error(f"⚠️ 현재 선택하신 조회 기간({d1} ~ {d2}) 에는 지면 데이터가 없습니다.")
+            st.info(f"💡 **안내:** 현재 DB에는 **{min_dt} ~ {max_dt}** 기간의 지면 데이터가 적재되어 있습니다. 좌측 메뉴의 🔍[조회 기간 및 필터 설정]을 열어서 해당 날짜로 변경해 주세요!")
+        except Exception:
+            st.info(f"{d1} ~ {d2} 기간에 해당하는 지면 데이터가 없습니다.")
         return
         
     for c in ["노출수", "클릭수", "광고비", "전환수", "전환매출"]:
