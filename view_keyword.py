@@ -11,7 +11,7 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-from page_helpers import _perf_common_merge_meta
+from page_helpers import _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
@@ -56,23 +56,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
                 styled_disp = disp.style.format(fmt)
-                
-                if "평균순위" in view.columns:
-                    all_kws = sorted([str(x) for x in view["키워드"].unique() if str(x).strip()])
-                    selected_kws = st.multiselect("모니터링 핵심 키워드 선택", all_kws, default=all_kws[:4] if len(all_kws) >= 4 else all_kws, key="star_kws_main")
-                    if selected_kws:
-                        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-                        cols = st.columns(4)
-                        target_df = view[view["키워드"].isin(selected_kws)]
-                        for idx, kw in enumerate(selected_kws):
-                            row_df = target_df[target_df["키워드"] == kw]
-                            if not row_df.empty:
-                                row = row_df.iloc[0]
-                                avg_rank = getattr(row, 'avg_rank', 0)
-                                rank_str = "순위 미수집" if pd.isna(avg_rank) or avg_rank == 0 else f"평균 {float(avg_rank):.1f}위"
-                                roas = getattr(row, 'ROAS(%)', 0)
-                                with cols[idx % 4]:
-                                    ui_metric_or_stmetric(title=kw, value=rank_str, desc=f"ROAS {roas:.2f}%", key=f"kw_star_main_{idx}")
                 
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>검색어별 상세 성과 표</div>", unsafe_allow_html=True)
                 render_big_table(styled_disp, "pl_grid_main", 500)
@@ -190,10 +173,21 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
+                # ✨ [NEW] 상세 증감 수치 좌우 대조표 및 색상 표
+                base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
+                render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
+
                 if not view.empty:
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>파워링크 키워드 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(disp.style.format(fmt), "pl_cmp_kw", 500)
+                    
+                    styled_cmp = disp.style.format(fmt)
+                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    if delta_cols:
+                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                        
+                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 키워드 기간 비교 표</div>", unsafe_allow_html=True)
+                    render_big_table(styled_cmp, "pl_cmp_kw", 500)
 
         elif cmp_view_mode == "파워링크 - 광고그룹 단위":
             if df_pl_raw.empty:
@@ -220,10 +214,21 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
+                # ✨ [NEW] 광고그룹 상세 대조 및 표 색상
+                base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
+                render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
+
                 if not view.empty:
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>파워링크 그룹 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(disp.style.format(fmt), "pl_cmp_grp", 500)
+                    
+                    styled_cmp = disp.style.format(fmt)
+                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    if delta_cols:
+                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                        
+                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 그룹 기간 비교 표</div>", unsafe_allow_html=True)
+                    render_big_table(styled_cmp, "pl_cmp_grp", 500)
                 
         elif cmp_view_mode == "쇼핑검색 - 상품 단위":
             shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
@@ -256,37 +261,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                             view = append_comparison_data(view, base_shop_bundle, valid_keys)
                             metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                             
-                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>쇼핑검색 상품 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(disp.style.format(fmt), "shop_cmp_grid", 500)
+                    # ✨ [NEW] 쇼핑상품 상세 대조 및 표 색상
+                    base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
+                    render_item_comparison_search("상품/소재", view, base_for_search, "상품/소재명", f["start"], f["end"], b1, b2)
 
-    with tab_neg:
-        st.markdown("<div style='font-size:16px; font-weight:700; margin-bottom:8px;'>비용 누수 키워드 확인</div>", unsafe_allow_html=True)
-        
-        if df_pl_raw.empty:
-            st.info("데이터가 부족하여 저효율 키워드를 분석할 수 없습니다.")
-        else:
-            leak_view = df_pl_raw.rename(columns={
-                "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", 
-                "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환"
-            }).copy()
-            
-            for c in ["노출", "클릭", "광고비", "전환"]:
-                leak_view[c] = pd.to_numeric(leak_view[c], errors="coerce").fillna(0)
-            
-            leak_df = leak_view[leak_view["전환"] == 0].copy()
-            
-            min_leak_cost = st.slider("최소 누수 비용 기준 (원)", 5000, 100000, 20000, 5000)
-            
-            target_leak = leak_df[leak_df["광고비"] >= min_leak_cost].sort_values("광고비", ascending=False)
-            
-            if target_leak.empty:
-                st.success(f"🎉 누수 키워드가 없습니다!")
-            else:
-                target_leak["CTR(%)"] = np.where(target_leak["노출"] > 0, (target_leak["클릭"] / target_leak["노출"]) * 100, 0.0)
-                st.warning(f"🚨 총 **{len(target_leak)}개**의 키워드에서 누수가 발견되었습니다.")
-                
-                disp_leak = target_leak[["캠페인", "광고그룹", "키워드", "노출", "클릭", "광고비", "CTR(%)"]].copy()
-                fmt_leak = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CTR(%)": "{:,.2f}%"}
-                
-                render_big_table(disp_leak.style.format(fmt_leak), key="leak_keyword_grid", height=400)
+                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
+                    
+                    styled_cmp = disp.style.format(fmt)
+                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    if delta_cols:
+                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                        
+                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>쇼핑검색 상품 기간 비교 표</div>", unsafe_allow_html=True)
+                    render_big_table(styled_cmp, "shop_cmp_grid", 500)
