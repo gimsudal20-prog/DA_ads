@@ -17,105 +17,119 @@ def page_media(engine, f):
     
     # --- 1. 다차원보고서 CSV 자동 수집/적재 엔진 ---
     with st.expander("📁 다차원보고서(CSV) 자동 적재 엔진 열기", expanded=False):
-        st.info("💡 여러 업체의 데이터가 섞이지 않도록, 먼저 업체를 선택한 후 다차원보고서(CSV)를 업로드하세요.")
+        st.info("💡 여러 업체의 데이터가 섞이지 않도록, 먼저 [👤담당자 ➡️ 🏢업체]를 순서대로 선택한 후 CSV를 업로드하세요.")
         
         if meta.empty:
             st.warning("먼저 '설정' 메뉴에서 업체를 동기화해주세요.")
             return
             
-        opts = meta[["customer_id", "account_name"]].copy()
-        opts["label"] = opts["account_name"] + " (" + opts["customer_id"].astype(str) + ")"
-        labels = opts["label"].tolist()
-        label_to_cid = dict(zip(opts["label"], opts["customer_id"].astype(str).tolist()))
+        # ✨ [NEW] 담당자 -> 업체 2단계 선택 레이아웃
+        c1, c2 = st.columns(2)
         
-        # ✨ [NEW] 업체 선택 기능 (DB에 업체 ID와 함께 매핑하여 저장)
-        sel_label = st.selectbox("📌 데이터를 적재할 업체를 선택하세요", labels)
-        target_cid = label_to_cid[sel_label]
+        with c1:
+            managers = ["전체 담당자"] + sorted([str(x) for x in meta["manager"].dropna().unique().tolist() if str(x).strip()])
+            sel_manager = st.selectbox("👤 담당자 선택", managers)
+            
+        df_filtered = meta.copy()
+        if sel_manager != "전체 담당자":
+            df_filtered = df_filtered[df_filtered["manager"].astype(str) == sel_manager]
+            
+        with c2:
+            if df_filtered.empty:
+                st.warning("배정된 업체가 없습니다.")
+                sel_label = None
+            else:
+                opts = df_filtered[["customer_id", "account_name"]].copy()
+                opts["label"] = opts["account_name"] + " (" + opts["customer_id"].astype(str) + ")"
+                labels = sorted(opts["label"].tolist())
+                label_to_cid = dict(zip(opts["label"], opts["customer_id"].astype(str).tolist()))
+                sel_label = st.selectbox("🏢 데이터를 적재할 업체 선택", labels)
         
-        uploaded_file = st.file_uploader("해당 업체의 CSV 파일 선택", type=["csv"])
-        
-        if uploaded_file is not None:
-            if st.button("🚀 데이터 적재 및 분석 시작", type="primary"):
-                with st.spinner("데이터를 분석하고 DB에 적재하는 중입니다..."):
-                    try:
-                        # CSV 파싱
-                        df_csv = pd.read_csv(uploaded_file, skiprows=1)
-                        cols_to_sum = ['노출수', '클릭수', '총비용(VAT포함,원)', '전환수', '전환매출액(원)']
-                        for c in cols_to_sum:
-                            if c in df_csv.columns:
-                                df_csv[c] = pd.to_numeric(df_csv[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-                        
-                        # 일별 날짜 파싱 (yyyy.mm.dd. 형식 제거)
-                        df_csv['dt'] = pd.to_datetime(df_csv['일별'].astype(str).str.replace(r'\.$', '', regex=True).str.replace('.', '-'), errors='coerce').dt.date
-                        df_csv = df_csv.dropna(subset=['dt', '매체이름'])
-                        
-                        # 캠페인유형 분류 (CSV에 포함되어 있음)
-                        if '캠페인유형' not in df_csv.columns:
-                            df_csv['캠페인유형'] = '기타'
+        if sel_label:
+            target_cid = label_to_cid[sel_label]
+            uploaded_file = st.file_uploader(f"[{sel_label}] 다차원보고서 CSV 파일 업로드", type=["csv"])
+            
+            if uploaded_file is not None:
+                if st.button("🚀 데이터 적재 및 분석 시작", type="primary", use_container_width=True):
+                    with st.spinner("데이터를 분석하고 DB에 적재하는 중입니다..."):
+                        try:
+                            # CSV 파싱
+                            df_csv = pd.read_csv(uploaded_file, skiprows=1)
+                            cols_to_sum = ['노출수', '클릭수', '총비용(VAT포함,원)', '전환수', '전환매출액(원)']
+                            for c in cols_to_sum:
+                                if c in df_csv.columns:
+                                    df_csv[c] = pd.to_numeric(df_csv[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                             
-                        grp = df_csv.groupby(['dt', '캠페인유형', '매체이름'])[cols_to_sum].sum().reset_index()
-                        
-                        rows = []
-                        for _, r in grp.iterrows():
-                            # 부가세 제외 금액으로 환산
-                            cost = int(round(float(r['총비용(VAT포함,원)']) / 1.1)) 
-                            rows.append({
-                                "dt": r['dt'],
-                                "customer_id": target_cid,
-                                "campaign_type": str(r['캠페인유형']),
-                                "media_name": str(r['매체이름']),
-                                "imp": int(r['노출수']),
-                                "clk": int(r['클릭수']),
-                                "cost": cost,
-                                "conv": float(r['전환수']),
-                                "sales": int(float(r['전환매출액(원)']))
-                            })
-                        
-                        # ✨ [NEW] 업체명, 광고유형까지 구분하여 저장하도록 테이블 구조(Schema) 개편
-                        with engine.begin() as conn:
-                            # 만약 이전 대화에서 만들었던 구버전 테이블이 남아있다면 초기화
-                            res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fact_media_daily'"))
-                            cols = [r[0] for r in res]
-                            if cols and 'customer_id' not in cols:
-                                conn.execute(text("DROP TABLE fact_media_daily"))
-                                
-                            conn.execute(text("""
-                                CREATE TABLE IF NOT EXISTS fact_media_daily (
-                                    dt DATE,
-                                    customer_id TEXT,
-                                    campaign_type TEXT,
-                                    media_name TEXT,
-                                    imp BIGINT,
-                                    clk BIGINT,
-                                    cost BIGINT,
-                                    conv DOUBLE PRECISION,
-                                    sales BIGINT DEFAULT 0,
-                                    PRIMARY KEY(dt, customer_id, campaign_type, media_name)
-                                )
-                            """))
+                            # 일별 날짜 파싱 (yyyy.mm.dd. 형식 제거)
+                            df_csv['dt'] = pd.to_datetime(df_csv['일별'].astype(str).str.replace(r'\.$', '', regex=True).str.replace('.', '-'), errors='coerce').dt.date
+                            df_csv = df_csv.dropna(subset=['dt', '매체이름'])
                             
-                            if rows:
-                                sql = """
-                                INSERT INTO fact_media_daily (dt, customer_id, campaign_type, media_name, imp, clk, cost, conv, sales)
-                                VALUES (:dt, :customer_id, :campaign_type, :media_name, :imp, :clk, :cost, :conv, :sales)
-                                ON CONFLICT (dt, customer_id, campaign_type, media_name) DO UPDATE SET
-                                imp = fact_media_daily.imp + EXCLUDED.imp, 
-                                clk = fact_media_daily.clk + EXCLUDED.clk, 
-                                cost = fact_media_daily.cost + EXCLUDED.cost, 
-                                conv = fact_media_daily.conv + EXCLUDED.conv, 
-                                sales = fact_media_daily.sales + EXCLUDED.sales
-                                """
-                                conn.execute(text(sql), rows)
-                        
-                        if "_table_names_cache" in st.session_state:
-                            del st.session_state["_table_names_cache"]
+                            # 캠페인유형 분류 (CSV에 포함되어 있음)
+                            if '캠페인유형' not in df_csv.columns:
+                                df_csv['캠페인유형'] = '기타'
                                 
-                        st.success(f"🎉 '{sel_label}' 업체의 지면 데이터 {len(rows)}건이 분리 적재되었습니다! 1초 뒤 화면이 새로고침됩니다.")
-                        time.sleep(1.5)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
+                            grp = df_csv.groupby(['dt', '캠페인유형', '매체이름'])[cols_to_sum].sum().reset_index()
+                            
+                            rows = []
+                            for _, r in grp.iterrows():
+                                # 부가세 제외 금액으로 환산
+                                cost = int(round(float(r['총비용(VAT포함,원)']) / 1.1)) 
+                                rows.append({
+                                    "dt": r['dt'],
+                                    "customer_id": target_cid,
+                                    "campaign_type": str(r['캠페인유형']),
+                                    "media_name": str(r['매체이름']),
+                                    "imp": int(r['노출수']),
+                                    "clk": int(r['클릭수']),
+                                    "cost": cost,
+                                    "conv": float(r['전환수']),
+                                    "sales": int(float(r['전환매출액(원)']))
+                                })
+                            
+                            with engine.begin() as conn:
+                                # 이전 테이블 구조 초기화 대응
+                                res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fact_media_daily'"))
+                                cols = [r[0] for r in res]
+                                if cols and 'customer_id' not in cols:
+                                    conn.execute(text("DROP TABLE fact_media_daily"))
+                                    
+                                conn.execute(text("""
+                                    CREATE TABLE IF NOT EXISTS fact_media_daily (
+                                        dt DATE,
+                                        customer_id TEXT,
+                                        campaign_type TEXT,
+                                        media_name TEXT,
+                                        imp BIGINT,
+                                        clk BIGINT,
+                                        cost BIGINT,
+                                        conv DOUBLE PRECISION,
+                                        sales BIGINT DEFAULT 0,
+                                        PRIMARY KEY(dt, customer_id, campaign_type, media_name)
+                                    )
+                                """))
+                                
+                                if rows:
+                                    sql = """
+                                    INSERT INTO fact_media_daily (dt, customer_id, campaign_type, media_name, imp, clk, cost, conv, sales)
+                                    VALUES (:dt, :customer_id, :campaign_type, :media_name, :imp, :clk, :cost, :conv, :sales)
+                                    ON CONFLICT (dt, customer_id, campaign_type, media_name) DO UPDATE SET
+                                    imp = fact_media_daily.imp + EXCLUDED.imp, 
+                                    clk = fact_media_daily.clk + EXCLUDED.clk, 
+                                    cost = fact_media_daily.cost + EXCLUDED.cost, 
+                                    conv = fact_media_daily.conv + EXCLUDED.conv, 
+                                    sales = fact_media_daily.sales + EXCLUDED.sales
+                                    """
+                                    conn.execute(text(sql), rows)
+                            
+                            if "_table_names_cache" in st.session_state:
+                                del st.session_state["_table_names_cache"]
+                                    
+                            st.success(f"🎉 '{sel_label}' 업체의 지면 데이터 {len(rows)}건이 완벽하게 분리 적재되었습니다! 1.5초 뒤 화면이 새로고침됩니다.")
+                            time.sleep(1.5)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
     # --- 2. DB 데이터 불러오기 및 대시보드 렌더링 ---
     if not table_exists(engine, "fact_media_daily"):
@@ -126,7 +140,6 @@ def page_media(engine, f):
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     
-    # ✨ [NEW] 사이드바 업체 필터 적용
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
     sql = f"""
@@ -147,12 +160,11 @@ def page_media(engine, f):
             min_dt = minmax.iloc[0]['min_dt']
             max_dt = minmax.iloc[0]['max_dt']
             st.error(f"⚠️ 선택하신 업체 필터와 조회 기간({d1} ~ {d2}) 에는 지면 데이터가 없습니다.")
-            st.info(f"💡 현재 DB에는 **{min_dt} ~ {max_dt}** 기간의 지면 데이터가 적재되어 있습니다. 필터를 변경하시거나, 해당 업체의 데이터를 새로 올려주세요!")
+            st.info(f"💡 현재 DB에는 **{min_dt} ~ {max_dt}** 기간의 지면 데이터가 적재되어 있습니다. 좌측 필터를 변경하시거나, 해당 업체의 데이터를 새로 올려주세요!")
         except Exception:
             st.info(f"조건에 맞는 지면 데이터가 없습니다.")
         return
 
-    # ✨ [NEW] 사이드바 캠페인유형 필터 적용 (파워링크 / 쇼핑검색 연동)
     if type_sel:
         df = df[df["캠페인유형"].isin(type_sel)]
         if df.empty:
