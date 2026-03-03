@@ -9,7 +9,7 @@ from typing import Dict
 
 from data import query_campaign_bundle
 from ui import render_big_table
-from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, render_comparison_section, _perf_common_merge_meta
+from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, render_comparison_section, _perf_common_merge_meta, render_item_comparison_search
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -72,6 +72,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not base_bundle.empty:
             valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view_cmp.columns and k in base_bundle.columns]
             if valid_keys: view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
+
+        # ✨ [NEW] 캠페인 검색형 대조표 렌더링
+        base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
+        render_item_comparison_search("캠페인", view, base_for_search, "캠페인", f["start"], f["end"], b1, b2)
 
         metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
         final_cols_cmp = [c for c in base_cols + metrics_cols_cmp if c in view_cmp.columns]
