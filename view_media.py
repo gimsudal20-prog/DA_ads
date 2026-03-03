@@ -15,7 +15,6 @@ def page_media(engine, f):
     st.markdown("<div class='nv-sec-title'>🌐 매체 및 지역 효율 분석</div>", unsafe_allow_html=True)
     meta = get_meta(engine)
     
-    # --- 1. 다차원보고서 CSV 자동 수집/적재 엔진 (덮어쓰기 로직 적용) ---
     with st.expander("📁 다차원보고서(CSV) 덮어쓰기 적재 엔진 열기", expanded=False):
         st.info("💡 겹치는 기간의 데이터를 올려도 기존 데이터는 지워지고 깔끔하게 덮어씌워지므로 중복(뻥튀기) 걱정이 없습니다.")
         
@@ -43,16 +42,15 @@ def page_media(engine, f):
                 labels = sorted(opts["label"].tolist())
                 label_to_cid = dict(zip(opts["label"], opts["customer_id"].astype(str).tolist()))
                 
-                # ✨ [FIX] index=None을 추가하여 명시적으로 선택하기 전까지는 빈칸으로 유지
                 sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels, index=None, placeholder="먼저 업체를 선택해주세요")
         
-        # 업체를 명시적으로 선택했을 때만 업로드 창이 뜨도록 제어
         if sel_label:
             target_cid = label_to_cid[sel_label]
             uploaded_file = st.file_uploader(f"[{sel_label}] 다차원보고서 CSV 파일 업로드", type=["csv"])
             
             if uploaded_file is not None:
-                if st.button("🚀 데이터 덮어쓰기 시작", type="primary", use_container_width=True):
+                # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
+                if st.button("🚀 데이터 덮어쓰기 시작", type="primary", width="stretch"):
                     with st.spinner("데이터를 분석하고 기존 기간 데이터를 교체하는 중입니다..."):
                         try:
                             df_csv = pd.read_csv(uploaded_file, skiprows=1)
@@ -142,7 +140,6 @@ def page_media(engine, f):
                         except Exception as e:
                             st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
-    # --- 2. DB 데이터 불러오기 및 대시보드 렌더링 ---
     if not table_exists(engine, "fact_media_daily"):
         st.warning("🚨 데이터베이스에 매체/지역 데이터가 없습니다. 위의 업로드 창을 통해 CSV 파일을 적재해주세요.")
         return
@@ -185,7 +182,6 @@ def page_media(engine, f):
     for c in ["노출수", "클릭수", "광고비", "전환수", "전환매출"]:
         df_raw[c] = pd.to_numeric(df_raw[c], errors="coerce").fillna(0)
 
-    # --- 데이터 마트 (매체별 / 지역별) ---
     df_media = df_raw.groupby("매체이름")[["노출수", "클릭수", "광고비", "전환수", "전환매출"]].sum().reset_index()
     df_region = df_raw.groupby("지역명")[["노출수", "클릭수", "광고비", "전환수", "전환매출"]].sum().reset_index()
     
@@ -221,11 +217,13 @@ def page_media(engine, f):
         with col1:
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; color:#FC503D;'>❌ 1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
             bad_m = df_media[(df_media["전환수"] == 0) & (df_media["광고비"] >= 10000)].sort_values("광고비", ascending=False)
-            if not bad_m.empty: st.dataframe(bad_m[["매체이름", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, use_container_width=True)
+            # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
+            if not bad_m.empty: st.dataframe(bad_m[["매체이름", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, width="stretch")
             else: st.success("비용 누수 매체가 없습니다!")
             
         with col2:
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; color:#FC503D;'>❌ 1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
             bad_r = df_region[(df_region["전환수"] == 0) & (df_region["광고비"] >= 10000) & (~df_region["지역명"].isin(["전체", "-", "알수없음"]))].sort_values("광고비", ascending=False)
-            if not bad_r.empty: st.dataframe(bad_r[["지역명", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, use_container_width=True)
+            # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
+            if not bad_r.empty: st.dataframe(bad_r[["지역명", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, width="stretch")
             else: st.success("비용 누수 지역이 없습니다!")
