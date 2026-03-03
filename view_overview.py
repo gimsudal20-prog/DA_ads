@@ -31,53 +31,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         elif len(acc_names) > 1: account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
     
     st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
-    
-    # 🚀 [NEW] 종합 화면 최상단: 비즈머니 및 예산 소진 위험 지수 배너 표시
-    try:
-        yesterday = date.today() - timedelta(days=1)
-        end_dt = f.get("end") or yesterday
-        avg_d2 = end_dt if end_dt <= yesterday else yesterday
-        avg_d1 = avg_d2 - timedelta(days=6)
-        month_d1 = avg_d2.replace(day=1)
-        month_d2 = date(avg_d2.year + 1, 1, 1) - timedelta(days=1) if avg_d2.month == 12 else date(avg_d2.year, avg_d2.month + 1, 1) - timedelta(days=1)
-        
-        bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, 7)
-        
-        if bundle is not None and not bundle.empty:
-            biz_view = bundle.copy()
-            m = biz_view["avg_cost"].astype(float) > 0
-            biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
-            
-            budget_risk_mask = (biz_view["monthly_budget"].astype(float) > 0) & (biz_view["current_month_cost"].astype(float) / biz_view["monthly_budget"].astype(float) >= 0.9)
-            balance_risk_mask = biz_view["days_cover"].fillna(999).astype(float) <= 3.0
-            
-            risk_count = len(biz_view[budget_risk_mask | balance_risk_mask])
-            total_accounts = len(biz_view)
-            risk_index = int((risk_count / total_accounts) * 100) if total_accounts > 0 else 0
-            
-            if risk_index >= 50: 
-                r_col, r_text, r_icon = "#FC503D", "위험 (모니터링 시급)", "🚨"
-            elif risk_index >= 20: 
-                r_col, r_text, r_icon = "#FF9F0A", "주의 (잔액 확인 필요)", "⚠️"
-            else: 
-                r_col, r_text, r_icon = "#32D74B", "안전 (안정적 운영중)", "✅"
-            
-            risk_html = f"""
-            <div style='background-color: {r_col}15; border: 1px solid {r_col}40; padding: 16px 20px; border-radius: 12px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.04);'>
-                <div style='display: flex; align-items: center; gap: 16px;'>
-                    <div style='font-size: 32px;'>{r_icon}</div>
-                    <div>
-                        <div style='font-size: 13px; color: #555; font-weight: 600; margin-bottom: 4px;'>비즈머니 소진 및 예산 초과 위험도</div>
-                        <div style='font-size: 16px; font-weight: 800; color: {r_col};'>상태: {r_text} <span style='font-size:14px; color:#555;'>(위험계정 {risk_count}건 / 전체 {total_accounts}건)</span></div>
-                    </div>
-                </div>
-                <div style='font-size: 36px; font-weight: 900; color: {r_col};'>{risk_index}점</div>
-            </div>
-            """
-            st.markdown(risk_html, unsafe_allow_html=True)
-    except Exception as e:
-        pass
-
     st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
