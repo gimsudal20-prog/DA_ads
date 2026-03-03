@@ -9,7 +9,7 @@ from typing import Dict
 
 from data import query_campaign_bundle
 from ui import render_big_table
-from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, render_comparison_section, _perf_common_merge_meta
+from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -73,9 +73,20 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view_cmp.columns and k in base_bundle.columns]
             if valid_keys: view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
 
+        # ✨ [NEW] 항목 선택 시 상세 증감 수치(좌우 대조표) 오픈
+        base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
+        render_item_comparison_search("캠페인", view_cmp, base_for_search, "캠페인", f["start"], f["end"], b1, b2)
+
         metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
         final_cols_cmp = [c for c in base_cols + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
 
-        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비교 데이터</div>", unsafe_allow_html=True)
-        render_big_table(disp_cmp.style.format(fmt), "camp_grid_cmp", 550)
+        # ✨ [NEW] 표 자체에는 색상과 퍼센트 증감만 직관적으로 표시
+        styled_cmp = disp_cmp.style.format(fmt)
+        delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp_cmp.columns]
+        if delta_cols:
+            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
+        render_big_table(styled_cmp, "camp_grid_cmp", 550)
