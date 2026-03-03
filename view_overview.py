@@ -123,7 +123,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown("<div class='nv-sec-title'>트렌드 및 요일별 효율 분석</div>", unsafe_allow_html=True)
             tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 히트맵"])
             with tab_trend:
-                ts["roas"] = np.where(pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0, 0.0)
+                # ✨ [FIX] ROAS 값을 파이썬에서 미리 소수점 1자리로 '반올림'하여 고정 (자바스크립트 오류 원천 차단)
+                ts["roas"] = np.where(
+                    pd.to_numeric(ts["cost"], errors="coerce").fillna(0) > 0, 
+                    round((pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0), 1), 
+                    0.0
+                )
+                
                 if HAS_ECHARTS: render_echarts_dual_axis("일자별 광고비 및 ROAS", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
                 
             with tab_dow:
