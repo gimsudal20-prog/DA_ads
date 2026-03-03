@@ -11,7 +11,7 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-from page_helpers import _perf_common_merge_meta
+from page_helpers import _perf_common_merge_meta, render_item_comparison_search
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
@@ -181,6 +181,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                 view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                 
+                # ✨ [NEW] 키워드 검색형 대조표 렌더링
+                base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
+                render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
+                
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 
@@ -211,6 +215,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                 
                 base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
+                
+                # ✨ [NEW] 광고그룹 검색형 대조표 렌더링
+                base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
+                render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
+                
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 
@@ -246,6 +255,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
                     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+                    
+                    # ✨ [NEW] 쇼핑상품 검색형 대조표 렌더링
+                    base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
+                    render_item_comparison_search("상품/소재", view, base_for_search, "상품/소재명", f["start"], f["end"], b1, b2)
                     
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
                     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
