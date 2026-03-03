@@ -42,8 +42,11 @@ def page_media(engine, f):
                 opts["label"] = opts["account_name"] + " (" + opts["customer_id"].astype(str) + ")"
                 labels = sorted(opts["label"].tolist())
                 label_to_cid = dict(zip(opts["label"], opts["customer_id"].astype(str).tolist()))
-                sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels)
+                
+                # ✨ [FIX] index=None을 추가하여 명시적으로 선택하기 전까지는 빈칸으로 유지
+                sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels, index=None, placeholder="먼저 업체를 선택해주세요")
         
+        # 업체를 명시적으로 선택했을 때만 업로드 창이 뜨도록 제어
         if sel_label:
             target_cid = label_to_cid[sel_label]
             uploaded_file = st.file_uploader(f"[{sel_label}] 다차원보고서 CSV 파일 업로드", type=["csv"])
@@ -76,10 +79,8 @@ def page_media(engine, f):
                             if '매체이름' not in df_csv.columns: df_csv['매체이름'] = '전체'
                             if '지역' not in df_csv.columns: df_csv['지역'] = '전체'
                                 
-                            # ✨ [핵심 1] 지역 정보까지 묶어서(groupby) 파싱
                             grp = df_csv.groupby(['dt', '캠페인유형', '매체이름', '지역'])[cols_to_sum].sum().reset_index()
                             
-                            # ✨ [핵심 2] 업로드한 파일의 실제 시작일과 종료일 추출
                             min_dt = grp['dt'].min()
                             max_dt = grp['dt'].max()
                             
@@ -100,7 +101,6 @@ def page_media(engine, f):
                                 })
                             
                             with engine.begin() as conn:
-                                # 테이블 재생성 (지역 컬럼 추가)
                                 res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fact_media_daily'"))
                                 cols = [r[0] for r in res]
                                 if cols and 'region_name' not in cols:
@@ -122,11 +122,9 @@ def page_media(engine, f):
                                     )
                                 """))
                                 
-                                # ✨ [핵심 3] 해당 업체의 기존 데이터 중 업로드 기간(min_dt ~ max_dt)에 속하는 데이터만 깔끔하게 삭제
                                 conn.execute(text("DELETE FROM fact_media_daily WHERE customer_id = :cid AND dt BETWEEN :min_dt AND :max_dt"), 
                                              {"cid": target_cid, "min_dt": min_dt, "max_dt": max_dt})
                                 
-                                # 그리고 방금 파싱한 새로운 데이터를 Insert (안전한 덮어쓰기 완료)
                                 if rows:
                                     sql = """
                                     INSERT INTO fact_media_daily (dt, customer_id, campaign_type, media_name, region_name, imp, clk, cost, conv, sales)
@@ -155,7 +153,6 @@ def page_media(engine, f):
     
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
-    # 지면(매체) 및 지역 데이터를 동시에 가져옴
     sql = f"""
     SELECT campaign_type AS "캠페인유형", media_name AS "매체이름", region_name AS "지역명", SUM(imp) AS "노출수", SUM(clk) AS "클릭수", SUM(cost) AS "광고비", SUM(conv) AS "전환수", SUM(sales) AS "전환매출"
     FROM fact_media_daily
@@ -213,7 +210,6 @@ def page_media(engine, f):
             
     with tab_region:
         st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:12px; color:#047857;'>조회 기간 내 지역별 성과 리스트</div>", unsafe_allow_html=True)
-        # 특정 지역이 없는 경우 방어코드
         df_region_clean = df_region[~df_region["지역명"].isin(["전체", "-", "알수없음"])].copy()
         if not df_region_clean.empty:
             render_big_table(df_region_clean.style.format(fmt), "region_table_main", 600)
