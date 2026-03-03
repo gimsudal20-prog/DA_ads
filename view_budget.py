@@ -17,8 +17,6 @@ from page_helpers import *
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
     
-    tab_budget, tab_alert, tab_history = st.tabs(["월 예산 현황", "소진 예상일", "꺼짐 기록"])
-    
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
     end_dt = f.get("end") or yesterday
@@ -29,14 +27,58 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
     
-    with tab_budget:
-        if bundle is None or bundle.empty: return
-
+    biz_view = pd.DataFrame()
+    
+    if bundle is not None and not bundle.empty:
         biz_view = bundle.copy()
         m = biz_view["avg_cost"].astype(float) > 0
         biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
         biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
         biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+
+        # ✨ [NEW] 예산관리 위험 지수 (Risk Index) 계산 및 대시보드 최상단 패널 노출
+        total_accounts = len(biz_view)
+        
+        # 위험 조건 1: 이번 달 예산 집행률 90% 이상 (예산이 0보다 큰 경우에만)
+        budget_risk_mask = (biz_view["monthly_budget"].astype(float) > 0) & (biz_view["current_month_cost"].astype(float) / biz_view["monthly_budget"].astype(float) >= 0.9)
+        # 위험 조건 2: 비즈머니 잔액으로 버틸 수 있는 예상일이 3일 이하
+        balance_risk_mask = biz_view["days_cover"].fillna(999).astype(float) <= 3.0
+        
+        risk_accounts = biz_view[budget_risk_mask | balance_risk_mask]
+        risk_count = len(risk_accounts)
+        
+        # 지수 산출 (위험 계정 비율)
+        risk_index = int((risk_count / total_accounts) * 100) if total_accounts > 0 else 0
+        
+        # 점수에 따른 상태 색상 및 텍스트 매핑
+        if risk_index >= 50: 
+            risk_color = "#FC503D" # Red
+            risk_status = "위험 (계정 모니터링 시급)"
+        elif risk_index >= 20: 
+            risk_color = "#FF9F0A" # Orange
+            risk_status = "주의 (잔액 및 예산 확인 필요)"
+        else: 
+            risk_color = "#32D74B" # Green
+            risk_status = "안전 (안정적인 소진 상태)"
+            
+        st.markdown(f"""
+        <div style='padding: 20px; border-radius: 12px; background-color: rgba(55, 95, 255, 0.04); border: 1px solid rgba(55, 95, 255, 0.15); margin-bottom: 24px;'>
+            <div style='font-size: 14px; color: #2b52ff; font-weight: 800; margin-bottom: 12px;'>🚨 전체 예산관리 위험 지수</div>
+            <div style='display: flex; align-items: center; gap: 24px;'>
+                <div style='font-size: 38px; font-weight: 900; color: {risk_color};'>{risk_index}점</div>
+                <div>
+                    <div style='font-size: 16px; font-weight: 700; color: #333; margin-bottom: 4px;'>현재 상태: <span style='color: {risk_color};'>{risk_status}</span></div>
+                    <div style='font-size: 13px; color: #666;'>위험 계정 <span style='font-weight:700; color:#333;'>{risk_count}개</span> / 전체 <span style='font-weight:700; color:#333;'>{total_accounts}개</span></div>
+                </div>
+            </div>
+            <div style='margin-top: 12px; font-size: 12px; color: #888;'>* <b>예산관리 위험 지수</b>: 전체 계정 중 '예산 집행률 90% 초과' 또는 '비즈머니 3일 이내 고갈'이 예상되는 위험 계정의 비율(%)입니다.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    tab_budget, tab_alert, tab_history = st.tabs(["월 예산 현황", "소진 예상일", "꺼짐 기록"])
+    
+    with tab_budget:
+        if biz_view.empty: return
 
         biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
         
@@ -143,7 +185,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.rerun()
 
     with tab_alert:
-        if bundle is None or bundle.empty: return
+        if biz_view.empty: return
         
         def get_depletion_date(days_left):
             if pd.isna(days_left) or float(days_left) >= 99: return "여유"
