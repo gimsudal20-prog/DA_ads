@@ -18,7 +18,8 @@ import streamlit as st
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+# NullPool 임포트는 이제 사용하지 않지만 남겨두어도 무방합니다.
+from sqlalchemy.pool import NullPool 
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,12 +53,27 @@ def get_database_url() -> str:
         db_url = db_url + f"{joiner}sslmode=require"
     return db_url
 
-# ✨ [FIX] SSL 커넥션 끊김 에러 방지 (NullPool 적용)
+# 🚀 [FIX] 성능 저하 해결 및 끊김 방지 (pool_pre_ping 적용)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     url = get_database_url()
-    connect_args = {"sslmode": "require", "connect_timeout": 10, "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
-    return create_engine(url, connect_args=connect_args, poolclass=NullPool, future=True)
+    connect_args = {
+        "sslmode": "require", 
+        "connect_timeout": 10, 
+        "keepalives": 1, 
+        "keepalives_idle": 30, 
+        "keepalives_interval": 10, 
+        "keepalives_count": 5
+    }
+    return create_engine(
+        url, 
+        connect_args=connect_args,
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=300,
+        pool_pre_ping=True, # 핵심 옵션: 쿼리 실행 직전 연결상태를 확인하고 끊겼으면 자동 복구
+        future=True
+    )
 
 def _reset_engine_cache() -> None:
     try: get_engine.clear()
@@ -122,7 +138,6 @@ def db_ping(engine, retries: int = 2) -> None:
             logger.error(f"DB Ping failed: {e}")
             raise last_err
 
-# ✨ [FIX] 메타데이터 검사 재시도 로직 추가 (일시적 연결 실패 대비)
 def _get_table_names_cached(engine, schema: str = "public") -> set:
     cache = st.session_state.setdefault("_table_names_cache", {})
     if schema in cache: return cache[schema]
@@ -142,7 +157,6 @@ def _get_table_names_cached(engine, schema: str = "public") -> set:
 def table_exists(engine, table: str, schema: str = "public") -> bool:
     return table in _get_table_names_cached(engine, schema=schema)
 
-# ✨ [FIX] 메타데이터 검사 재시도 로직 추가 (일시적 연결 실패 대비)
 def get_table_columns(engine, table: str, schema: str = "public") -> set:
     cache = st.session_state.setdefault("_table_cols_cache", {})
     key = f"{schema}.{table}"
