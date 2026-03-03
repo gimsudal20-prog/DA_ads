@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v13.1)
+collector.py - 네이버 검색광고 수집기 (v13.2)
 - 쇼핑검색 상품명 및 썸네일(이미지 URL) 수집 기능 강화
 - 확장소재 불필요한 '[확장소재] PROMOTION |' 접두어 노출 제거
+- 변수 언패킹(too many values to unpack) 버그 핫픽스
 """
 
 from __future__ import annotations
@@ -118,7 +119,6 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-                # ✨ [NEW] image_url 컬럼 최초 생성 스키마 반영
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
@@ -138,7 +138,6 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN mobile_landing_url TEXT"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN creative_text TEXT"))
-                    # ✨ [NEW] 기존 테이블에도 image_url 컬럼 안전하게 추가
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN image_url TEXT"))
             except Exception: pass
             
@@ -240,29 +239,24 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
-# ✨ [NEW] 쇼핑검색 상품명 및 이미지 추출 로직 대폭 강화
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     
-    # 1. 이미지 URL 추출 (쇼핑검색 및 일반소재 썸네일)
     image_url = ""
     if "image" in ad_inner and isinstance(ad_inner["image"], dict):
         image_url = ad_inner["image"].get("imageUrl", "")
     if not image_url:
         image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
 
-    # 2. 텍스트 추출
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
-    # 쇼핑 카탈로그/상품명 추출 강화
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         sp = ad_inner["shoppingProduct"]
         title = title or sp.get("name") or sp.get("productName") or ""
         if not image_url:
             image_url = sp.get("imageUrl", "")
             
-    # valData 형식 대비
     if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
         title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
 
@@ -293,9 +287,11 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         "image_url": str(image_url)[:1000]
     }
 
+# ✨ [FIX] unpack 에러 수정 (리스트와 문자열 분리)
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
-    out, d_str = d1.strftime("%Y-%m-%d")
+    out = []
+    d_str = d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
     for i in range(0, len(ids), 50):
@@ -519,7 +515,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                                 ext_type = ext.get("extensionType", "")
                                 ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
                                 
-                                # ✨ [NEW] '[확장소재] PROMOTION | ' 등 거추장스러운 텍스트를 모두 날리고 텍스트만 보이게 개선
                                 ad_rows.append({
                                     "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
                                     "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, 
