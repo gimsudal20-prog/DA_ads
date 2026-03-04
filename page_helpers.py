@@ -214,8 +214,15 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         if pd.isna(x) or x == 0: return "-"
         return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
         
+    roas_delta_col = "ROAS 증감(%)"
+    # 배포 버전/수정 과정에서 컬럼명이 오타(ROAS 증(%))로 생성되어도 안전하게 흡수
+    if roas_delta_col not in out.columns and "ROAS 증(%)" in out.columns:
+        out[roas_delta_col] = out["ROAS 증(%)"]
+    if roas_delta_col not in out.columns:
+        out[roas_delta_col] = 0
+
     out["광고비 증감(%)"] = out["광고비 증감(%)"].apply(fmt_pct)
-    out["ROAS 증감(%)"] = out["ROAS 증(%)"].apply(fmt_pct)
+    out[roas_delta_col] = pd.to_numeric(out[roas_delta_col], errors='coerce').fillna(0).apply(fmt_pct)
     out["전환 증감"] = out["전환 증감"].apply(fmt_diff)
     
     return out
@@ -342,7 +349,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         html = textwrap.dedent(f"""
         <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
             <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
-                ✨ [{selected}] 성과 비교 상세 요약
+                ✨ [{selected}] 성 비교 상세 요약
             </div>
             <div style='display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;'>
                 
