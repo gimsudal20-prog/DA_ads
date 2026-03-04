@@ -67,7 +67,7 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
         if df is not None:
-            # ✨ [핵심 해결 1] 엑셀의 한글 컬럼명을 코드가 인식하는 영어 컬럼명으로 자동 번역
+            # 한글 컬럼명을 코드가 인식하는 영문으로 매핑
             rename_map = {
                 "업체명": "account_name",
                 "커스텀 ID": "customer_id",
@@ -76,6 +76,21 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
             }
             df = df.rename(columns=rename_map)
             
+            # ✨ [핵심 방어 1] 엑셀 덮어쓰기 전에 기존에 저장된 예산(monthly_budget) 백업!
+            if table_exists(engine, "dim_customer"):
+                try:
+                    old_df = sql_read(engine, "SELECT * FROM dim_customer")
+                    # 예전 한글 컬럼으로 남아있을 경우까지 대비
+                    cid_col = "customer_id" if "customer_id" in old_df.columns else ("커스텀 ID" if "커스텀 ID" in old_df.columns else None)
+                    if cid_col and "monthly_budget" in old_df.columns:
+                        budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
+                        df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
+                except Exception: pass
+            
+            # 예산 컬럼이 아예 없다면 0으로 초기화하여 생성
+            if "monthly_budget" not in df.columns:
+                df["monthly_budget"] = 0
+                
             df.to_sql("dim_customer", engine, if_exists="replace", index=False)
             if "_table_names_cache" in st.session_state: del st.session_state["_table_names_cache"]
             get_meta.clear()
@@ -89,15 +104,9 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
-    
-    # ✨ [핵심 해결 2] 만약 이미 예전 방식으로 한글인 채 DB에 들어갔어도 강제로 번역해서 에러 방지
+    # 예전에 올라간 한글 컬럼명이 조회되더라도 즉시 영문으로 번역하여 에러 방지
     if not df.empty:
-        rename_map = {
-            "업체명": "account_name",
-            "커스텀 ID": "customer_id",
-            "커스텀ID": "customer_id",
-            "담당자": "manager"
-        }
+        rename_map = {"업체명": "account_name", "커스텀 ID": "customer_id", "커스텀ID": "customer_id", "담당자": "manager"}
         df = df.rename(columns=rename_map)
     return df
 
@@ -167,7 +176,6 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     df = meta.copy()
     if cids: df = df[df["customer_id"].isin(cids)]
     
-    # 타입 불일치로 인한 조인 에러 방지를 위해 강제 형변환
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_m.empty: df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
@@ -185,16 +193,32 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     if "account_name" not in df.columns: df["account_name"] = df["customer_id"].astype(str)
     return df
 
+# ✨ [핵심 방어 2] 예산을 저장할 때 DB 스키마 오류를 스스로 치유하는 자동 복구 로직
 def update_monthly_budget(_engine, cid: int, val: int):
-    try: sql_exec(_engine, "UPDATE dim_customer SET monthly_budget = :val WHERE customer_id = :cid", {"val": val, "cid": cid})
-    except Exception: pass
+    try:
+        cols = get_table_columns(_engine, "dim_customer")
+        
+        # 1. DB에 아직도 '커스텀 ID'라는 한글 이름표가 있다면 강제로 영문으로 변경
+        if "customer_id" not in cols and "커스텀 ID" in cols:
+            sql_exec(_engine, 'ALTER TABLE dim_customer RENAME COLUMN "커스텀 ID" TO customer_id')
+            sql_exec(_engine, 'ALTER TABLE dim_customer RENAME COLUMN "업체명" TO account_name')
+            sql_exec(_engine, 'ALTER TABLE dim_customer RENAME COLUMN "담당자" TO manager')
+            cols = get_table_columns(_engine, "dim_customer") # 컬럼 목록 최신화
+            
+        # 2. 예산 컬럼 자체가 없다면 새로 생성 (기본값 0)
+        if "monthly_budget" not in cols:
+            sql_exec(_engine, "ALTER TABLE dim_customer ADD COLUMN monthly_budget BIGINT DEFAULT 0")
+            
+        # 3. 안전하게 예산 저장
+        sql_exec(_engine, "UPDATE dim_customer SET monthly_budget = :val WHERE customer_id = :cid", {"val": val, "cid": cid})
+    except Exception as e:
+        st.error(f"예산 저장 중 오류 발생: {e}")
 
 @st.cache_data(ttl=600, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
-
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
