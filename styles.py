@@ -119,25 +119,25 @@ div[role="listbox"] ul li:hover,
 div[role="listbox"] ul li[aria-selected="true"],
 [data-baseweb="menu"] [role="option"]:hover,
 [data-baseweb="menu"] [role="option"][aria-selected="true"] {
-  background-color: #EAF0FF !important;
-  color: #1F3FBF !important;
+  background-color: #375FFF !important;
+  color: #FFFFFF !important;
 }
 
 div[role="listbox"] ul li:hover *,
 div[role="listbox"] ul li[aria-selected="true"] *,
 [data-baseweb="menu"] [role="option"]:hover *,
 [data-baseweb="menu"] [role="option"][aria-selected="true"] * {
-  color: #1F3FBF !important;
+  color: #FFFFFF !important;
   font-weight: 700 !important;
 }
 
-/* 선택된 멀티셀렉트 태그(칩) 색상도 동일 톤으로 정리 */
+/* 선택된 멀티셀렉트 태그(칩)도 진한 파란 배경 + 흰 텍스트 */
 [data-baseweb="tag"] {
-  background-color: #EAF0FF !important;
-  border: 1px solid #C9D6FF !important;
+  background-color: #375FFF !important;
+  border: 1px solid #2748C9 !important;
 }
 [data-baseweb="tag"] * {
-  color: #1F3FBF !important;
+  color: #FFFFFF !important;
 }
 
 </style>
