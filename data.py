@@ -65,6 +65,15 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
         st.error(f"데이터베이스 조회 중 오류가 발생했습니다: {e}")
         return pd.DataFrame()
 
+# ✨ [NEW] DB 데이터를 삭제/수정할 때 쓰는 필수 함수
+def sql_exec(_engine, query: str, params: dict = None) -> None:
+    try:
+        with _engine.begin() as conn:
+            conn.execute(text(query), params or {})
+    except Exception as e:
+        st.error(f"DB 실행(삭제/수정) 중 오류 발생: {e}")
+        raise e
+
 def _sql_in_str_list(lst: list) -> str:
     if not lst: return "''"
     return ",".join(f"'{str(x)}'" for x in lst)
@@ -72,20 +81,23 @@ def _sql_in_str_list(lst: list) -> str:
 # ==========================================
 # 2. Metadata & Dimensions & Seeding
 # ==========================================
-# ✨ [FIX] 누락되었던 엑셀 파일 업로드(업체 세팅) 함수 복구!!
-def seed_from_accounts_xlsx(engine, file_buffer):
+# ✨ [FIX] 엑셀 업로드 시 파일 원본이나 데이터프레임(df) 무엇이든 다 받을 수 있도록 완벽 대응!
+def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
-        df = pd.read_excel(file_buffer)
-        df.to_sql("dim_customer", engine, if_exists="replace", index=False)
-        
-        # 새로운 데이터가 들어왔으므로 캐시 초기화
-        if "_table_names_cache" in st.session_state:
-            del st.session_state["_table_names_cache"]
-        get_meta.clear()
-        return True
+        if df is None and file_buffer is not None:
+            df = pd.read_excel(file_buffer)
+            
+        if df is not None:
+            df.to_sql("dim_customer", engine, if_exists="replace", index=False)
+            
+            if "_table_names_cache" in st.session_state:
+                del st.session_state["_table_names_cache"]
+            get_meta.clear()
+            return {"meta": len(df)}
+        return {"meta": 0}
     except Exception as e:
-        st.error(f"엑셀 데이터 적재 중 오류 발생: {e}")
-        return False
+        st.error(f"데이터 적재 중 오류 발생: {e}")
+        return {"meta": 0}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
