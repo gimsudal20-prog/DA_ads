@@ -105,12 +105,22 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
     return sql_read(_engine, "SELECT * FROM dim_campaign")
 
+# ✨ [핵심 해결] DB의 영문 유형을 한글 필터명으로 통역해주는 사전 추가!
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty: return ["파워링크", "쇼핑검색"]
     col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
     if col_name not in dim_campaign.columns: return ["파워링크", "쇼핑검색"]
-    opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
-    return opts if opts else ["파워링크", "쇼핑검색"]
+    
+    mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+    raw_opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
+    opts = list(set([mapping.get(x.upper(), x) for x in raw_opts]))
+    return sorted(opts) if opts else ["파워링크", "쇼핑검색"]
+
+def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
+    if not df.empty and col_name in df.columns:
+        mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+        df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
+    return df
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
@@ -233,7 +243,11 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         GROUP BY f.customer_id, f.campaign_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if type_sel and not df.empty and 'campaign_type' in df.columns: df = df[df['campaign_type'].isin(type_sel)]
+    
+    # ✨ 데이터 필터링 전 한글 통역 실행!
+    df = _map_campaign_types(df, 'campaign_type')
+    if type_sel and not df.empty and 'campaign_type' in df.columns: 
+        df = df[df['campaign_type'].isin(type_sel)]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -255,15 +269,17 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
         GROUP BY f.customer_id, a.campaign_id, k.adgroup_id, f.keyword_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if type_sel and not df.empty and 'campaign_type_label' in df.columns: df = df[df['campaign_type_label'].isin(type_sel)]
+    
+    # ✨ 데이터 필터링 전 한글 통역 실행!
+    df = _map_campaign_types(df, 'campaign_type_label')
+    if type_sel and not df.empty and 'campaign_type_label' in df.columns: 
+        df = df[df['campaign_type_label'].isin(type_sel)]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    
-    # ✨ [FIX] ad.landing_url -> ad.pc_landing_url 로 컬럼명 완벽 수정 (DB 스키마 일치)
     sql = f"""
         SELECT 
             f.customer_id, a.campaign_id, ad.adgroup_id, f.ad_id,
@@ -279,7 +295,11 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         GROUP BY f.customer_id, a.campaign_id, ad.adgroup_id, f.ad_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if type_sel and not df.empty and 'campaign_type_label' in df.columns: df = df[df['campaign_type_label'].isin(type_sel)]
+    
+    # ✨ 데이터 필터링 전 한글 통역 실행!
+    df = _map_campaign_types(df, 'campaign_type_label')
+    if type_sel and not df.empty and 'campaign_type_label' in df.columns: 
+        df = df[df['campaign_type_label'].isin(type_sel)]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
