@@ -40,8 +40,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
         except Exception: return None
 
-    def _kpi_html(label, value, delta_text, delta_val, highlight=False):
-        cls_delta = "pos" if delta_val and float(delta_val) > 0 else ("neg" if delta_val and float(delta_val) < 0 else "neu")
+    def _kpi_html(label, value, delta_text, delta_val, highlight=False, improve_when_up=True):
+        delta_num = float(delta_val) if delta_val is not None else 0.0
+        is_neutral = abs(delta_num) < 5
+        if is_neutral:
+            cls_delta = "neu"
+            delta_text = f"● 유지 ({delta_num:+.1f}%)"
+        else:
+            improved = delta_num > 0 if improve_when_up else delta_num < 0
+            cls_delta = "pos" if improved else "neg"
+            trend_label = "✓ 개선" if improved else "▲ 악화"
+            delta_text = f"{trend_label} {pct_to_arrow(delta_num)}"
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
@@ -67,8 +76,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         <div class='kpi-group'>
             <div class='kpi-group-title'>💸 비용 지표</div>
             <div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True)}
-                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"))}
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True, improve_when_up=False)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
             </div>
         </div>
         <div class='kpi-group'>
@@ -82,6 +91,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     </div>
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
+
+    cost_delta = _delta_pct("cost") or 0.0
+    conv_delta = _delta_pct("conv") or 0.0
+    if abs(cost_delta) < 5 and abs(conv_delta) < 5:
+        insight = "광고비/전환 모두 큰 변동이 없어 안정적으로 운영 중입니다."
+    elif cost_delta > conv_delta + 10:
+        insight = f"광고비 증감({cost_delta:+.1f}%) 대비 전환 증감({conv_delta:+.1f}%)이 낮아 효율 악화 가능성이 있습니다."
+    elif conv_delta > cost_delta + 10:
+        insight = f"전환 증감({conv_delta:+.1f}%)이 광고비 증감({cost_delta:+.1f}%)보다 커 효율 개선 흐름입니다."
+    else:
+        insight = f"광고비({cost_delta:+.1f}%)와 전환({conv_delta:+.1f}%)이 유사하게 움직이고 있습니다."
+    st.info(f"🧭 KPI 해석: {insight}")
     
     alerts = []
     cur_roas = cur_summary.get('roas', 0)
