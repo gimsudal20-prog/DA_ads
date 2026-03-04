@@ -242,7 +242,7 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
-    st.caption(f"조회 기간: {d1} ~ {d2}")
+    st.caption(f"회 기간: {d1} ~ {d2}")
     
     valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
     if len(valid_ads) < 2:
@@ -392,4 +392,5 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             </div>
         </div>
         """)
+        html = html.lstrip()
         st.markdown(html, unsafe_allow_html=True)
