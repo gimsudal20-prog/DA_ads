@@ -131,7 +131,7 @@ div[role="listbox"] ul li[aria-selected="true"] *,
   font-weight: 700 !important;
 }
 
-/* 선택된 멀티셀렉트 태그(칩)도 진한 파란 배경 + 흰 텍스트 */
+/* 선택된 멀티셀렉트 태그(칩) 색상도 동일 톤으로 정리 */
 [data-baseweb="tag"] {
   background-color: #375FFF !important;
   border: 1px solid #2748C9 !important;
