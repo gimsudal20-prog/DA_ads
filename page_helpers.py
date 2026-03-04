@@ -349,7 +349,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         html = textwrap.dedent(f"""
         <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
             <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
-                ✨ [{selected}] 성 비교 상세 요약
+                ✨ [{selected}] 성과 비교 상세 요약
             </div>
             <div style='display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;'>
                 
