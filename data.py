@@ -39,6 +39,16 @@ def table_exists(engine, table_name: str) -> bool:
             return False
     return table_name in st.session_state["_table_names_cache"]
 
+# ✨ [FIX] 누락되었던 get_table_columns 함수 복구!
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_table_columns(_engine, table_name: str) -> list:
+    try:
+        with _engine.connect() as conn:
+            res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
+            return [r[0] for r in res]
+    except Exception:
+        return []
+
 @st.cache_data(ttl=600, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     try:
@@ -85,7 +95,7 @@ def get_latest_dates(_engine) -> dict:
     return dates
 
 # ==========================================
-# 3. Helper Functions (Math & Formatting) - ✨ 누락된 함수 복구!
+# 3. Helper Functions (Math & Formatting)
 # ==========================================
 def pct_change(cur: float, base: float) -> float:
     if not base or base == 0: 
