@@ -29,17 +29,25 @@ def get_engine():
         future=True
     )
 
+# ✨ [FIX] 메인 앱에서 DB 생존 여부를 확인하는 db_ping 함수 복구!
+def db_ping(engine) -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
 def table_exists(engine, table_name: str) -> bool:
     if "_table_names_cache" not in st.session_state:
         try:
             with engine.connect() as conn:
                 res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
                 st.session_state["_table_names_cache"] = [r[0] for r in res]
-        except Exception as e:
+        except Exception:
             return False
     return table_name in st.session_state["_table_names_cache"]
 
-# ✨ [FIX] 누락되었던 get_table_columns 함수 복구!
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     try:
