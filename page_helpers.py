@@ -215,7 +215,7 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
         
     out["광고비 증감(%)"] = out["광고비 증감(%)"].apply(fmt_pct)
-    out["ROAS 증감(%)"] = out["ROAS 증감(%)"].apply(fmt_pct)
+    out["ROAS 증감(%)"] = out["ROAS 증(%)"].apply(fmt_pct)
     out["전환 증감"] = out["전환 증감"].apply(fmt_diff)
     
     return out
