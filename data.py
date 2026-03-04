@@ -18,8 +18,7 @@ import streamlit as st
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-# NullPool 임포트는 이제 사용하지 않지만 남겨두어도 무방합니다.
-from sqlalchemy.pool import NullPool 
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,10 +52,15 @@ def get_database_url() -> str:
         db_url = db_url + f"{joiner}sslmode=require"
     return db_url
 
-# 🚀 [FIX] 성능 저하 해결 및 끊김 방지 (pool_pre_ping 적용)
+# 🚀 [FIX] 성능 저하 해결 및 끊김 방지 (NullPool 적용으로 외부 풀러에 전적으로 위임)
 @st.cache_resource(show_spinner=False)
 def get_engine():
     url = get_database_url()
+    
+    # 최신 SQLAlchemy 호환성을 위해 postgres:// 를 postgresql:// 로 자동 변환
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+        
     connect_args = {
         "sslmode": "require", 
         "connect_timeout": 10, 
@@ -65,13 +69,11 @@ def get_engine():
         "keepalives_interval": 10, 
         "keepalives_count": 5
     }
+    
     return create_engine(
         url, 
         connect_args=connect_args,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=300,
-        pool_pre_ping=True, # 핵심 옵션: 쿼리 실행 직전 연결상태를 확인하고 끊겼으면 자동 복구
+        poolclass=NullPool,  # 핵심: SQLAlchemy 내부 풀링을 비활성화하여 강제 종료 에러 원천 차단
         future=True
     )
 
