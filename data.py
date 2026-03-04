@@ -240,8 +240,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
-    
-    # ✨ [핵심 해결 1] fact 테이블에는 keyword_id밖에 없으므로 dim_keyword -> dim_adgroup -> dim_campaign 순서로 조인
     sql = f"""
         SELECT 
             f.customer_id, a.campaign_id, k.adgroup_id, f.keyword_id,
@@ -265,12 +263,12 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
-    # ✨ [핵심 해결 2] 소재(ad) 데이터도 동일하게 dim_ad -> dim_adgroup -> dim_campaign 순서로 징검다리 조인
+    # ✨ [FIX] ad.landing_url -> ad.pc_landing_url 로 컬럼명 완벽 수정 (DB 스키마 일치)
     sql = f"""
         SELECT 
             f.customer_id, a.campaign_id, ad.adgroup_id, f.ad_id,
             MAX(c.campaign_name) as campaign_name, MAX(c.campaign_tp) as campaign_type_label,
-            MAX(a.adgroup_name) as adgroup_name, MAX(ad.ad_name) as ad_name, MAX(ad.landing_url) as landing_url,
+            MAX(a.adgroup_name) as adgroup_name, MAX(ad.ad_name) as ad_name, MAX(ad.pc_landing_url) as landing_url,
             SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
             SUM(f.conv) as conv, SUM(f.sales) as sales 
         FROM fact_ad_daily f
