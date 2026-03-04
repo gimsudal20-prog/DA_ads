@@ -16,7 +16,7 @@ def page_media(engine, f):
     meta = get_meta(engine)
     
     with st.expander("📁 다차원보고서(CSV) 덮어쓰기 적재 엔진 열기", expanded=False):
-        st.info("💡 겹치는 기간의 데이터를 올려도 기존 데이터는 지워지고 깔끔하게 덮어씌워지므로 중복(뻥튀기) 걱정이 없습니다.")
+        st.info("💡 겹치는 기간의 데이터를 올리면 기존 데이터는 지워지고 덮어씌워집니다.")
         
         if meta.empty:
             st.warning("먼저 '설정' 메뉴에서 업체를 동기화해주세요.")
@@ -25,11 +25,15 @@ def page_media(engine, f):
         c1, c2 = st.columns(2)
         
         with c1:
-            managers = ["전체 담당자"] + sorted([str(x) for x in meta["manager"].dropna().unique().tolist() if str(x).strip()])
-            sel_manager = st.selectbox("👤 담당자 선택", managers)
+            # ✨ [FIX 4] 엑셀에 manager 컬럼이 없는 경우 터지지 않도록 예외 처리
+            if "manager" in meta.columns:
+                managers = ["전체 담당자"] + sorted([str(x) for x in meta["manager"].dropna().unique().tolist() if str(x).strip()])
+                sel_manager = st.selectbox("👤 담당자 선택", managers)
+            else:
+                sel_manager = "전체 담당자"
             
         df_filtered = meta.copy()
-        if sel_manager != "전체 담당자":
+        if sel_manager != "전체 담당자" and "manager" in df_filtered.columns:
             df_filtered = df_filtered[df_filtered["manager"].astype(str) == sel_manager]
             
         with c2:
@@ -49,7 +53,6 @@ def page_media(engine, f):
             uploaded_file = st.file_uploader(f"[{sel_label}] 다차원보고서 CSV 파일 업로드", type=["csv"])
             
             if uploaded_file is not None:
-                # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
                 if st.button("🚀 데이터 덮어쓰기 시작", type="primary", width="stretch"):
                     with st.spinner("데이터를 분석하고 기존 기간 데이터를 교체하는 중입니다..."):
                         try:
@@ -217,13 +220,11 @@ def page_media(engine, f):
         with col1:
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; color:#FC503D;'>❌ 1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
             bad_m = df_media[(df_media["전환수"] == 0) & (df_media["광고비"] >= 10000)].sort_values("광고비", ascending=False)
-            # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
             if not bad_m.empty: st.dataframe(bad_m[["매체이름", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, width="stretch")
             else: st.success("비용 누수 매체가 없습니다!")
             
         with col2:
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; color:#FC503D;'>❌ 1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
             bad_r = df_region[(df_region["전환수"] == 0) & (df_region["광고비"] >= 10000) & (~df_region["지역명"].isin(["전체", "-", "알수없음"]))].sort_values("광고비", ascending=False)
-            # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
             if not bad_r.empty: st.dataframe(bad_r[["지역명", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, width="stretch")
             else: st.success("비용 누수 지역이 없습니다!")
