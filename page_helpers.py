@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import textwrap
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -145,8 +146,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     st.session_state["_prev_manager_sel"] = manager_sel or []
     st.session_state["_prev_account_sel"] = account_sel or []
 
-    if (cur_manager_count == 1 and prev_manager_count != 1) or (cur_account_count == 1 and prev_account_count != 1):
+    if ((cur_manager_count == 1 and prev_manager_count != 1) or (cur_account_count == 1 and prev_account_count != 1)) and st.session_state.get("filters_expanded", True):
         st.session_state["filters_expanded"] = False
+        st.rerun()
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
 
@@ -337,7 +339,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             word = "증가" if diff > 0 else "감소"
             return f"<span style='color:{color}; font-weight:800; font-size:15px;'>{sign} {abs_val} {word}</span>"
             
-        html = f"""
+        html = textwrap.dedent(f"""
         <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
             <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
                 ✨ [{selected}] 성과 비교 상세 요약
@@ -382,5 +384,5 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
             </div>
         </div>
-        """
+        """)
         st.markdown(html, unsafe_allow_html=True)
