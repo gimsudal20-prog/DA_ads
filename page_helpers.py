@@ -12,7 +12,6 @@ from typing import Dict, List
 
 from data import *
 from ui import *
-
 from data import pct_change, pct_to_arrow
 
 BUILD_TAG = os.getenv("APP_BUILD", "")
@@ -43,6 +42,17 @@ def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
     elif delta == 7: return ["비교 안함", "전주대비"]
     elif 28 <= delta <= 31: return ["비교 안함", "전월대비"]
     else: return ["비교 안함", "이전 같은 기간 대비"]
+
+# ✨ [FIX] 실수로 누락되었던 기간 비교 계산 함수 복구!
+def period_compare_range(d1: date, d2: date, cmp_mode: str):
+    delta = (d2 - d1).days + 1
+    if cmp_mode == "전일대비":
+        return d1 - timedelta(days=1), d2 - timedelta(days=1)
+    elif cmp_mode == "전주대비":
+        return d1 - timedelta(days=7), d2 - timedelta(days=7)
+    else:
+        # "이전 같은 기간 대비" 또는 "전월대비" (선택된 일수만큼 과거로 이동)
+        return d1 - timedelta(days=delta), d1 - timedelta(days=1)
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     today = date.today()
@@ -170,7 +180,6 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
-# ✨ [NEW] 데이터프레임의 증감 컬럼(▲, ▼)에 색상을 입히는 Pandas 스타일러 함수
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
@@ -179,10 +188,10 @@ def style_table_deltas(val):
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
-    pass # 사용하지 않는 예전 위젯 (호환성을 위해 껍데기만 유지)
+    pass # 사용하지 않는 예전 위젯
 
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
-    pass # 사용하지 않는 예전 위젯 (호환성을 위해 껍데기만 유지)
+    pass # 사용하지 않는 예전 위젯
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
@@ -233,7 +242,6 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     with c2: st.markdown(_card(ad2, "💡 소재 B"), unsafe_allow_html=True)
     st.divider()
 
-# ✨ [NEW] 구체적 수치(몇 상승/몇 하락)를 보여주는 좌우 상세 대조표 위젯
 def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_base: pd.DataFrame, name_col: str, d1: date, d2: date, b1: date, b2: date):
     import streamlit as st
     import pandas as pd
@@ -282,7 +290,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             if diff == 0: return "<span style='color:#888;'>변동 없음</span>"
             
             sign = "▲" if diff > 0 else "▼"
-            color = "#e11d48" if diff > 0 else "#2563eb" # Red for Up, Blue for Down
+            color = "#e11d48" if diff > 0 else "#2563eb"
             
             if is_currency: abs_val = f"{int(abs(diff)):,}원"
             elif is_pct: abs_val = f"{abs(diff):.1f}%p"
