@@ -36,7 +36,6 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # ✨ [NEW] 파괴적 액션을 위한 Danger Zone (안전장치 추가)
     st.markdown("### 🛑 Danger Zone (수동 DB 소각)")
     st.caption("동기화 후에도 계속 뜨는 악성 '유령 계정'이 있다면 커스텀 ID(숫자)를 입력해 과거 데이터까지 DB에서 완전히 소각하세요. **이 작업은 되돌릴 수 없습니다.**")
     
@@ -56,7 +55,8 @@ def page_settings(engine) -> None:
                 if del_cid.strip() and del_cid.strip().isdigit():
                     try:
                         cid_val = str(del_cid.strip())
-                        sql_exec(engine, "DELETE FROM dim_account_meta WHERE customer_id = :cid", {"cid": int(cid_val)})
+                        # ✨ [FIX] 올바른 테이블명인 dim_customer 로 삭제 명령 수행
+                        sql_exec(engine, "DELETE FROM dim_customer WHERE customer_id = :cid", {"cid": int(cid_val)})
                         for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_search_term_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
                             try: sql_exec(engine, f"DELETE FROM {table} WHERE customer_id::text = :cid", {"cid": cid_val})
                             except Exception: pass
