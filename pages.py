@@ -36,6 +36,7 @@ def main():
 
     with st.sidebar:
         st.markdown("### 📌 메뉴 이동")
+        st.caption("보고서 섹션을 선택하세요")
         if not meta_ready: st.warning("동기화가 필요합니다.")
         
         # ✨ "🌐 매체(지면) 분석" 메뉴를 추가했습니다.
