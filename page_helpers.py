@@ -65,16 +65,17 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             "period_mode": "어제", "d1": default_start, "d2": default_end,
             "top_n_keyword": 300, "top_n_ad": 200, "top_n_campaign": 200, "prefetch_warm": True,
         }
+    if "filters_expanded" not in st.session_state:
+        st.session_state["filters_expanded"] = True
     sv = st.session_state["filters_v8"]
 
     managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    with st.expander("🔍 조회 기간 및 필터 설정", expanded=True):
+    with st.expander("🔍 조회 기간 및 필터 설정", expanded=st.session_state.get("filters_expanded", True)):
         st.caption("💡 기본 필터에서 빠르게 조회하고, 필요할 때만 고급 필터를 여세요.")
 
         manager_sel = sv.get("manager", [])
-        account_sel = sv.get("account", [])
 
         basic_col1, basic_col2, basic_col3 = st.columns([1.5, 1.8, 1.7], gap="medium")
         period_mode = basic_col1.selectbox(
@@ -97,10 +98,11 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             basic_col2.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
             basic_col3.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
 
-        st.caption(f"선택 기간: **{d1} ~ {d2}** · 총 {(d2 - d1).days + 1}일")
-
         if period_mode == "오늘":
             st.warning("⚠️ '오늘' 데이터는 매체/API 수집 지연으로 일부 지표가 덜 집계될 수 있습니다.")
+
+        if period_mode != "직접 선택":
+            st.caption(f"📅 선택 기간: {d1} ~ {d2}")
 
         try:
             basic_filter_container = st.container(border=True)
@@ -109,21 +111,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             basic_filter_container = st.container()
 
         with basic_filter_container:
-            st.markdown("**기본 필터 (빠른 선택 + 다중선택)**")
-            c_mgr_quick, c_acc_quick = st.columns(2, gap="small")
-
-            manager_quick_options = ["전체 담당자"] + managers
-            manager_quick = c_mgr_quick.selectbox(
-                "빠른 담당자 선택(1개)",
-                options=manager_quick_options,
-                index=0,
-                key="f_manager_quick",
-                help="한 명만 바로 선택할 때 사용하세요. (다중선택은 아래에서 유지)"
-            )
-            if manager_quick != "전체 담당자":
-                manager_sel = [manager_quick]
-
-            manager_sel = ui_multiselect(st, "담당자 필터(다중선택 유지)", managers, default=manager_sel, key="f_manager", placeholder="모든 담당자")
+            st.markdown("**기본 필터**")
+            manager_sel = ui_multiselect(st, "담당자 필터", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
 
             accounts_by_mgr = accounts
             if manager_sel:
@@ -135,19 +124,12 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
                 except Exception:
                     pass
 
-            account_quick_options = ["전체 광고주"] + accounts_by_mgr
-            account_quick = c_acc_quick.selectbox(
-                "빠른 광고주 선택(1개)",
-                options=account_quick_options,
-                index=0,
-                key="f_account_quick",
-                help="한 계정만 바로 선택할 때 사용하세요."
-            )
-            if account_quick != "전체 광고주":
-                account_sel = [account_quick]
+            prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
+            account_sel = ui_multiselect(st, "광고주(계정) 필터", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
 
-            prev_acc = [a for a in (account_sel or []) if a in accounts_by_mgr]
-            account_sel = ui_multiselect(st, "광고주(계정) 필터(다중선택 유지)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
+            if st.button("✅ 필터 적용", key="btn_apply_filters", use_container_width=True):
+                st.session_state["filters_expanded"] = False
+                st.rerun()
 
         with st.expander("고급 필터 (검색/유형)", expanded=False):
             q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="찾고 싶은 키워드나 캠페인 이름을 입력하세요")
@@ -155,6 +137,17 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
     st.session_state["filters_v8"] = sv
+
+    prev_manager_count = len(st.session_state.get("_prev_manager_sel", []))
+    prev_account_count = len(st.session_state.get("_prev_account_sel", []))
+    cur_manager_count = len(manager_sel or [])
+    cur_account_count = len(account_sel or [])
+    st.session_state["_prev_manager_sel"] = manager_sel or []
+    st.session_state["_prev_account_sel"] = account_sel or []
+
+    if (cur_manager_count == 1 and prev_manager_count != 1) or (cur_account_count == 1 and prev_account_count != 1):
+        st.session_state["filters_expanded"] = False
+
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
 
     return {
