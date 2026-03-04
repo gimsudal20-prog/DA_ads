@@ -15,13 +15,11 @@ from datetime import date
 def get_engine():
     db_url = os.getenv("DATABASE_URL", "").strip()
     if not db_url: 
-        # 로컬 테스트용 메모리 DB (설정 없을 시)
         return create_engine("sqlite:///:memory:", future=True)
         
     if "sslmode=" not in db_url: 
         db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
         
-    # ✨ [FIX] SSL 연결 끊김 현상(Timeout) 영구 방지 설정
     return create_engine(
         db_url, 
         pool_size=10, 
@@ -87,7 +85,7 @@ def get_latest_dates(_engine) -> dict:
     return dates
 
 # ==========================================
-# 3. Helper Functions (Math & Formatting)
+# 3. Helper Functions (Math & Formatting) - ✨ 누락된 함수 복구!
 # ==========================================
 def pct_change(cur: float, base: float) -> float:
     if not base or base == 0: 
@@ -100,6 +98,18 @@ def pct_to_arrow(val) -> str:
     if val < 0: return f"▼ {abs(val):.1f}%"
     return "-"
 
+def format_currency(val) -> str:
+    try: 
+        return f"{int(float(val)):,}원"
+    except (ValueError, TypeError): 
+        return "0원"
+
+def format_number_commas(val) -> str:
+    try: 
+        return f"{int(float(val)):,}"
+    except (ValueError, TypeError): 
+        return "0"
+
 # ==========================================
 # 4. Data Aggregation Queries
 # ==========================================
@@ -108,7 +118,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
     
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    # 간단한 구현을 위해 캠페인 유형 필터는 쿼리 레벨에서 생략하거나 앱에서 후가공 (필요시 확장)
     
     sql = f"""
         SELECT 
@@ -131,7 +140,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
-    # 조인하여 캠페인 메타데이터(이름, 유형 등)까지 한 번에 가져오기
     sql = f"""
         SELECT 
             f.customer_id, f.campaign_id, 
