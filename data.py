@@ -29,7 +29,6 @@ def get_engine():
         future=True
     )
 
-# ✨ [FIX] 메인 앱에서 DB 생존 여부를 확인하는 db_ping 함수 복구!
 def db_ping(engine) -> bool:
     try:
         with engine.connect() as conn:
@@ -71,8 +70,23 @@ def _sql_in_str_list(lst: list) -> str:
     return ",".join(f"'{str(x)}'" for x in lst)
 
 # ==========================================
-# 2. Metadata & Dimensions
+# 2. Metadata & Dimensions & Seeding
 # ==========================================
+# ✨ [FIX] 누락되었던 엑셀 파일 업로드(업체 세팅) 함수 복구!!
+def seed_from_accounts_xlsx(engine, file_buffer):
+    try:
+        df = pd.read_excel(file_buffer)
+        df.to_sql("dim_customer", engine, if_exists="replace", index=False)
+        
+        # 새로운 데이터가 들어왔으므로 캐시 초기화
+        if "_table_names_cache" in st.session_state:
+            del st.session_state["_table_names_cache"]
+        get_meta.clear()
+        return True
+    except Exception as e:
+        st.error(f"엑셀 데이터 적재 중 오류 발생: {e}")
+        return False
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): 
