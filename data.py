@@ -67,6 +67,15 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
         if df is not None:
+            # ✨ [핵심 해결 1] 엑셀의 한글 컬럼명을 코드가 인식하는 영어 컬럼명으로 자동 번역
+            rename_map = {
+                "업체명": "account_name",
+                "커스텀 ID": "customer_id",
+                "커스텀ID": "customer_id",
+                "담당자": "manager"
+            }
+            df = df.rename(columns=rename_map)
+            
             df.to_sql("dim_customer", engine, if_exists="replace", index=False)
             if "_table_names_cache" in st.session_state: del st.session_state["_table_names_cache"]
             get_meta.clear()
@@ -79,7 +88,18 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
-    return sql_read(_engine, "SELECT * FROM dim_customer")
+    df = sql_read(_engine, "SELECT * FROM dim_customer")
+    
+    # ✨ [핵심 해결 2] 만약 이미 예전 방식으로 한글인 채 DB에 들어갔어도 강제로 번역해서 에러 방지
+    if not df.empty:
+        rename_map = {
+            "업체명": "account_name",
+            "커스텀 ID": "customer_id",
+            "커스텀ID": "customer_id",
+            "담당자": "manager"
+        }
+        df = df.rename(columns=rename_map)
+    return df
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
@@ -126,7 +146,6 @@ def format_number_commas(val) -> str:
 # ==========================================
 # 4. Data Aggregation Queries
 # ==========================================
-# ✨ [FIX 1] 누락되었던 예산 및 잔액 관련 함수들 전격 복구
 @st.cache_data(ttl=600, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
@@ -147,6 +166,13 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
         
     df = meta.copy()
     if cids: df = df[df["customer_id"].isin(cids)]
+    
+    # 타입 불일치로 인한 조인 에러 방지를 위해 강제 형변환
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_m.empty: df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_b.empty: df_b["customer_id"] = pd.to_numeric(df_b["customer_id"], errors="coerce").fillna(0).astype(int)
+    
     if not df_avg.empty: df = df.merge(df_avg, on="customer_id", how="left")
     if not df_m.empty: df = df.merge(df_m, on="customer_id", how="left")
     if not df_b.empty: df = df.merge(df_b, on="customer_id", how="left")
@@ -186,7 +212,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    # ✨ [FIX 2] campaign_tp 로 DB 스키마 완벽 일치 반영
     sql = f"""
         SELECT 
             f.customer_id, f.campaign_id, 
@@ -206,7 +231,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
-    # ✨ [FIX 3] fact_keyword_daily에 없는 f.campaign_id 우회 조인 및 campaign_tp 수정
     sql = f"""
         SELECT 
             f.customer_id, a.campaign_id, f.adgroup_id, f.keyword_id,
@@ -229,12 +253,11 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    # ✨ [FIX 3] fact_ad_daily에 없는 f.campaign_id 우회 조인 및 campaign_tp 수정
     sql = f"""
         SELECT 
             f.customer_id, a.campaign_id, f.adgroup_id, f.ad_id,
             MAX(c.campaign_name) as campaign_name, MAX(c.campaign_tp) as campaign_type_label,
-            MAX(a.adgroup_name) as adgroup_name, MAX(ad.ad_name) as ad_name, MAX(ad.landing_url) as landing_url,
+            MAX(g.adgroup_name) as adgroup_name, MAX(ad.ad_name) as ad_name, MAX(ad.landing_url) as landing_url,
             SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
             SUM(f.conv) as conv, SUM(f.sales) as sales 
         FROM fact_ad_daily f
