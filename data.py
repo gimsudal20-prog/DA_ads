@@ -105,7 +105,6 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
     return sql_read(_engine, "SELECT * FROM dim_campaign")
 
-# ✨ [핵심 해결] DB의 영문 유형을 한글 필터명으로 통역해주는 사전 추가!
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty: return ["파워링크", "쇼핑검색"]
     col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
@@ -230,21 +229,26 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 @st.cache_data(ttl=600, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    
+    # ✨ [속도 개선] 캠페인 데이터를 먼저 합산한 다음 이름표 부착
     sql = f"""
         SELECT 
-            f.customer_id, f.campaign_id, 
-            MAX(d.campaign_name) as campaign_name, MAX(d.campaign_tp) as campaign_type,
-            SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
-            SUM(f.conv) as conv, SUM(f.sales) as sales 
-        FROM fact_campaign_daily f
-        LEFT JOIN dim_campaign d ON f.campaign_id = d.campaign_id AND f.customer_id = d.customer_id
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-        GROUP BY f.customer_id, f.campaign_id
+            agg.customer_id, agg.campaign_id, 
+            c.campaign_name, c.campaign_tp as campaign_type,
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+        FROM (
+            SELECT customer_id, campaign_id,
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
+                   SUM(conv) as conv, SUM(sales) as sales
+            FROM fact_campaign_daily
+            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+            GROUP BY customer_id, campaign_id
+        ) agg
+        LEFT JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     
-    # ✨ 데이터 필터링 전 한글 통역 실행!
     df = _map_campaign_types(df, 'campaign_type')
     if type_sel and not df.empty and 'campaign_type' in df.columns: 
         df = df[df['campaign_type'].isin(type_sel)]
@@ -253,24 +257,29 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 @st.cache_data(ttl=600, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
+    
+    # ✨ [속도 개선] 수백만 줄의 키워드 데이터를 먼저 합산(서브쿼리)하여 획기적으로 속도 향상
     sql = f"""
         SELECT 
-            f.customer_id, a.campaign_id, k.adgroup_id, f.keyword_id,
-            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_tp) as campaign_type_label,
-            MAX(a.adgroup_name) as adgroup_name, MAX(k.keyword) as keyword,
-            SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
-            SUM(f.conv) as conv, SUM(f.sales) as sales 
-        FROM fact_keyword_daily f
-        LEFT JOIN dim_keyword k ON f.keyword_id = k.keyword_id
+            agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
+            c.campaign_name, c.campaign_tp as campaign_type_label,
+            a.adgroup_name, k.keyword,
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+        FROM (
+            SELECT customer_id, keyword_id,
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
+                   SUM(conv) as conv, SUM(sales) as sales
+            FROM fact_keyword_daily 
+            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+            GROUP BY customer_id, keyword_id
+        ) agg
+        LEFT JOIN dim_keyword k ON agg.keyword_id = k.keyword_id
         LEFT JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id
         LEFT JOIN dim_campaign c ON a.campaign_id = c.campaign_id
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-        GROUP BY f.customer_id, a.campaign_id, k.adgroup_id, f.keyword_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     
-    # ✨ 데이터 필터링 전 한글 통역 실행!
     df = _map_campaign_types(df, 'campaign_type_label')
     if type_sel and not df.empty and 'campaign_type_label' in df.columns: 
         df = df[df['campaign_type_label'].isin(type_sel)]
@@ -279,24 +288,29 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
 @st.cache_data(ttl=600, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    
+    # ✨ [속도 개선] 소재 데이터 역시 먼저 합산 후 이름표 부착
     sql = f"""
         SELECT 
-            f.customer_id, a.campaign_id, ad.adgroup_id, f.ad_id,
-            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_tp) as campaign_type_label,
-            MAX(a.adgroup_name) as adgroup_name, MAX(ad.ad_name) as ad_name, MAX(ad.pc_landing_url) as landing_url,
-            SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
-            SUM(f.conv) as conv, SUM(f.sales) as sales 
-        FROM fact_ad_daily f
-        LEFT JOIN dim_ad ad ON f.ad_id = ad.ad_id
+            agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
+            c.campaign_name, c.campaign_tp as campaign_type_label,
+            a.adgroup_name, ad.ad_name, ad.pc_landing_url as landing_url,
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+        FROM (
+            SELECT customer_id, ad_id,
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
+                   SUM(conv) as conv, SUM(sales) as sales
+            FROM fact_ad_daily
+            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+            GROUP BY customer_id, ad_id
+        ) agg
+        LEFT JOIN dim_ad ad ON agg.ad_id = ad.ad_id
         LEFT JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id
         LEFT JOIN dim_campaign c ON a.campaign_id = c.campaign_id
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-        GROUP BY f.customer_id, a.campaign_id, ad.adgroup_id, f.ad_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     
-    # ✨ 데이터 필터링 전 한글 통역 실행!
     df = _map_campaign_types(df, 'campaign_type_label')
     if type_sel and not df.empty and 'campaign_type_label' in df.columns: 
         df = df[df['campaign_type_label'].isin(type_sel)]
