@@ -91,8 +91,12 @@ table.nv-table tr:hover td { background: #F5F8FF; color: var(--nv-primary); }
   transition: all 0.2s ease;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-  background: #F5F8FF !important;
-  border-color: #DCE6FF;
+  background: #375FFF !important;
+  border-color: #2748C9;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover p {
+  color: #FFFFFF !important;
+  font-weight: 700 !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
   background-color: #375FFF !important;
@@ -102,6 +106,18 @@ table.nv-table tr:hover td { background: #F5F8FF; color: var(--nv-primary); }
   color: #FFFFFF !important;
   font-weight: 700 !important;
 }
+
+/* Filter dropdown hover/selected consistency */
+div[role="listbox"] ul li:hover,
+div[role="listbox"] ul li[aria-selected="true"] {
+  background-color: #375FFF !important;
+  color: #FFFFFF !important;
+}
+div[role="listbox"] ul li:hover * ,
+div[role="listbox"] ul li[aria-selected="true"] * {
+  color: #FFFFFF !important;
+}
+
 </style>
 """
 
