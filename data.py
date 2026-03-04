@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from datetime import date
 
 # ==========================================
-# 1. Database Connection (연결 끊김 방지 적용)
+# 1. Database Connection
 # ==========================================
 @st.cache_resource
 def get_engine():
@@ -24,8 +24,8 @@ def get_engine():
         db_url, 
         pool_size=10, 
         max_overflow=20, 
-        pool_pre_ping=True,  # 쿼리 실행 전 연결이 살아있는지 사전 확인
-        pool_recycle=1800,   # 30분(1800초)마다 안전하게 새 연결로 갱신
+        pool_pre_ping=True,  
+        pool_recycle=1800,   
         future=True
     )
 
@@ -65,7 +65,6 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
         st.error(f"데이터베이스 조회 중 오류가 발생했습니다: {e}")
         return pd.DataFrame()
 
-# ✨ [NEW] DB 데이터를 삭제/수정할 때 쓰는 필수 함수
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     try:
         with _engine.begin() as conn:
@@ -81,7 +80,6 @@ def _sql_in_str_list(lst: list) -> str:
 # ==========================================
 # 2. Metadata & Dimensions & Seeding
 # ==========================================
-# ✨ [FIX] 엑셀 업로드 시 파일 원본이나 데이터프레임(df) 무엇이든 다 받을 수 있도록 완벽 대응!
 def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None:
@@ -111,10 +109,18 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
         return pd.DataFrame()
     return sql_read(_engine, "SELECT * FROM dim_campaign")
 
+# ✨ [FIX] 올바른 컬럼명(campaign_type)을 우선적으로 찾도록 수정
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
-    if dim_campaign is None or dim_campaign.empty or "campaign_type_label" not in dim_campaign.columns:
+    if dim_campaign is None or dim_campaign.empty:
         return ["파워링크", "쇼핑검색", "파워컨텐츠", "브랜드검색", "플레이스"]
-    opts = [str(x) for x in dim_campaign["campaign_type_label"].dropna().unique() if str(x).strip()]
+    
+    col_name = "campaign_type"
+    if "campaign_type_label" in dim_campaign.columns:
+        col_name = "campaign_type_label"
+    elif "campaign_type" not in dim_campaign.columns:
+        return ["파워링크", "쇼핑검색"]
+        
+    opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
     return opts if opts else ["파워링크", "쇼핑검색"]
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -184,10 +190,11 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
+    # ✨ [FIX] d.campaign_type_label -> d.campaign_type 로 컬럼명 오류 수정
     sql = f"""
         SELECT 
             f.customer_id, f.campaign_id, 
-            MAX(d.campaign_name) as campaign_name, MAX(d.campaign_type_label) as campaign_type,
+            MAX(d.campaign_name) as campaign_name, MAX(d.campaign_type) as campaign_type,
             SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
             SUM(f.conv) as conv, SUM(f.sales) as sales 
         FROM fact_campaign_daily f
@@ -205,10 +212,11 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
     
+    # ✨ [FIX] c.campaign_type_label -> c.campaign_type 로 수정
     sql = f"""
         SELECT 
             f.customer_id, f.campaign_id, f.adgroup_id, f.keyword_id,
-            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_type_label) as campaign_type_label,
+            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_type) as campaign_type,
             MAX(a.adgroup_name) as adgroup_name, MAX(k.keyword) as keyword,
             SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
             SUM(f.conv) as conv, SUM(f.sales) as sales 
@@ -220,8 +228,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
         GROUP BY f.customer_id, f.campaign_id, f.adgroup_id, f.keyword_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if type_sel and not df.empty and 'campaign_type_label' in df.columns:
-        df = df[df['campaign_type_label'].isin(type_sel)]
+    if type_sel and not df.empty and 'campaign_type' in df.columns:
+        df = df[df['campaign_type'].isin(type_sel)]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -229,10 +237,11 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
+    # ✨ [FIX] c.campaign_type_label -> c.campaign_type 로 수정
     sql = f"""
         SELECT 
             f.customer_id, f.campaign_id, f.adgroup_id, f.ad_id,
-            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_type_label) as campaign_type_label,
+            MAX(c.campaign_name) as campaign_name, MAX(c.campaign_type) as campaign_type,
             MAX(g.adgroup_name) as adgroup_name, MAX(a.ad_name) as ad_name, MAX(a.landing_url) as landing_url,
             SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
             SUM(f.conv) as conv, SUM(f.sales) as sales 
@@ -244,8 +253,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         GROUP BY f.customer_id, f.campaign_id, f.adgroup_id, f.ad_id
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if type_sel and not df.empty and 'campaign_type_label' in df.columns:
-        df = df[df['campaign_type_label'].isin(type_sel)]
+    if type_sel and not df.empty and 'campaign_type' in df.columns:
+        df = df[df['campaign_type'].isin(type_sel)]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
