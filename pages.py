@@ -35,20 +35,22 @@ def main():
     meta_ready = (meta is not None) and (not meta.empty)
 
     with st.sidebar:
-        st.markdown("### 📌 메뉴 이동")
-        st.caption("보고서 섹션을 선택하세요")
+        st.markdown("""
+        <div class='nav-sidebar-title'>📌 메뉴 이동</div>
+        <div class='nav-sidebar-caption'>보고서 섹션을 선택하세요</div>
+        """, unsafe_allow_html=True)
         if not meta_ready: st.warning("동기화가 필요합니다.")
-        
+
         nav_items = [
-            "📋 요약", 
-            "💳 예산 및 잔액", 
+            "📋 요약",
+            "💳 예산 및 잔액",
             "🧭 시장/매체 통합 분석",
-            "📈 성과 분석 · 캠페인", 
-            "🔍 성과 분석 · 키워드", 
-            "🎨 성과 분석 · 소재", 
+            "📈 성과 분석 · 캠페인",
+            "🔍 성과 분석 · 키워드",
+            "🎨 성과 분석 · 소재",
             "⚙️ 설정 및 연결"
         ] if meta_ready else ["⚙️ 설정 및 연결"]
-        
+
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
