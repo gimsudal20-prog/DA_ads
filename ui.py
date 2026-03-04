@@ -100,13 +100,13 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             val = row[c]
             if c == "상태":
                 v_str = str(val)
-                # ✨ [NEW] 최신 앱 느낌의 파스텔 뱃지(Pill)
-                bg, text = "#F1F5F9", "#475569" # 미설정 (그레이)
-                if "적정" in v_str: bg, text = "#E6F4EA", "#047857" # 소프트 그린
-                elif "주의" in v_str: bg, text = "#FFF4E5", "#B45309" # 소프트 오렌지
-                elif "초과" in v_str: bg, text = "#FEE2E2", "#B91C1C" # 소프트 레드
+                # 색상 + 텍스트를 함께 사용해 접근성을 강화한 상태 배지
+                bg, text, icon = "#F1F5F9", "#475569", "●" # 미설정 (그레이)
+                if "적정" in v_str: bg, text, icon = "#E6F4EA", "#047857", "✓"
+                elif "주의" in v_str: bg, text, icon = "#FFF4E5", "#B45309", "!"
+                elif "초과" in v_str: bg, text, icon = "#FEE2E2", "#B91C1C", "▲"
                 
-                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:5px 10px; border-radius:12px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{v_str}</span></td>")
+                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:5px 10px; border-radius:12px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
             else:
                 tds.append(f"<td>{val}</td>")
         html_rows.append(f"<tr>{''.join(tds)}</tr>")
