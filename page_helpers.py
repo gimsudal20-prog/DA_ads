@@ -242,7 +242,7 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
-    st.caption(f"회 기간: {d1} ~ {d2}")
+    st.caption(f"조회 기간: {d1} ~ {d2}")
     
     valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
     if len(valid_ads) < 2:
@@ -346,7 +346,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             word = "증가" if diff > 0 else "감소"
             return f"<span style='color:{color}; font-weight:800; font-size:15px;'>{sign} {abs_val} {word}</span>"
             
-        html = textwrap.dedent(f"""
+        html = textwrap.dedent(f"""\
         <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
             <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
                 ✨ [{selected}] 성과 비교 상세 요약
@@ -391,6 +391,5 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
             </div>
         </div>
-        """)
-        html = html.lstrip()
+        """).strip()
         st.markdown(html, unsafe_allow_html=True)
