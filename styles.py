@@ -108,14 +108,36 @@ table.nv-table tr:hover td { background: #F5F8FF; color: var(--nv-primary); }
 }
 
 /* Filter dropdown hover/selected consistency */
-div[role="listbox"] ul li:hover,
-div[role="listbox"] ul li[aria-selected="true"] {
-  background-color: #375FFF !important;
-  color: #FFFFFF !important;
+/* Streamlit/BaseWeb 멀티셀렉트 메뉴의 hover/선택 색상 가독성 개선 */
+div[role="listbox"] ul li,
+[data-baseweb="menu"] [role="option"] {
+  border-radius: 6px !important;
+  box-shadow: none !important;
 }
-div[role="listbox"] ul li:hover * ,
-div[role="listbox"] ul li[aria-selected="true"] * {
-  color: #FFFFFF !important;
+
+div[role="listbox"] ul li:hover,
+div[role="listbox"] ul li[aria-selected="true"],
+[data-baseweb="menu"] [role="option"]:hover,
+[data-baseweb="menu"] [role="option"][aria-selected="true"] {
+  background-color: #EAF0FF !important;
+  color: #1F3FBF !important;
+}
+
+div[role="listbox"] ul li:hover *,
+div[role="listbox"] ul li[aria-selected="true"] *,
+[data-baseweb="menu"] [role="option"]:hover *,
+[data-baseweb="menu"] [role="option"][aria-selected="true"] * {
+  color: #1F3FBF !important;
+  font-weight: 700 !important;
+}
+
+/* 선택된 멀티셀렉트 태그(칩) 색상도 동일 톤으로 정리 */
+[data-baseweb="tag"] {
+  background-color: #EAF0FF !important;
+  border: 1px solid #C9D6FF !important;
+}
+[data-baseweb="tag"] * {
+  color: #1F3FBF !important;
 }
 
 </style>
