@@ -28,6 +28,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
 
     bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
+
+    alert_avg_d2 = yesterday
+    alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
+    alert_bundle = query_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
     
     if bundle is None or bundle.empty:
         biz_view = pd.DataFrame()
@@ -37,6 +41,13 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
         biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
         biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+
+    if alert_bundle is None or alert_bundle.empty:
+        alert_view = pd.DataFrame()
+    else:
+        alert_view = alert_bundle.copy()
+        m_alert = alert_view["avg_cost"].astype(float) > 0
+        alert_view.loc[m_alert, "days_cover"] = alert_view.loc[m_alert, "bizmoney_balance"].astype(float) / alert_view.loc[m_alert, "avg_cost"].astype(float)
 
     with tab_budget:
         if biz_view.empty:
@@ -147,7 +158,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         st.rerun()
 
     with tab_alert:
-        if biz_view.empty:
+        if alert_view.empty:
             st.info("비즈머니 관리 데이터가 없습니다.")
         else:
             # ✨ [FIX] 고갈 예상일에 따라 이모지 텍스트 반환
@@ -158,9 +169,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 deplete_date = date.today() + timedelta(days=int(days))
                 return deplete_date.strftime("⚠️ %m월 %d일") if days <= 3 else deplete_date.strftime("%m월 %d일")
 
-            biz_view["예상 중단일"] = biz_view["days_cover"].apply(get_depletion_date)
+            alert_view["예상 중단일"] = alert_view["days_cover"].apply(get_depletion_date)
             
-            display_df = biz_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
+            display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
             display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
             display_df["최근 평균소진"] = display_df["avg_cost"].apply(lambda x: format_currency(x))
             
