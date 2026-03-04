@@ -99,7 +99,13 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         if period_mode == "오늘":
             st.warning("⚠️ '오늘' 데이터는 매체/API 수집 지연으로 일부 지표가 덜 집계될 수 있습니다.")
 
-        with st.container(border=True):
+        try:
+            basic_filter_container = st.container(border=True)
+        except TypeError:
+            # 구버전 Streamlit 호환: border 파라미터 미지원
+            basic_filter_container = st.container()
+
+        with basic_filter_container:
             st.markdown("**기본 필터**")
             manager_sel = ui_multiselect(st, "담당자 필터", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
 
@@ -292,24 +298,69 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         b_conv = _get(b_df, "전환", "conv")
         b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
         
-        def _delta(a,b): return pct_change(a,b)
-        d_cost, d_sales, d_clk, d_imp, d_conv, d_roas = _delta(c_cost,b_cost), _delta(c_sales,b_sales), _delta(c_clk,b_clk), _delta(c_imp,b_imp), _delta(c_conv,b_conv), _delta(c_roas,b_roas)
+        def fmt_krw(v): return f"{int(v):,}원"
+        def fmt_num(v): return f"{int(v):,}"
+        def fmt_pct(v): return f"{v:.1f}%"
         
-        cur_label = f"{d1} ~ {d2}"
-        prev_label = f"{b1} ~ {b2}"
-        
-        st.markdown("<div style='margin-top:16px; margin-bottom:6px; font-size:14px; font-weight:700; color:#111;'>📌 선택 항목 비교</div>", unsafe_allow_html=True)
-        
-        cards = [
-            ("광고비", format_currency(c_cost), d_cost), ("전환매출", format_currency(c_sales), d_sales), ("ROAS", f"{c_roas:.2f}%", d_roas),
-            ("클릭", format_number_commas(c_clk), d_clk), ("노출", format_number_commas(c_imp), d_imp), ("전환", f"{c_conv:.1f}", d_conv),
-        ]
-        cols = st.columns(3)
-        for i,(label,val,d) in enumerate(cards):
-            with cols[i%3]:
-                color = "#0f766e" if (d is not None and d>=0) else "#be123c"
-                arrow = "▲" if (d is not None and d>=0) else "▼"
-                d_txt = "-" if d is None else f"{arrow} {abs(d):.2f}%"
-                st.markdown(
-                    f\"\"\"\n                    <div style='border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff;'>\n                        <div style='font-size:12px;color:#6b7280;font-weight:600;'>{label}</div>\n                        <div style='font-size:20px;color:#111827;font-weight:800;line-height:1.2;margin-top:2px;'>{val}</div>\n                        <div style='font-size:12px;color:{color};font-weight:700;margin-top:4px;'>{prev_label} 대비 {d_txt}</div>\n                    </div>\n                    \"\"\", unsafe_allow_html=True
-                )
+        def calc_detail_delta(c, b, is_currency=False, is_pct=False):
+            diff = c - b
+            if b == 0 and c > 0: return "<span style='color:#e11d48; font-weight:700;'>▲ 신규 발생</span>"
+            if diff == 0: return "<span style='color:#888;'>변동 없음</span>"
+            
+            sign = "▲" if diff > 0 else "▼"
+            color = "#e11d48" if diff > 0 else "#2563eb"
+            
+            if is_currency: abs_val = f"{int(abs(diff)):,}원"
+            elif is_pct: abs_val = f"{abs(diff):.1f}%p"
+            else: abs_val = f"{int(abs(diff)):,}" if diff.is_integer() else f"{abs(diff):.1f}"
+                
+            word = "증가" if diff > 0 else "감소"
+            return f"<span style='color:{color}; font-weight:800; font-size:15px;'>{sign} {abs_val} {word}</span>"
+            
+        html = f"""
+        <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
+            <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
+                ✨ [{selected}] 성과 비교 상세 요약
+            </div>
+            <div style='display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;'>
+                
+                <div style='flex: 1; min-width: 220px; background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #cbd5e1;'>
+                    <div style='font-size: 13px; font-weight: 700; color: #64748b; margin-bottom: 12px; text-align:center;'>⚪ 비교 기간 ({b1} ~ {b2})</div>
+                    <div style='font-size: 14px; line-height: 1.8;'>
+                        <span style='color:#475569;'>광고비:</span> <span style='font-weight:600; float:right;'>{fmt_krw(b_cost)}</span><br>
+                        <span style='color:#475569;'>전환매출:</span> <span style='font-weight:600; float:right;'>{fmt_krw(b_sales)}</span><br>
+                        <span style='color:#475569;'>ROAS:</span> <span style='font-weight:600; float:right;'>{fmt_pct(b_roas)}</span><hr style='margin:8px 0; border:0; border-top:1px dashed #e2e8f0;'>
+                        <span style='color:#475569;'>노출수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_imp)}</span><br>
+                        <span style='color:#475569;'>클릭수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_clk)}</span><br>
+                        <span style='color:#475569;'>전환수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_conv)}</span>
+                    </div>
+                </div>
+
+                <div style='flex: 1.2; min-width: 240px; background-color: #fffbeb; padding: 16px; border-radius: 8px; border: 2px solid #fde68a;'>
+                    <div style='font-size: 13px; font-weight: 800; color: #b45309; margin-bottom: 12px; text-align:center;'>📊 증감 요약 (Delta)</div>
+                    <div style='font-size: 14px; line-height: 1.8;'>
+                        <span style='color:#78350f; font-weight:600;'>광고비:</span> <span style='float:right;'>{calc_detail_delta(c_cost, b_cost, is_currency=True)}</span><br>
+                        <span style='color:#78350f; font-weight:600;'>전환매출:</span> <span style='float:right;'>{calc_detail_delta(c_sales, b_sales, is_currency=True)}</span><br>
+                        <span style='color:#78350f; font-weight:600;'>ROAS:</span> <span style='float:right;'>{calc_detail_delta(c_roas, b_roas, is_pct=True)}</span><hr style='margin:8px 0; border:0; border-top:1px dashed #fcd34d;'>
+                        <span style='color:#78350f; font-weight:600;'>노출수:</span> <span style='float:right;'>{calc_detail_delta(c_imp, b_imp)}</span><br>
+                        <span style='color:#78350f; font-weight:600;'>클릭수:</span> <span style='float:right;'>{calc_detail_delta(c_clk, b_clk)}</span><br>
+                        <span style='color:#78350f; font-weight:600;'>전환수:</span> <span style='float:right;'>{calc_detail_delta(c_conv, b_conv)}</span>
+                    </div>
+                </div>
+                
+                <div style='flex: 1; min-width: 220px; background-color: #eff6ff; padding: 16px; border-radius: 8px; border: 2px solid #bfdbfe;'>
+                    <div style='font-size: 13px; font-weight: 700; color: #1d4ed8; margin-bottom: 12px; text-align:center;'>🔵 선택 기간 ({d1} ~ {d2})</div>
+                    <div style='font-size: 14px; line-height: 1.8;'>
+                        <span style='color:#1e40af;'>광고비:</span> <span style='font-weight:700; color:#0f172a; float:right;'>{fmt_krw(c_cost)}</span><br>
+                        <span style='color:#1e40af;'>전환매출:</span> <span style='font-weight:700; color:#0f172a; float:right;'>{fmt_krw(c_sales)}</span><br>
+                        <span style='color:#1e40af;'>ROAS:</span> <span style='font-weight:800; color:#dc2626; float:right;'>{fmt_pct(c_roas)}</span><hr style='margin:8px 0; border:0; border-top:1px dashed #93c5fd;'>
+                        <span style='color:#1e40af;'>노출수:</span> <span style='font-weight:700; color:#0f172a; float:right;'>{fmt_num(c_imp)}</span><br>
+                        <span style='color:#1e40af;'>클릭수:</span> <span style='font-weight:700; color:#0f172a; float:right;'>{fmt_num(c_clk)}</span><br>
+                        <span style='color:#1e40af;'>전환수:</span> <span style='font-weight:700; color:#0f172a; float:right;'>{fmt_num(c_conv)}</span>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
