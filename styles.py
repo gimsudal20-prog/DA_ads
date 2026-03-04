@@ -76,35 +76,51 @@ table.nv-table tr:hover td { background: #F5F8FF; color: var(--nv-primary); }
 [data-testid="stExpander"] summary p { font-weight: 700 !important; font-size: 14px !important; color: var(--nv-text) !important; }
 
 /* Sidebar */
-[data-testid="stSidebar"] { background: #F5F8FF !important; border-right: 1px solid #DCE6FF !important; }
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #F6F9FF 0%, #EEF4FF 100%) !important;
+  border-right: 1px solid #D4E1FF !important;
+}
 [data-testid="stSidebar"] .block-container { padding-top: 1rem !important; }
+.nav-sidebar-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #1E3A8A;
+  letter-spacing: -0.02em;
+}
+.nav-sidebar-caption {
+  margin-top: 4px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #64748B;
+  font-weight: 600;
+}
 [data-testid="stSidebar"] [role="radiogroup"] {
   background: #FFFFFF;
-  border: 1px solid #DCE6FF;
-  border-radius: 12px;
-  padding: 8px;
+  border: 1px solid #CFE0FF;
+  border-radius: 14px;
+  padding: 10px;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label {
   padding: 10px 12px !important;
-  border-radius: var(--nv-radius) !important;
+  border-radius: 10px !important;
   border: 1px solid transparent;
   transition: all 0.2s ease;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-  background: #375FFF !important;
-  border-color: #2748C9;
+  background: #EDF3FF !important;
+  border-color: #C7D9FF;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover p {
-  color: #FFFFFF !important;
+  color: #1D4ED8 !important;
   font-weight: 700 !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-  background-color: #375FFF !important;
-  border-color: #2748C9 !important;
+  background: linear-gradient(90deg, #375FFF 0%, #5B7DFF 100%) !important;
+  border-color: #2F52D8 !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
   color: #FFFFFF !important;
-  font-weight: 700 !important;
+  font-weight: 800 !important;
 }
 
 /* Filter dropdown hover/selected consistency */
