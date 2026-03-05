@@ -305,25 +305,38 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     if selected != "- 표만 보기 (선택 안함) -":
         c_df = df_cur[df_cur[name_col] == selected] if not df_cur.empty else pd.DataFrame()
         b_df = df_base[df_base[name_col] == selected] if not df_base.empty else pd.DataFrame()
-        
-        def _get(df, c_kr, c_en): 
-            if not df.empty:
-                if c_kr in df.columns: return float(pd.to_numeric(df[c_kr], errors='coerce').fillna(0).sum())
-                if c_en in df.columns: return float(pd.to_numeric(df[c_en], errors='coerce').fillna(0).sum())
+
+        def _sum_col(df: pd.DataFrame, candidates: list[str]) -> float:
+            if df is None or df.empty:
+                return 0.0
+            for col in candidates:
+                if col in df.columns:
+                    return float(pd.to_numeric(df[col], errors='coerce').fillna(0).sum())
             return 0.0
-        
-        c_cost = _get(c_df, "광고비", "cost")
-        c_sales = _get(c_df, "전환매출", "sales")
-        c_clk = _get(c_df, "클릭", "clk")
-        c_imp = _get(c_df, "노출", "imp")
-        c_conv = _get(c_df, "전환", "conv")
+
+        def _cur_val(candidates_kr: list[str], candidates_en: list[str]) -> float:
+            return _sum_col(c_df, candidates_kr + candidates_en)
+
+        def _base_val(base_cols: list[str], prev_cols: list[str]) -> float:
+            # 1) 비교기간 raw dataframe(df_base) 우선
+            val = _sum_col(b_df, base_cols)
+            if val > 0:
+                return val
+            # 2) append_comparison_data로 붙인 p_* 컬럼 fallback
+            return _sum_col(c_df, prev_cols)
+
+        c_cost = _cur_val(["광고비"], ["cost"])
+        c_sales = _cur_val(["전환매출"], ["sales"])
+        c_clk = _cur_val(["클릭", "클릭수"], ["clk"])
+        c_imp = _cur_val(["노출", "노출수"], ["imp"])
+        c_conv = _cur_val(["전환", "전환수"], ["conv"])
         c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
-        
-        b_cost = _get(b_df, "광고비", "cost")
-        b_sales = _get(b_df, "전환매출", "sales")
-        b_clk = _get(b_df, "클릭", "clk")
-        b_imp = _get(b_df, "노출", "imp")
-        b_conv = _get(b_df, "전환", "conv")
+
+        b_cost = _base_val(["광고비", "cost"], ["p_cost"])
+        b_sales = _base_val(["전환매출", "sales"], ["p_sales"])
+        b_clk = _base_val(["클릭", "클릭수", "clk"], ["p_clk"])
+        b_imp = _base_val(["노출", "노출수", "imp"], ["p_imp"])
+        b_conv = _base_val(["전환", "전환수", "conv"], ["p_conv"])
         b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
         
         def fmt_krw(v): return f"{int(v):,}원"
@@ -409,57 +422,98 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             },
         ]
 
-        row_html = ""
-        for r in rows:
-            row_html += f"""
-            <div class='cmp-row'>
-                <div class='cmp-cell metric'>{r['label']}</div>
-                <div class='cmp-cell base'>{r['base']}</div>
-                <div class='cmp-cell curr'>
-                    <div class='curr-top'>{r['curr']}</div>
-                    <div class='curr-sub'>{delta_chip_text(r['delta'])} <span class='rate'>({r['rate']})</span></div>
-                </div>
-            </div>
-            """
+        def _board_rows(items: list[dict], is_right: bool = False) -> str:
+            html_rows = ""
+            for r in items:
+                if is_right:
+                    html_rows += f"""
+                    <div class='cmp-row'>
+                        <div class='cmp-top'>
+                            <span class='cmp-label'>{r['label']}</span>
+                            <span class='cmp-value'>{r['curr']}</span>
+                        </div>
+                        <div class='cmp-sub'>
+                            {delta_chip_text(r['delta'])}
+                            <span class='rate'>({r['rate']})</span>
+                        </div>
+                    </div>
+                    """
+                else:
+                    html_rows += f"""
+                    <div class='cmp-row'>
+                        <div class='cmp-top'>
+                            <span class='cmp-label'>{r['label']}</span>
+                            <span class='cmp-value'>{r['base']}</span>
+                        </div>
+                    </div>
+                    """
+            return html_rows
+
+        left_rows = _board_rows(rows, is_right=False)
+        right_rows = _board_rows(rows, is_right=True)
 
         html = textwrap.dedent(f"""\
         <div style='background-color:#f8fafc; border:2px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:8px; margin-bottom:24px; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);'>
             <div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:14px; text-align:center;'>✨ [{selected}] 성과 비교 상세 요약</div>
-            <div class='cmp-head'>
-                <div></div>
-                <div>⚪ 비교 기간 ({b1} ~ {b2})</div>
-                <div>🔵 선택 기간 ({d1} ~ {d2})</div>
+            <div class='cmp-boards'>
+                <div class='cmp-board left'>
+                    <div class='cmp-board-head'>⚪ 비교 기간 ({b1} ~ {b2})</div>
+                    {left_rows}
+                </div>
+                <div class='cmp-board right'>
+                    <div class='cmp-board-head'>🔵 선택 기간 ({d1} ~ {d2})</div>
+                    {right_rows}
+                </div>
             </div>
-            {row_html}
         </div>
         <style>
-            .cmp-head {{
+            .cmp-boards {{
                 display:grid;
-                grid-template-columns: 120px 1fr 1.25fr;
-                gap:10px;
+                grid-template-columns: 1fr 1fr;
+                gap:12px;
+            }}
+            .cmp-board {{
+                border-radius:10px;
+                padding:12px 14px;
+            }}
+            .cmp-board.left {{
+                background:#ffffff;
+                border:1px solid #cbd5e1;
+            }}
+            .cmp-board.right {{
+                background:#eff6ff;
+                border:2px solid #bfdbfe;
+            }}
+            .cmp-board-head {{
                 font-size:13px;
                 font-weight:800;
-                margin-bottom:8px;
+                text-align:center;
+                margin-bottom:6px;
             }}
-            .cmp-head > div:nth-child(2) {{ color:#64748b; text-align:center; }}
-            .cmp-head > div:nth-child(3) {{ color:#1d4ed8; text-align:center; }}
+            .cmp-board.left .cmp-board-head {{ color:#64748b; }}
+            .cmp-board.right .cmp-board-head {{ color:#1d4ed8; }}
 
             .cmp-row {{
-                display:grid;
-                grid-template-columns: 120px 1fr 1.25fr;
-                gap:10px;
-                align-items:center;
                 border-top:1px dashed #dbe4f0;
                 padding:9px 0;
             }}
-            .cmp-cell.metric {{ color:#334155; font-weight:800; }}
-            .cmp-cell.base {{ color:#0f172a; font-weight:700; text-align:right; padding-right:8px; }}
-            .cmp-cell.curr {{ text-align:right; }}
-            .curr-top {{ color:#0f172a; font-weight:800; }}
-            .curr-sub {{ margin-top:2px; font-size:13px; }}
+            .cmp-top {{
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+            }}
+            .cmp-board.left .cmp-label {{ color:#334155; font-weight:800; }}
+            .cmp-board.left .cmp-value {{ color:#0f172a; font-weight:700; }}
+            .cmp-board.right .cmp-label {{ color:#1e40af; font-weight:800; }}
+            .cmp-board.right .cmp-value {{ color:#0f172a; font-weight:800; }}
+            .cmp-sub {{
+                margin-top:2px;
+                text-align:right;
+                font-size:13px;
+            }}
             .rate {{ color:#64748b; font-weight:700; }}
         </style>
         """).strip()
         # Markdown 파서 상태에 따라 HTML이 코드블록으로 노출되는 이슈를 피하기 위해
         # 컴포넌트 HTML 렌더러를 사용한다.
-        st.components.v1.html(html, height=500, scrolling=False)
+        st.components.v1.html(html, height=560, scrolling=False)
