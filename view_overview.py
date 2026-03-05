@@ -18,14 +18,14 @@ def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
 
-def _build_periodic_report_text(report_type: str, campaign_type: str, imp: float, clk: float, ctr: float, cost: float) -> str:
+def _build_periodic_report_text(report_type: str, campaign_type: str, imp: float, clk: float, ctr: float, cost: float, top_keywords: str) -> str:
     return "\n".join([
         report_type,
         f"- {campaign_type} (전체)",
         _format_report_line("노출수", f"{int(imp):,}"),
         _format_report_line("클릭수", f"{int(clk):,}"),
         _format_report_line("클릭률", f"{float(ctr):.2f}%"),
-        _format_report_line("클릭이 많았던 키워드", "-"),
+        _format_report_line("클릭이 많았던 키워드", top_keywords),
         _format_report_line("광고 소진비용", f"{int(cost):,}원"),
     ])
 
@@ -120,7 +120,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         insight = f"광고비({cost_delta:+.1f}%)와 전환({conv_delta:+.1f}%)이 유사하게 움직이고 있습니다."
     st.info(f"🧭 KPI 해석: {insight}")
 
-    with st.expander("📝 주간/월간 보고서 내보내기", expanded=True):
+    top_keywords_text = "-"
+    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
+    if kw_bundle is not None and not kw_bundle.empty and {"keyword", "clk"}.issubset(kw_bundle.columns):
+        kw_top = kw_bundle.copy()
+        kw_top["clk"] = pd.to_numeric(kw_top["clk"], errors="coerce").fillna(0)
+        kw_top = kw_top.groupby("keyword", as_index=False)["clk"].sum().sort_values("clk", ascending=False).head(3)
+        if not kw_top.empty:
+            top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
+
+    with st.expander("📝 주간/월간 보고서 내보내기", expanded=False):
         report_type = st.radio("보고서 타입", ["주간보고서", "월간보고서"], horizontal=True, key="overview_report_type")
         campaign_label = ", ".join(type_sel) if type_sel else "전체"
         report_text = _build_periodic_report_text(
@@ -130,6 +139,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             clk=float(cur.get("clk", 0.0) or 0.0),
             ctr=float(cur.get("ctr", 0.0) or 0.0),
             cost=float(cur.get("cost", 0.0) or 0.0),
+            top_keywords=top_keywords_text,
         )
         st.code(report_text, language="text")
         st.download_button(
@@ -155,7 +165,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not hippos.empty: alerts.append(f"💸 비용 누수: 비용 5만 원 이상 소진 중이나 전환이 없는 캠페인이 {len(hippos)}개 발견되었습니다.")
 
     if alerts:
-        with st.expander(f"🚨 계정 내 점검이 필요한 {len(alerts)}건의 알림이 있습니다.", expanded=True):
+        with st.expander(f"🚨 계정 내 점검이 필요한 {len(alerts)}건의 알림이 있습니다.", expanded=False):
             for a in alerts: st.markdown(f"- {a}")
             
             if not hippos.empty:
