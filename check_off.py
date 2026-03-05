@@ -77,31 +77,42 @@ def check_account(engine, cid):
     camp_off = []
     grp_off = []
     
+    scan_kst = datetime.utcnow() + timedelta(hours=9)
+
+    def _is_budget_stop(status: str, reason: str) -> bool:
+        s = (status or "").upper()
+        r = (reason or "").upper()
+        return ("EXHAUSTED" in s) or any(k in r for k in ["LIMIT", "BUDGET", "EXHAUSTED"])
+
     # 2. 캠페인 꺼짐 검사
     if camps:
         for c in camps:
-            if "EXHAUSTED" in c.get("status", "") or "LIMIT" in c.get("statusReason", ""):
+            if _is_budget_stop(c.get("status", ""), c.get("statusReason", "")):
                 edit_tm = c.get("editTm", "")
+                off_time = scan_kst.strftime("%H:%M")
                 if edit_tm:
                     try:
                         utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
                         kst_dt = utc_dt + timedelta(hours=9)
-                        if kst_dt.date() == target_date:
-                            camp_off.append((target_date, str(cid), str(c["nccCampaignId"]), kst_dt.strftime("%H:%M")))
-                    except Exception: pass
+                        off_time = kst_dt.strftime("%H:%M") if kst_dt.date() == target_date else off_time
+                    except Exception:
+                        pass
+                camp_off.append((target_date, str(cid), str(c["nccCampaignId"]), off_time))
 
     # 3. 🚨 추가된 기능: 광고그룹 꺼짐 검사
     if grps:
         for g in grps:
-            if "EXHAUSTED" in g.get("status", "") or "LIMIT" in g.get("statusReason", ""):
+            if _is_budget_stop(g.get("status", ""), g.get("statusReason", "")):
                 edit_tm = g.get("editTm", "")
+                off_time = scan_kst.strftime("%H:%M")
                 if edit_tm:
                     try:
                         utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
                         kst_dt = utc_dt + timedelta(hours=9)
-                        if kst_dt.date() == target_date:
-                            grp_off.append((target_date, str(cid), str(g["nccAdgroupId"]), kst_dt.strftime("%H:%M")))
-                    except Exception: pass
+                        off_time = kst_dt.strftime("%H:%M") if kst_dt.date() == target_date else off_time
+                    except Exception:
+                        pass
+                grp_off.append((target_date, str(cid), str(g["nccAdgroupId"]), off_time))
 
     # 4. 발견된 내역 DB에 꽂아넣기
     raw_conn = None
