@@ -13,6 +13,13 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
+
+def _format_avg_rank(value):
+    num = pd.to_numeric(value, errors="coerce")
+    if pd.isna(num) or num <= 0:
+        return "미수집"
+    return f"{num:.1f}위"
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("<div class='nv-sec-title'>그룹 / 키워드 상세 분석</div>", unsafe_allow_html=True)
@@ -41,7 +48,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
                 if "avg_rank" in view.columns:
-                    view["평균순위"] = view["avg_rank"].apply(lambda x: f"{float(x):.1f}위" if float(x) > 0 else "미수집")
+                    view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
                     base_cols.append("평균순위")
                     
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -118,7 +125,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0)
                 view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
-                metrics_cols_shop = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
+                if "avg_rank" in view_shop.columns:
+                    view_shop["평균순위"] = view_shop["avg_rank"].apply(_format_avg_rank)
+                    base_cols_shop.append("평균순위")
+
+                metrics_cols_shop = ["출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
                 c1, c2 = st.columns([2, 2])
                 with c1:
@@ -131,7 +143,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 if sel_item != "전체": view_shop = view_shop[view_shop["_filter_label"] == sel_item]
 
-                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
                 final_cols_shop = [c for c in base_cols_shop + metrics_cols_shop if c in view_shop.columns]
                 
                 disp_shop = view_shop[final_cols_shop].sort_values("광고비", ascending=False).head(top_n)
@@ -165,6 +176,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                 
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+                if "avg_rank" in view.columns:
+                    view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+                    base_cols.append("평균순위")
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 
                 if not base_kw_bundle.empty:
@@ -253,6 +267,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                     
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
+                    if "avg_rank" in view.columns:
+                        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+                        base_cols.append("평균순위")
                     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                     
                     if base_shop_bundle is not None and not base_shop_bundle.empty:
