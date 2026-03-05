@@ -396,6 +396,17 @@ def collect_dim_for_customer(customer_id: str, account_name: str) -> Tuple[List[
 
     return camps, adgs, kws, ads
 
+def load_target_ids_from_db(engine: Engine, customer_id: str) -> Tuple[List[str], List[str], List[str]]:
+    campaign_ids, keyword_ids, ad_ids = [], [], []
+    try:
+        with engine.connect() as conn:
+            campaign_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
+            keyword_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
+            ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
+    except Exception:
+        pass
+    return campaign_ids, keyword_ids, ad_ids
+
 def get_stats_range(customer_id: str, ids: List[str], target_date: date) -> List[dict]:
     if not ids: return []
     all_rows = []
@@ -780,18 +791,28 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         target_kw_ids = [k["keyword_id"] for k in kws] if kws else []
         target_ad_ids = [a["ad_id"] for a in ads] if ads else []
 
+        db_campaign_ids, db_kw_ids, db_ad_ids = load_target_ids_from_db(engine, customer_id)
         if not target_campaign_ids:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})
-                target_campaign_ids = [str(r[0]) for r in res]
-        if not target_kw_ids and not SKIP_KEYWORD_STATS:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})
-                target_kw_ids = [str(r[0]) for r in res]
-        if not target_ad_ids and not SKIP_AD_STATS:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})
-                target_ad_ids = [str(r[0]) for r in res]
+            target_campaign_ids = db_campaign_ids
+        if not target_kw_ids:
+            target_kw_ids = db_kw_ids
+        if not target_ad_ids:
+            target_ad_ids = db_ad_ids
+
+        if skip_dim and not target_campaign_ids:
+            log(f"   ⚠️ [ {account_name} ] skip_dim 상태에서 DIM ID가 없어 강제로 DIM 1회 수집을 시도합니다.")
+            camps, adgs, kws, ads = collect_dim_for_customer(customer_id, account_name)
+            if camps: upsert_rows(engine, "dim_campaign", camps, ["customer_id", "campaign_id"])
+            if adgs: upsert_rows(engine, "dim_adgroup", adgs, ["customer_id", "adgroup_id"])
+            if kws: upsert_rows(engine, "dim_keyword", kws, ["customer_id", "keyword_id"])
+            if ads: upsert_rows(engine, "dim_ad", ads, ["customer_id", "ad_id"])
+            upsert_rows(engine, "dim_account", [{"customer_id": customer_id, "account_name": account_name}], ["customer_id"])
+            target_campaign_ids = [c["campaign_id"] for c in camps] if camps else []
+            target_kw_ids = [k["keyword_id"] for k in kws] if kws else []
+            target_ad_ids = [a["ad_id"] for a in ads] if ads else []
+
+        if not target_campaign_ids and not target_kw_ids and not target_ad_ids:
+            log(f"   ⚠️ [ {account_name} ] 수집 대상 ID(캠페인/키워드/소재)가 없어 통계를 가져올 수 없습니다.")
 
         c_cnt = k_cnt = a_cnt = 0
 
@@ -825,13 +846,30 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if not SKIP_KEYWORD_STATS:
             if dfs.get("KEYWORD") is not None:
                 kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid"], has_rank=True)
-                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
+                if kw_stat:
+                    k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
+                else:
+                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
             else:
                 k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
 
         ad_stat = {}
         if dfs.get("AD") is not None:
             ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
+            if not ad_stat and target_ad_ids and not SKIP_AD_STATS:
+                raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
+                for r in raw_ad_stats:
+                    eid = str(r.get("id"))
+                    cost = int(float(r.get("salesAmt", 0) or 0))
+                    sales = int(float(r.get("convAmt", 0) or 0))
+                    ad_stat[eid] = {
+                        "imp": int(r.get("impCnt", 0) or 0),
+                        "clk": int(r.get("clkCnt", 0) or 0),
+                        "cost": cost,
+                        "conv": float(r.get("ccnt", 0) or 0),
+                        "sales": sales,
+                        "rank_sum": 0.0, "rank_cnt": 0
+                    }
         else:
             if target_ad_ids and not SKIP_AD_STATS:
                 raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
