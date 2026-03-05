@@ -40,17 +40,34 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
             except Exception:
                 pass
 
+    freshness = "🟢 최신"
+    if dt_str == "수집 대기 중":
+        freshness = "🟠 수집 대기"
+
     html_str = f"""
-    <div style='background: #FFFFFF; border: 1px solid #E4E4E4; padding: 20px 32px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;'>
-        <div style='display: flex; align-items: center; gap: 20px;'>
-            <div>{logo_html}</div>
-            <div style='border-left: 1px solid #E4E4E4; padding-left: 20px;'>
-                <h1 style='margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #19191A;'>
-                    {dashboard_title}
-                </h1>
-                <p style='margin: 6px 0 0 0; color: #474747; font-size: 13.5px; font-weight: 500;'>
-                    최신 데이터 기준일: <span style='color: #375FFF; font-weight: 700;'>{dt_str}</span>
-                </p>
+    <div class='nv-hero'>
+        <div class='nv-hero-top'>
+            <div class='nv-hero-brand'>
+                <div>{logo_html}</div>
+                <div>
+                    <h1 class='nv-hero-title'>{dashboard_title}</h1>
+                    <div class='nv-hero-sub'>빌드: {build_tag} · 최신 데이터 기준일: <strong>{dt_str}</strong></div>
+                </div>
+            </div>
+            <div class='nv-fresh-badge'>{freshness}</div>
+        </div>
+        <div class='nv-hero-kpis'>
+            <div class='nv-hero-kpi'>
+                <div class='k'>기준일</div>
+                <div class='v'>{dt_str}</div>
+            </div>
+            <div class='nv-hero-kpi'>
+                <div class='k'>환경</div>
+                <div class='v'>Streamlit</div>
+            </div>
+            <div class='nv-hero-kpi'>
+                <div class='k'>상태</div>
+                <div class='v'>{freshness}</div>
             </div>
         </div>
     </div>
@@ -59,10 +76,10 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):
     html = f"""
-    <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #E4E4E4; margin-bottom: 16px;">
-        <div style="color: #474747; font-size: 13px; font-weight: 600; margin-bottom: 8px;">{title}</div>
-        <div style="color: #19191A; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">{value}</div>
-        <div style="color: #375FFF; font-size: 12px; font-weight: 600; margin-top: 6px; background: #F5F8FF; display: inline-block; padding: 2px 8px; border-radius: 4px;">{desc}</div>
+    <div class="nv-metric-card">
+        <div class="nv-metric-card-title">{title}</div>
+        <div class="nv-metric-card-value">{value}</div>
+        <div class="nv-metric-card-desc">{desc}</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
