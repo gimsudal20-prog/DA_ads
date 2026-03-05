@@ -253,6 +253,41 @@ def get_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     if not ok or not isinstance(data, list): return []
     return data
 
+def extract_ad_thumbnail(ad_row: dict) -> str:
+    direct_candidates = [
+        ad_row.get("thumbnailUrl"),
+        ad_row.get("thumbnailImageUrl"),
+        ad_row.get("imageUrl"),
+    ]
+    for v in direct_candidates:
+        vv = str(v or "").strip()
+        if vv:
+            return vv
+
+    nested_candidates = [
+        ad_row.get("ad", {}),
+        ad_row.get("imageExtension", {}),
+        ad_row.get("product", {}),
+        ad_row.get("shoppingProduct", {}),
+        ad_row.get("catalog", {}),
+    ]
+    key_candidates = [
+        "imageUrl",
+        "thumbnailUrl",
+        "thumbnailImageUrl",
+        "representativeImageUrl",
+        "mainImageUrl",
+        "productImageUrl",
+    ]
+    for item in nested_candidates:
+        if not isinstance(item, dict):
+            continue
+        for key in key_candidates:
+            vv = str(item.get(key, "") or "").strip()
+            if vv:
+                return vv
+    return ""
+
 def collect_dim_for_customer(customer_id: str, account_name: str) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
     camps_raw = get_campaigns(customer_id)
     camps, adgs, kws, ads = [], [], [], []
@@ -268,70 +303,96 @@ def collect_dim_for_customer(customer_id: str, account_name: str) -> Tuple[List[
             "status": str(c.get("status", "")).strip(),
         })
 
-    def _collect_for_campaign(c):
-        _adgs, _kws, _ads = [], [], []
-        camp_id = c["campaign_id"]
-        g_raw = get_adgroups(customer_id, camp_id)
-        for g in g_raw:
+    def _load_adgroups(camp: dict) -> List[dict]:
+        camp_id = camp["campaign_id"]
+        groups = []
+        for g in get_adgroups(customer_id, camp_id):
             gid = str(g.get("nccAdgroupId", "")).strip()
-            if not gid: continue
-            _adgs.append({
+            if not gid:
+                continue
+            groups.append({
                 "customer_id": customer_id,
                 "adgroup_id": gid,
                 "adgroup_name": str(g.get("name", "")).strip(),
                 "campaign_id": camp_id,
                 "status": str(g.get("status", "")).strip(),
             })
-            if not SKIP_KEYWORD_DIM:
-                k_raw = get_keywords(customer_id, gid)
-                for k in k_raw:
-                    kid = str(k.get("nccKeywordId", "")).strip()
-                    if not kid: continue
-                    _kws.append({
-                        "customer_id": customer_id,
-                        "keyword_id": kid,
-                        "keyword": str(k.get("keyword", "")).strip(),
-                        "adgroup_id": gid,
-                        "status": str(k.get("status", "")).strip(),
-                    })
-            if not SKIP_AD_DIM:
-                a_raw = get_ads(customer_id, gid)
-                for a in a_raw:
-                    aid = str(a.get("nccAdId", "")).strip()
-                    if not aid: continue
-                    ad_name = str(a.get("name", "")).strip()
-                    ad_title = ""
-                    ad_desc = ""
-                    thumb = ""
-                    pc_url = str(a.get("pcFinalUrl", "") or a.get("pcFinalUrl2", "") or "").strip()
-
-                    info = a.get("ad", {})
-                    if isinstance(info, dict):
-                        ad_title = str(info.get("title", "")).strip()
-                        ad_desc = str(info.get("description", "")).strip()
-                        thumb = str(info.get("imageUrl", "")).strip()
-
-                    _ads.append({
-                        "customer_id": customer_id,
-                        "ad_id": aid,
-                        "ad_name": ad_name,
-                        "ad_title": ad_title,
-                        "ad_desc": ad_desc,
-                        "adgroup_id": gid,
-                        "status": str(a.get("status", "")).strip(),
-                        "pc_landing_url": pc_url,
-                        "thumbnail_url": thumb
-                    })
-        return _adgs, _kws, _ads
+        return groups
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=CAMPAIGN_WORKERS) as ex:
-        futs = [ex.submit(_collect_for_campaign, c) for c in camps]
+        futs = [ex.submit(_load_adgroups, c) for c in camps]
         for f in concurrent.futures.as_completed(futs):
             try:
-                _adgs, _kws, _ads = f.result()
-                adgs.extend(_adgs); kws.extend(_kws); ads.extend(_ads)
+                adgs.extend(f.result())
             except Exception:
                 pass
+
+    def _load_keywords(g: dict) -> List[dict]:
+        gid = g["adgroup_id"]
+        rows = []
+        for k in get_keywords(customer_id, gid):
+            kid = str(k.get("nccKeywordId", "")).strip()
+            if not kid:
+                continue
+            rows.append({
+                "customer_id": customer_id,
+                "keyword_id": kid,
+                "keyword": str(k.get("keyword", "")).strip(),
+                "adgroup_id": gid,
+                "status": str(k.get("status", "")).strip(),
+            })
+        return rows
+
+    def _load_ads(g: dict) -> List[dict]:
+        gid = g["adgroup_id"]
+        rows = []
+        for a in get_ads(customer_id, gid):
+            aid = str(a.get("nccAdId", "")).strip()
+            if not aid:
+                continue
+            ad_name = str(a.get("name", "")).strip()
+            ad_title = ""
+            ad_desc = ""
+            thumb = extract_ad_thumbnail(a)
+            pc_url = str(a.get("pcFinalUrl", "") or a.get("pcFinalUrl2", "") or "").strip()
+
+            info = a.get("ad", {})
+            if isinstance(info, dict):
+                ad_title = str(info.get("title", "")).strip()
+                ad_desc = str(info.get("description", "")).strip()
+                if not thumb:
+                    thumb = str(info.get("imageUrl", "")).strip()
+
+            rows.append({
+                "customer_id": customer_id,
+                "ad_id": aid,
+                "ad_name": ad_name,
+                "ad_title": ad_title,
+                "ad_desc": ad_desc,
+                "adgroup_id": gid,
+                "status": str(a.get("status", "")).strip(),
+                "pc_landing_url": pc_url,
+                "thumbnail_url": thumb
+            })
+        return rows
+
+    if adgs and not SKIP_KEYWORD_DIM:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=DIM_WORKERS) as ex:
+            futs = [ex.submit(_load_keywords, g) for g in adgs]
+            for f in concurrent.futures.as_completed(futs):
+                try:
+                    kws.extend(f.result())
+                except Exception:
+                    pass
+
+    if adgs and not SKIP_AD_DIM:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=DIM_WORKERS) as ex:
+            futs = [ex.submit(_load_ads, g) for g in adgs]
+            for f in concurrent.futures.as_completed(futs):
+                try:
+                    ads.extend(f.result())
+                except Exception:
+                    pass
 
     return camps, adgs, kws, ads
 
@@ -813,20 +874,38 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
 
+def build_date_range(single_date: str, start_date: str, end_date: str) -> List[date]:
+    if single_date:
+        return [datetime.strptime(single_date, "%Y-%m-%d").date()]
+
+    if not start_date and not end_date:
+        return [date.today() - timedelta(days=1)]
+
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(end_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else start
+    if end < start:
+        start, end = end, start
+
+    days = (end - start).days
+    return [start + timedelta(days=i) for i in range(days + 1)]
+
 def main():
     engine = get_engine()
     ensure_tables(engine)
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
+    parser.add_argument("--start_date", type=str, default="")
+    parser.add_argument("--end_date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
+    parser.add_argument("--skip_dim_after_first", action="store_true")
     parser.add_argument("--workers", type=int, default=10)
     args = parser.parse_args()
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
+    target_dates = build_date_range(args.date, args.start_date, args.end_date)
 
     print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print(f"🚀🚀🚀 [ 수집 일자 범위: {target_dates[0]} ~ {target_dates[-1]} / 총 {len(target_dates)}일 ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
@@ -870,11 +949,19 @@ def main():
 
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
-        for future in concurrent.futures.as_completed(futures):
-            try: future.result()
-            except Exception: pass
+    for idx, target_date in enumerate(target_dates):
+        date_skip_dim = args.skip_dim or (args.skip_dim_after_first and idx > 0)
+        log(f"📆 날짜 처리 시작: {target_date} (skip_dim={date_skip_dim})")
+        started_at = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, date_skip_dim) for acc in accounts_info]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+        elapsed = int(time.time() - started_at)
+        log(f"📆 날짜 처리 완료: {target_date} (소요 {elapsed}s)")
 
 if __name__ == "__main__":
     main()
