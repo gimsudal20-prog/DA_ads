@@ -737,21 +737,21 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             ad_stat = {}
             if dfs.get("AD") is not None:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
-            else:
-                if target_ad_ids and not SKIP_AD_STATS:
-                    raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
-                    for r in raw_ad_stats:
-                        eid = str(r.get("id"))
-                        cost = int(float(r.get("salesAmt", 0) or 0))
-                        sales = int(float(r.get("convAmt", 0) or 0))
-                        ad_stat[eid] = {
-                            "imp": int(r.get("impCnt", 0) or 0),
-                            "clk": int(r.get("clkCnt", 0) or 0),
-                            "cost": cost,
-                            "conv": float(r.get("ccnt", 0) or 0),
-                            "sales": sales,
-                            "rank_sum": 0.0, "rank_cnt": 0
-                        }
+
+            if not ad_stat and target_ad_ids and not SKIP_AD_STATS:
+                raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
+                for r in raw_ad_stats:
+                    eid = str(r.get("id"))
+                    cost = int(float(r.get("salesAmt", 0) or 0))
+                    sales = int(float(r.get("convAmt", 0) or 0))
+                    ad_stat[eid] = {
+                        "imp": int(r.get("impCnt", 0) or 0),
+                        "clk": int(r.get("clkCnt", 0) or 0),
+                        "cost": cost,
+                        "conv": float(r.get("ccnt", 0) or 0),
+                        "sales": sales,
+                        "rank_sum": 0.0, "rank_cnt": 0
+                    }
             
             ext_ids = []
             try:
