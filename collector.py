@@ -140,7 +140,7 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
                         dt DATE,
@@ -162,6 +162,11 @@ def ensure_tables(engine: Engine):
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
+            except Exception: pass
+
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
             except Exception: pass
             break
         except Exception as e:
@@ -336,7 +341,7 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             "dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")),
             "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas
         }
-        if id_key == "keyword_id":
+        if id_key in ["keyword_id", "ad_id"]:
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
         
@@ -493,7 +498,7 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             "imp": s["imp"], "clk": s["clk"], "cost": cost,
             "conv": s["conv"], "sales": sales, "roas": roas
         }
-        if pk_name == "keyword_id":
+        if pk_name in ["keyword_id", "ad_id"]:
             row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
@@ -604,7 +609,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             ad_stat = {}
             if dfs.get("AD") is not None:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"])
+                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
             else:
                 if target_ad_ids and not SKIP_AD_STATS:
                     raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
