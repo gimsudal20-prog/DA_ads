@@ -295,8 +295,10 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
             break
 
     rank_agg_sql = ""
+    rank_select_sql = ""
     if rank_col:
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+        rank_select_sql = ", agg.avg_rank"
 
     # 🔥 [핵심] JOIN에 agg.customer_id를 모두 추가하여 인덱스 풀가동 (100배 빨라짐)
     sql = f"""
@@ -312,7 +314,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, k.keyword,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
         FROM agg
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
         JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
@@ -352,8 +354,10 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
             break
 
     rank_agg_sql = ""
+    rank_select_sql = ""
     if rank_col:
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+        rank_select_sql = ", agg.avg_rank"
 
     # 🔥 [핵심] 소재 데이터도 완벽한 인덱스 매칭 및 INNER JOIN 적용
     sql = f"""
@@ -369,7 +373,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, ad.ad_name, ad.{url_col} as landing_url,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
