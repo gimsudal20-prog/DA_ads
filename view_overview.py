@@ -131,7 +131,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if c in df_show.columns: df_show[c] = df_show[c].apply(lambda x: format_currency(x) if c == "광고비" else format_number_commas(x))
                 
                 st.markdown("<div style='margin-top: 16px; font-weight: 700; color: #FC503D; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
-                # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
                 st.dataframe(df_show, width="stretch", hide_index=True)
     else:
         st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 있습니다!")
@@ -150,8 +149,35 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     round((pd.to_numeric(ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(ts["cost"], errors="coerce").fillna(0) * 100.0), 1), 
                     0.0
                 )
-                
-                if HAS_ECHARTS: render_echarts_dual_axis("일자별 광고비 및 ROAS", ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
+
+                trend_metric_options = {
+                    "광고비 + ROAS": {"col": "cost", "label": "광고비(원)", "mode": "dual"},
+                    "클릭수": {"col": "clk", "label": "클릭수", "mode": "single"},
+                    "노출수": {"col": "imp", "label": "노출수", "mode": "single"},
+                    "전환수": {"col": "conv", "label": "전환수", "mode": "single"},
+                }
+
+                selected_trend_metric = st.selectbox(
+                    "전체트렌드 지표 선택",
+                    list(trend_metric_options.keys()),
+                    index=0,
+                    key="overview_trend_metric_selector"
+                )
+                selected_cfg = trend_metric_options[selected_trend_metric]
+                trend_ts = ts.copy()
+                trend_ts[selected_cfg["col"]] = pd.to_numeric(trend_ts[selected_cfg["col"]], errors="coerce").fillna(0)
+
+                if selected_cfg["mode"] == "dual":
+                    if HAS_ECHARTS:
+                        render_echarts_dual_axis("일자별 광고비 및 ROAS", trend_ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
+                    else:
+                        st.line_chart(trend_ts.set_index("dt")[["cost", "roas"]], height=320)
+                else:
+                    chart_title = f"일자별 {selected_cfg['label']}"
+                    if HAS_ECHARTS:
+                        render_echarts_single_axis(chart_title, trend_ts, "dt", selected_cfg["col"], selected_cfg["label"], height=320)
+                    else:
+                        st.line_chart(trend_ts.set_index("dt")[[selected_cfg["col"]]], height=320)
                 
             with tab_dow:
                 ts_dow = ts.copy()
@@ -172,7 +198,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
                 })
                 
-                # ✨ [FIX] use_container_width=True -> width="stretch" 로 변경
                 st.dataframe(styled_df, width="stretch", hide_index=True)
     except Exception as e:
         pass
