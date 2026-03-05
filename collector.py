@@ -40,6 +40,18 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
 
+def get_env_int(name: str, default: int, min_value: int = 1, max_value: int = 50) -> int:
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
+
+STATS_CHUNK_SIZE = get_env_int("STATS_CHUNK_SIZE", 50, min_value=10, max_value=200)
+STATS_WORKERS = get_env_int("STATS_WORKERS", 6, min_value=1, max_value=20)
+CAMPAIGN_WORKERS = get_env_int("CAMPAIGN_WORKERS", 4, min_value=1, max_value=12)
+DIM_WORKERS = get_env_int("DIM_WORKERS", 8, min_value=1, max_value=20)
+
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
@@ -267,6 +279,28 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+
+def list_campaign_adgroups(customer_id: str, campaign_ids: List[str]) -> List[Tuple[str, dict]]:
+    if not campaign_ids:
+        return []
+
+    campaign_pairs: List[Tuple[str, dict]] = []
+
+    def fetch_campaign_adgroups(campaign_id: str) -> List[Tuple[str, dict]]:
+        return [(campaign_id, g) for g in list_adgroups(customer_id, campaign_id)]
+
+    workers = max(1, min(CAMPAIGN_WORKERS, len(campaign_ids)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(fetch_campaign_adgroups, cid): cid for cid in campaign_ids}
+        for future in concurrent.futures.as_completed(futures):
+            cid = futures[future]
+            try:
+                campaign_pairs.extend(future.result())
+            except Exception as e:
+                log(f"   ⚠️ adgroup 조회 실패(campaign_id={cid}): {e}")
+
+    return campaign_pairs
+
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     
@@ -317,16 +351,107 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
-    out = []
+    unique_ids = list(dict.fromkeys(str(i) for i in ids if i))
+    if not unique_ids:
+        return []
+
     d_str = d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
-    for i in range(0, len(ids), 50):
-        chunk = ids[i:i+50]
+
+    def fetch_chunk(chunk: List[str]) -> List[dict]:
         params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
+        if status == 200 and isinstance(data, dict) and "data" in data:
+            return data["data"]
+        return []
+
+    chunks = [unique_ids[i:i+STATS_CHUNK_SIZE] for i in range(0, len(unique_ids), STATS_CHUNK_SIZE)]
+    if len(chunks) == 1:
+        return fetch_chunk(chunks[0])
+
+    out: List[dict] = []
+    workers = max(1, min(STATS_WORKERS, len(chunks)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        for chunk_rows in executor.map(fetch_chunk, chunks):
+            if chunk_rows:
+                out.extend(chunk_rows)
     return out
+
+
+def collect_adgroup_dim(customer_id: str, campaign_id: str, adgroup: dict) -> Dict[str, Any]:
+    gid = adgroup.get("nccAdgroupId")
+    if not gid:
+        return {}
+
+    result = {
+        "gid": gid,
+        "ag_row": {
+            "customer_id": customer_id,
+            "adgroup_id": gid,
+            "campaign_id": campaign_id,
+            "adgroup_name": adgroup.get("name"),
+            "status": adgroup.get("status"),
+        },
+        "kw_ids": [],
+        "kw_rows": [],
+        "ad_ids": [],
+        "ad_rows": [],
+    }
+
+    if not SKIP_KEYWORD_DIM:
+        for k in list_keywords(customer_id, gid):
+            kid = k.get("nccKeywordId")
+            if not kid:
+                continue
+            result["kw_ids"].append(kid)
+            result["kw_rows"].append({
+                "customer_id": customer_id,
+                "keyword_id": kid,
+                "adgroup_id": gid,
+                "keyword": k.get("keyword"),
+                "status": k.get("status"),
+            })
+
+    if not SKIP_AD_DIM:
+        for a in list_ads(customer_id, gid):
+            aid = a.get("nccAdId")
+            if not aid:
+                continue
+            result["ad_ids"].append(aid)
+            extracted = extract_ad_creative_fields(a)
+            result["ad_rows"].append({
+                "customer_id": customer_id,
+                "ad_id": aid,
+                "adgroup_id": gid,
+                "ad_name": a.get("name") or extracted["ad_title"],
+                "status": a.get("status"),
+                **extracted,
+            })
+
+        for ext in list_ad_extensions(customer_id, gid):
+            ext_id = ext.get("nccAdExtensionId")
+            if not ext_id:
+                continue
+            result["ad_ids"].append(ext_id)
+            ext_info = ext.get("adExtension", {}) or ext
+            ext_type = ext.get("extensionType", "")
+            ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
+            result["ad_rows"].append({
+                "customer_id": customer_id,
+                "ad_id": ext_id,
+                "adgroup_id": gid,
+                "ad_name": ext_text,
+                "status": ext.get("status"),
+                "ad_title": f"[{ext_type}]",
+                "ad_desc": ext_text,
+                "pc_landing_url": ext_info.get("pcLandingUrl", ""),
+                "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                "creative_text": str(ext_text)[:500],
+                "image_url": "",
+            })
+
+    return result
 
 def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
     if not ids: return 0
@@ -523,34 +648,31 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if not cid: continue
                 target_camp_ids.append(cid)
                 camp_rows.append({"customer_id": customer_id, "campaign_id": cid, "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")})
-                for g in list_adgroups(customer_id, cid):
-                    gid = g.get("nccAdgroupId")
-                    if not gid: continue
-                    ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
-                    if not SKIP_KEYWORD_DIM:
-                        for k in list_keywords(customer_id, gid):
-                            if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
-                    if not SKIP_AD_DIM:
-                        for a in list_ads(customer_id, gid):
-                            if aid := a.get("nccAdId"): 
-                                target_ad_ids.append(aid)
-                                extracted = extract_ad_creative_fields(a)
-                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
-                        
-                        for ext in list_ad_extensions(customer_id, gid):
-                            if ext_id := ext.get("nccAdExtensionId"):
-                                target_ad_ids.append(ext_id)
-                                ext_info = ext.get("adExtension", {}) or ext
-                                ext_type = ext.get("extensionType", "")
-                                ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                                
-                                ad_rows.append({
-                                    "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
-                                    "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, 
-                                    "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
-                                    "creative_text": str(ext_text)[:500], 
-                                    "image_url": ""
-                                })
+
+            campaign_pairs = list_campaign_adgroups(customer_id, target_camp_ids)
+
+            if campaign_pairs:
+                workers = max(1, min(DIM_WORKERS, len(campaign_pairs)))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {executor.submit(collect_adgroup_dim, customer_id, cid, g): (cid, g.get("nccAdgroupId")) for cid, g in campaign_pairs}
+                    for future in concurrent.futures.as_completed(futures):
+                        cid, gid = futures[future]
+                        try:
+                            result = future.result()
+                        except Exception as e:
+                            log(f"   ⚠️ dim 수집 실패(campaign_id={cid}, adgroup_id={gid}): {e}")
+                            continue
+                        if not result:
+                            continue
+                        ag_rows.append(result["ag_row"])
+                        target_kw_ids.extend(result["kw_ids"])
+                        target_ad_ids.extend(result["ad_ids"])
+                        kw_rows.extend(result["kw_rows"])
+                        ad_rows.extend(result["ad_rows"])
+
+            target_camp_ids = list(dict.fromkeys(target_camp_ids))
+            target_kw_ids = list(dict.fromkeys(target_kw_ids))
+            target_ad_ids = list(dict.fromkeys(target_ad_ids))
 
             upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
             upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
