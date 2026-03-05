@@ -222,8 +222,14 @@ def page_media(engine, f):
     df_media = calc_metrics(df_media)
     df_region = calc_metrics(df_region)
 
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-    with st.expander("📝 주간/월간 보고서 서식 내보내기", expanded=False):
+    fmt = {"노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}", "전환수": "{:,.1f}", "전환매출": "{:,.0f}", "ROAS(%)": "{:,.2f}%", "CPA(원)": "{:,.0f}", "CTR(%)": "{:,.2f}%"}
+
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+    tab_report, tab_media, tab_region, tab_bad = st.tabs(["📝 보고서 내보내기", "🌐 지면(매체) 성과 분석", "📍 지역 성과 분석", "🚨 비용 누수 항목 (전환 0건)"])
+
+    with tab_report:
+        st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:12px; color:#111827;'>주간/월간 보고서 템플릿을 바로 생성해서 내려받을 수 있습니다.</div>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns([1.2, 1.4, 1.4])
         report_type = c1.selectbox("보고서 타입", ["주간보고서", "월간보고서"], key="media_report_type")
 
@@ -250,12 +256,6 @@ def page_media(engine, f):
             mime="text/plain",
             use_container_width=True,
         )
-    
-    fmt = {"노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}", "전환수": "{:,.1f}", "전환매출": "{:,.0f}", "ROAS(%)": "{:,.2f}%", "CPA(원)": "{:,.0f}", "CTR(%)": "{:,.2f}%"}
-
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-
-    tab_media, tab_region, tab_bad = st.tabs(["🌐 지면(매체) 성과 분석", "📍 지역 성과 분석", "🚨 비용 누수 항목 (전환 0건)"])
     
     with tab_media:
         st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:12px; color:#375FFF;'>조회 기간 내 전체 매체(지면) 효율 리스트</div>", unsafe_allow_html=True)
