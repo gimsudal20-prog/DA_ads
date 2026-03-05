@@ -31,6 +31,15 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
+
+
+def _normalize_merge_keys(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for k in keys:
+        if k in out.columns:
+            out[k] = out[k].astype(str)
+    return out
+
 def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     if kw_bundle is None or kw_bundle.empty or "avg_rank" not in kw_bundle.columns:
         return pd.DataFrame(columns=keys + ["avg_rank"])
@@ -61,7 +70,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     df = _perf_common_merge_meta(bundle, meta)
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭",
+        "campaign_name": "페인", "imp": "노출", "clk": "클릭",
         "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
     view = _add_perf_metrics(view)
@@ -69,7 +78,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not kw_bundle_cur.empty:
         rank_map_camp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id"])
         if not rank_map_camp.empty:
-            view = view.merge(rank_map_camp, on=["customer_id", "campaign_id"], how="left")
+            key_cols = ["customer_id", "campaign_id"]
+            view = _normalize_merge_keys(view, key_cols)
+            rank_map_camp = _normalize_merge_keys(rank_map_camp, key_cols)
+            view = view.merge(rank_map_camp, on=key_cols, how="left")
     if "avg_rank" in view.columns:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
@@ -115,7 +127,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
                 rank_map_grp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id", "adgroup_id"])
                 if not rank_map_grp.empty:
-                    grouped = grouped.merge(rank_map_grp, on=["customer_id", "campaign_id", "adgroup_id"], how="left")
+                    key_cols_grp = ["customer_id", "campaign_id", "adgroup_id"]
+                    grouped = _normalize_merge_keys(grouped, key_cols_grp)
+                    rank_map_grp = _normalize_merge_keys(rank_map_grp, key_cols_grp)
+                    grouped = grouped.merge(rank_map_grp, on=key_cols_grp, how="left")
                     grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
 
                 camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
@@ -152,7 +167,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not base_kw_bundle.empty:
             base_rank_map = _keyword_rank_by_keys(base_kw_bundle, ["customer_id", "campaign_id"]).rename(columns={"avg_rank": "base_avg_rank"})
             if not base_rank_map.empty:
-                view_cmp = view_cmp.merge(base_rank_map, on=["customer_id", "campaign_id"], how="left")
+                key_cols_cmp = ["customer_id", "campaign_id"]
+                view_cmp = _normalize_merge_keys(view_cmp, key_cols_cmp)
+                base_rank_map = _normalize_merge_keys(base_rank_map, key_cols_cmp)
+                view_cmp = view_cmp.merge(base_rank_map, on=key_cols_cmp, how="left")
 
         base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
         render_item_comparison_search("캠페인", view_cmp, base_for_search, "캠페인", f["start"], f["end"], b1, b2)
