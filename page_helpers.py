@@ -428,7 +428,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
         <div class='cmp-title'>✨ [{selected}] 성과 비교 상세 요약</div>
-        <div class='cmp-desc'>비교 기간({b1} ~ {b2}) 대비 선택 기간({d1} ~ {d2})의 주요 지표 변화를 보여줍니다.</div>
         <div class='cmp-boards'>
             <div class='cmp-board'>
                 <div class='cmp-board-head'>⚪ 비교 기간 ({b1} ~ {b2})</div>
