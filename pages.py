@@ -51,6 +51,7 @@ def main():
             "⚙️ 설정 및 연결"
         ] if meta_ready else ["⚙️ 설정 및 연결"]
 
+        st.caption("요약 · 분석 · 설정")
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
