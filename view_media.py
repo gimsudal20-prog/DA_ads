@@ -11,6 +11,31 @@ from datetime import date
 from data import sql_read, table_exists, get_meta, _sql_in_str_list
 from ui import render_big_table
 
+
+def _format_report_line(label: str, value: str) -> str:
+    return f"{label} : {value}"
+
+
+def _build_periodic_report_text(report_type: str, campaign_type: str, media_name: str, row: pd.Series) -> str:
+    imp = int(row.get("노출수", 0))
+    clk = int(row.get("클릭수", 0))
+    ctr = float(row.get("CTR(%)", 0.0))
+    cost = int(row.get("광고비", 0))
+
+    lines = [
+        report_type,
+        f"- {campaign_type} ({media_name})",
+        _format_report_line("노출수", f"{imp:,}"),
+        _format_report_line("클릭수", f"{clk:,}"),
+        _format_report_line("클릭률", f"{ctr:.2f}%"),
+        _format_report_line("클릭이 많았던 키워드", "-"),
+        _format_report_line("광고 소진비용", f"{cost:,}원"),
+        "",
+        "요약 지면 지금이 확인하기에는 좋아서 UI나 UX변형 크게 없이",
+        "보고서용으로 지금 서식으로만 내보낼 수 있으면 좋겠는데",
+    ]
+    return "\n".join(lines)
+
 def page_media(engine, f):
     st.markdown("<div class='nv-sec-title'>🌐 매체 및 지역 효율 분석</div>", unsafe_allow_html=True)
     meta = get_meta(engine)
@@ -196,6 +221,35 @@ def page_media(engine, f):
 
     df_media = calc_metrics(df_media)
     df_region = calc_metrics(df_region)
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    with st.expander("📝 주간/월간 보고서 서식 내보내기", expanded=False):
+        c1, c2, c3 = st.columns([1.2, 1.4, 1.4])
+        report_type = c1.selectbox("보고서 타입", ["주간보고서", "월간보고서"], key="media_report_type")
+
+        campaign_options = sorted(df_raw["캠페인유형"].astype(str).unique().tolist())
+        sel_campaign = c2.selectbox("캠페인 유형", campaign_options, key="media_report_campaign")
+
+        media_options = sorted(
+            df_raw[df_raw["캠페인유형"].astype(str) == sel_campaign]["매체이름"].astype(str).unique().tolist()
+        )
+        sel_media = c3.selectbox("매체 이름", media_options, key="media_report_media")
+
+        report_df = df_raw[
+            (df_raw["캠페인유형"].astype(str) == sel_campaign)
+            & (df_raw["매체이름"].astype(str) == sel_media)
+        ][["노출수", "클릭수", "광고비"]].sum().to_frame().T
+        report_df["CTR(%)"] = np.where(report_df["노출수"] > 0, (report_df["클릭수"] / report_df["노출수"]) * 100, 0.0)
+
+        report_text = _build_periodic_report_text(report_type, sel_campaign, sel_media, report_df.iloc[0])
+        st.code(report_text, language="text")
+        st.download_button(
+            "📥 보고서 txt 내보내기",
+            data=report_text,
+            file_name=f"{report_type}_{sel_campaign}_{sel_media}_{d1}_{d2}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
     
     fmt = {"노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}", "전환수": "{:,.1f}", "전환매출": "{:,.0f}", "ROAS(%)": "{:,.2f}%", "CPA(원)": "{:,.0f}", "CTR(%)": "{:,.2f}%"}
 
