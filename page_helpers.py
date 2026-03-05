@@ -108,6 +108,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         try:
             basic_filter_container = st.container(border=True)
         except TypeError:
+            # 구버전 Streamlit 호환: border 파라미터 미지원
             basic_filter_container = st.container()
 
         with basic_filter_container:
@@ -128,6 +129,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             account_sel = ui_multiselect(st, "광고주(계정) 필터", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
 
             if st.button("✅ 필터 적용", key="btn_apply_filters", use_container_width=True):
+                # 사용자가 명시적으로 접지 않는 한 필터 박스는 유지한다.
                 st.session_state["filters_expanded"] = True
                 st.rerun()
 
@@ -138,8 +140,14 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
     st.session_state["filters_v8"] = sv
 
+    prev_manager_count = len(st.session_state.get("_prev_manager_sel", []))
+    prev_account_count = len(st.session_state.get("_prev_account_sel", []))
+    cur_manager_count = len(manager_sel or [])
+    cur_account_count = len(account_sel or [])
     st.session_state["_prev_manager_sel"] = manager_sel or []
     st.session_state["_prev_account_sel"] = account_sel or []
+
+    # 담당자/계정 선택 시 필터가 자동으로 접히지 않도록 동작 제거
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
 
@@ -206,6 +214,7 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
         
     roas_delta_col = "ROAS 증감(%)"
+    # 배포 버전/수정 과정에서 컬럼명이 오타(ROAS 증(%))로 생성되어도 안전하게 흡수
     if roas_delta_col not in out.columns and "ROAS 증(%)" in out.columns:
         out[roas_delta_col] = out["ROAS 증(%)"]
     if roas_delta_col not in out.columns:
@@ -220,15 +229,15 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        if "▲" in val: return "color: #e11d48; font-weight: 700;"
-        if "▼" in val: return "color: #2563eb; font-weight: 700;"
+        if "▲" in val: return "color: #e11d48; font-weight: 700;" # Red (상승)
+        if "▼" in val: return "color: #2563eb; font-weight: 700;" # Blue (하락)
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
-    pass
+    pass # 사용하지 않는 예전 위젯
 
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
-    pass
+    pass # 사용하지 않는 예전 위젯
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
@@ -436,13 +445,13 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             background:#f8fafc;
             border:1px solid #d9e4f2;
             border-radius:14px;
-            padding:16px;
+            padding:12px;
             margin-top:10px;
             margin-bottom:24px;
             box-shadow:0 4px 12px rgba(15,23,42,0.06);
         }}
         .cmp-title {{
-            font-size:15px;
+            font-size:14px;
             font-weight:900;
             color:#0f172a;
             margin-bottom:6px;
@@ -450,19 +459,19 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         }}
         .cmp-desc {{
             text-align:center;
-            font-size:13px;
+            font-size:12px;
             color:#64748b;
-            margin-bottom:10px;
+            margin-bottom:8px;
         }}
         .cmp-boards {{
             display:grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap:10px;
+            gap:8px;
             align-items:stretch;
         }}
         .cmp-board {{
             border-radius:12px;
-            padding:10px 12px;
+            padding:8px 10px;
             border:1px solid #d7deea;
             background:#ffffff;
         }}
@@ -471,19 +480,19 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             border-color:#bfd8ff;
         }}
         .cmp-board-head {{
-            font-size:13px;
+            font-size:12px;
             font-weight:900;
             text-align:center;
-            margin-bottom:5px;
-            padding-bottom:7px;
+            margin-bottom:4px;
+            padding-bottom:6px;
             border-bottom:1px dashed #dbe4f0;
             color:#334155;
         }}
 
         .cmp-row {{
             border-top:1px dashed #dbe4f0;
-            padding:8px 0;
-            min-height:56px;
+            padding:6px 0;
+            min-height:44px;
             display:flex;
             flex-direction:column;
             justify-content:center;
@@ -499,14 +508,14 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         }}
         .cmp-label {{
             font-weight:800;
-            font-size:14px;
+            font-size:12px;
             color:#334155;
             line-height:1.2;
         }}
         .cmp-value {{
             color:#0f172a;
             font-weight:900;
-            font-size:24px;
+            font-size:17px;
             line-height:1.1;
             letter-spacing:-0.3px;
         }}
@@ -514,14 +523,14 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             color:#dc2626;
         }}
         .cmp-sub {{
-            margin-top:3px;
+            margin-top:2px;
             display:flex;
             justify-content:flex-end;
-            gap:6px;
+            gap:4px;
             align-items:center;
-            min-height:18px;
+            min-height:14px;
             text-align:right;
-            font-size:12px;
+            font-size:11px;
             line-height:1.3;
         }}
         .cmp-sub-muted {{
@@ -529,10 +538,10 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             font-weight:700;
         }}
         .delta-chip {{
-            font-size:11px;
+            font-size:10px;
             font-weight:800;
             border-radius:999px;
-            padding:2px 7px;
+            padding:1px 6px;
             display:inline-block;
         }}
         .delta-up {{ background:#fee2e2; color:#dc2626; }}
@@ -545,9 +554,10 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
                 grid-template-columns: 1fr;
             }}
             .cmp-value {{
-                font-size:20px;
+                font-size:15px;
             }}
         }}
     </style>
     """).strip()
-    st.components.v1.html(html, height=560, scrolling=False)
+    comp_height = 200 + (len(rows) * 50)
+    st.components.v1.html(html, height=max(460, comp_height), scrolling=False)
