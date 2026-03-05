@@ -1,7 +1,11 @@
+from datetime import date
+import textwrap
+
+import pandas as pd
+import streamlit as st
+
+
 def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_base: pd.DataFrame, name_col: str, d1: date, d2: date, b1: date, b2: date):
-    import streamlit as st
-    import pandas as pd
-    
     items_cur = set(df_cur[name_col].dropna().astype(str).unique()) if not df_cur.empty and name_col in df_cur.columns else set()
     items_base = set(df_base[name_col].dropna().astype(str).unique()) if not df_base.empty and name_col in df_base.columns else set()
     
@@ -134,10 +138,11 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
         def _board_rows(items: list[dict], is_right: bool = False) -> str:
             html_rows = ""
-            for r in items:
+            for idx, r in enumerate(items):
+                zebra = "odd" if idx % 2 == 0 else "even"
                 if is_right:
                     html_rows += f"""
-                    <div class='cmp-row'>
+                    <div class='cmp-row {zebra}'>
                         <div class='cmp-top'>
                             <span class='cmp-label'>{r['label']}</span>
                             <span class='cmp-value'>{r['curr']}</span>
@@ -150,7 +155,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
                     """
                 else:
                     html_rows += f"""
-                    <div class='cmp-row'>
+                    <div class='cmp-row {zebra}'>
                         <div class='cmp-top'>
                             <span class='cmp-label'>{r['label']}</span>
                             <span class='cmp-value'>{r['base']}</span>
@@ -163,105 +168,144 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         right_rows = _board_rows(rows, is_right=True)
 
         html = textwrap.dedent(f"""\
-        <div class='cmp-wrapper'>
+        <div class='cmp-wrap'>
             <div class='cmp-title'>✨ [{selected}] 성과 비교 상세 요약</div>
             <div class='cmp-boards'>
-                <div class='cmp-board left'>
+                <section class='cmp-board left'>
                     <div class='cmp-board-head'>⚪ 비교 기간 ({b1} ~ {b2})</div>
                     {left_rows}
-                </div>
-                <div class='cmp-board right'>
+                </section>
+                <section class='cmp-board right'>
                     <div class='cmp-board-head'>🔵 선택 기간 ({d1} ~ {d2})</div>
                     {right_rows}
-                </div>
+                </section>
             </div>
         </div>
+
         <style>
-            .cmp-wrapper {{
-                background:linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
-                border:1px solid #d9e4f2;
+            .cmp-wrap {{
+                background:#f8fafc;
+                border:1px solid #dbe3ef;
                 border-radius:14px;
                 padding:18px;
-                margin-top:8px;
+                margin-top:10px;
                 margin-bottom:24px;
-                box-shadow:0 4px 12px rgba(15,23,42,0.06);
+                box-shadow:0 2px 10px rgba(15,23,42,.05);
             }}
+
             .cmp-title {{
                 font-size:18px;
                 font-weight:900;
                 color:#0f172a;
                 margin-bottom:14px;
                 text-align:center;
-                letter-spacing:-0.2px;
+                letter-spacing:-0.01em;
             }}
+
             .cmp-boards {{
                 display:grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
+                grid-template-columns:1fr 1fr;
                 gap:14px;
             }}
+
             .cmp-board {{
                 border-radius:12px;
-                padding:12px 14px;
+                padding:14px 16px;
+                min-height:460px;
             }}
+
             .cmp-board.left {{
                 background:#ffffff;
                 border:1px solid #cbd5e1;
             }}
+
             .cmp-board.right {{
-                background:#eff6ff;
+                background:#eef4ff;
                 border:2px solid #bfdbfe;
             }}
+
             .cmp-board-head {{
                 font-size:14px;
                 font-weight:900;
                 text-align:center;
-                margin-bottom:8px;
-                padding-bottom:8px;
-                border-bottom:1px dashed #dbe4f0;
+                padding-bottom:10px;
+                margin-bottom:2px;
+                border-bottom:1px dashed #d7e2f0;
             }}
+
             .cmp-board.left .cmp-board-head {{ color:#64748b; }}
             .cmp-board.right .cmp-board-head {{ color:#1d4ed8; }}
 
             .cmp-row {{
                 border-top:1px dashed #dbe4f0;
-                padding:10px 0;
+                padding:12px 2px;
             }}
-            .cmp-row:first-of-type {{
-                border-top:none;
-                padding-top:4px;
-            }}
+
+            .cmp-row.odd {{ background:rgba(148,163,184,.04); }}
+            .cmp-row.even {{ background:transparent; }}
+
             .cmp-top {{
                 display:flex;
                 justify-content:space-between;
-                align-items:center;
+                align-items:baseline;
                 gap:12px;
             }}
-            .cmp-board.left .cmp-label, .cmp-board.right .cmp-label {{
+
+            .cmp-board.left .cmp-label {{
+                color:#334155;
                 font-weight:800;
-                font-size:15px;
+                font-size:16px;
             }}
-            .cmp-board.left .cmp-label {{ color:#334155; }}
-            .cmp-board.right .cmp-label {{ color:#1e40af; }}
-            .cmp-board.left .cmp-value, .cmp-board.right .cmp-value {{
+
+            .cmp-board.left .cmp-value {{
+                color:#0f172a;
+                font-weight:800;
+                font-size:33px;
+                line-height:1.05;
+                letter-spacing:-0.02em;
+            }}
+
+            .cmp-board.right .cmp-label {{
+                color:#1e40af;
+                font-weight:900;
+                font-size:37px;
+            }}
+
+            .cmp-board.right .cmp-value {{
                 color:#0f172a;
                 font-weight:900;
-                font-size:33px;
-                line-height:1.1;
+                font-size:32px;
+                line-height:1.02;
+                letter-spacing:-0.02em;
             }}
-            .cmp-sub {{
-                margin-top:2px;
-                text-align:right;
-                font-size:14px;
-            }}
-            .rate {{ color:#64748b; font-weight:700; }}
 
-            @media (max-width: 1100px) {{
+            .cmp-sub {{
+                margin-top:5px;
+                text-align:right;
+                font-size:15px;
+                font-weight:700;
+            }}
+
+            .rate {{
+                color:#64748b;
+                font-weight:800;
+                margin-left:6px;
+            }}
+
+            @media (max-width: 980px) {{
                 .cmp-boards {{
-                    grid-template-columns: 1fr;
+                    grid-template-columns:1fr;
+                }}
+                .cmp-board {{
+                    min-height:auto;
+                }}
+                .cmp-board.left .cmp-value,
+                .cmp-board.right .cmp-value {{
+                    font-size:28px;
                 }}
             }}
         </style>
         """).strip()
         # Markdown 파서 상태에 따라 HTML이 코드블록으로 노출되는 이슈를 피하기 위해
         # 컴포넌트 HTML 렌더러를 사용한다.
-        st.components.v1.html(html, height=640, scrolling=False)
+        st.components.v1.html(html, height=620, scrolling=False)
