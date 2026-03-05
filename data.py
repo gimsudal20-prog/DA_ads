@@ -289,7 +289,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
 
     rank_col = None
     kw_fact_cols = get_table_columns(_engine, "fact_keyword_daily")
-    for candidate in ["avg_rank", "averageposition", "average_position", "avgrnk"]:
+    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
         if candidate in kw_fact_cols:
             rank_col = candidate
             break
@@ -348,7 +348,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
 
     rank_col = None
     ad_fact_cols = get_table_columns(_engine, "fact_ad_daily")
-    for candidate in ["avg_rank", "averageposition", "average_position", "avgrnk"]:
+    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
         if candidate in ad_fact_cols:
             rank_col = candidate
             break
