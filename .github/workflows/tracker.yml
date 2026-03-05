@@ -31,9 +31,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Collector for TODAY (실시간 꺼짐 감지)
+      - name: Run OFF Scanner (실시간 꺼짐 감지)
         run: |
-          TODAY=$(date +'%Y-%m-%d')
-          echo "🕵️ $TODAY 당일 캠페인 예산 소진 상태를 실시간으로 추적합니다..."
-          # --skip_dim 옵션을 써서 무거운 작업은 빼고, '꺼짐 상태'만 초고속으로 싹 긁어옵니다.
-          python collector.py --date $TODAY --skip_dim --workers 10
+          NOW=$(date +'%Y-%m-%d %H:%M:%S')
+          echo "🕵️ [$NOW] 캠페인/광고그룹 예산 소진 꺼짐 상태를 스캔합니다..."
+          # tracker는 꺼짐 로그 전용(check_off.py)으로 실행해 누락 가능성을 줄입니다.
+          python check_off.py
