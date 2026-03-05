@@ -70,7 +70,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     df = _perf_common_merge_meta(bundle, meta)
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-        "campaign_name": "페인", "imp": "노출", "clk": "클릭",
+        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭",
         "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
     view = _add_perf_metrics(view)
@@ -85,7 +85,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if "avg_rank" in view.columns:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
-    tab_main, tab_group, tab_cmp = st.tabs(["종합 성과", "그룹별 성과", "기간 비교"])
+    tab_main, tab_group, tab_cmp = st.tabs(["종합 성과", "그룹 성과", "기간 비교"])
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
@@ -113,7 +113,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if kw_bundle_cur is None or kw_bundle_cur.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
-            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in kw_bundle_cur.columns]
+            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in kw_bundle_cur.columns]
             val_cols = [c for c in ["imp", "clk", "cost", "conv", "sales"] if c in kw_bundle_cur.columns]
             if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
