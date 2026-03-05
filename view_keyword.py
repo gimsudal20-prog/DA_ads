@@ -115,8 +115,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
             is_shopping = view_shop["캠페인유형"] == "쇼핑검색"
-            is_not_ext = ~view_shop["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
-            view_shop = view_shop[is_shopping & is_not_ext].copy()
+            ext_by_name = view_shop["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
+            ext_by_title = (view_shop["ad_title"].astype(str).str.match(r'^\[[^\]]+\]$', na=False) if "ad_title" in view_shop.columns else pd.Series(False, index=view_shop.index))
+            ext_by_image = (view_shop["image_url"].fillna("").astype(str).str.strip().str.lower().isin(["", "nan", "none"]) if "image_url" in view_shop.columns else pd.Series(True, index=view_shop.index))
+            is_ext = ext_by_name | (ext_by_title & ext_by_image)
+            view_shop = view_shop[is_shopping & ~is_ext].copy()
 
             if not view_shop.empty:
                 for c in ["노출", "클릭", "광고비", "전환", "전환매출"]: view_shop[c] = pd.to_numeric(view_shop.get(c, 0), errors="coerce").fillna(0)
@@ -125,12 +128,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0)
                 view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
-                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
+                if "image_url" in view_shop.columns:
+                    view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
+                if "ad_title" in view_shop.columns:
+                    view_shop = view_shop.rename(columns={"ad_title": "노출용 상품명"})
+
+                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                 if "avg_rank" in view_shop.columns:
                     view_shop["평균순위"] = view_shop["avg_rank"].apply(_format_avg_rank)
                     base_cols_shop.append("평균순위")
 
-                metrics_cols_shop = ["출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+                metrics_cols_shop = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
                 c1, c2 = st.columns([2, 2])
                 with c1:
@@ -148,7 +156,18 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 disp_shop = view_shop[final_cols_shop].sort_values("광고비", ascending=False).head(top_n)
 
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>상품/소재별 상세 성과 표</div>", unsafe_allow_html=True)
-                render_big_table(disp_shop.style.format(fmt), "shop_general_grid_main", 500)
+                if "소재이미지" in disp_shop.columns:
+                    st.dataframe(
+                        disp_shop,
+                        use_container_width=True,
+                        height=500,
+                        hide_index=True,
+                        column_config={
+                            "소재이미지": st.column_config.ImageColumn("소재이미지", help="소재 이미지", width="small"),
+                        },
+                    )
+                else:
+                    render_big_table(disp_shop.style.format(fmt), "shop_general_grid_main", 500)
             else:
                 st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
         else:
@@ -195,7 +214,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
                     
                     styled_cmp = disp.style.format(fmt)
-                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증(%)", "전환 증감"] if c in disp.columns]
                     if delta_cols:
                         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
                         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
@@ -254,8 +273,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
                 is_shopping = view["캠페인유형"] == "쇼핑검색"
-                is_not_ext = ~view["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
-                view = view[is_shopping & is_not_ext].copy()
+                ext_by_name = view["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
+                ext_by_title = (view["ad_title"].astype(str).str.match(r'^\[[^\]]+\]$', na=False) if "ad_title" in view.columns else pd.Series(False, index=view.index))
+                ext_by_image = (view["image_url"].fillna("").astype(str).str.strip().str.lower().isin(["", "nan", "none"]) if "image_url" in view.columns else pd.Series(True, index=view.index))
+                is_ext = ext_by_name | (ext_by_title & ext_by_image)
+                view = view[is_shopping & ~is_ext].copy()
                 
                 if view.empty:
                     st.info("비교할 일반 상품 데이터가 없습니다.")
@@ -266,7 +288,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                     
-                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "상품/소재명"]
+                    if "image_url" in view.columns:
+                        view = view.rename(columns={"image_url": "소재이미지"})
+                    if "ad_title" in view.columns:
+                        view = view.rename(columns={"ad_title": "노출용 상품명"})
+
+                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     if "avg_rank" in view.columns:
                         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
                         base_cols.append("평균순위")
