@@ -13,6 +13,22 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta
 
+
+def _format_report_line(label: str, value: str) -> str:
+    return f"{label} : {value}"
+
+
+def _build_periodic_report_text(report_type: str, campaign_type: str, imp: float, clk: float, ctr: float, cost: float) -> str:
+    return "\n".join([
+        report_type,
+        f"- {campaign_type} (전체)",
+        _format_report_line("노출수", f"{int(imp):,}"),
+        _format_report_line("클릭수", f"{int(clk):,}"),
+        _format_report_line("클릭률", f"{float(ctr):.2f}%"),
+        _format_report_line("클릭이 많았던 키워드", "-"),
+        _format_report_line("광고 소진비용", f"{int(cost):,}원"),
+    ])
+
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f: return
     
@@ -103,6 +119,26 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     else:
         insight = f"광고비({cost_delta:+.1f}%)와 전환({conv_delta:+.1f}%)이 유사하게 움직이고 있습니다."
     st.info(f"🧭 KPI 해석: {insight}")
+
+    with st.expander("📝 주간/월간 보고서 내보내기", expanded=True):
+        report_type = st.radio("보고서 타입", ["주간보고서", "월간보고서"], horizontal=True, key="overview_report_type")
+        campaign_label = ", ".join(type_sel) if type_sel else "전체"
+        report_text = _build_periodic_report_text(
+            report_type=report_type,
+            campaign_type=campaign_label,
+            imp=float(cur.get("imp", 0.0) or 0.0),
+            clk=float(cur.get("clk", 0.0) or 0.0),
+            ctr=float(cur.get("ctr", 0.0) or 0.0),
+            cost=float(cur.get("cost", 0.0) or 0.0),
+        )
+        st.code(report_text, language="text")
+        st.download_button(
+            "📥 요약 보고서 txt 내보내기",
+            data=report_text,
+            file_name=f"{report_type}_요약_{f['start']}_{f['end']}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
     
     alerts = []
     cur_roas = cur_summary.get('roas', 0)
