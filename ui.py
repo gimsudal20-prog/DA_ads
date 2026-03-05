@@ -40,7 +40,6 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
             except Exception:
                 pass
 
-    # 직관적이고 꽉 찬 헤더 레이아웃
     html_str = f"""
     <div style='background: #FFFFFF; border: 1px solid #E4E4E4; padding: 20px 32px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;'>
         <div style='display: flex; align-items: center; gap: 20px;'>
@@ -83,9 +82,9 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#375FFF" # 블루 (여유)
-        if v >= 100: c = "#FC503D" # 레드 (초과)
-        elif v >= 90: c = "#F67514" # 오렌지 (주의)
+        c = "#375FFF"
+        if v >= 100: c = "#FC503D"
+        elif v >= 90: c = "#F67514"
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -100,8 +99,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             val = row[c]
             if c == "상태":
                 v_str = str(val)
-                # 색상 + 텍스트를 함께 사용해 접근성을 강화한 상태 배지
-                bg, text, icon = "#F1F5F9", "#475569", "●" # 미설정 (그레이)
+                bg, text, icon = "#F1F5F9", "#475569", "●"
                 if "적정" in v_str: bg, text, icon = "#E6F4EA", "#047857", "✓"
                 elif "주의" in v_str: bg, text, icon = "#FFF4E5", "#B45309", "!"
                 elif "초과" in v_str: bg, text, icon = "#FEE2E2", "#B91C1C", "▲"
@@ -120,7 +118,6 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y1_data = df[y1_col].fillna(0).tolist()
     y2_data = df[y2_col].fillna(0).tolist()
 
-    # ✨ [NEW] 막대는 브랜드 블루, 선은 다크그레이로 세팅
     options = {
         "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#19191A", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
@@ -134,6 +131,25 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
         "series": [
             {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#375FFF", "borderRadius": [2,2,0,0]}}, 
             {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#19191A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+        ]
+    }
+    st_echarts(options=options, height=f"{height}px")
+
+
+def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: str, y_name: str, height: int = 300):
+    if df.empty: return
+    x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
+    y_data = df[y_col].fillna(0).tolist()
+
+    options = {
+        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#19191A", "fontWeight": 700}, "left": "left", "top": 0},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
+        "legend": {"data": [y_name], "bottom": 0},
+        "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#E4E4E4"}}}],
+        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F4F4F4"}}}],
+        "series": [
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#375FFF"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
