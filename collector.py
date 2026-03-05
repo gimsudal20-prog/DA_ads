@@ -138,7 +138,7 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
                 conn.execute(text("""
@@ -159,6 +159,11 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN image_url TEXT"))
             except Exception: pass
             
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
+            except Exception: pass
+
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
@@ -341,7 +346,7 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             "dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")),
             "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas
         }
-        if id_key in ["keyword_id", "ad_id"]:
+        if id_key in ["campaign_id", "keyword_id", "ad_id"]:
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
         
@@ -498,7 +503,7 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             "imp": s["imp"], "clk": s["clk"], "cost": cost,
             "conv": s["conv"], "sales": sales, "roas": roas
         }
-        if pk_name in ["keyword_id", "ad_id"]:
+        if pk_name in ["campaign_id", "keyword_id", "ad_id"]:
             row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
@@ -596,7 +601,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
             if dfs.get("CAMPAIGN") is not None:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"])
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
             else:
                 c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
@@ -665,7 +670,7 @@ def main():
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
     
     print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print(f"🚀🚀🚀 [ 현재 수 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
