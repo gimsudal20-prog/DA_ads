@@ -102,11 +102,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 rtmp = group_view.copy()
                 rtmp["avg_rank"] = pd.to_numeric(rtmp["avg_rank"], errors="coerce").fillna(0.0)
                 rtmp["노출"] = pd.to_numeric(rtmp["노출"], errors="coerce").fillna(0.0)
+                rtmp["_rank_imp"] = rtmp["avg_rank"] * rtmp["노출"]
                 rank_grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in rtmp.columns]
                 if rank_grp_cols:
-                    rank_agg = rtmp.groupby(rank_grp_cols, as_index=False).apply(
-                        lambda g: (g["avg_rank"] * g["노출"]).sum() / g["노출"].sum() if g["노출"].sum() > 0 else np.nan
-                    ).reset_index(name="avg_rank")
+                    rank_agg = rtmp.groupby(rank_grp_cols, as_index=False)[["_rank_imp", "노출"]].sum()
+                    rank_agg["avg_rank"] = np.where(rank_agg["노출"] > 0, rank_agg["_rank_imp"] / rank_agg["노출"], np.nan)
+                    rank_agg = rank_agg[rank_grp_cols + ["avg_rank"]]
                     grouped = grouped.merge(rank_agg, on=rank_grp_cols, how="left")
                     grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
 
