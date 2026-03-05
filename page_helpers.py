@@ -329,21 +329,24 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         def fmt_krw(v): return f"{int(v):,}원"
         def fmt_num(v): return f"{int(v):,}"
         def fmt_pct(v): return f"{v:.1f}%"
-        
+
         def calc_detail_delta(c, b, is_currency=False, is_pct=False):
             diff = c - b
-            if b == 0 and c > 0: return "<span style='color:#e11d48; font-weight:700;'>▲ 신규 발생</span>"
-            if diff == 0: return "<span style='color:#888;'>변동 없음</span>"
-            
+            if b == 0 and c > 0:
+                return "신규"
+            if diff == 0:
+                return "변동 없음"
+
             sign = "▲" if diff > 0 else "▼"
-            color = "#e11d48" if diff > 0 else "#2563eb"
-            
-            if is_currency: abs_val = f"{int(abs(diff)):,}원"
-            elif is_pct: abs_val = f"{abs(diff):.1f}%p"
-            else: abs_val = f"{int(abs(diff)):,}" if diff.is_integer() else f"{abs(diff):.1f}"
-                
+            if is_currency:
+                abs_val = f"{int(abs(diff)):,}원"
+            elif is_pct:
+                abs_val = f"{abs(diff):.1f}%p"
+            else:
+                abs_val = f"{int(abs(diff)):,}" if diff.is_integer() else f"{abs(diff):.1f}"
+
             word = "증가" if diff > 0 else "감소"
-            return f"<span style='color:{color}; font-weight:800; font-size:15px;'>{sign} {abs_val} {word}</span>"
+            return f"{sign} {abs_val} {word}"
 
         def calc_delta_rate(c, b):
             if b == 0 and c > 0:
@@ -352,45 +355,65 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
                 return "0.0%"
             return f"{((c - b) / b) * 100:+.1f}%"
 
+        def metric_row(label, value_html, tone="base"):
+            label_color = "#475569" if tone == "base" else "#1e40af"
+            return (
+                "<div style='display:flex; align-items:center; justify-content:space-between; padding:7px 0;'>"
+                f"<span style='color:{label_color}; font-weight:700;'>{label}</span>"
+                f"<span style='font-weight:800; color:#0f172a;'>{value_html}</span>"
+                "</div>"
+            )
+
+        def delta_chip_text(delta_text: str):
+            if delta_text == "변동 없음":
+                return "<span style='color:#64748b; font-weight:700;'>변동 없음</span>"
+            if delta_text == "신규":
+                return "<span style='color:#e11d48; font-weight:800;'>▲ 신규</span>"
+            if delta_text.startswith("▲"):
+                return f"<span style='color:#e11d48; font-weight:800;'>{delta_text}</span>"
+            return f"<span style='color:#2563eb; font-weight:800;'>{delta_text}</span>"
+
         def selected_metric_row(label, value_html, delta_html, delta_rate):
             return (
-                f"<span style='color:#1e40af;'>{label}:</span> "
-                f"<span style='font-weight:700; color:#0f172a; float:right;'>{value_html}</span><br>"
-                f"<span style='color:#60a5fa; font-size:12px;'>증감:</span> "
-                f"<span style='float:right; font-size:12px;'>{delta_html} "
-                f"<span style='color:#64748b; font-weight:700;'>({delta_rate})</span></span><br>"
+                "<div style='padding:7px 0;'>"
+                "<div style='display:flex; align-items:center; justify-content:space-between;'>"
+                f"<span style='color:#1e40af; font-weight:700;'>{label}</span>"
+                f"<span style='font-weight:800; color:#0f172a;'>{value_html}</span>"
+                "</div>"
+                "<div style='display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:2px;'>"
+                f"{delta_chip_text(delta_html)}"
+                f"<span style='color:#64748b; font-size:12px; font-weight:700;'>({delta_rate})</span>"
+                "</div>"
+                "</div>"
             )
-            
+
         html = textwrap.dedent(f"""\
         <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
             <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
                 ✨ [{selected}] 성과 비교 상세 요약
             </div>
-            <div style='display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;'>
-                
-                <div style='flex: 1; min-width: 220px; background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #cbd5e1;'>
-                    <div style='font-size: 13px; font-weight: 700; color: #64748b; margin-bottom: 12px; text-align:center;'>⚪ 비교 기간 ({b1} ~ {b2})</div>
-                    <div style='font-size: 14px; line-height: 1.8;'>
-                        <span style='color:#475569;'>광고비:</span> <span style='font-weight:600; float:right;'>{fmt_krw(b_cost)}</span><br>
-                        <span style='color:#475569;'>전환매출:</span> <span style='font-weight:600; float:right;'>{fmt_krw(b_sales)}</span><br>
-                        <span style='color:#475569;'>ROAS:</span> <span style='font-weight:600; float:right;'>{fmt_pct(b_roas)}</span><hr style='margin:8px 0; border:0; border-top:1px dashed #e2e8f0;'>
-                        <span style='color:#475569;'>노출수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_imp)}</span><br>
-                        <span style='color:#475569;'>클릭수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_clk)}</span><br>
-                        <span style='color:#475569;'>전환수:</span> <span style='font-weight:600; float:right;'>{fmt_num(b_conv)}</span>
-                    </div>
+            <div style='display:grid; grid-template-columns: 1fr 1fr; gap: 14px;'>
+
+                <div style='background-color: #ffffff; padding: 14px 16px; border-radius: 10px; border: 1px solid #cbd5e1;'>
+                    <div style='font-size: 13px; font-weight: 700; color: #64748b; margin-bottom: 8px; text-align:center;'>⚪ 비교 기간 ({b1} ~ {b2})</div>
+                    {metric_row("광고비", fmt_krw(b_cost), "base")}
+                    {metric_row("전환매출", fmt_krw(b_sales), "base")}
+                    {metric_row("ROAS", fmt_pct(b_roas), "base")}
+                    <hr style='margin:6px 0; border:0; border-top:1px dashed #e2e8f0;'>
+                    {metric_row("노출수", fmt_num(b_imp), "base")}
+                    {metric_row("클릭수", fmt_num(b_clk), "base")}
+                    {metric_row("전환수", fmt_num(b_conv), "base")}
                 </div>
 
-                <div style='flex: 1; min-width: 220px; background-color: #eff6ff; padding: 16px; border-radius: 8px; border: 2px solid #bfdbfe;'>
-                    <div style='font-size: 13px; font-weight: 700; color: #1d4ed8; margin-bottom: 12px; text-align:center;'>🔵 선택 기간 ({d1} ~ {d2})</div>
-                    <div style='font-size: 14px; line-height: 1.8;'>
-                        {selected_metric_row("광고비", fmt_krw(c_cost), calc_detail_delta(c_cost, b_cost, is_currency=True), calc_delta_rate(c_cost, b_cost))}
-                        {selected_metric_row("전환매출", fmt_krw(c_sales), calc_detail_delta(c_sales, b_sales, is_currency=True), calc_delta_rate(c_sales, b_sales))}
-                        {selected_metric_row("ROAS", f"<span style='font-weight:800; color:#dc2626;'>{fmt_pct(c_roas)}</span>", calc_detail_delta(c_roas, b_roas, is_pct=True), calc_delta_rate(c_roas, b_roas))}
-                        <hr style='margin:8px 0; border:0; border-top:1px dashed #93c5fd;'>
-                        {selected_metric_row("노출수", fmt_num(c_imp), calc_detail_delta(c_imp, b_imp), calc_delta_rate(c_imp, b_imp))}
-                        {selected_metric_row("클릭수", fmt_num(c_clk), calc_detail_delta(c_clk, b_clk), calc_delta_rate(c_clk, b_clk))}
-                        {selected_metric_row("전환수", fmt_num(c_conv), calc_detail_delta(c_conv, b_conv), calc_delta_rate(c_conv, b_conv))}
-                    </div>
+                <div style='background-color: #eff6ff; padding: 14px 16px; border-radius: 10px; border: 2px solid #bfdbfe;'>
+                    <div style='font-size: 13px; font-weight: 700; color: #1d4ed8; margin-bottom: 8px; text-align:center;'>🔵 선택 기간 ({d1} ~ {d2})</div>
+                    {selected_metric_row("광고비", fmt_krw(c_cost), calc_detail_delta(c_cost, b_cost, is_currency=True), calc_delta_rate(c_cost, b_cost))}
+                    {selected_metric_row("전환매출", fmt_krw(c_sales), calc_detail_delta(c_sales, b_sales, is_currency=True), calc_delta_rate(c_sales, b_sales))}
+                    {selected_metric_row("ROAS", f"<span style='font-weight:800; color:#dc2626;'>{fmt_pct(c_roas)}</span>", calc_detail_delta(c_roas, b_roas, is_pct=True), calc_delta_rate(c_roas, b_roas))}
+                    <hr style='margin:6px 0; border:0; border-top:1px dashed #93c5fd;'>
+                    {selected_metric_row("노출수", fmt_num(c_imp), calc_detail_delta(c_imp, b_imp), calc_delta_rate(c_imp, b_imp))}
+                    {selected_metric_row("클릭수", fmt_num(c_clk), calc_detail_delta(c_clk, b_clk), calc_delta_rate(c_clk, b_clk))}
+                    {selected_metric_row("전환수", fmt_num(c_conv), calc_detail_delta(c_conv, b_conv), calc_delta_rate(c_conv, b_conv))}
                 </div>
 
             </div>
@@ -398,4 +421,4 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         """).strip()
         # Markdown 파서 상태에 따라 HTML이 코드블록으로 노출되는 이슈를 피하기 위해
         # 컴포넌트 HTML 렌더러를 사용한다.
-        st.components.v1.html(html, height=460, scrolling=False)
+        st.components.v1.html(html, height=420, scrolling=False)
