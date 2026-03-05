@@ -7,12 +7,33 @@ import numpy as np
 import streamlit as st
 from typing import Dict
 
-from data import query_campaign_bundle
+from data import query_campaign_bundle, query_ad_bundle
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
+
+def _format_avg_rank(value):
+    num = pd.to_numeric(value, errors="coerce")
+    if pd.isna(num) or num <= 0:
+        return "미수집"
+    return f"{num:.1f}위"
+
+
+def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
+    for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
+        if c in view.columns:
+            view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+
+    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
+    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
+    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
+    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+    return view
+
+
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
-    if not f.get("ready", False): return
+    if not f.get("ready", False):
+        return
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []))
@@ -20,26 +41,25 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     top_n = int(f.get("top_n_campaign", 200))
 
     bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
-    if bundle is None or bundle.empty: return
+    if bundle is None or bundle.empty:
+        return
 
     df = _perf_common_merge_meta(bundle, meta)
-    
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", 
+        "campaign_name": "캠페인", "imp": "노출", "clk": "클릭",
         "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
-    
-    for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
-        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+    view = _add_perf_metrics(view)
 
-    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
-    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
-    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
-    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+    if "avg_rank" in view.columns:
+        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
-    tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
-    fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
+    tab_main, tab_group, tab_cmp = st.tabs(["종합 성과", "그룹별 성과", "기간 비교"])
+    fmt = {
+        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
+        "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
+    }
 
     with tab_main:
         if not view.empty and "캠페인" in view.columns:
@@ -49,44 +69,101 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             sel_camp_main = "전체"
 
         disp_main = view.copy()
-        if sel_camp_main != "전체": disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
+        if sel_camp_main != "전체":
+            disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
 
         base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
+        if "평균순위" in disp_main.columns:
+            base_cols.append("평균순위")
         metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>성과 데이터</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         render_big_table(disp_main.style.format(fmt), "camp_grid_main", 550)
+
+    with tab_group:
+        ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=30000, top_k=50)
+        if ad_bundle is None or ad_bundle.empty:
+            st.info("광고그룹 성과 데이터가 없습니다.")
+        else:
+            ad_df = _perf_common_merge_meta(ad_bundle, meta)
+            group_view = ad_df.rename(columns={
+                "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
+                "campaign_name": "캠페인", "adgroup_id": "adgroup_id", "adgroup_name": "광고그룹",
+                "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+            }).copy()
+
+            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"] if c in group_view.columns]
+            sum_cols = [c for c in ["노출", "클릭", "광고비", "전환", "전환매출"] if c in group_view.columns]
+            grouped = group_view.groupby(grp_cols, as_index=False)[sum_cols].sum() if grp_cols and sum_cols else pd.DataFrame()
+
+            if "avg_rank" in group_view.columns and not group_view.empty:
+                rtmp = group_view.copy()
+                rtmp["avg_rank"] = pd.to_numeric(rtmp["avg_rank"], errors="coerce").fillna(0.0)
+                rtmp["노출"] = pd.to_numeric(rtmp["노출"], errors="coerce").fillna(0.0)
+                rank_grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in rtmp.columns]
+                if rank_grp_cols:
+                    rank_agg = rtmp.groupby(rank_grp_cols, as_index=False).apply(
+                        lambda g: (g["avg_rank"] * g["노출"]).sum() / g["노출"].sum() if g["노출"].sum() > 0 else np.nan
+                    ).reset_index(name="avg_rank")
+                    grouped = grouped.merge(rank_agg, on=rank_grp_cols, how="left")
+                    grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
+
+            if grouped.empty:
+                st.info("광고그룹 성과 데이터가 없습니다.")
+            else:
+                c1, c2 = st.columns([2, 2])
+                with c1:
+                    camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
+                    sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
+
+                if sel_camp != "전체" and "캠페인" in grouped.columns:
+                    grouped = grouped[grouped["캠페인"] == sel_camp]
+
+                grouped = _add_perf_metrics(grouped)
+                base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
+                if "평균순위" in grouped.columns:
+                    base_cols_grp.append("평균순위")
+                metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+                cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
+                disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
+
+                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>광고그룹별 성과 데이터</div>", unsafe_allow_html=True)
+                render_big_table(disp_grp.style.format(fmt), "camp_group_grid", 550)
 
     with tab_cmp:
         opts = get_dynamic_cmp_options(f["start"], f["end"])
         cmp_opts = [o for o in opts if o != "비교 안함"]
-        
+
         cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
 
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
-        
+
         view_cmp = view.copy()
         if not base_bundle.empty:
             valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view_cmp.columns and k in base_bundle.columns]
-            if valid_keys: view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
+            if valid_keys:
+                view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
 
-        # ✨ [NEW] 항목 선택 시 상세 증감 수치(좌우 대조표) 오픈
         base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
         render_item_comparison_search("캠페인", view_cmp, base_for_search, "캠페인", f["start"], f["end"], b1, b2)
 
+        base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
+        if "평균순위" in view_cmp.columns:
+            base_cols_cmp.append("평균순위")
         metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
-        final_cols_cmp = [c for c in base_cols + metrics_cols_cmp if c in view_cmp.columns]
+        final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
 
-        # ✨ [NEW] 표 자체에는 색상과 퍼센트 증감만 직관적으로 표시
         styled_cmp = disp_cmp.style.format(fmt)
         delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp_cmp.columns]
         if delta_cols:
-            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+            try:
+                styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+            except AttributeError:
+                styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
