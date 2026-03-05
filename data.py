@@ -46,7 +46,7 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     try:
         with _engine.connect() as conn: return pd.read_sql(text(query), conn, params=params)
     except Exception as e:
-        st.error(f"데이터베이스 조회 중 오류가 발생했습니다: {e}")
+        st.error(f"데이터베이스 조회 중 오류가 발했습니다: {e}")
         return pd.DataFrame()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
@@ -248,11 +248,24 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
+    rank_col = None
+    camp_fact_cols = get_table_columns(_engine, "fact_campaign_daily")
+    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
+        if candidate in camp_fact_cols:
+            rank_col = candidate
+            break
+
+    rank_agg_sql = ""
+    rank_select_sql = ""
+    if rank_col:
+        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+        rank_select_sql = ", agg.avg_rank"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, campaign_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
             FROM fact_campaign_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, campaign_id
@@ -260,7 +273,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         SELECT 
             agg.customer_id, agg.campaign_id, 
             c.campaign_name, c.{cp_col} as campaign_type,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
