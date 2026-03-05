@@ -287,12 +287,23 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
+    rank_col = None
+    kw_fact_cols = get_table_columns(_engine, "fact_keyword_daily")
+    for candidate in ["avg_rank", "averageposition", "average_position", "avgrnk"]:
+        if candidate in kw_fact_cols:
+            rank_col = candidate
+            break
+
+    rank_agg_sql = ""
+    if rank_col:
+        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+
     # 🔥 [핵심] JOIN에 agg.customer_id를 모두 추가하여 인덱스 풀가동 (100배 빨라짐)
     sql = f"""
         WITH agg AS (
             SELECT customer_id, keyword_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
             FROM fact_keyword_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, keyword_id
@@ -333,12 +344,23 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
+    rank_col = None
+    ad_fact_cols = get_table_columns(_engine, "fact_ad_daily")
+    for candidate in ["avg_rank", "averageposition", "average_position", "avgrnk"]:
+        if candidate in ad_fact_cols:
+            rank_col = candidate
+            break
+
+    rank_agg_sql = ""
+    if rank_col:
+        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+
     # 🔥 [핵심] 소재 데이터도 완벽한 인덱스 매칭 및 INNER JOIN 적용
     sql = f"""
         WITH agg AS (
             SELECT customer_id, ad_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
             FROM fact_ad_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, ad_id
