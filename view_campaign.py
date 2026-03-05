@@ -7,7 +7,7 @@ import numpy as np
 import streamlit as st
 from typing import Dict
 
-from data import query_campaign_bundle, query_ad_bundle
+from data import query_campaign_bundle, query_keyword_bundle
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
@@ -31,6 +31,18 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
+def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if kw_bundle is None or kw_bundle.empty or "avg_rank" not in kw_bundle.columns:
+        return pd.DataFrame(columns=keys + ["avg_rank"])
+    tmp = kw_bundle.copy()
+    tmp["imp"] = pd.to_numeric(tmp.get("imp", 0), errors="coerce").fillna(0.0)
+    tmp["avg_rank"] = pd.to_numeric(tmp.get("avg_rank", np.nan), errors="coerce")
+    tmp["_rank_imp"] = tmp["avg_rank"].fillna(0.0) * tmp["imp"]
+    grp = tmp.groupby(keys, as_index=False)[["_rank_imp", "imp"]].sum()
+    grp["avg_rank"] = np.where(grp["imp"] > 0, grp["_rank_imp"] / grp["imp"], np.nan)
+    return grp[keys + ["avg_rank"]]
+
+
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
@@ -44,6 +56,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if bundle is None or bundle.empty:
         return
 
+    kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
+
     df = _perf_common_merge_meta(bundle, meta)
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
@@ -52,6 +66,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     }).copy()
     view = _add_perf_metrics(view)
 
+    if not kw_bundle_cur.empty:
+        rank_map_camp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id"])
+        if not rank_map_camp.empty:
+            view = view.merge(rank_map_camp, on=["customer_id", "campaign_id"], how="left")
     if "avg_rank" in view.columns:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
@@ -62,11 +80,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
 
     with tab_main:
-        if not view.empty and "캠페인" in view.columns:
-            camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].unique() if str(x).strip()])
-            sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
-        else:
-            sel_camp_main = "전체"
+        camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
+        sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
 
         disp_main = view.copy()
         if sel_camp_main != "전체":
@@ -83,42 +98,28 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         render_big_table(disp_main.style.format(fmt), "camp_grid_main", 550)
 
     with tab_group:
-        ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=30000, top_k=50)
-        if ad_bundle is None or ad_bundle.empty:
+        if kw_bundle_cur is None or kw_bundle_cur.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
-            ad_df = _perf_common_merge_meta(ad_bundle, meta)
-            group_view = ad_df.rename(columns={
-                "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
-                "campaign_name": "캠페인", "adgroup_id": "adgroup_id", "adgroup_name": "광고그룹",
-                "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
-            }).copy()
-
-            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"] if c in group_view.columns]
-            sum_cols = [c for c in ["노출", "클릭", "광고비", "전환", "전환매출"] if c in group_view.columns]
-            grouped = group_view.groupby(grp_cols, as_index=False)[sum_cols].sum() if grp_cols and sum_cols else pd.DataFrame()
-
-            if "avg_rank" in group_view.columns and not group_view.empty:
-                rtmp = group_view.copy()
-                rtmp["avg_rank"] = pd.to_numeric(rtmp["avg_rank"], errors="coerce").fillna(0.0)
-                rtmp["노출"] = pd.to_numeric(rtmp["노출"], errors="coerce").fillna(0.0)
-                rtmp["_rank_imp"] = rtmp["avg_rank"] * rtmp["노출"]
-                rank_grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in rtmp.columns]
-                if rank_grp_cols:
-                    rank_agg = rtmp.groupby(rank_grp_cols, as_index=False)[["_rank_imp", "노출"]].sum()
-                    rank_agg["avg_rank"] = np.where(rank_agg["노출"] > 0, rank_agg["_rank_imp"] / rank_agg["노출"], np.nan)
-                    rank_agg = rank_agg[rank_grp_cols + ["avg_rank"]]
-                    grouped = grouped.merge(rank_agg, on=rank_grp_cols, how="left")
-                    grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
-
-            if grouped.empty:
+            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in kw_bundle_cur.columns]
+            val_cols = [c for c in ["imp", "clk", "cost", "conv", "sales"] if c in kw_bundle_cur.columns]
+            if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
             else:
-                c1, c2 = st.columns([2, 2])
-                with c1:
-                    camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
-                    sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
+                grp = kw_bundle_cur.groupby(grp_cols, as_index=False)[val_cols].sum()
+                grp = _perf_common_merge_meta(grp, meta)
+                grouped = grp.rename(columns={
+                    "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인",
+                    "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+                }).copy()
 
+                rank_map_grp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id", "adgroup_id"])
+                if not rank_map_grp.empty:
+                    grouped = grouped.merge(rank_map_grp, on=["customer_id", "campaign_id", "adgroup_id"], how="left")
+                    grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
+
+                camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
+                sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
                 if sel_camp != "전체" and "캠페인" in grouped.columns:
                     grouped = grouped[grouped["캠페인"] == sel_camp]
 
@@ -136,17 +137,22 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     with tab_cmp:
         opts = get_dynamic_cmp_options(f["start"], f["end"])
         cmp_opts = [o for o in opts if o != "비교 안함"]
-
         cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
 
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
+        base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
 
         view_cmp = view.copy()
         if not base_bundle.empty:
-            valid_keys = [k for k in ['customer_id', 'campaign_id'] if k in view_cmp.columns and k in base_bundle.columns]
+            valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
             if valid_keys:
                 view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
+
+        if not base_kw_bundle.empty:
+            base_rank_map = _keyword_rank_by_keys(base_kw_bundle, ["customer_id", "campaign_id"]).rename(columns={"avg_rank": "base_avg_rank"})
+            if not base_rank_map.empty:
+                view_cmp = view_cmp.merge(base_rank_map, on=["customer_id", "campaign_id"], how="left")
 
         base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
         render_item_comparison_search("캠페인", view_cmp, base_for_search, "캠페인", f["start"], f["end"], b1, b2)
