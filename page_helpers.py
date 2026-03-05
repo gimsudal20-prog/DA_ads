@@ -355,15 +355,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
                 return "0.0%"
             return f"{((c - b) / b) * 100:+.1f}%"
 
-        def metric_row(label, value_html, tone="base"):
-            label_color = "#475569" if tone == "base" else "#1e40af"
-            return (
-                "<div style='display:flex; align-items:center; justify-content:space-between; padding:7px 0;'>"
-                f"<span style='color:{label_color}; font-weight:700;'>{label}</span>"
-                f"<span style='font-weight:800; color:#0f172a;'>{value_html}</span>"
-                "</div>"
-            )
-
         def delta_chip_text(delta_text: str):
             if delta_text == "변동 없음":
                 return "<span style='color:#64748b; font-weight:700;'>변동 없음</span>"
@@ -373,52 +364,102 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
                 return f"<span style='color:#e11d48; font-weight:800;'>{delta_text}</span>"
             return f"<span style='color:#2563eb; font-weight:800;'>{delta_text}</span>"
 
-        def selected_metric_row(label, value_html, delta_html, delta_rate):
-            return (
-                "<div style='padding:7px 0;'>"
-                "<div style='display:flex; align-items:center; justify-content:space-between;'>"
-                f"<span style='color:#1e40af; font-weight:700;'>{label}</span>"
-                f"<span style='font-weight:800; color:#0f172a;'>{value_html}</span>"
-                "</div>"
-                "<div style='display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:2px;'>"
-                f"{delta_chip_text(delta_html)}"
-                f"<span style='color:#64748b; font-size:12px; font-weight:700;'>({delta_rate})</span>"
-                "</div>"
-                "</div>"
-            )
+        rows = [
+            {
+                "label": "광고비",
+                "base": fmt_krw(b_cost),
+                "curr": fmt_krw(c_cost),
+                "delta": calc_detail_delta(c_cost, b_cost, is_currency=True),
+                "rate": calc_delta_rate(c_cost, b_cost),
+            },
+            {
+                "label": "전환매출",
+                "base": fmt_krw(b_sales),
+                "curr": fmt_krw(c_sales),
+                "delta": calc_detail_delta(c_sales, b_sales, is_currency=True),
+                "rate": calc_delta_rate(c_sales, b_sales),
+            },
+            {
+                "label": "ROAS",
+                "base": fmt_pct(b_roas),
+                "curr": f"<span style='font-weight:800; color:#dc2626;'>{fmt_pct(c_roas)}</span>",
+                "delta": calc_detail_delta(c_roas, b_roas, is_pct=True),
+                "rate": calc_delta_rate(c_roas, b_roas),
+            },
+            {
+                "label": "노출수",
+                "base": fmt_num(b_imp),
+                "curr": fmt_num(c_imp),
+                "delta": calc_detail_delta(c_imp, b_imp),
+                "rate": calc_delta_rate(c_imp, b_imp),
+            },
+            {
+                "label": "클릭수",
+                "base": fmt_num(b_clk),
+                "curr": fmt_num(c_clk),
+                "delta": calc_detail_delta(c_clk, b_clk),
+                "rate": calc_delta_rate(c_clk, b_clk),
+            },
+            {
+                "label": "전환수",
+                "base": fmt_num(b_conv),
+                "curr": fmt_num(c_conv),
+                "delta": calc_detail_delta(c_conv, b_conv),
+                "rate": calc_delta_rate(c_conv, b_conv),
+            },
+        ]
+
+        row_html = ""
+        for r in rows:
+            row_html += f"""
+            <div class='cmp-row'>
+                <div class='cmp-cell metric'>{r['label']}</div>
+                <div class='cmp-cell base'>{r['base']}</div>
+                <div class='cmp-cell curr'>
+                    <div class='curr-top'>{r['curr']}</div>
+                    <div class='curr-sub'>{delta_chip_text(r['delta'])} <span class='rate'>({r['rate']})</span></div>
+                </div>
+            </div>
+            """
 
         html = textwrap.dedent(f"""\
-        <div style='background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 8px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);'>
-            <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-bottom: 16px; text-align: center;'>
-                ✨ [{selected}] 성과 비교 상세 요약
+        <div style='background-color:#f8fafc; border:2px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:8px; margin-bottom:24px; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);'>
+            <div style='font-size:16px; font-weight:800; color:#0f172a; margin-bottom:14px; text-align:center;'>✨ [{selected}] 성과 비교 상세 요약</div>
+            <div class='cmp-head'>
+                <div></div>
+                <div>⚪ 비교 기간 ({b1} ~ {b2})</div>
+                <div>🔵 선택 기간 ({d1} ~ {d2})</div>
             </div>
-            <div style='display:grid; grid-template-columns: 1fr 1fr; gap: 14px;'>
-
-                <div style='background-color: #ffffff; padding: 14px 16px; border-radius: 10px; border: 1px solid #cbd5e1;'>
-                    <div style='font-size: 13px; font-weight: 700; color: #64748b; margin-bottom: 8px; text-align:center;'>⚪ 비교 기간 ({b1} ~ {b2})</div>
-                    {metric_row("광고비", fmt_krw(b_cost), "base")}
-                    {metric_row("전환매출", fmt_krw(b_sales), "base")}
-                    {metric_row("ROAS", fmt_pct(b_roas), "base")}
-                    <hr style='margin:6px 0; border:0; border-top:1px dashed #e2e8f0;'>
-                    {metric_row("노출수", fmt_num(b_imp), "base")}
-                    {metric_row("클릭수", fmt_num(b_clk), "base")}
-                    {metric_row("전환수", fmt_num(b_conv), "base")}
-                </div>
-
-                <div style='background-color: #eff6ff; padding: 14px 16px; border-radius: 10px; border: 2px solid #bfdbfe;'>
-                    <div style='font-size: 13px; font-weight: 700; color: #1d4ed8; margin-bottom: 8px; text-align:center;'>🔵 선택 기간 ({d1} ~ {d2})</div>
-                    {selected_metric_row("광고비", fmt_krw(c_cost), calc_detail_delta(c_cost, b_cost, is_currency=True), calc_delta_rate(c_cost, b_cost))}
-                    {selected_metric_row("전환매출", fmt_krw(c_sales), calc_detail_delta(c_sales, b_sales, is_currency=True), calc_delta_rate(c_sales, b_sales))}
-                    {selected_metric_row("ROAS", f"<span style='font-weight:800; color:#dc2626;'>{fmt_pct(c_roas)}</span>", calc_detail_delta(c_roas, b_roas, is_pct=True), calc_delta_rate(c_roas, b_roas))}
-                    <hr style='margin:6px 0; border:0; border-top:1px dashed #93c5fd;'>
-                    {selected_metric_row("노출수", fmt_num(c_imp), calc_detail_delta(c_imp, b_imp), calc_delta_rate(c_imp, b_imp))}
-                    {selected_metric_row("클릭수", fmt_num(c_clk), calc_detail_delta(c_clk, b_clk), calc_delta_rate(c_clk, b_clk))}
-                    {selected_metric_row("전환수", fmt_num(c_conv), calc_detail_delta(c_conv, b_conv), calc_delta_rate(c_conv, b_conv))}
-                </div>
-
-            </div>
+            {row_html}
         </div>
+        <style>
+            .cmp-head {{
+                display:grid;
+                grid-template-columns: 120px 1fr 1.25fr;
+                gap:10px;
+                font-size:13px;
+                font-weight:800;
+                margin-bottom:8px;
+            }}
+            .cmp-head > div:nth-child(2) {{ color:#64748b; text-align:center; }}
+            .cmp-head > div:nth-child(3) {{ color:#1d4ed8; text-align:center; }}
+
+            .cmp-row {{
+                display:grid;
+                grid-template-columns: 120px 1fr 1.25fr;
+                gap:10px;
+                align-items:center;
+                border-top:1px dashed #dbe4f0;
+                padding:9px 0;
+            }}
+            .cmp-cell.metric {{ color:#334155; font-weight:800; }}
+            .cmp-cell.base {{ color:#0f172a; font-weight:700; text-align:right; padding-right:8px; }}
+            .cmp-cell.curr {{ text-align:right; }}
+            .curr-top {{ color:#0f172a; font-weight:800; }}
+            .curr-sub {{ margin-top:2px; font-size:13px; }}
+            .rate {{ color:#64748b; font-weight:700; }}
+        </style>
         """).strip()
         # Markdown 파서 상태에 따라 HTML이 코드블록으로 노출되는 이슈를 피하기 위해
         # 컴포넌트 HTML 렌더러를 사용한다.
-        st.components.v1.html(html, height=420, scrolling=False)
+        st.components.v1.html(html, height=500, scrolling=False)
