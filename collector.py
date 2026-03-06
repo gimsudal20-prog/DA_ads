@@ -27,7 +27,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 load_dotenv(override=True)
@@ -40,22 +40,10 @@ CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
 
-def get_env_int(name: str, default: int, min_value: int = 1, max_value: int = 50) -> int:
-    try:
-        value = int(os.getenv(name, str(default)).strip())
-    except Exception:
-        value = default
-    return max(min_value, min(max_value, value))
-
-STATS_CHUNK_SIZE = get_env_int("STATS_CHUNK_SIZE", 50, min_value=10, max_value=200)
-STATS_WORKERS = get_env_int("STATS_WORKERS", 6, min_value=1, max_value=20)
-CAMPAIGN_WORKERS = get_env_int("CAMPAIGN_WORKERS", 4, min_value=1, max_value=12)
-DIM_WORKERS = get_env_int("DIM_WORKERS", 8, min_value=1, max_value=20)
-
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
-SKIP_KEYWORD_STATS = False
-SKIP_AD_STATS = False
+SKIP_KEYWORD_STATS = False  
+SKIP_AD_STATS = False       
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -69,8 +57,6 @@ if not API_KEY or not API_SECRET:
 
 # ✨ [SPEED UP] 네이버 API 통신 연결(Session) 재사용으로 네트워크 딜레이 최소화
 thread_local = threading.local()
-_table_cols_cache: Dict[str, set[str]] = {}
-_table_cols_lock = threading.Lock()
 
 def get_session():
     if not hasattr(thread_local, "session"):
@@ -99,7 +85,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
     url = BASE_URL + path
     max_retries = 4
     session = get_session()
-
+    
     for attempt in range(max_retries):
         headers = make_headers(method, path, customer_id)
         try:
@@ -112,7 +98,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 continue
             data = None
             try: data = r.json()
-            except Exception: data = r.text
+            except Exception as e: data = r.text
             if raise_error and r.status_code >= 400:
                 raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
@@ -126,7 +112,7 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     try:
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
-    except Exception:
+    except Exception as e:
         return False, None
 
 # ✨ [SPEED UP] DB 연결을 맺고 끊기를 반복하지 않도록 pool_size 할당 및 pool_pre_ping 활성화
@@ -135,11 +121,11 @@ def get_engine() -> Engine:
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return create_engine(
-        db_url,
-        pool_size=15,
-        max_overflow=30,
-        pool_pre_ping=True,
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"},
+        db_url, 
+        pool_size=15, 
+        max_overflow=30, 
+        pool_pre_ping=True, 
+        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"}, 
         future=True
     )
 
@@ -150,485 +136,286 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, keyword TEXT, adgroup_id TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, ad_name TEXT, ad_title TEXT, ad_desc TEXT, adgroup_id TEXT, status TEXT, pc_landing_url TEXT, thumbnail_url TEXT, PRIMARY KEY(customer_id, ad_id))"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_off_log (dt DATE, customer_id TEXT, campaign_id TEXT, event_type TEXT, reason TEXT, ts TIMESTAMP DEFAULT NOW())"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_competitor_keyword (
-                    dt DATE,
-                    customer_id TEXT,
-                    adgroup_id TEXT,
-                    keyword_id TEXT,
-                    keyword TEXT,
-                    rank INTEGER,
-                    ad_name TEXT,
-                    domain TEXT,
-                    mobile_url TEXT,
-                    pc_url TEXT,
-                    bid_price BIGINT,
-                    naver_id TEXT,
-                    collected_at TIMESTAMP DEFAULT NOW(),
-                    PRIMARY KEY(dt, customer_id, adgroup_id, keyword_id, rank)
-                )"""))
-                conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS sales BIGINT DEFAULT 0"))
-                conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS sales BIGINT DEFAULT 0"))
-                conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS sales BIGINT DEFAULT 0"))
-                conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS roas DOUBLE PRECISION DEFAULT 0"))
-                conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS roas DOUBLE PRECISION DEFAULT 0"))
-                conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS roas DOUBLE PRECISION DEFAULT 0"))
-                conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS thumbnail_url TEXT"))
-                conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS pc_landing_url TEXT"))
-                conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT"))
-                conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_desc TEXT"))
-                try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
+                        dt DATE,
+                        customer_id TEXT,
+                        campaign_id TEXT,
+                        off_time TEXT,
+                        PRIMARY KEY(dt, customer_id, campaign_id)
+                    )
+                """))
+            
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN mobile_landing_url TEXT"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN creative_text TEXT"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN image_url TEXT"))
+            except Exception: pass
+            
+            try:
+                with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-                except Exception:
-                    pass
-                try:
+            except Exception: pass
+
+            try:
+                with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-                except Exception:
-                    pass
-                try:
+            except Exception: pass
+
+            try:
+                with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-                except Exception:
-                    pass
-            return
+            except Exception: pass
+            break
         except Exception as e:
-            if attempt == 2: die(f"테이블 생성 실패: {e}")
-            time.sleep(2)
+            time.sleep(3)
+            if attempt == 2: raise e
 
-def split_chunks(items: List[Any], chunk_size: int) -> List[List[Any]]:
-    return [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
+def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
+    if not rows: return
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    pk_str = ", ".join([f'"{c}"' for c in pk_cols])
+    conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols]) if update_cols else f'ON CONFLICT ({pk_str}) DO NOTHING'
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    
+    tuples = list(df.itertuples(index=False, name=None))
+    for attempt in range(3):
+        raw_conn, cur = None, None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            raw_conn.commit()
+            break
+        except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except Exception as ex: pass
+            time.sleep(3)
+        finally:
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
 
-def fetch_customer_list_from_api() -> List[Dict[str, Any]]:
-    ok, data = safe_call("GET", "/ncc/customers", CUSTOMER_ID)
-    if not ok or not isinstance(data, list): return []
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    if not rows: return
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+    
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
+            break
+        except Exception as e:
+            time.sleep(3)
+            
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    tuples = list(df.itertuples(index=False, name=None))
+    
+    for attempt in range(3):
+        raw_conn, cur = None, None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            raw_conn.commit()
+            break
+        except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except Exception: pass
+            time.sleep(3)
+        finally:
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
+
+def list_campaigns(customer_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
+    return data if ok and isinstance(data, list) else []
+
+def list_adgroups(customer_id: str, campaign_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": campaign_id})
+    return data if ok and isinstance(data, list) else []
+
+def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/keywords", customer_id, {"nccAdgroupId": adgroup_id})
+    return data if ok and isinstance(data, list) else []
+
+def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
+    return data if ok and isinstance(data, list) else []
+
+def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
+    ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
+    return data if ok and isinstance(data, list) else []
+
+def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
+    ad_inner = ad_obj.get("ad", {})
+    
+    image_url = ""
+    if "image" in ad_inner and isinstance(ad_inner["image"], dict):
+        image_url = ad_inner["image"].get("imageUrl", "")
+    if not image_url:
+        image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
+
+    title = ad_inner.get("headline") or ad_inner.get("title") or ""
+    desc = ad_inner.get("description") or ad_inner.get("desc") or ""
+    
+    if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
+        sp = ad_inner["shoppingProduct"]
+        title = title or sp.get("name") or sp.get("productName") or ""
+        if not image_url:
+            image_url = sp.get("imageUrl", "")
+            
+    if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
+        title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
+
+    if "addPromoText" in ad_inner:
+        desc = desc or ad_inner["addPromoText"]
+        
+    if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
+    if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
+    
+    if not title:
+        for k, v in ad_inner.items():
+            if isinstance(v, dict) and v.get("name"): 
+                title = v.get("name")
+                break
+    if not title: 
+        title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
+    
+    pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
+    m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
+    
+    creative_text = f"{title} | {desc}".strip(" |")
+    if pc_url: creative_text += f" | {pc_url}"
+    
+    return {
+        "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
+        "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
+        "creative_text": str(creative_text)[:500],
+        "image_url": str(image_url)[:1000]
+    }
+
+def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
+    if not ids: return []
     out = []
-    for r in data:
-        cid = str(r.get("customerId", "")).strip()
-        nm = str(r.get("customerName", "")).strip()
-        if cid: out.append({"customer_id": cid, "account_name": nm})
+    d_str = d1.strftime("%Y-%m-%d")
+    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
+    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i+50]
+        params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
+        status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
+        if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
     return out
 
-def sync_dim_account(engine: Engine, candidates: List[Dict[str, str]]):
+def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
+    if not ids: return 0
+    raw_stats = get_stats_range(customer_id, ids, target_date)
+    if not raw_stats: return 0
+    
     rows = []
-    for r in candidates:
-        cid = str(r.get("customer_id", "")).strip()
-        nm = str(r.get("account_name", "")).strip() or cid
-        if cid: rows.append({"customer_id": cid, "account_name": nm})
-    if not rows: return
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM dim_account"))
-        conn.execute(text("INSERT INTO dim_account(customer_id, account_name) VALUES (:customer_id, :account_name)"), rows)
-
-def get_table_columns(engine: Engine, table: str) -> set[str]:
-    with _table_cols_lock:
-        if table in _table_cols_cache:
-            return _table_cols_cache[table]
-
-    cols = {c["name"] for c in inspect(engine).get_columns(table)}
-    with _table_cols_lock:
-        _table_cols_cache[table] = cols
-    return cols
-
-def upsert_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
-    if not rows: return
-
-    try:
-        table_cols = get_table_columns(engine, table)
-    except Exception as e:
-        log(f"⚠️ {table} 컬럼 조회 실패로 저장 스킵: {e}")
-        return
-
-    cols = [c for c in rows[0].keys() if c in table_cols]
-    if not cols:
-        log(f"⚠️ {table} 저장 스킵: 테이블과 매칭되는 컬럼이 없습니다.")
-        return
-
-    safe_pk_cols = [c for c in pk_cols if c in cols]
-    if len(safe_pk_cols) != len(pk_cols):
-        log(f"⚠️ {table} 저장 스킵: 충돌키 컬럼이 테이블에 없어 upsert를 안전하게 수행할 수 없습니다.")
-        return
-
-    filtered_rows = [{k: v for k, v in row.items() if k in cols} for row in rows]
-    col_sql = ",".join(cols)
-    val_sql = ",".join([f":{c}" for c in cols])
-    pk_sql = ",".join(safe_pk_cols)
-    upd_cols = [c for c in cols if c not in safe_pk_cols]
-    upd_sql = ",".join([f"{c}=EXCLUDED.{c}" for c in upd_cols]) if upd_cols else ""
-    sql = f"INSERT INTO {table} ({col_sql}) VALUES ({val_sql}) ON CONFLICT ({pk_sql}) DO UPDATE SET {upd_sql}" if upd_sql else f"INSERT INTO {table} ({col_sql}) VALUES ({val_sql}) ON CONFLICT ({pk_sql}) DO NOTHING"
-    with engine.begin() as conn:
-        conn.execute(text(sql), filtered_rows)
-
-def get_campaigns(customer_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
-    if not ok or not isinstance(data, list): return []
-    return data
-
-def get_adgroups(customer_id: str, campaign_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/adgroups", customer_id, params={"nccCampaignId": campaign_id})
-    if not ok or not isinstance(data, list): return []
-    return data
-
-def get_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/keywords", customer_id, params={"nccAdgroupId": adgroup_id})
-    if not ok or not isinstance(data, list): return []
-    return data
-
-def get_ads(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/ads", customer_id, params={"nccAdgroupId": adgroup_id})
-    if not ok or not isinstance(data, list): return []
-    return data
-
-def extract_ad_thumbnail(ad_row: dict) -> str:
-    direct_candidates = [
-        ad_row.get("thumbnailUrl"),
-        ad_row.get("thumbnailImageUrl"),
-        ad_row.get("imageUrl"),
-    ]
-    for v in direct_candidates:
-        vv = str(v or "").strip()
-        if vv:
-            return vv
-
-    nested_candidates = [
-        ad_row.get("ad", {}),
-        ad_row.get("imageExtension", {}),
-        ad_row.get("product", {}),
-        ad_row.get("shoppingProduct", {}),
-        ad_row.get("catalog", {}),
-    ]
-    key_candidates = [
-        "imageUrl",
-        "thumbnailUrl",
-        "thumbnailImageUrl",
-        "representativeImageUrl",
-        "mainImageUrl",
-        "productImageUrl",
-    ]
-    for item in nested_candidates:
-        if not isinstance(item, dict):
-            continue
-        for key in key_candidates:
-            vv = str(item.get(key, "") or "").strip()
-            if vv:
-                return vv
-    return ""
-
-def collect_dim_for_customer(customer_id: str, account_name: str) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
-    camps_raw = get_campaigns(customer_id)
-    camps, adgs, kws, ads = [], [], [], []
-
-    for c in camps_raw:
-        cid = str(c.get("nccCampaignId", "")).strip()
-        if not cid: continue
-        camps.append({
-            "customer_id": customer_id,
-            "campaign_id": cid,
-            "campaign_name": str(c.get("name", "")).strip(),
-            "campaign_tp": str(c.get("campaignTp", "")).strip(),
-            "status": str(c.get("status", "")).strip(),
-        })
-
-    def _load_adgroups(camp: dict) -> List[dict]:
-        camp_id = camp["campaign_id"]
-        groups = []
-        for g in get_adgroups(customer_id, camp_id):
-            gid = str(g.get("nccAdgroupId", "")).strip()
-            if not gid:
-                continue
-            groups.append({
-                "customer_id": customer_id,
-                "adgroup_id": gid,
-                "adgroup_name": str(g.get("name", "")).strip(),
-                "campaign_id": camp_id,
-                "status": str(g.get("status", "")).strip(),
-            })
-        return groups
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CAMPAIGN_WORKERS) as ex:
-        futs = [ex.submit(_load_adgroups, c) for c in camps]
-        for f in concurrent.futures.as_completed(futs):
-            try:
-                adgs.extend(f.result())
-            except Exception:
-                pass
-
-    def _load_keywords(g: dict) -> List[dict]:
-        gid = g["adgroup_id"]
-        rows = []
-        for k in get_keywords(customer_id, gid):
-            kid = str(k.get("nccKeywordId", "")).strip()
-            if not kid:
-                continue
-            rows.append({
-                "customer_id": customer_id,
-                "keyword_id": kid,
-                "keyword": str(k.get("keyword", "")).strip(),
-                "adgroup_id": gid,
-                "status": str(k.get("status", "")).strip(),
-            })
-        return rows
-
-    def _load_ads(g: dict) -> List[dict]:
-        gid = g["adgroup_id"]
-        rows = []
-        for a in get_ads(customer_id, gid):
-            aid = str(a.get("nccAdId", "")).strip()
-            if not aid:
-                continue
-            ad_name = str(a.get("name", "")).strip()
-            ad_title = ""
-            ad_desc = ""
-            thumb = extract_ad_thumbnail(a)
-            pc_url = str(a.get("pcFinalUrl", "") or a.get("pcFinalUrl2", "") or "").strip()
-
-            info = a.get("ad", {})
-            if isinstance(info, dict):
-                ad_title = str(info.get("title", "")).strip()
-                ad_desc = str(info.get("description", "")).strip()
-                if not thumb:
-                    thumb = str(info.get("imageUrl", "")).strip()
-
-            rows.append({
-                "customer_id": customer_id,
-                "ad_id": aid,
-                "ad_name": ad_name,
-                "ad_title": ad_title,
-                "ad_desc": ad_desc,
-                "adgroup_id": gid,
-                "status": str(a.get("status", "")).strip(),
-                "pc_landing_url": pc_url,
-                "thumbnail_url": thumb
-            })
-        return rows
-
-    if adgs and not SKIP_KEYWORD_DIM:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=DIM_WORKERS) as ex:
-            futs = [ex.submit(_load_keywords, g) for g in adgs]
-            for f in concurrent.futures.as_completed(futs):
-                try:
-                    kws.extend(f.result())
-                except Exception:
-                    pass
-
-    if adgs and not SKIP_AD_DIM:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=DIM_WORKERS) as ex:
-            futs = [ex.submit(_load_ads, g) for g in adgs]
-            for f in concurrent.futures.as_completed(futs):
-                try:
-                    ads.extend(f.result())
-                except Exception:
-                    pass
-
-    return camps, adgs, kws, ads
-
-def load_target_ids_from_db(engine: Engine, customer_id: str) -> Tuple[List[str], List[str], List[str]]:
-    campaign_ids, keyword_ids, ad_ids = [], [], []
-    try:
-        with engine.connect() as conn:
-            campaign_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-            keyword_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-            ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-    except Exception:
-        pass
-    return campaign_ids, keyword_ids, ad_ids
-
-def get_stats_range(customer_id: str, ids: List[str], target_date: date) -> List[dict]:
-    if not ids: return []
-    all_rows = []
-    chunks = split_chunks(ids, STATS_CHUNK_SIZE)
-
-    def _call_chunk(chunk_ids: List[str]) -> List[dict]:
-        params = {
-            "ids": ",".join(chunk_ids),
-            "timeRange": f"{target_date.isoformat()},{target_date.isoformat()}",
-            "fields": "impCnt,clkCnt,salesAmt,ccnt,convAmt",
-            "timeIncrement": "all",
-            "breakdown": "no",
-        }
-        ok, data = safe_call("GET", "/stats", customer_id, params=params)
-        if not ok: return []
-        if isinstance(data, list): return data
-        if isinstance(data, dict):
-            return data.get("data", []) if isinstance(data.get("data"), list) else []
-        return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=STATS_WORKERS) as ex:
-        futs = [ex.submit(_call_chunk, ch) for ch in chunks]
-        for f in concurrent.futures.as_completed(futs):
-            try:
-                rows = f.result()
-                if rows: all_rows.extend(rows)
-            except Exception:
-                pass
-    return all_rows
-
-def normalize_stats_rows(rows: List[dict], id_key_candidates: List[str]) -> Dict[str, Dict[str, Any]]:
-    out = {}
-    for r in rows:
-        rid = ""
-        for k in id_key_candidates:
-            if k in r and r.get(k) is not None:
-                rid = str(r.get(k)).strip()
-                break
-        if not rid and "id" in r: rid = str(r.get("id")).strip()
-        if not rid: continue
+    for r in raw_stats:
+        cost = int(float(r.get("salesAmt", 0) or 0))
+        sales = int(float(r.get("convAmt", 0) or 0))
         imp = int(r.get("impCnt", 0) or 0)
         clk = int(r.get("clkCnt", 0) or 0)
-        cost = int(float(r.get("salesAmt", 0) or 0))
-        conv = float(r.get("ccnt", 0) or 0.0)
-        sales = int(float(r.get("convAmt", 0) or 0))
-        if rid not in out:
-            out[rid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0}
-        out[rid]["imp"] += imp
-        out[rid]["clk"] += clk
-        out[rid]["cost"] += cost
-        out[rid]["conv"] += conv
-        out[rid]["sales"] += sales
-    return out
+        conv = float(r.get("ccnt", 0) or 0)
+        roas = (sales / cost * 100) if cost > 0 else 0.0
+        
+        row = {
+            "dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")),
+            "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas
+        }
+        if id_key in ["campaign_id", "keyword_id", "ad_id"]:
+            row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
+        rows.append(row)
+        
+    if rows:
+        replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    return len(rows)
 
-def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], pk_name: str, table_name: str):
-    if not ids: return 0
-    rows = get_stats_range(customer_id, ids, target_date)
-    norm = normalize_stats_rows(rows, [pk_name, "id"])
-    if not norm: return 0
-    data_rows = []
-    for _id, s in norm.items():
-        cost = int(s["cost"])
-        sales = int(s["sales"])
-        roas = (sales / cost * 100.0) if cost > 0 else 0.0
-        data_rows.append({
-            "dt": target_date,
-            "customer_id": customer_id,
-            pk_name: _id,
-            "imp": int(s["imp"]),
-            "clk": int(s["clk"]),
-            "cost": cost,
-            "conv": float(s["conv"]),
-            "sales": sales,
-            "roas": roas,
-            "avg_rnk": 0.0,
-        })
-    upsert_rows(engine, table_name, data_rows, ["dt", "customer_id", pk_name])
-    return len(data_rows)
+def cleanup_ghost_reports(customer_id: str):
+    status, data = request_json("GET", "/stat-reports", customer_id, raise_error=False)
+    if status == 200 and isinstance(data, list):
+        for job in data:
+            if job_id := job.get("reportJobId"):
+                safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
 
-def parse_csv_report(content_bytes: bytes) -> pd.DataFrame:
-    for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-        try:
-            txt = content_bytes.decode(enc, errors="replace")
-            return pd.read_csv(io.StringIO(txt), header=None)
-        except Exception:
-            continue
-    return pd.DataFrame()
-
-def create_report(customer_id: str, report_tp: str, target_date: date, ids: List[str]) -> str:
-    body = {
-        "reportTp": report_tp,
-        "statDt": target_date.strftime("%Y%m%d"),
-        "fields": ["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"],
-        "timeUnit": "SUMMARY",
-        "format": "CSV",
-        "ids": ids
-    }
-    path = "/stat-reports"
-    ok, data = safe_call("POST", path, customer_id, params=None)
-    if ok and isinstance(data, dict) and data.get("reportJobId"):
-        return str(data["reportJobId"])
-    try:
-        _, data = request_json("POST", path, customer_id, json_data=body, raise_error=True)
-        return str(data.get("reportJobId", "")).strip()
-    except Exception:
-        return ""
-
-def download_report(customer_id: str, report_job_id: str) -> pd.DataFrame | None:
-    path = f"/stat-reports/{report_job_id}"
-    try:
-        _, data = request_json("GET", path, customer_id, raise_error=True)
-        if isinstance(data, dict):
-            stt = str(data.get("status", "")).upper()
-            if stt in ["NONE", "ERROR"]:
-                return pd.DataFrame() if stt == "NONE" else None
-            if stt in ["BUILT", "BUILD", "COMPLETED", "READY", "SUCCESS"]:
-                download_url = data.get("downloadUrl") or data.get("url")
-                if not download_url:
-                    return pd.DataFrame()
-                s = get_session()
-                r = s.get(download_url, timeout=TIMEOUT)
-                if r.status_code >= 400:
-                    return None
-                return parse_csv_report(r.content)
-    except Exception:
-        return None
-    return None
-
-def poll_and_collect_reports(customer_id: str, target_date: date, target_campaign_ids: List[str], target_kw_ids: List[str], target_ad_ids: List[str]) -> Dict[str, pd.DataFrame | None]:
-    jobs = {}
-    results = {"CAMPAIGN": None, "KEYWORD": None, "AD": None}
-    spec = [
-        ("CAMPAIGN", target_campaign_ids),
-        ("KEYWORD", target_kw_ids),
-        ("AD", target_ad_ids),
-    ]
-
-    for tp, ids in spec:
-        if not ids:
-            results[tp] = pd.DataFrame()
-            continue
-        job_id = create_report(customer_id, tp, target_date, ids[:50000])
-        if job_id:
-            jobs[tp] = job_id
-        else:
-            results[tp] = None
-
-    max_wait = 40
-    while jobs and max_wait > 0:
-        for tp in list(jobs.keys()):
-            job_id = jobs[tp]
-            path = f"/stat-reports/{job_id}"
-            ok, data = safe_call("GET", path, customer_id)
-            if ok and isinstance(data, dict):
-                stt = str(data.get("status", "")).upper()
-                if stt in ["BUILT", "BUILD", "COMPLETED", "READY", "SUCCESS"]:
-                    df = download_report(customer_id, job_id)
-                    if df is None:
-                        results[tp] = None
-                    else:
-                        if isinstance(df, pd.DataFrame):
-                            results[tp] = df
-                        else:
-                            results[tp] = pd.DataFrame()
-                    safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-                    del jobs[tp]
-                elif stt in ["NONE", "ERROR"]:
-                    results[tp] = pd.DataFrame() if stt == "NONE" else None
-                    safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-                    del jobs[tp]
-        if jobs:
-            time.sleep(1.0)
-        max_wait -= 1
-
-    for job_id in jobs.values():
-        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-
+def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame | None]:
+    cleanup_ghost_reports(customer_id)
+    
+    results = {tp: None for tp in report_types}
+    session = get_session()
+    
+    for i in range(0, len(report_types), 3):
+        batch = report_types[i:i+3]
+        jobs = {}
+        for tp in batch:
+            payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
+            status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
+            if status == 200 and data and "reportJobId" in data:
+                jobs[tp] = data["reportJobId"]
+            time.sleep(0.1)
+            
+        max_wait = 25
+        while jobs and max_wait > 0:
+            for tp, job_id in list(jobs.items()):
+                s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
+                if s_status == 200 and s_data:
+                    stt = s_data.get("status")
+                    if stt == "BUILT":
+                        dl_url = s_data.get("downloadUrl")
+                        if dl_url:
+                            try:
+                                r = session.get(dl_url, timeout=60)
+                                r.encoding = 'utf-8'
+                                txt = r.text.strip()
+                                if txt: 
+                                    results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
+                                else:
+                                    results[tp] = pd.DataFrame()
+                            except Exception: pass
+                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+                        del jobs[tp]
+                    elif stt in ["NONE", "ERROR"]:
+                        results[tp] = pd.DataFrame() if stt == "NONE" else None
+                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+                        del jobs[tp]
+            if jobs: time.sleep(1.0)
+            max_wait -= 1
+            
+        for job_id in jobs.values():
+            safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
+            
     return results
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
-    norm_headers = [str(h).lower().replace(" ", "").replace("_", "").replace("-", "") for h in headers]
-    norm_candidates = [str(c).lower().replace(" ", "").replace("_", "").replace("-", "") for c in candidates]
-
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if c == h:
-                return i
-
-    for c in norm_candidates:
+    for c in candidates:
         for i, h in enumerate(headers):
-            hh = str(h).lower().replace(" ", "").replace("_", "").replace("-", "")
-            if c in hh and "그룹" not in hh:
-                return i
+            if c == h: return i
+    for c in candidates:
+        for i, h in enumerate(headers):
+            if c in h and "그룹" not in h: return i
     return -1
 
 def safe_float(v) -> float:
@@ -646,7 +433,7 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
         if any(c in row_vals for c in pk_cands):
             header_idx = i
             break
-
+            
     if header_idx != -1:
         headers = [str(x).lower().replace(" ", "").replace("_", "") for x in df.iloc[header_idx].fillna("")]
         df = df.iloc[header_idx+1:].reset_index(drop=True)
@@ -656,16 +443,7 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
         imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
         clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
         cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
-        rank_idx = get_col_idx(headers, [
-            "평균노출순위",
-            "평균노출순위(검색)",
-            "노출순위",
-            "averageposition",
-            "average_position",
-            "averageexposurerank",
-            "avgexposurerank",
-            "avgrnk",
-        ])
+        rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
     else:
         if "CAMPAIGN" in report_tp: pk_idx = 2
         elif "KEYWORD" in report_tp: pk_idx = 5
@@ -679,30 +457,30 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
         rank_idx = 11
 
     if pk_idx == -1: return {}
-
+    
     res = {}
     for _, r in df.iterrows():
         try:
             if len(r) <= pk_idx: continue
             obj_id = str(r.iloc[pk_idx]).strip()
             if not obj_id or obj_id == '-': continue
-
+            
             if obj_id not in res:
                 res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-
+            
             imp = 0
             if imp_idx != -1 and len(r) > imp_idx:
                 imp = int(safe_float(r.iloc[imp_idx]))
                 res[obj_id]["imp"] += imp
-            if clk_idx != -1 and len(r) > clk_idx:
+            if clk_idx != -1 and len(r) > clk_idx: 
                 res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
-            if cost_idx != -1 and len(r) > cost_idx:
+            if cost_idx != -1 and len(r) > cost_idx: 
                 res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
-            if conv_idx != -1 and len(r) > conv_idx:
+            if conv_idx != -1 and len(r) > conv_idx: 
                 res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-            if sales_idx != -1 and len(r) > sales_idx:
+            if sales_idx != -1 and len(r) > sales_idx: 
                 res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
-
+            
             if has_rank and rank_idx != -1 and len(r) > rank_idx:
                 rnk = safe_float(r.iloc[rank_idx])
                 if rnk > 0 and imp > 0:
@@ -715,264 +493,184 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
     if not stat_res: return 0
     rows = []
     for k, s in stat_res.items():
-        cost = int(s.get("cost", 0))
-        sales = int(s.get("sales", 0))
+        cost = s["cost"]
+        sales = s["sales"]
         roas = (sales / cost * 100.0) if cost > 0 else 0.0
         avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
+        
         row = {
-            "dt": target_date,
-            "customer_id": customer_id,
-            pk_name: str(k),
-            "imp": int(s.get("imp", 0)),
-            "clk": int(s.get("clk", 0)),
-            "cost": cost,
-            "conv": float(s.get("conv", 0.0)),
-            "sales": sales,
-            "roas": roas,
-            "avg_rnk": round(avg_rnk, 2)
+            "dt": target_date, "customer_id": str(customer_id), pk_name: k,
+            "imp": s["imp"], "clk": s["clk"], "cost": cost,
+            "conv": s["conv"], "sales": sales, "roas": roas
         }
+        if pk_name in ["campaign_id", "keyword_id", "ad_id"]:
+            row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
-    upsert_rows(engine, table_name, rows, ["dt", "customer_id", pk_name])
+    replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
-def fetch_all_competitor_keywords(customer_id: str, adgroup_ids: List[str], target_date: date) -> List[dict]:
-    if not adgroup_ids:
-        return []
-    out_rows = []
-    chunks = split_chunks(adgroup_ids, 20)
-
-    def _fetch_chunk(chunk):
-        local = []
-        for agid in chunk:
-            ok, data = safe_call("GET", "/ncc/keywords", customer_id, params={"nccAdgroupId": agid})
-            if not ok or not isinstance(data, list):
-                continue
-            for kw in data:
-                kid = str(kw.get("nccKeywordId", "")).strip()
-                kw_text = str(kw.get("keyword", "")).strip()
-                if not kid or not kw_text:
-                    continue
-                ok2, comp = safe_call("GET", f"/keywords/{kid}/ads", customer_id)
-                if not ok2 or not isinstance(comp, list):
-                    continue
-                for item in comp:
-                    rank = int(item.get("rank", 0) or 0)
-                    ad_name = str(item.get("adName", "")).strip()
-                    domain = str(item.get("domain", "")).strip()
-                    m_url = str(item.get("mobileUrl", "")).strip()
-                    p_url = str(item.get("pcUrl", "")).strip()
-                    bid = int(float(item.get("bidPrice", 0) or 0))
-                    nid = str(item.get("naverId", "")).strip()
-                    if rank <= 0:
-                        continue
-                    local.append({
-                        "dt": target_date,
-                        "customer_id": customer_id,
-                        "adgroup_id": agid,
-                        "keyword_id": kid,
-                        "keyword": kw_text,
-                        "rank": rank,
-                        "ad_name": ad_name,
-                        "domain": domain,
-                        "mobile_url": m_url,
-                        "pc_url": p_url,
-                        "bid_price": bid,
-                        "naver_id": nid
-                    })
-        return local
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
-        futs = [ex.submit(_fetch_chunk, ch) for ch in chunks]
-        for f in concurrent.futures.as_completed(futs):
-            try:
-                rr = f.result()
-                if rr:
-                    out_rows.extend(rr)
-            except Exception:
-                pass
-    return out_rows
-
-def save_competitor_keywords(engine: Engine, rows: List[dict]):
-    if not rows:
-        return
-    upsert_rows(
-        engine,
-        "fact_competitor_keyword",
-        rows,
-        ["dt", "customer_id", "adgroup_id", "keyword_id", "rank"]
-    )
-
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool=False):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     try:
-        log(f"▶️ [ {account_name} / {customer_id} ] 처리 시작")
-
-        camps, adgs, kws, ads = [], [], [], []
+        target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
+        
         if not skip_dim:
-            camps, adgs, kws, ads = collect_dim_for_customer(customer_id, account_name)
-            if camps: upsert_rows(engine, "dim_campaign", camps, ["customer_id", "campaign_id"])
-            if adgs: upsert_rows(engine, "dim_adgroup", adgs, ["customer_id", "adgroup_id"])
-            if kws: upsert_rows(engine, "dim_keyword", kws, ["customer_id", "keyword_id"])
-            if ads: upsert_rows(engine, "dim_ad", ads, ["customer_id", "ad_id"])
-            upsert_rows(engine, "dim_account", [{"customer_id": customer_id, "account_name": account_name}], ["customer_id"])
-            log(f"   ✅ DIM 저장: 캠페인({len(camps)})/광고그룹({len(adgs)})/키워드({len(kws)})/소재({len(ads)})")
+            camp_list = list_campaigns(customer_id)
+            if not camp_list: return
+                
+            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+            for c in camp_list:
+                cid = c.get("nccCampaignId")
+                if not cid: continue
+                target_camp_ids.append(cid)
+                camp_rows.append({"customer_id": customer_id, "campaign_id": cid, "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")})
+                for g in list_adgroups(customer_id, cid):
+                    gid = g.get("nccAdgroupId")
+                    if not gid: continue
+                    ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
+                    if not SKIP_KEYWORD_DIM:
+                        for k in list_keywords(customer_id, gid):
+                            if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
+                    if not SKIP_AD_DIM:
+                        for a in list_ads(customer_id, gid):
+                            if aid := a.get("nccAdId"): 
+                                target_ad_ids.append(aid)
+                                extracted = extract_ad_creative_fields(a)
+                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
+                        
+                        for ext in list_ad_extensions(customer_id, gid):
+                            if ext_id := ext.get("nccAdExtensionId"):
+                                target_ad_ids.append(ext_id)
+                                ext_info = ext.get("adExtension", {}) or ext
+                                ext_type = ext.get("extensionType", "")
+                                ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
+                                
+                                ad_rows.append({
+                                    "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
+                                    "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, 
+                                    "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
+                                    "creative_text": str(ext_text)[:500], 
+                                    "image_url": ""
+                                })
 
-        target_campaign_ids = [c["campaign_id"] for c in camps] if camps else []
-        target_kw_ids = [k["keyword_id"] for k in kws] if kws else []
-        target_ad_ids = [a["ad_id"] for a in ads] if ads else []
-
-        db_campaign_ids, db_kw_ids, db_ad_ids = load_target_ids_from_db(engine, customer_id)
-        if not target_campaign_ids:
-            target_campaign_ids = db_campaign_ids
-        if not target_kw_ids:
-            target_kw_ids = db_kw_ids
-        if not target_ad_ids:
-            target_ad_ids = db_ad_ids
-
-        if skip_dim and not target_campaign_ids:
-            log(f"   ⚠️ [ {account_name} ] skip_dim 상태에서 DIM ID가 없어 강제로 DIM 1회 수집을 시도합니다.")
-            camps, adgs, kws, ads = collect_dim_for_customer(customer_id, account_name)
-            if camps: upsert_rows(engine, "dim_campaign", camps, ["customer_id", "campaign_id"])
-            if adgs: upsert_rows(engine, "dim_adgroup", adgs, ["customer_id", "adgroup_id"])
-            if kws: upsert_rows(engine, "dim_keyword", kws, ["customer_id", "keyword_id"])
-            if ads: upsert_rows(engine, "dim_ad", ads, ["customer_id", "ad_id"])
-            upsert_rows(engine, "dim_account", [{"customer_id": customer_id, "account_name": account_name}], ["customer_id"])
-            target_campaign_ids = [c["campaign_id"] for c in camps] if camps else []
-            target_kw_ids = [k["keyword_id"] for k in kws] if kws else []
-            target_ad_ids = [a["ad_id"] for a in ads] if ads else []
-
-        if not target_campaign_ids and not target_kw_ids and not target_ad_ids:
-            log(f"   ⚠️ [ {account_name} ] 수집 대상 ID(캠페인/키워드/소재)가 없어 통계를 가져올 수 없습니다.")
-
-        c_cnt = k_cnt = a_cnt = 0
-
-        dfs = poll_and_collect_reports(customer_id, target_date, target_campaign_ids, target_kw_ids, target_ad_ids)
-
-        camp_stat = {}
-        if dfs.get("CAMPAIGN") is not None:
-            camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
+            upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+            upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+            if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+            if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
         else:
-            if target_campaign_ids:
-                raw_camp_stats = get_stats_range(customer_id, target_campaign_ids, target_date)
-                for r in raw_camp_stats:
-                    eid = str(r.get("id"))
-                    cost = int(float(r.get("salesAmt", 0) or 0))
-                    sales = int(float(r.get("convAmt", 0) or 0))
-                    camp_stat[eid] = {
-                        "imp": int(r.get("impCnt", 0) or 0),
-                        "clk": int(r.get("clkCnt", 0) or 0),
-                        "cost": cost,
-                        "conv": float(r.get("ccnt", 0) or 0),
-                        "sales": sales,
-                        "rank_sum": 0.0, "rank_cnt": 0
-                    }
-
-        if camp_stat:
-            c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
+            with engine.connect() as conn:
+                target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
+        
+        if target_date == date.today():
+            log(f"   ⚠️ [ {account_name} ] 당일 데이터 실시간 우회 조회 중...")
+            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
+            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
+            log(f"   📊 [ {account_name} ] 당일 적재: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            
+            log(f"   🕒 [ {account_name} ] 당일 캠페인 예산 소진(꺼짐) 시간 기록 중...")
+            try:
+                realtime_camps = list_campaigns(customer_id)
+                off_rows = []
+                for c in realtime_camps:
+                    status = c.get("status", "")
+                    reason = c.get("statusReason", "")
+                    if "EXHAUSTED" in status or "LIMIT" in reason:
+                        edit_tm = c.get("editTm", "")
+                        if edit_tm:
+                            utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
+                            kst_dt = utc_dt + timedelta(hours=9)
+                            
+                            if kst_dt.date() == target_date:
+                                off_rows.append({
+                                    "dt": target_date,
+                                    "customer_id": str(customer_id),
+                                    "campaign_id": str(c["nccCampaignId"]),
+                                    "off_time": kst_dt.strftime("%H:%M")
+                                })
+                if off_rows:
+                    upsert_many(engine, "fact_campaign_off_log", off_rows, ["dt", "customer_id", "campaign_id"])
+            except Exception as e:
+                log(f"   ⚠️ 꺼짐 시간 기록 실패: {e}")
+                
         else:
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_campaign_ids, "campaign_id", "fact_campaign_daily")
+            report_types = ["CAMPAIGN", "KEYWORD", "AD"]
+            dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
+            
+            c_cnt, k_cnt, a_cnt = 0, 0, 0
+            
+            if dfs.get("CAMPAIGN") is not None:
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
+                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
+            else:
+                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
 
-        kw_stat = {}
-        if not SKIP_KEYWORD_STATS:
             if dfs.get("KEYWORD") is not None:
                 kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid"], has_rank=True)
-                if kw_stat:
-                    k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
-                else:
-                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
             else:
                 k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
 
-        ad_stat = {}
-        if dfs.get("AD") is not None:
-            ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
-            if not ad_stat and target_ad_ids and not SKIP_AD_STATS:
-                raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
-                for r in raw_ad_stats:
+            ad_stat = {}
+            if dfs.get("AD") is not None:
+                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
+            else:
+                if target_ad_ids and not SKIP_AD_STATS:
+                    raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
+                    for r in raw_ad_stats:
+                        eid = str(r.get("id"))
+                        cost = int(float(r.get("salesAmt", 0) or 0))
+                        sales = int(float(r.get("convAmt", 0) or 0))
+                        ad_stat[eid] = {
+                            "imp": int(r.get("impCnt", 0) or 0),
+                            "clk": int(r.get("clkCnt", 0) or 0),
+                            "cost": cost,
+                            "conv": float(r.get("ccnt", 0) or 0),
+                            "sales": sales,
+                            "rank_sum": 0.0, "rank_cnt": 0
+                        }
+            
+            ext_ids = []
+            try:
+                with engine.connect() as conn:
+                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
+                    ext_ids = [str(r[0]) for r in res]
+            except Exception: pass
+                
+            if ext_ids:
+                ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
+                for r in ext_stats_raw:
                     eid = str(r.get("id"))
-                    cost = int(float(r.get("salesAmt", 0) or 0))
-                    sales = int(float(r.get("convAmt", 0) or 0))
-                    ad_stat[eid] = {
-                        "imp": int(r.get("impCnt", 0) or 0),
-                        "clk": int(r.get("clkCnt", 0) or 0),
-                        "cost": cost,
-                        "conv": float(r.get("ccnt", 0) or 0),
-                        "sales": sales,
-                        "rank_sum": 0.0, "rank_cnt": 0
-                    }
-        else:
-            if target_ad_ids and not SKIP_AD_STATS:
-                raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
-                for r in raw_ad_stats:
-                    eid = str(r.get("id"))
-                    cost = int(float(r.get("salesAmt", 0) or 0))
-                    sales = int(float(r.get("convAmt", 0) or 0))
-                    ad_stat[eid] = {
-                        "imp": int(r.get("impCnt", 0) or 0),
-                        "clk": int(r.get("clkCnt", 0) or 0),
-                        "cost": cost,
-                        "conv": float(r.get("ccnt", 0) or 0),
-                        "sales": sales,
-                        "rank_sum": 0.0, "rank_cnt": 0
-                    }
+                    if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+                    ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
+                    ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
+                    ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
+                    ad_stat[eid]["conv"] += float(r.get("ccnt", 0) or 0)
+                    ad_stat[eid]["sales"] += int(float(r.get("convAmt", 0) or 0))
 
-        ext_ids = []
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
-                ext_ids = [str(r[0]) for r in res]
-        except Exception: pass
-
-        if ext_ids:
-            ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
-            for r in ext_stats_raw:
-                eid = str(r.get("id"))
-                if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-                ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
-                ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
-                ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
-                ad_stat[eid]["conv"] += float(r.get("ccnt", 0) or 0)
-                ad_stat[eid]["sales"] += int(float(r.get("convAmt", 0) or 0))
-
-        if ad_stat:
-            a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
-
-        log(f"   📊 [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-
+            if ad_stat:
+                a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
+            
+            log(f"   📊 [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
-
-def build_date_range(single_date: str, start_date: str, end_date: str) -> List[date]:
-    if single_date:
-        return [datetime.strptime(single_date, "%Y-%m-%d").date()]
-
-    if not start_date and not end_date:
-        return [date.today() - timedelta(days=1)]
-
-    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(end_date, "%Y-%m-%d").date()
-    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else start
-    if end < start:
-        start, end = end, start
-
-    days = (end - start).days
-    return [start + timedelta(days=i) for i in range(days + 1)]
 
 def main():
     engine = get_engine()
     ensure_tables(engine)
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
-    parser.add_argument("--start_date", type=str, default="")
-    parser.add_argument("--end_date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
-    parser.add_argument("--skip_dim_after_first", action="store_true")
     parser.add_argument("--workers", type=int, default=10)
     args = parser.parse_args()
-
-    target_dates = build_date_range(args.date, args.start_date, args.end_date)
-
+    
+    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
+    
     print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 수집 일자 범위: {target_dates[0]} ~ {target_dates[-1]} / 총 {len(target_dates)}일 ] 🚀🚀🚀", flush=True)
+    print(f"🚀🚀🚀 [ 현재 수 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
@@ -986,14 +684,14 @@ def main():
                 log(f"⚠️ accounts.xlsx 파싱 실패 (Excel): {e}")
                 try: df_acc = pd.read_csv("accounts.xlsx")
                 except Exception: pass
-
+            
             if df_acc is not None:
                 id_col, name_col = None, None
                 for c in df_acc.columns:
                     c_clean = str(c).replace(" ", "").lower()
                     if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
                     if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
-
+                
                 if id_col and name_col:
                     seen_ids = set()
                     for _, row in df_acc.iterrows():
@@ -1010,25 +708,17 @@ def main():
             except Exception: pass
         if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
-    if not accounts_info:
+    if not accounts_info: 
         log("⚠️ 수집할 계정이 없습니다.")
         return
-
+        
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
-    for idx, target_date in enumerate(target_dates):
-        date_skip_dim = args.skip_dim or (args.skip_dim_after_first and idx > 0)
-        log(f"📆 날짜 처리 시작: {target_date} (skip_dim={date_skip_dim})")
-        started_at = time.time()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, date_skip_dim) for acc in accounts_info]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception:
-                    pass
-        elapsed = int(time.time() - started_at)
-        log(f"📆 날짜 처리 완료: {target_date} (소요 {elapsed}s)")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
+        for future in concurrent.futures.as_completed(futures):
+            try: future.result()
+            except Exception: pass
 
 if __name__ == "__main__":
     main()
