@@ -21,13 +21,29 @@ def _format_report_line(label: str, value: str) -> str:
 def _build_periodic_report_text(report_type: str, campaign_type: str, imp: float, clk: float, ctr: float, cost: float, top_keywords: str) -> str:
     return "\n".join([
         report_type,
-        f"- {campaign_type} (전체)",
+        f"- {campaign_type}",
         _format_report_line("노출수", f"{int(imp):,}"),
         _format_report_line("클릭수", f"{int(clk):,}"),
         _format_report_line("클릭률", f"{float(ctr):.2f}%"),
         _format_report_line("클릭이 많았던 키워드", top_keywords),
         _format_report_line("광고 소진비용", f"{int(cost):,}원"),
     ])
+
+
+def _available_overview_types(selected_types: tuple) -> list:
+    priority = ["파워링크", "쇼핑검색"]
+    if selected_types:
+        avail = [t for t in priority if t in selected_types]
+        if not avail:
+            avail = list(selected_types)
+    else:
+        avail = priority
+    return ["종합"] + avail
+
+
+def _summary_by_type(engine, start_dt, end_dt, cids: tuple, selected_type: str) -> dict:
+    type_filter = tuple() if selected_type == "종합" else (selected_type,)
+    return get_entity_totals(engine, "campaign", start_dt, end_dt, cids, type_filter)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -60,13 +76,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
-    cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
-    base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
 
-    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
+    overview_types = _available_overview_types(type_sel)
+    overview_switch_scope = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
+    selected_type_key = f"overview_summary_type_switch_{abs(hash(overview_switch_scope))}"
+    if selected_type_key not in st.session_state or st.session_state[selected_type_key] not in overview_types:
+        st.session_state[selected_type_key] = overview_types[1] if len(overview_types) > 1 else overview_types[0]
+
+    st.markdown("<div style='font-size:13px; color:#666; margin-bottom:6px;'>종합 성과 보기</div>", unsafe_allow_html=True)
+    type_btn_cols = st.columns(len(overview_types))
+    for idx, opt in enumerate(overview_types):
+        is_active = st.session_state[selected_type_key] == opt
+        btn_label = f"✅ {opt}" if is_active else opt
+        if type_btn_cols[idx].button(btn_label, key=f"btn_overview_summary_type_{abs(hash(overview_switch_scope))}_{idx}", use_container_width=True):
+            st.session_state[selected_type_key] = opt
+
+    selected_overview_type = st.session_state[selected_type_key]
+
+    cur_summary = _summary_by_type(engine, f["start"], f["end"], cids, selected_overview_type)
+    base_summary = _summary_by_type(engine, b1, b2, cids, selected_overview_type)
+
+    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}|{selected_overview_type}"
     state_hash = abs(hash(state_sig))
     report_loaded_key = f"overview_report_loaded_{state_hash}"
     alerts_loaded_key = f"overview_alerts_loaded_{state_hash}"
@@ -80,7 +113,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         elif len(acc_names) > 1:
             account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
 
-    st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_overview_type})</div>", unsafe_allow_html=True)
     st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
@@ -158,7 +191,23 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     with st.expander("📝 주간/월간 보고서 내보내기", expanded=False):
         report_type = st.radio("보고서 타입", ["주간보고서", "월간보고서"], horizontal=True, key="overview_report_type")
-        campaign_label = ", ".join(type_sel) if type_sel else "전체"
+        report_data_types = [t for t in overview_types if t != "종합"] or ["종합"]
+        report_selected_key = f"overview_report_campaign_type_{state_hash}"
+        if report_selected_key not in st.session_state or st.session_state[report_selected_key] not in report_data_types:
+            st.session_state[report_selected_key] = selected_overview_type if selected_overview_type in report_data_types else report_data_types[0]
+
+        st.markdown("<div style='font-size:13px; color:#666; margin-bottom:6px;'>보고서 데이터 유형</div>", unsafe_allow_html=True)
+        report_btn_cols = st.columns(len(report_data_types))
+        for idx, opt in enumerate(report_data_types):
+            is_active = st.session_state[report_selected_key] == opt
+            btn_label = f"✅ {opt}" if is_active else opt
+            if report_btn_cols[idx].button(btn_label, key=f"btn_overview_report_type_{state_hash}_{idx}", use_container_width=True):
+                st.session_state[report_selected_key] = opt
+
+        report_campaign_type = st.session_state[report_selected_key]
+        report_type_filter = tuple() if report_campaign_type == "종합" else (report_campaign_type,)
+        report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, report_type_filter)
+
         load_keywords = st.button("⚡ 클릭 상위 키워드 포함해서 생성", key=f"btn_load_keywords_{state_hash}", use_container_width=True)
         if load_keywords:
             st.session_state[report_loaded_key] = True
@@ -166,7 +215,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         top_keywords_text = "-"
         if st.session_state.get(report_loaded_key, False):
             with st.spinner("키워드 집계 중..."):
-                kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+                kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, report_type_filter)
             if not kw_bundle.empty and {"keyword", "clk"}.issubset(kw_bundle.columns):
                 kw_top = kw_bundle.copy()
                 kw_top["clk"] = pd.to_numeric(kw_top["clk"], errors="coerce").fillna(0)
@@ -178,11 +227,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         report_text = _build_periodic_report_text(
             report_type=report_type,
-            campaign_type=campaign_label,
-            imp=float(cur.get("imp", 0.0) or 0.0),
-            clk=float(cur.get("clk", 0.0) or 0.0),
-            ctr=float(cur.get("ctr", 0.0) or 0.0),
-            cost=float(cur.get("cost", 0.0) or 0.0),
+            campaign_type=report_campaign_type,
+            imp=float(report_cur.get("imp", 0.0) or 0.0),
+            clk=float(report_cur.get("clk", 0.0) or 0.0),
+            ctr=float(report_cur.get("ctr", 0.0) or 0.0),
+            cost=float(report_cur.get("cost", 0.0) or 0.0),
             top_keywords=top_keywords_text,
         )
         st.code(report_text, language="text")
