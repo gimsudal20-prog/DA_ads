@@ -225,7 +225,32 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    df = sql_read(_engine, f"SELECT SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, SUM(conv) as conv, SUM(sales) as sales FROM fact_{entity}_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
+
+    type_join_sql = ""
+    type_where_sql = ""
+    if type_sel and table_exists(_engine, "dim_campaign"):
+        fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
+        dim_cols = get_table_columns(_engine, "dim_campaign")
+        cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
+        if "campaign_id" in fact_cols and cp_col in dim_cols:
+            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENT", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+            db_types = [rev_map.get(t, t) for t in type_sel]
+            type_list_str = ",".join([f"'{x}'" for x in db_types])
+            type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+            type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+
+    sql = f"""
+        SELECT
+            SUM(f.imp) as imp,
+            SUM(f.clk) as clk,
+            SUM(f.cost) as cost,
+            SUM(f.conv) as conv,
+            SUM(f.sales) as sales
+        FROM fact_{entity}_daily f
+        {type_join_sql}
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     if df.empty: return {}
     row = df.iloc[0].fillna(0).to_dict()
     row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
