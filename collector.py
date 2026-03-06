@@ -27,7 +27,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 load_dotenv(override=True)
@@ -54,8 +54,8 @@ DIM_WORKERS = get_env_int("DIM_WORKERS", 8, min_value=1, max_value=20)
 
 SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
-SKIP_KEYWORD_STATS = False  
-SKIP_AD_STATS = False       
+SKIP_KEYWORD_STATS = False
+SKIP_AD_STATS = False
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -69,6 +69,8 @@ if not API_KEY or not API_SECRET:
 
 # ✨ [SPEED UP] 네이버 API 통신 연결(Session) 재사용으로 네트워크 딜레이 최소화
 thread_local = threading.local()
+_table_cols_cache: Dict[str, set[str]] = {}
+_table_cols_lock = threading.Lock()
 
 def get_session():
     if not hasattr(thread_local, "session"):
@@ -97,7 +99,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
     url = BASE_URL + path
     max_retries = 4
     session = get_session()
-    
+
     for attempt in range(max_retries):
         headers = make_headers(method, path, customer_id)
         try:
@@ -110,7 +112,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 continue
             data = None
             try: data = r.json()
-            except Exception as e: data = r.text
+            except Exception: data = r.text
             if raise_error and r.status_code >= 400:
                 raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
@@ -124,7 +126,7 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     try:
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
-    except Exception as e:
+    except Exception:
         return False, None
 
 # ✨ [SPEED UP] DB 연결을 맺고 끊기를 반복하지 않도록 pool_size 할당 및 pool_pre_ping 활성화
@@ -133,11 +135,11 @@ def get_engine() -> Engine:
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return create_engine(
-        db_url, 
-        pool_size=15, 
-        max_overflow=30, 
-        pool_pre_ping=True, 
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"}, 
+        db_url,
+        pool_size=15,
+        max_overflow=30,
+        pool_pre_ping=True,
+        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"},
         future=True
     )
 
@@ -221,17 +223,44 @@ def sync_dim_account(engine: Engine, candidates: List[Dict[str, str]]):
         conn.execute(text("DELETE FROM dim_account"))
         conn.execute(text("INSERT INTO dim_account(customer_id, account_name) VALUES (:customer_id, :account_name)"), rows)
 
+def get_table_columns(engine: Engine, table: str) -> set[str]:
+    with _table_cols_lock:
+        if table in _table_cols_cache:
+            return _table_cols_cache[table]
+
+    cols = {c["name"] for c in inspect(engine).get_columns(table)}
+    with _table_cols_lock:
+        _table_cols_cache[table] = cols
+    return cols
+
 def upsert_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
-    cols = list(rows[0].keys())
+
+    try:
+        table_cols = get_table_columns(engine, table)
+    except Exception as e:
+        log(f"⚠️ {table} 컬럼 조회 실패로 저장 스킵: {e}")
+        return
+
+    cols = [c for c in rows[0].keys() if c in table_cols]
+    if not cols:
+        log(f"⚠️ {table} 저장 스킵: 테이블과 매칭되는 컬럼이 없습니다.")
+        return
+
+    safe_pk_cols = [c for c in pk_cols if c in cols]
+    if len(safe_pk_cols) != len(pk_cols):
+        log(f"⚠️ {table} 저장 스킵: 충돌키 컬럼이 테이블에 없어 upsert를 안전하게 수행할 수 없습니다.")
+        return
+
+    filtered_rows = [{k: v for k, v in row.items() if k in cols} for row in rows]
     col_sql = ",".join(cols)
     val_sql = ",".join([f":{c}" for c in cols])
-    pk_sql = ",".join(pk_cols)
-    upd_cols = [c for c in cols if c not in pk_cols]
+    pk_sql = ",".join(safe_pk_cols)
+    upd_cols = [c for c in cols if c not in safe_pk_cols]
     upd_sql = ",".join([f"{c}=EXCLUDED.{c}" for c in upd_cols]) if upd_cols else ""
     sql = f"INSERT INTO {table} ({col_sql}) VALUES ({val_sql}) ON CONFLICT ({pk_sql}) DO UPDATE SET {upd_sql}" if upd_sql else f"INSERT INTO {table} ({col_sql}) VALUES ({val_sql}) ON CONFLICT ({pk_sql}) DO NOTHING"
     with engine.begin() as conn:
-        conn.execute(text(sql), rows)
+        conn.execute(text(sql), filtered_rows)
 
 def get_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
