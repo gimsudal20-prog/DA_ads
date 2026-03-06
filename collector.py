@@ -409,13 +409,27 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             
     return results
 
+def normalize_header(v: str) -> str:
+    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "")
+
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
-    for c in candidates:
-        for i, h in enumerate(headers):
-            if c == h: return i
-    for c in candidates:
-        for i, h in enumerate(headers):
-            if c in h and "그룹" not in h: return i
+    norm_headers = [normalize_header(h) for h in headers]
+    norm_candidates = [normalize_header(c) for c in candidates]
+
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c == h:
+                return i
+
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c in h and "그룹" not in h:
+                return i
+
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if h in c and h and "그룹" not in h:
+                return i
     return -1
 
 def safe_float(v) -> float:
@@ -428,14 +442,16 @@ def safe_float(v) -> float:
 def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False) -> dict:
     if df is None or df.empty: return {}
     header_idx = -1
-    for i in range(min(5, len(df))):
-        row_vals = [str(x).replace(" ", "").lower() for x in df.iloc[i].fillna("")]
-        if any(c in row_vals for c in pk_cands):
+    scan_limit = min(20, len(df))
+    norm_pk_cands = [normalize_header(c) for c in pk_cands]
+    for i in range(scan_limit):
+        row_vals = [normalize_header(x) for x in df.iloc[i].fillna("")]
+        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
             header_idx = i
             break
             
     if header_idx != -1:
-        headers = [str(x).lower().replace(" ", "").replace("_", "") for x in df.iloc[header_idx].fillna("")]
+        headers = [normalize_header(x) for x in df.iloc[header_idx].fillna("")]
         df = df.iloc[header_idx+1:].reset_index(drop=True)
         pk_idx = get_col_idx(headers, pk_cands)
         conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
@@ -465,6 +481,13 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             obj_id = str(r.iloc[pk_idx]).strip()
             if not obj_id or obj_id == '-': continue
             
+            obj_id_norm = normalize_header(obj_id)
+            if obj_id_norm in [
+                "id", "keywordid", "adid", "campaignid", "productid", "itemid",
+                "키워드id", "광고id", "소재id", "캠페인id", "검색어id", "쇼핑검색어id"
+            ]:
+                continue
+
             if obj_id not in res:
                 res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
@@ -607,7 +630,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
 
             if dfs.get("KEYWORD") is not None:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid"], has_rank=True)
+                kw_stat = parse_df_combined(
+                    dfs["KEYWORD"],
+                    "KEYWORD",
+                    ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"],
+                    has_rank=True,
+                )
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
             else:
                 k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
