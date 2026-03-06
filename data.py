@@ -224,7 +224,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
 @st.cache_data(ttl=600, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
 
     type_join_sql = ""
     type_where_sql = ""
