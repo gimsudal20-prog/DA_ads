@@ -20,6 +20,32 @@ def _format_avg_rank(value):
         return "미수집"
     return f"{num:.1f}위"
 
+
+def _filter_shopping_general_ads(df: pd.DataFrame) -> pd.DataFrame:
+    """쇼핑검색 일반소재만 남긴다.
+
+    - 캠페인유형이 쇼핑검색인 행만 유지
+    - 확장소재(문구/서브링크 등)로 추정되는 행은 제거
+    """
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+
+    work = df.copy()
+    is_shopping = work.get("캠페인유형", pd.Series(False, index=work.index)) == "쇼핑검색"
+
+    ad_name = work.get("상품/소재명", pd.Series("", index=work.index)).astype(str)
+    ad_title = work.get("ad_title", pd.Series("", index=work.index)).astype(str)
+    image_url = work.get("image_url", pd.Series("", index=work.index)).fillna("").astype(str).str.strip().str.lower()
+
+    # collector_shop_ext.py 에서 수집되는 확장소재 표기
+    ext_by_name = ad_name.str.contains(r'\[확장소재\]', na=False, regex=True)
+    # collector.py 확장소재: ad_title="[타입]" + image_url=""
+    ext_by_title = ad_title.str.match(r'^\[[^\]]+\]$', na=False)
+    ext_by_image = image_url.isin(["", "nan", "none"])
+    is_ext = ext_by_name | (ext_by_title & ext_by_image)
+
+    return work[is_shopping & ~is_ext].copy()
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("<div class='nv-sec-title'>그룹 / 키워드 상세 분석</div>", unsafe_allow_html=True)
@@ -106,7 +132,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.info("파워링크 그룹 데이터가 없습니다.")
             
     with tab_shop:
-        shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
+        shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
         
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
             shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
@@ -114,12 +140,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            is_shopping = view_shop["캠페인유형"] == "쇼핑검색"
-            ext_by_name = view_shop["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
-            ext_by_title = (view_shop["ad_title"].astype(str).str.match(r'^\[[^\]]+\]$', na=False) if "ad_title" in view_shop.columns else pd.Series(False, index=view_shop.index))
-            ext_by_image = (view_shop["image_url"].fillna("").astype(str).str.strip().str.lower().isin(["", "nan", "none"]) if "image_url" in view_shop.columns else pd.Series(True, index=view_shop.index))
-            is_ext = ext_by_name | (ext_by_title & ext_by_image)
-            view_shop = view_shop[is_shopping & ~is_ext].copy()
+            view_shop = _filter_shopping_general_ads(view_shop)
 
             if not view_shop.empty:
                 for c in ["노출", "클릭", "광고비", "전환", "전환매출"]: view_shop[c] = pd.to_numeric(view_shop.get(c, 0), errors="coerce").fillna(0)
@@ -214,7 +235,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
                     
                     styled_cmp = disp.style.format(fmt)
-                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증(%)", "전환 증감"] if c in disp.columns]
+                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
                     if delta_cols:
                         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
                         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
@@ -264,20 +285,15 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     render_big_table(styled_cmp, "pl_cmp_grp", 500)
                 
         elif cmp_view_mode == "쇼핑검색 - 상품 단위":
-            shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
+            shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
             if shop_ad_bundle is None or shop_ad_bundle.empty:
                 st.info("비교할 데이터가 없습니다.")
             else:
-                base_shop_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000, top_k=50)
+                base_shop_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=0, top_k=50)
                 shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
-                is_shopping = view["캠페인유형"] == "쇼핑검색"
-                ext_by_name = view["상품/소재명"].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)
-                ext_by_title = (view["ad_title"].astype(str).str.match(r'^\[[^\]]+\]$', na=False) if "ad_title" in view.columns else pd.Series(False, index=view.index))
-                ext_by_image = (view["image_url"].fillna("").astype(str).str.strip().str.lower().isin(["", "nan", "none"]) if "image_url" in view.columns else pd.Series(True, index=view.index))
-                is_ext = ext_by_name | (ext_by_title & ext_by_image)
-                view = view[is_shopping & ~is_ext].copy()
+                view = _filter_shopping_general_ads(view)
                 
                 if view.empty:
                     st.info("비교할 일반 상품 데이터가 없습니다.")
