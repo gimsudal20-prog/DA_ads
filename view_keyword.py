@@ -21,7 +21,7 @@ def _format_avg_rank(value):
     return f"{num:.1f}위"
 
 
-def _filter_shopping_general_ads(df: pd.DataFrame) -> pd.DataFrame:
+def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
     """쇼핑검색 일반소재만 남긴다.
 
     - 캠페인유형이 쇼핑검색인 행만 유지
@@ -31,7 +31,11 @@ def _filter_shopping_general_ads(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame() if df is None else df
 
     work = df.copy()
-    is_shopping = work.get("캠페인유형", pd.Series(False, index=work.index)) == "쇼핑검색"
+    campaign_type = work.get("캠페인유형", pd.Series("", index=work.index)).astype(str).str.strip()
+    if allow_unknown_type:
+        is_shopping = campaign_type.eq("쇼핑검색") | campaign_type.eq("") | campaign_type.str.lower().isin(["nan", "none"])
+    else:
+        is_shopping = campaign_type.eq("쇼핑검색")
 
     ad_name = work.get("상품/소재명", pd.Series("", index=work.index)).astype(str)
     ad_title = work.get("ad_title", pd.Series("", index=work.index)).astype(str)
@@ -140,9 +144,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            view_shop = _filter_shopping_general_ads(view_shop)
+            view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True)
 
             if not view_shop.empty:
+                if "캠페인유형" in view_shop.columns:
+                    view_shop["캠페인유형"] = view_shop["캠페인유형"].replace(["", "nan", "None", "none"], np.nan).fillna("쇼핑검색(매핑누락)")
                 for c in ["노출", "클릭", "광고비", "전환", "전환매출"]: view_shop[c] = pd.to_numeric(view_shop.get(c, 0), errors="coerce").fillna(0)
                 view_shop["CTR(%)"] = np.where(view_shop["노출"] > 0, (view_shop["클릭"] / view_shop["노출"]) * 100, 0.0)
                 view_shop["CPC(원)"] = np.where(view_shop["클릭"] > 0, view_shop["광고비"] / view_shop["클릭"], 0.0)
@@ -293,11 +299,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
-                view = _filter_shopping_general_ads(view)
+                view = _filter_shopping_general_ads(view, allow_unknown_type=True)
                 
                 if view.empty:
                     st.info("비교할 일반 상품 데이터가 없습니다.")
                 else:
+                    if "캠페인유형" in view.columns:
+                        view["캠페인유형"] = view["캠페인유형"].replace(["", "nan", "None", "none"], np.nan).fillna("쇼핑검색(매핑누락)")
                     for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
                     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
                     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
@@ -311,7 +319,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     if "avg_rank" in view.columns:
-                        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+                        view["평균위"] = view["avg_rank"].apply(_format_avg_rank)
                         base_cols.append("평균순위")
                     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                     
