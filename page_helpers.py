@@ -51,7 +51,6 @@ def period_compare_range(d1: date, d2: date, cmp_mode: str):
     elif cmp_mode == "전주대비":
         return d1 - timedelta(days=7), d2 - timedelta(days=7)
     else:
-        # "이전 같은 기간 대비" 또는 "전월대비" (선택된 일수만큼 과거로 이동)
         return d1 - timedelta(days=delta), d1 - timedelta(days=1)
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
@@ -70,15 +69,14 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    # ✨ 사이드바로 필터 영역 이동
     with st.sidebar:
-        st.markdown("<div class='nav-sidebar-title'>🔍 조회 및 필터 설정</div>", unsafe_allow_html=True)
+        st.markdown("<div class='nav-sidebar-title'>조회 조건 설정</div>", unsafe_allow_html=True)
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
         manager_sel = sv.get("manager", [])
 
         # 1. 기간 설정
-        st.markdown("**📅 기간 설정**")
+        st.markdown("**📅 기간 선택**")
         period_mode = st.selectbox(
             "기간 간편 선택",
             ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
@@ -103,13 +101,13 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             c2.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
 
         if period_mode == "오늘":
-            st.warning("⚠️ '오늘' 데이터는 매체 수집 지연으로 일부 지표가 비어있을 수 있습니다.")
+            st.warning("⚠️ '오늘' 데이터는 매체 수집 지연이 있을 수 있습니다.")
 
         st.divider()
 
         # 2. 계정 필터
-        st.markdown("**👤 계정 및 담당자**")
-        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
+        st.markdown("**👤 담당자 및 계정**")
+        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체")
 
         accounts_by_mgr = accounts
         if manager_sel:
@@ -122,19 +120,18 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
                 pass
 
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
-        account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
+        account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
 
         st.divider()
         
         # 3. 상세(고급) 필터
-        st.markdown("**⚙️ 상세 검색**")
-        q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 검색")
-        type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="모든 광고 보기")
+        st.markdown("**⚙️ 상세 필터**")
+        q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
+        type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
 
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
-        # 적용 버튼 (기본색상(Primary)으로 눈에 띄게 처리됨)
-        if st.button("🚀 위 조건으로 데이터 조회", key="btn_apply_filters", use_container_width=True, type="primary"):
+        if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
             st.rerun()
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
@@ -219,8 +216,8 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        if "▲" in val: return "color: #EF4444; font-weight: 700;" # Red (상승)
-        if "▼" in val: return "color: #3B82F6; font-weight: 700;" # Blue (하락)
+        if "▲" in val: return "color: #FF025D; font-weight: 700;" # 포털 스타일 상승
+        if "▼" in val: return "color: #4876EF; font-weight: 700;" # 포털 스타일 하락
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
@@ -230,7 +227,7 @@ def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: dat
     pass 
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
-    st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>소재 A/B 비교 (상위 2개)</div>", unsafe_allow_html=True)
     st.caption(f"조회 기간: {d1} ~ {d2}")
     
     valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
@@ -244,38 +241,38 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     
     def _card(row, label):
         return f"""
-        <div style='background:#F8FAFC; padding:20px; border-radius:12px; border:2px solid #E2E8F0;'>
-            <div style='text-align:center; font-size:13px; font-weight:800; color:#475569; margin-bottom:8px;'>{label}</div>
-            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#6366F1; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+        <div style='background:#FFFFFF; padding:20px; border-radius:6px; border:1px solid #D7DCE5;'>
+            <div style='text-align:center; font-size:12px; font-weight:800; color:#666666; margin-bottom:8px;'>{label}</div>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#4876EF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#64748B; font-weight:600;'>광고비</span>
-                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('광고비',0))}</span>
+                <span style='color:#666666; font-weight:600;'>광고비</span>
+                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('광고비',0))}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#64748B; font-weight:600;'>전환매출</span>
-                <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('전환매출',0))}</span>
+                <span style='color:#666666; font-weight:600;'>전환매출</span>
+                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('전환매출',0))}</span>
             </div>
-            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed #CBD5E1;'>
-                <span style='color:#64748B; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#EF4444; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E5E6E9;'>
+                <span style='color:#666666; font-weight:600;'>ROAS</span>
+                <span style='font-weight:800; color:#FF025D; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#64748B; font-size:13px;'>노출수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
+                <span style='color:#999999; font-size:13px;'>노출수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#64748B; font-size:13px;'>클릭수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
+                <span style='color:#999999; font-size:13px;'>클릭수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
             </div>
             <div style='display:flex; justify-content:space-between;'>
-                <span style='color:#64748B; font-size:13px;'>전환수</span>
-                <span style='color:#334155; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
+                <span style='color:#999999; font-size:13px;'>전환수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
             </div>
         </div>
         """
     
-    with c1: st.markdown(_card(ad1, "💡 소재 A"), unsafe_allow_html=True)
-    with c2: st.markdown(_card(ad2, "💡 소재 B"), unsafe_allow_html=True)
+    with c1: st.markdown(_card(ad1, "소재 A"), unsafe_allow_html=True)
+    with c2: st.markdown(_card(ad2, "소재 B"), unsafe_allow_html=True)
     st.divider()
 
 def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_base: pd.DataFrame, name_col: str, d1: date, d2: date, b1: date, b2: date):
@@ -291,19 +288,18 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         unsafe_allow_html=True,
     )
 
-    query = st.text_input("항목 검색", key=f"search_detail_query_{entity_label}_{name_col}", placeholder="이름 일부를 입력해 빠르게 찾기")
+    query = st.text_input("항목 검색", key=f"search_detail_query_{entity_label}_{name_col}", placeholder="이름을 입력해 빠르게 찾기")
     filtered_items = [item for item in all_items if query.lower() in item.lower()] if query else all_items
     options = ["선택 안 함"] + filtered_items
 
     if len(options) == 1:
-        st.info("검색 결과가 없습니다. 검색어를 바꿔주세요.")
+        st.info("검색 결과가 없습니다.")
         return
 
     selected = st.selectbox("분석 항목", options, key=f"search_detail_{entity_label}_{name_col}")
-    st.caption(f"현재 선택: {selected}" if selected != "선택 안 함" else "현재 선택: 없음")
+    st.caption(f"현재 선택: {selected}" if selected != "선택 안 함" else "선택 없음")
 
     if selected == "선택 안 함":
-        st.info("비교 카드를 보려면 분석 항목을 선택하세요.")
         return
 
     c_df = df_cur[df_cur[name_col] == selected] if not df_cur.empty else pd.DataFrame()
@@ -340,47 +336,30 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     b_conv = _base_val(["전환", "전환수", "conv"], ["p_conv"])
     b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
 
-    def fmt_krw(v):
-        return f"{int(v):,}원"
-
-    def fmt_num(v):
-        return f"{int(v):,}"
-
-    def fmt_pct(v):
-        return f"{v:.1f}%"
+    def fmt_krw(v): return f"{int(v):,}원"
+    def fmt_num(v): return f"{int(v):,}"
+    def fmt_pct(v): return f"{v:.1f}%"
 
     def calc_detail_delta(c, b, is_currency=False, is_pct=False):
         diff = c - b
-        if b == 0 and c > 0:
-            return "신규"
-        if diff == 0:
-            return "변동 없음"
-
+        if b == 0 and c > 0: return "신규"
+        if diff == 0: return "변동 없음"
         sign = "▲" if diff > 0 else "▼"
-        if is_currency:
-            abs_val = f"{int(abs(diff)):,}원"
-        elif is_pct:
-            abs_val = f"{abs(diff):.1f}%p"
-        else:
-            abs_val = f"{int(abs(diff)):,}" if float(diff).is_integer() else f"{abs(diff):.1f}"
-
+        if is_currency: abs_val = f"{int(abs(diff)):,}원"
+        elif is_pct: abs_val = f"{abs(diff):.1f}%p"
+        else: abs_val = f"{int(abs(diff)):,}" if float(diff).is_integer() else f"{abs(diff):.1f}"
         word = "증가" if diff > 0 else "감소"
         return f"{sign} {abs_val} {word}"
 
     def calc_delta_rate(c, b):
-        if b == 0 and c > 0:
-            return "신규"
-        if b == 0:
-            return "0.0%"
+        if b == 0 and c > 0: return "신규"
+        if b == 0: return "0.0%"
         return f"{((c - b) / b) * 100:+.1f}%"
 
     def delta_chip_text(delta_text: str):
-        if delta_text == "변동 없음":
-            return "<span class='delta-chip delta-flat'>변동 없음</span>"
-        if delta_text == "신규":
-            return "<span class='delta-chip delta-up'>▲ 신규</span>"
-        if delta_text.startswith("▲"):
-            return f"<span class='delta-chip delta-up'>{delta_text}</span>"
+        if delta_text == "변동 없음": return "<span class='delta-chip delta-flat'>변동 없음</span>"
+        if delta_text == "신규": return "<span class='delta-chip delta-up'>▲ 신규</span>"
+        if delta_text.startswith("▲"): return f"<span class='delta-chip delta-up'>{delta_text}</span>"
         return f"<span class='delta-chip delta-down'>{delta_text}</span>"
 
     rows = [
@@ -398,8 +377,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             curr_cls = "cmp-value emphasize" if r.get("emphasis", False) else "cmp-value"
             sub_row = (
                 f"<div class='cmp-sub'>{delta_chip_text(r['delta'])}<span class='rate'>({r['rate']})</span></div>"
-                if is_right
-                else "<div class='cmp-sub cmp-sub-muted'>기준 값</div>"
+                if is_right else "<div class='cmp-sub cmp-sub-muted'>기준 값</div>"
             )
             value = r["curr"] if is_right else r["base"]
             html_rows += f"""
@@ -417,135 +395,92 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     right_rows = _board_rows(rows, is_right=True)
 
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
-        <div class='cmp-title'>✨ [{selected}] 성과 비교 상세 요약</div>
+        <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
             <div class='cmp-board'>
-                <div class='cmp-board-head'>⚪ 비교 기간 ({b1} ~ {b2})</div>
+                <div class='cmp-board-head'>이전 기간 ({b1} ~ {b2})</div>
                 {left_rows}
             </div>
             <div class='cmp-board cmp-board-right'>
-                <div class='cmp-board-head'>🔵 선택 기간 ({d1} ~ {d2})</div>
+                <div class='cmp-board-head'>선택 기간 ({d1} ~ {d2})</div>
                 {right_rows}
             </div>
         </div>
     </div>
     <style>
         .cmp-wrapper {{
-            background:#F8FAFC;
-            border:1px solid #E2E8F0;
-            border-radius:14px;
-            padding:12px;
+            background:#FFFFFF;
+            border:1px solid #D7DCE5;
+            border-radius:6px;
+            padding:16px;
             margin-top:10px;
             margin-bottom:24px;
-            box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);
         }}
         .cmp-title {{
             font-size:14px;
-            font-weight:900;
-            color:#0f172a;
-            margin-bottom:6px;
+            font-weight:800;
+            color:#111111;
+            margin-bottom:12px;
             text-align:center;
-        }}
-        .cmp-desc {{
-            text-align:center;
-            font-size:12px;
-            color:#64748b;
-            margin-bottom:8px;
         }}
         .cmp-boards {{
             display:grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap:8px;
+            gap:10px;
             align-items:stretch;
         }}
         .cmp-board {{
-            border-radius:12px;
-            padding:8px 10px;
-            border:1px solid #CBD5E1;
-            background:#ffffff;
+            border-radius:4px;
+            padding:10px 12px;
+            border:1px solid #E5E6E9;
+            background:#F8F9FA;
         }}
         .cmp-board-right {{
-            background:#EEF2FF;
-            border-color:#A5B4FC;
+            background:#F0F4FF;
+            border-color:#C2D3FF;
         }}
         .cmp-board-head {{
             font-size:12px;
-            font-weight:900;
+            font-weight:700;
             text-align:center;
-            margin-bottom:4px;
-            padding-bottom:6px;
-            border-bottom:1px dashed #E2E8F0;
-            color:#334155;
+            margin-bottom:6px;
+            padding-bottom:8px;
+            border-bottom:1px solid #D7DCE5;
+            color:#444444;
         }}
 
         .cmp-row {{
-            border-top:1px dashed #E2E8F0;
-            padding:6px 0;
+            border-top:1px solid #E5E6E9;
+            padding:8px 0;
             min-height:44px;
             display:flex;
             flex-direction:column;
             justify-content:center;
         }}
-        .cmp-row:first-child {{
-            border-top:none;
-        }}
+        .cmp-row:first-child {{ border-top:none; }}
         .cmp-top {{
             display:flex;
             justify-content:space-between;
             align-items:center;
             gap:12px;
         }}
-        .cmp-label {{
-            font-weight:800;
-            font-size:12px;
-            color:#334155;
-            line-height:1.2;
-        }}
-        .cmp-value {{
-            color:#0f172a;
-            font-weight:900;
-            font-size:17px;
-            line-height:1.1;
-            letter-spacing:-0.3px;
-        }}
-        .cmp-value.emphasize {{
-            color:#EF4444;
-        }}
+        .cmp-label {{ font-weight:700; font-size:13px; color:#444444; }}
+        .cmp-value {{ color:#222222; font-weight:800; font-size:16px; }}
+        .cmp-value.emphasize {{ color:#FF025D; }}
         .cmp-sub {{
-            margin-top:2px;
+            margin-top:4px;
             display:flex;
             justify-content:flex-end;
             gap:4px;
             align-items:center;
-            min-height:14px;
-            text-align:right;
             font-size:11px;
-            line-height:1.3;
         }}
-        .cmp-sub-muted {{
-            color:#94a3b8;
-            font-weight:700;
-        }}
-        .delta-chip {{
-            font-size:10px;
-            font-weight:800;
-            border-radius:999px;
-            padding:1px 6px;
-            display:inline-block;
-        }}
-        .delta-up {{ background:#FEE2E2; color:#EF4444; }}
-        .delta-down {{ background:#EEF2FF; color:#4F46E5; }}
-        .delta-flat {{ background:#F1F5F9; color:#64748B; }}
-        .rate {{ color:#64748b; font-weight:700; }}
-
-        @media (max-width: 1024px) {{
-            .cmp-boards {{
-                grid-template-columns: 1fr;
-            }}
-            .cmp-value {{
-                font-size:15px;
-            }}
-        }}
+        .cmp-sub-muted {{ color:#999999; font-weight:600; }}
+        .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
+        .delta-up {{ background:#FFE6EE; color:#FF025D; }}
+        .delta-down {{ background:#E9EFFF; color:#4876EF; }}
+        .delta-flat {{ background:#E5E6E9; color:#666666; }}
+        .rate {{ color:#666666; font-weight:600; }}
     </style>
     """).strip()
     comp_height = 200 + (len(rows) * 50)
