@@ -12,113 +12,61 @@ GLOBAL_UI_CSS = """
 :root {
   --nv-bg: #FFFFFF;
   --nv-surface: #F8F9FA;
-  --nv-panel: #F4F6FA;
   --nv-line: #E5E6E9;
   --nv-line-strong: #D7DCE5;
   --nv-text: #222222;
   --nv-muted: #666666;
-  --nv-muted-light: #999999;
   
   --nv-primary: #4876EF;
   --nv-primary-hover: #3A5EBF;
   --nv-primary-soft: #F0F4FF;
   
-  --nv-success: #58B04B;
+  --nv-success: #58B04B; 
   --nv-warning: #FF9839;
-  --nv-danger: #FF025D;
+  --nv-danger: #FF025D; 
   --nv-radius: 6px;
 }
 
-html, body, [class*="css"] {
-  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', sans-serif !important;
+/* ✨ UI를 깨뜨렸던 위험한 CSS 요소를 제거하고 폰트만 안전하게 적용했습니다 */
+html, body, .stApp {
+  font-family: 'Pretendard', -apple-system, sans-serif !important;
   color: var(--nv-text);
-  background: var(--nv-bg);
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 700 !important;
-  letter-spacing: -0.03em !important;
-  color: #111111;
-}
+h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; color: #111111; }
 
 /* =========================================
-   🔘 일반 버튼 디자인
+   🚨 [최종 해결] 드롭다운 & 인풋창 굵은 파란줄 완벽 차단
    ========================================= */
-button[data-testid="baseButton-secondary"] {
-    background-color: #FFFFFF !important;
-    border: 1px solid var(--nv-line-strong) !important;
-    color: var(--nv-text) !important;
+/* 기본 테두리를 1px로 단단하게 고정 */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div {
+    border-bottom: 1px solid var(--nv-line-strong) !important;
     border-radius: var(--nv-radius) !important;
-    font-weight: 600 !important;
-    padding: 4px 16px !important;
 }
 
-button[data-testid="baseButton-secondary"]:hover {
+/* 포커스 시 굵은 줄 대신 사방으로 얇고 예쁜 파란 테두리만 남김 */
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="input"] > div:focus-within {
     border-color: var(--nv-primary) !important;
-    color: var(--nv-primary) !important;
-    background-color: var(--nv-primary-soft) !important;
-}
-
-button[data-testid="baseButton-primary"] {
-    background: var(--nv-primary) !important;
-    border: 1px solid var(--nv-primary) !important;
-    color: #FFFFFF !important;
-    border-radius: var(--nv-radius) !important;
-    font-weight: 700 !important;
-    padding: 4px 16px !important;
-}
-
-button[data-testid="baseButton-primary"]:hover {
-    background: var(--nv-primary-hover) !important;
-    border-color: var(--nv-primary-hover) !important;
-}
-
-/* =========================================
-   🚨 [최종판] 드롭다운 하단 굵은 2px 파란줄 완전 차단
-   (Streamlit이 주입하는 모든 border-bottom 강제 무효화)
-   ========================================= */
-/* 기본, 호버, 포커스 상태 무관하게 무조건 1px 선언 */
-.stSelectbox div[data-baseweb="select"] > div,
-.stMultiSelect div[data-baseweb="select"] > div {
-    border-top: 1px solid var(--nv-line-strong) !important;
-    border-left: 1px solid var(--nv-line-strong) !important;
-    border-right: 1px solid var(--nv-line-strong) !important;
-    border-bottom: 1px solid var(--nv-line-strong) !important; 
-    border-radius: var(--nv-radius) !important;
-    box-shadow: none !important;
-    background-color: #FFFFFF !important;
-}
-
-/* 포커스 및 호버 시 테두리를 얇은 파란색 1px로만 처리 */
-.stSelectbox div[data-baseweb="select"] > div:hover,
-.stMultiSelect div[data-baseweb="select"] > div:hover,
-.stSelectbox div[data-baseweb="select"] > div:focus-within,
-.stMultiSelect div[data-baseweb="select"] > div:focus-within {
-    border-top: 1px solid var(--nv-primary) !important;
-    border-left: 1px solid var(--nv-primary) !important;
-    border-right: 1px solid var(--nv-primary) !important;
     border-bottom: 1px solid var(--nv-primary) !important;
     box-shadow: 0 0 0 1px var(--nv-primary) inset !important;
 }
 
-/* Streamlit의 내부 하단 선 생성용 가상 요소(pseudo-element) 숨김 */
+/* 🔥 스트림릿이 내부적으로 파란 밑줄을 그릴 때 사용하는 숨겨진 가상 요소 강제 삭제! */
 div[data-baseweb="select"] > div::before,
-div[data-baseweb="select"] > div::after {
+div[data-baseweb="select"] > div::after,
+div[data-baseweb="input"] > div::before,
+div[data-baseweb="input"] > div::after {
     display: none !important;
     content: none !important;
     height: 0 !important;
 }
 
 /* =========================================
-   🚨 선택된 칩(태그) 디자인
+   🚨 선택된 항목(멀티셀렉트 칩/태그) 선명하게
    ========================================= */
-[data-baseweb="tag"] {
-    background-color: var(--nv-primary) !important;
-    border: none !important;
-    border-radius: 4px !important;
-    margin-top: 3px !important;
-    margin-bottom: 3px !important;
-}
+[data-baseweb="tag"] { background-color: var(--nv-primary) !important; border: none !important; border-radius: 4px !important; margin: 2px !important; }
 [data-baseweb="tag"] * { color: #FFFFFF !important; font-weight: 600 !important; }
 [data-baseweb="tag"] svg { fill: #FFFFFF !important; }
 
@@ -146,41 +94,28 @@ div[data-baseweb="select"] > div::after {
    📊 공통 메트릭 & 테이블 UI
    ========================================= */
 .nv-sec-title { font-size: 18px; font-weight: 700; margin-top: 24px; margin-bottom: 8px; color: #111111; display: flex; align-items: center; gap: 8px; }
-.nv-metric-card { background: var(--nv-bg); padding: 20px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; }
-.nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.nv-metric-card-value { color: var(--nv-text); font-size: 24px; font-weight: 800; }
-.nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 700; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 4px; }
+.nv-metric-card { background: var(--nv-bg); padding: 20px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+.nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.02em; }
+.nv-metric-card-value { color: var(--nv-text); font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 
-table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left; border: 1px solid var(--nv-line); border-radius: var(--nv-radius); overflow: hidden; }
-table.nv-table th { position: sticky; top: 0; z-index: 2; background: #F8F9FA; padding: 13px 16px; font-weight: 700; color: #444444; border-bottom: 1px solid var(--nv-line-strong); }
-table.nv-table td { padding: 13px 16px; border-bottom: 1px solid var(--nv-line); vertical-align: middle; color: var(--nv-text); }
-table.nv-table tr:hover td { background: var(--nv-primary-soft); color: var(--nv-primary-hover); }
-
-.nv-pbar { display: flex; align-items: center; gap: 10px; min-width: 160px; }
-.nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--nv-line); overflow: hidden; }
-.nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
-.nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: var(--nv-text); font-size: 12px; }
-
-[data-baseweb="tab-list"] { gap: 20px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line-strong); }
-[data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 600; padding: 14px 4px !important; margin: 0 !important; color: var(--nv-muted-light) !important; font-size: 15px; border-radius: 0 !important; }
-[aria-selected="true"] { color: #111111 !important; font-weight: 800 !important; border-bottom: 3px solid var(--nv-primary) !important; box-shadow: none !important; }
+button[data-testid="baseButton-secondary"] { background-color: #FFFFFF !important; border: 1px solid var(--nv-line-strong) !important; border-radius: var(--nv-radius) !important; font-weight: 600 !important; }
+button[data-testid="baseButton-secondary"]:hover { border-color: var(--nv-primary) !important; color: var(--nv-primary) !important; background-color: var(--nv-primary-soft) !important; }
+button[data-testid="baseButton-primary"] { background: var(--nv-primary) !important; color: #FFFFFF !important; border-radius: var(--nv-radius) !important; font-weight: 700 !important; border: none !important; }
 
 /* 좌측 사이드바 디자인 */
 [data-testid="stSidebar"] { background: var(--nv-surface) !important; border-right: 1px solid var(--nv-line) !important; }
-[data-testid="stSidebar"] .block-container { padding-top: 1rem !important; }
-.nav-sidebar-title { font-size: 16px; font-weight: 800; color: #111111; letter-spacing: -0.02em; }
 </style>
 """
 
-# 드롭다운 자동 닫힘 무적 스크립트 (바탕화면 강제 마우스다운)
+# 🔥 담당자/계정 등 선택 시 드롭다운 창 무조건 닫히게 하는 강력한 백그라운드 스크립트
 JS_AUTO_CLOSE = """
 <script>
 (function() {
     const parentDoc = window.parent.document;
-    if (parentDoc.getElementById('dropdown-auto-closer-v4')) return;
+    if (parentDoc.getElementById('dropdown-auto-closer-final')) return;
     
     const marker = parentDoc.createElement('div');
-    marker.id = 'dropdown-auto-closer-v4';
+    marker.id = 'dropdown-auto-closer-final';
     marker.style.display = 'none';
     parentDoc.body.appendChild(marker);
 
@@ -188,8 +123,7 @@ JS_AUTO_CLOSE = """
         let target = e.target;
         let isOptionClicked = false;
         
-        // 클릭된 요소가 드롭다운 리스트 옵션인지 확인
-        while (target && target !== parentDoc) {
+        while (target && target !== parentDoc.body) {
             if (target.getAttribute && target.getAttribute('role') === 'option') {
                 isOptionClicked = true;
                 break;
@@ -197,28 +131,11 @@ JS_AUTO_CLOSE = """
             target = target.parentNode;
         }
         
+        // 옵션 클릭 감지 시, 0.05초 뒤에 배경(body)을 강제로 클릭시켜 드롭다운을 무조건 접어버림!
         if (isOptionClicked) {
             setTimeout(function() {
-                // 1. 포커스 뺏기
-                if (parentDoc.activeElement) {
-                    parentDoc.activeElement.blur();
-                }
-                
-                // 2. 앱 최상단 배경으로 강제 마우스다운 이벤트 발생시켜 창 내리기
-                const appMain = parentDoc.querySelector('.stApp');
-                if (appMain) {
-                    const clickEvent = new MouseEvent('mousedown', {
-                        bubbles: true, cancelable: true, view: window
-                    });
-                    appMain.dispatchEvent(clickEvent);
-                }
-                
-                // 3. 확실한 처리를 위해 ESC 키 발생
-                const escEvent = new KeyboardEvent('keydown', {
-                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                });
-                parentDoc.dispatchEvent(escEvent);
-                
+                parentDoc.body.click(); 
+                if (parentDoc.activeElement) parentDoc.activeElement.blur();
             }, 50);
         }
     }, true);
