@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import streamlit as st
+import streamlit.components.v1 as components
 
 GLOBAL_UI_CSS = """
 <style>
@@ -235,9 +236,77 @@ div[role="listbox"] ul li[aria-selected="true"] *,
   border: 1px solid #2748C9 !important;
 }
 [data-baseweb="tag"] * { color: #FFFFFF !important; }
+
+/* ========================================================
+   [추가 1] 인풋/셀렉트박스 파란줄 방지 & 모든 면 동일한 1px 테두리
+   ======================================================== */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div {
+    border-bottom-width: 1px !important;
+}
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="input"] > div:focus-within {
+    border-bottom-width: 1px !important;
+    box-shadow: 0 0 0 1px var(--nv-primary) inset !important;
+    border-color: var(--nv-primary) !important;
+}
+div[data-baseweb="select"] > div::after,
+div[data-baseweb="select"] > div::before,
+div[data-baseweb="input"] > div::after,
+div[data-baseweb="input"] > div::before {
+    display: none !important;
+    content: none !important;
+}
 </style>
 """
 
+# ========================================================
+# [추가 2] 드롭다운 항목 클릭 시 자동으로 접히게 만드는 스크립트
+# ========================================================
+JS_AUTO_CLOSE = """
+<script>
+const initAutoClose = () => {
+    try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || parentDoc.getElementById('dropdown-auto-closer')) return;
+        
+        const marker = parentDoc.createElement('div');
+        marker.id = 'dropdown-auto-closer';
+        marker.style.display = 'none';
+        parentDoc.body.appendChild(marker);
+
+        parentDoc.addEventListener('click', function(e) {
+            let target = e.target;
+            let isOptionClicked = false;
+            
+            while (target && target !== parentDoc) {
+                if (target.getAttribute && target.getAttribute('role') === 'option') {
+                    isOptionClicked = true;
+                    break;
+                }
+                target = target.parentNode;
+            }
+            
+            if (isOptionClicked) {
+                setTimeout(function() {
+                    const escEvent = new KeyboardEvent('keydown', {
+                        key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                    });
+                    if (parentDoc.activeElement) {
+                        parentDoc.activeElement.dispatchEvent(escEvent);
+                    } else {
+                        parentDoc.dispatchEvent(escEvent);
+                    }
+                }, 50);
+            }
+        }, true);
+    } catch (err) {}
+};
+setInterval(initAutoClose, 1000);
+</script>
+"""
 
 def apply_global_css():
     st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    components.html(JS_AUTO_CLOSE, height=0, width=0)
+
