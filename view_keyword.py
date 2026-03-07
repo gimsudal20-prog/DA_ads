@@ -134,7 +134,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.info("파워링크 그룹 데이터가 없습니다.")
             
     with tab_shop:
-        # 확장소재 관련 안내 및 일반상품만 필터링 진행
         st.markdown("<div style='font-size:13px; color:#666; margin-bottom:12px;'>※ 확장소재(문구/서브링크 등)는 제외되고 순수 일반 상품의 성과만 표시됩니다.</div>", unsafe_allow_html=True)
 
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
@@ -145,7 +144,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            # 핵심: 일반소재(순수 상품)만 강제 필터링
+            # 일반소재(순수 상품)만 필터링
             view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True)
 
             if not view_shop.empty:
@@ -159,8 +158,22 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 if "image_url" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
+                    
                 if "ad_title" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"ad_title": "노출용 상품명"})
+                elif "상품/소재명" in view_shop.columns:
+                    view_shop["노출용 상품명"] = view_shop["상품/소재명"]
+
+                # ✨ [NEW] 노출용 상품명이 API 문제로 ID(숫자)로만 나왔을 때의 강력한 보정 로직
+                is_invalid_title = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
+                is_valid_name = ~(view_shop["상품/소재명"].astype(str).str.strip().eq("") | view_shop["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view_shop["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
+
+                # 1차 보정: 사용자가 입력한 상품/소재명이 텍스트면 우선 적용
+                view_shop["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view_shop["상품/소재명"], view_shop["노출용 상품명"])
+                
+                # 2차 보정: 그래도 숫자(ID)라면 광고그룹명으로 덮어씀 (쇼핑검색은 1상품 1그룹 세팅이므로 완벽 호환)
+                is_invalid_title_again = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
+                view_shop["노출용 상품명"] = np.where(is_invalid_title_again, view_shop["광고그룹"], view_shop["노출용 상품명"])
 
                 base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                 if "avg_rank" in view_shop.columns:
@@ -171,8 +184,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                 c1, c2 = st.columns([2, 2])
                 with c1:
-                    if "캠페인" in view_shop.columns and "광고그룹" in view_shop.columns and "상품/소재명" in view_shop.columns:
-                        view_shop["_filter_label"] = view_shop["캠페인"].astype(str) + " > " + view_shop["광고그룹"].astype(str) + " > " + view_shop["상품/소재명"].astype(str)
+                    if "캠페인" in view_shop.columns and "광고그룹" in view_shop.columns and "노출용 상품명" in view_shop.columns:
+                        # 필터 레이블에서도 보정된 노출용 상품명을 쓰도록 수정
+                        view_shop["_filter_label"] = view_shop["캠페인"].astype(str) + " > " + view_shop["광고그룹"].astype(str) + " > " + view_shop["노출용 상품명"].astype(str)
                         items = ["전체"] + sorted([str(x) for x in view_shop["_filter_label"].unique() if str(x).strip()])
                     else:
                         items = ["전체"]
@@ -300,7 +314,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
                 
-                # 핵심: 기간 비교 탭에서도 일반소재(순수 상품)만 강제 필터링
                 view = _filter_shopping_general_ads(view, allow_unknown_type=True)
                 
                 if view.empty:
@@ -316,8 +329,19 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     
                     if "image_url" in view.columns:
                         view = view.rename(columns={"image_url": "소재이미지"})
+                        
                     if "ad_title" in view.columns:
                         view = view.rename(columns={"ad_title": "노출용 상품명"})
+                    elif "상품/소재명" in view.columns:
+                        view["노출용 상품명"] = view["상품/소재명"]
+                        
+                    # ✨ [NEW] 비교 탭에도 동일한 보정 로직 적용
+                    is_invalid_title = view["노출용 상품명"].astype(str).str.strip().eq("") | view["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view["노출용 상품명"].astype(str).str.startswith("소재 (") | view["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
+                    is_valid_name = ~(view["상품/소재명"].astype(str).str.strip().eq("") | view["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
+                    view["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view["상품/소재명"], view["노출용 상품명"])
+                    
+                    is_invalid_title_again = view["노출용 상품명"].astype(str).str.strip().eq("") | view["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view["노출용 상품명"].astype(str).str.startswith("소재 (") | view["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
+                    view["노출용 상품명"] = np.where(is_invalid_title_again, view["광고그룹"], view["노출용 상품명"])
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     if "avg_rank" in view.columns:
@@ -332,7 +356,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                             metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                             
                     base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
-                    render_item_comparison_search("일반 상품", view, base_for_search, "상품/소재명", f["start"], f["end"], b1, b2)
+                    # 검색 렌더링에 사용할 기준도 보정된 노출용 상품명으로 전달
+                    render_item_comparison_search("일반 상품", view, base_for_search, "노출용 상품명", f["start"], f["end"], b1, b2)
 
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
                     
