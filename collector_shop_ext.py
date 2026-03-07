@@ -89,12 +89,10 @@ def upsert_many(engine, table: str, rows: list, pk_cols: list):
         if cur: cur.close()
         if raw_conn: raw_conn.close()
 
-# ✨ [핵심 조치] 네이버가 어떤 이름표로 텍스트를 주든 다 긁어오는 진공청소기 로직
 def parse_ext_name(ext: dict) -> str:
     ext_info = ext.get("adExtension", {}) or ext
     ext_type = ext.get("extensionType") or ext.get("type") or "쇼핑확장"
     
-    # 1차 시도: 일반적으로 알려진 텍스트 키값 탐색
     cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text"]
     text_val = ""
     for c in cands:
@@ -102,13 +100,11 @@ def parse_ext_name(ext: dict) -> str:
             text_val = str(ext_info[c]).strip()
             break
             
-    # 2차 시도: 그래도 없으면, 딕셔너리 안에 있는 문자열을 싹 다 합쳐서 노출!
     if not text_val:
         vals = [str(v) for k, v in ext_info.items() if isinstance(v, str) and not v.startswith("http") and k not in ("extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type")]
         if vals:
             text_val = " / ".join(vals)
         else:
-            # 3차 시도: 진짜 아무것도 없으면 JSON 원문을 그대로 뿌려줌 (최소한 원인 파악 가능)
             text_val = str(ext_info)[:150]
             
     return f"[확장소재] {ext_type} | {text_val}"
@@ -131,7 +127,6 @@ def process_account(engine, customer_id: str, target_date: date):
             "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")
         })
         
-        # 캠페인 레벨 확장소재
         camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": cid}) or []
         if camp_exts:
             ag_rows.append({
@@ -143,7 +138,7 @@ def process_account(engine, customer_id: str, target_date: date):
                 if ext_id:
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
-                    display_name = parse_ext_name(ext) # ✨ 진공청소기 적용
+                    display_name = parse_ext_name(ext)
                     
                     ad_rows.append({
                         "customer_id": str(customer_id), "ad_id": str(ext_id), "adgroup_id": f"CAMP_{cid}",
@@ -153,7 +148,6 @@ def process_account(engine, customer_id: str, target_date: date):
                         "creative_text": display_name[:500]
                     })
         
-        # 광고그룹 레벨 확장소재
         groups = request_json("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": cid}) or []
         for g in groups:
             gid = g.get("nccAdgroupId")
@@ -168,7 +162,7 @@ def process_account(engine, customer_id: str, target_date: date):
                 if ext_id:
                     target_ad_ids.append(ext_id)
                     ext_info = ext.get("adExtension", {}) or ext
-                    display_name = parse_ext_name(ext) # ✨ 진공청소기 적용
+                    display_name = parse_ext_name(ext)
                     
                     ad_rows.append({
                         "customer_id": str(customer_id), "ad_id": str(ext_id), "adgroup_id": str(gid),
@@ -198,7 +192,8 @@ def process_account(engine, customer_id: str, target_date: date):
 
         fact_rows = []
         for r in raw_stats:
-            cost = int(round(float(r.get("salesAmt", 0) or 0) * 1.1))
+            # ✨ [수정 완료] 부가세 1.1 곱셈을 제거하여 메인 수집기와 동일한 기준(공급가액)으로 통일
+            cost = int(float(r.get("salesAmt", 0) or 0))
             sales = int(float(r.get("convAmt", 0) or 0))
             fact_rows.append({
                 "dt": target_date, "customer_id": str(customer_id), "ad_id": str(r.get("id")),
