@@ -112,17 +112,21 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             with c_form:
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>월 예산 설정</div>", unsafe_allow_html=True)
                 opts = budget_view_disp[["customer_id", "account_name"]].copy()
+                opts["customer_id"] = opts["customer_id"].astype(str)
                 opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
                 labels = opts["label"].tolist()
                 label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
 
-                sel = st.selectbox("업체 선택", labels, index=0 if labels else None, disabled=(len(labels) == 0))
-                if labels:
-                    cid = int(label_to_cid.get(sel, 0))
+                if not labels:
+                    st.info("설정 가능한 업체가 없습니다.")
+                else:
+                    sel = st.selectbox("업체 선택", labels, index=0)
+                    cid = str(label_to_cid.get(sel, ""))
                     sk = f"budget_input_{cid}"
                     
                     if sk not in st.session_state:
-                        cur_budget = int(budget_view_disp.loc[budget_view_disp["customer_id"] == cid, "monthly_budget_val"].iloc[0])
+                        selected_budget = budget_view_disp.loc[budget_view_disp["customer_id"].astype(str) == cid, "monthly_budget_val"]
+                        cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
                         st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
                     
                     def format_budget_on_change(key_name):
