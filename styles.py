@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import streamlit as st
+import streamlit.components.v1 as components
 
 GLOBAL_UI_CSS = """
 <style>
@@ -82,36 +83,37 @@ button[data-testid="baseButton-primary"]:hover {
 
 
 /* =========================================
-   🚨 인풋 & 셀렉트박스 하단 굵은 줄(Underline) '완벽' 제거 
+   🚨 [핵심] 인풋 & 셀렉트박스 하단 굵은 줄 '완벽' 제거
+   (스트림릿 내부 숨겨진 ::after 가상 요소 멸망시키기)
    ========================================= */
-.stSelectbox div[data-baseweb="select"] > div,
-.stMultiSelect div[data-baseweb="select"] > div,
-.stTextInput div[data-baseweb="input"] > div,
-.stDateInput div[data-baseweb="input"] > div {
-    border-top-width: 1px !important;
-    border-right-width: 1px !important;
-    border-left-width: 1px !important;
-    border-bottom-width: 1px !important; 
-    border-style: solid !important;
-    border-color: var(--nv-line-strong) !important;
+div[data-baseweb="select"] > div::after,
+div[data-baseweb="select"] > div::before,
+div[data-baseweb="input"] > div::after,
+div[data-baseweb="input"] > div::before {
+    display: none !important;
+    content: none !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+/* 본체 테두리 디자인 덮어쓰기 */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div {
+    border: 1px solid var(--nv-line-strong) !important;
     border-radius: var(--nv-radius) !important;
-    background-color: #FFFFFF !important;
     box-shadow: none !important;
+    background-color: #FFFFFF !important;
     transition: all 0.2s ease !important;
 }
 
-.stSelectbox div[data-baseweb="select"] > div:hover,
-.stMultiSelect div[data-baseweb="select"] > div:hover,
-.stTextInput div[data-baseweb="input"] > div:hover,
-.stDateInput div[data-baseweb="input"] > div:hover {
+div[data-baseweb="select"] > div:hover,
+div[data-baseweb="input"] > div:hover {
     border-color: var(--nv-primary) !important;
 }
 
-.stSelectbox div[data-baseweb="select"] > div:focus-within,
-.stMultiSelect div[data-baseweb="select"] > div:focus-within,
-.stTextInput div[data-baseweb="input"] > div:focus-within,
-.stDateInput div[data-baseweb="input"] > div:focus-within {
-    border-bottom-width: 1px !important; 
+/* 포커스 시 (하단 굵은 줄 없이 얇고 예쁜 전체 포커스링만 표시) */
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="input"] > div:focus-within {
     border-color: var(--nv-primary) !important;
     box-shadow: 0 0 0 1px var(--nv-primary) !important; 
 }
@@ -154,7 +156,6 @@ button[data-testid="baseButton-primary"]:hover {
 .kpi.highlight { border-color: var(--nv-primary); background: var(--nv-primary-soft); }
 .kpi.highlight .v { color: var(--nv-primary); font-size: 20px; }
 
-/* ✨ 증감 색상 (초록=개선/상승, 빨강=악화/하락) */
 .kpi .d.pos { background: #EAF7E9; color: var(--nv-success); } 
 .kpi .d.neg { background: #FFE6EE; color: var(--nv-danger); } 
 .kpi .d.neu { background: #E5E6E9; color: var(--nv-muted); }
@@ -218,5 +219,35 @@ div[role="listbox"] ul li:hover *, div[role="listbox"] ul li[aria-selected="true
 </style>
 """
 
+JS_AUTO_CLOSE = """
+<script>
+// 드롭다운 옵션 클릭 시 포커스를 잃게 만들어 자동으로 닫히게 하는 스크립트
+const parentDoc = window.parent.document;
+if (!parentDoc.getElementById('dropdown-auto-close-loaded')) {
+    const marker = parentDoc.createElement('div');
+    marker.id = 'dropdown-auto-close-loaded';
+    marker.style.display = 'none';
+    parentDoc.body.appendChild(marker);
+
+    parentDoc.addEventListener('click', function(e) {
+        if (e.target.closest('[role="option"]')) {
+            setTimeout(() => {
+                const active = parentDoc.activeElement;
+                if (active) {
+                    active.blur(); // 강제 포커스 해제 -> 드롭다운 접힘
+                }
+                // 확실한 접힘을 위해 가상의 ESC 키 입력 발생
+                parentDoc.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                }));
+            }, 50);
+        }
+    });
+}
+</script>
+"""
+
 def apply_global_css():
     st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
+    # 스크립트는 HTML 컴포넌트를 통해 백그라운드에 몰래 심어둡니다.
+    components.html(JS_AUTO_CLOSE, height=0, width=0)
