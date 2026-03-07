@@ -15,7 +15,7 @@ from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_it
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
-    st.markdown("<div class='nv-sec-title'>광고 소재 및 랜딩페이지 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>광고 소재 분석</div>", unsafe_allow_html=True)
     
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_ad", 200))
     bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
@@ -52,7 +52,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
 
-    tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"])
+    tab_pl, tab_shop, tab_cmp = st.tabs(["파워링크", "쇼핑검색", "기간 비교"])
     
     fmt = {"노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"}
 
@@ -97,28 +97,6 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
             df_shop = df_shop[~df_shop['소재내용'].astype(str).str.contains('TALK', na=False, case=False)]
         _render_ad_tab(df_shop, "쇼핑검색 확장소재")
-
-    with tab_landing:
-        if "landing_url" in view.columns:
-            df_lp = view[view["landing_url"].astype(str) != ""].copy()
-            if df_lp.empty: st.info("수집된 URL 데이터가 없습니다.")
-            else:
-                lp_grp = df_lp.groupby("landing_url", as_index=False)[["노출", "클릭", "광고비", "전환", "전환매출"]].sum()
-                lp_grp["CTR(%)"] = np.where(lp_grp["노출"] > 0, (lp_grp["클릭"]/lp_grp["노출"])*100, 0)
-                lp_grp["CVR(%)"] = np.where(lp_grp["클릭"] > 0, (lp_grp["전환"]/lp_grp["클릭"])*100, 0)
-                lp_grp["ROAS(%)"] = np.where(lp_grp["광고비"] > 0, (lp_grp["전환매출"]/lp_grp["광고비"])*100, 0)
-                lp_grp = lp_grp.rename(columns={"landing_url": "랜딩페이지 URL"}).sort_values("광고비", ascending=False)
-                
-                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>랜딩페이지(URL) 효율</div>", unsafe_allow_html=True)
-                st.dataframe(
-                    lp_grp.style.background_gradient(cmap="Blues", subset=["CVR(%)", "ROAS(%)"]).format({'노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', '전환': '{:,.1f}', '전환매출': '{:,.0f}', 'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'}), 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "랜딩페이지 URL": st.column_config.LinkColumn("랜딩페이지 URL (클릭 시 이동)", display_text="링크 열기")
-                    }
-                )
-        else: st.info("랜딩페이지 URL 컬럼이 없습니다.")
 
     with tab_cmp:
         cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
