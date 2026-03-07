@@ -10,6 +10,7 @@ GLOBAL_UI_CSS = """
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 
 :root {
+  /* 사람인(Saramin) 스타일 프로페셔널 팔레트 */
   --nv-bg: #FFFFFF;
   --nv-surface: #F8F9FA;
   --nv-panel: #F4F6FA;
@@ -42,7 +43,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* =========================================
-   🔘 일반 버튼 디자인
+   🔘 버튼 디자인
    ========================================= */
 button[data-testid="baseButton-secondary"] {
     background-color: #FFFFFF !important;
@@ -52,13 +53,11 @@ button[data-testid="baseButton-secondary"] {
     font-weight: 600 !important;
     padding: 4px 16px !important;
 }
-
 button[data-testid="baseButton-secondary"]:hover {
     border-color: var(--nv-primary) !important;
     color: var(--nv-primary) !important;
     background-color: var(--nv-primary-soft) !important;
 }
-
 button[data-testid="baseButton-primary"] {
     background: var(--nv-primary) !important;
     border: 1px solid var(--nv-primary) !important;
@@ -67,52 +66,42 @@ button[data-testid="baseButton-primary"] {
     font-weight: 700 !important;
     padding: 4px 16px !important;
 }
-
 button[data-testid="baseButton-primary"]:hover {
     background: var(--nv-primary-hover) !important;
     border-color: var(--nv-primary-hover) !important;
 }
+[data-testid="stCheckbox"] label span[data-baseweb="checkbox"] {
+    background-color: var(--nv-primary) !important;
+}
 
 /* =========================================
-   🚨 [최종판] 드롭다운 & 인풋 하단 굵은 줄 완전 파괴
+   🚨 안전한 방식의 드롭다운/인풋 하단 굵은 줄(2px) 제거
+   (이전처럼 UI가 깨지지 않도록 border 속성만 덮어씀)
    ========================================= */
-/* Streamlit BaseWeb 테두리를 담당하는 모든 div 선택 */
 div[data-baseweb="select"] > div,
 div[data-baseweb="input"] > div {
-    border-top: 1px solid var(--nv-line-strong) !important;
-    border-right: 1px solid var(--nv-line-strong) !important;
-    border-left: 1px solid var(--nv-line-strong) !important;
-    border-bottom: 1px solid var(--nv-line-strong) !important;
+    border-width: 1px !important;
+    border-bottom-width: 1px !important; /* 강제 1px 고정 */
+    border-style: solid !important;
+    border-color: var(--nv-line-strong) !important;
     border-radius: var(--nv-radius) !important;
-    box-shadow: none !important;
     background-color: #FFFFFF !important;
 }
 
-/* 포커스 및 호버 시 모든 방향에 동일한 1px 파란색 적용 */
 div[data-baseweb="select"] > div:hover,
-div[data-baseweb="input"] > div:hover,
+div[data-baseweb="input"] > div:hover {
+    border-color: var(--nv-primary) !important;
+}
+
+/* 포커스(클릭) 시 굵은 줄 대신 얇고 깔끔한 외곽선만 나타나도록 처리 */
 div[data-baseweb="select"] > div:focus-within,
 div[data-baseweb="input"] > div:focus-within {
     border-color: var(--nv-primary) !important;
     box-shadow: 0 0 0 1px var(--nv-primary) inset !important;
 }
 
-/* 결정적 원인인 스트림릿의 가상 요소(파란 밑줄) 완전히 숨김 처리 */
-div[data-baseweb="select"] > div::before,
-div[data-baseweb="select"] > div::after,
-div[data-baseweb="input"] > div::before,
-div[data-baseweb="input"] > div::after {
-    display: none !important;
-    content: none !important;
-    border: none !important;
-    border-bottom: none !important;
-    box-shadow: none !important;
-    width: 0 !important;
-    height: 0 !important;
-}
-
 /* =========================================
-   🚨 선택된 칩(태그) 디자인
+   🚨 선택된 항목(멀티셀렉트 칩/태그) 선명하게 변경
    ========================================= */
 [data-baseweb="tag"] {
     background-color: var(--nv-primary) !important;
@@ -125,7 +114,7 @@ div[data-baseweb="input"] > div::after {
 [data-baseweb="tag"] svg { fill: #FFFFFF !important; }
 
 /* =========================================
-   📈 요약(Overview) KPI 카드
+   📈 요약(Overview) KPI 카드 레이아웃 (복원됨)
    ========================================= */
 .kpi-group-container { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
 .kpi-group { flex: 1; min-width: 250px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); border-radius: var(--nv-radius); padding: 16px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02); }
@@ -140,6 +129,7 @@ div[data-baseweb="input"] > div::after {
 .kpi.highlight { border-color: var(--nv-primary); background: var(--nv-primary-soft); }
 .kpi.highlight .v { color: var(--nv-primary); font-size: 20px; }
 
+/* 증감 색상 (초록=상승, 빨강=하락) */
 .kpi .d.pos { background: #EAF7E9; color: var(--nv-success); } 
 .kpi .d.neg { background: #FFE6EE; color: var(--nv-danger); } 
 .kpi .d.neu { background: #E5E6E9; color: var(--nv-muted); }
@@ -148,69 +138,88 @@ div[data-baseweb="input"] > div::after {
    📊 공통 메트릭 & 테이블 UI
    ========================================= */
 .nv-sec-title { font-size: 18px; font-weight: 700; margin-top: 24px; margin-bottom: 8px; color: #111111; display: flex; align-items: center; gap: 8px; }
-.nv-metric-card { background: var(--nv-bg); padding: 20px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; }
-.nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.nv-metric-card-value { color: var(--nv-text); font-size: 24px; font-weight: 800; }
+.nv-metric-card { background: var(--nv-bg); padding: 20px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+.nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.02em; }
+.nv-metric-card-value { color: var(--nv-text); font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 .nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 700; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 4px; }
 
 table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left; border: 1px solid var(--nv-line); border-radius: var(--nv-radius); overflow: hidden; }
-table.nv-table th { position: sticky; top: 0; z-index: 2; background: #F8F9FA; padding: 13px 16px; font-weight: 700; color: #444444; border-bottom: 1px solid var(--nv-line-strong); }
-table.nv-table td { padding: 13px 16px; border-bottom: 1px solid var(--nv-line); vertical-align: middle; color: var(--nv-text); }
+table.nv-table th { position: sticky; top: 0; z-index: 2; background: #F8F9FA; padding: 13px 16px; font-weight: 700; color: #444444; border-bottom: 1px solid var(--nv-line-strong); letter-spacing:-0.02em; }
+table.nv-table td { padding: 13px 16px; border-bottom: 1px solid var(--nv-line); vertical-align: middle; color: var(--nv-text); transition: background 0.1s ease; }
 table.nv-table tr:hover td { background: var(--nv-primary-soft); color: var(--nv-primary-hover); }
 
 .nv-pbar { display: flex; align-items: center; gap: 10px; min-width: 160px; }
 .nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--nv-line); overflow: hidden; }
-.nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
+.nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.5s ease; border-radius: 3px; }
 .nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: var(--nv-text); font-size: 12px; }
 
 [data-baseweb="tab-list"] { gap: 20px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line-strong); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 600; padding: 14px 4px !important; margin: 0 !important; color: var(--nv-muted-light) !important; font-size: 15px; border-radius: 0 !important; }
 [aria-selected="true"] { color: #111111 !important; font-weight: 800 !important; border-bottom: 3px solid var(--nv-primary) !important; box-shadow: none !important; }
 
-/* 좌측 사이드바 디자인 */
+[data-testid="stExpander"] { border: 1px solid var(--nv-line) !important; border-radius: var(--nv-radius) !important; box-shadow: none !important; background: var(--nv-bg) !important; }
+[data-testid="stExpander"] summary { padding: 16px !important; background-color: var(--nv-surface) !important; border-radius: var(--nv-radius) !important;}
+[data-testid="stExpander"] summary p { font-weight: 700 !important; font-size: 14px !important; color: var(--nv-text) !important; }
+
+/* 좌측 사이드바 */
 [data-testid="stSidebar"] { background: var(--nv-surface) !important; border-right: 1px solid var(--nv-line) !important; }
 [data-testid="stSidebar"] .block-container { padding-top: 1rem !important; }
 .nav-sidebar-title { font-size: 16px; font-weight: 800; color: #111111; letter-spacing: -0.02em; }
+.nav-sidebar-caption { margin-top: 4px; margin-bottom: 10px; font-size: 12px; color: var(--nv-muted); font-weight: 600; }
+
+[data-testid="stSidebar"] [role="radiogroup"] { background: #FFFFFF; border: 1px solid var(--nv-line); border-radius: var(--nv-radius); padding: 8px; }
+[data-testid="stSidebar"] [role="radiogroup"] label { padding: 10px 12px !important; border-radius: 4px !important; border: 1px solid transparent; transition: background 0.1s ease; }
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--nv-surface) !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: var(--nv-primary-soft) !important; border-left: 3px solid var(--nv-primary) !important; border-radius: 0 4px 4px 0 !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-primary) !important; font-weight: 700 !important; }
+
+div[role="listbox"] ul li, [data-baseweb="menu"] [role="option"] { border-radius: 4px !important; }
+div[role="listbox"] ul li:hover, div[role="listbox"] ul li[aria-selected="true"], [data-baseweb="menu"] [role="option"]:hover, [data-baseweb="menu"] [role="option"][aria-selected="true"] { background-color: var(--nv-primary-soft) !important; color: var(--nv-primary) !important; }
+div[role="listbox"] ul li:hover *, div[role="listbox"] ul li[aria-selected="true"] *, [data-baseweb="menu"] [role="option"]:hover *, [data-baseweb="menu"] [role="option"][aria-selected="true"] * { color: var(--nv-primary) !important; font-weight: 700 !important; }
 </style>
 """
 
-# Streamlit 환경에서 무조건 드롭다운 창을 닫아버리는 강력한 자바스크립트
 JS_AUTO_CLOSE = """
 <script>
-const initAutoClose = () => {
-    try {
-        const parentDoc = window.parent.document;
-        if (!parentDoc || parentDoc.getElementById('dropdown-fix-v2')) return;
-        
+// 드롭다운 항목 클릭 시 강제로 ESC 키를 전송하여 드롭다운 창을 닫게 만드는 무적 스크립트
+(function() {
+    const parentDoc = window.parent.document;
+    if (!parentDoc.getElementById('dropdown-auto-closer')) {
         const marker = parentDoc.createElement('div');
-        marker.id = 'dropdown-fix-v2';
+        marker.id = 'dropdown-auto-closer';
+        marker.style.display = 'none';
         parentDoc.body.appendChild(marker);
 
         parentDoc.addEventListener('click', function(e) {
-            // 클릭된 요소가 드롭다운 목록의 아이템(role="option")인지 확인
-            let isOption = false;
             let target = e.target;
-            while(target && target !== parentDoc) {
+            let isOptionClicked = false;
+            
+            // 클릭한 대상이 리스트의 'option'인지 식별
+            while (target && target !== parentDoc) {
                 if (target.getAttribute && target.getAttribute('role') === 'option') {
-                    isOption = true;
+                    isOptionClicked = true;
                     break;
                 }
                 target = target.parentNode;
             }
             
-            if (isOption) {
-                // 클릭 직후 백그라운드 클릭 이벤트를 쏴서 강제로 팝업을 접히게 함
-                setTimeout(() => {
-                    const appRoot = parentDoc.querySelector('.stApp');
-                    if (appRoot) {
-                        appRoot.click(); // 바탕화면 강제 클릭
+            // 항목을 클릭했다면 0.05초 뒤에 ESC 키를 발생시켜 창을 닫아버림
+            if (isOptionClicked) {
+                setTimeout(function() {
+                    const escEvent = new KeyboardEvent('keydown', {
+                        key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                    });
+                    if (parentDoc.activeElement) {
+                        parentDoc.activeElement.dispatchEvent(escEvent);
+                        parentDoc.activeElement.blur(); // 포커스 선(파란테두리)도 같이 해제
+                    } else {
+                        parentDoc.dispatchEvent(escEvent);
                     }
                 }, 50);
             }
         }, true);
-    } catch (err) {}
-};
-setInterval(initAutoClose, 1000);
+    }
+})();
 </script>
 """
 
