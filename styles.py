@@ -83,39 +83,48 @@ button[data-testid="baseButton-primary"]:hover {
 
 
 /* =========================================
-   🚨 [핵심] 인풋 & 셀렉트박스 하단 굵은 줄 '완벽' 제거
-   (스트림릿 내부 숨겨진 ::after 가상 요소 멸망시키기)
+   🚨 [집중 공략] 하단 2px 굵은 파란줄 '완벽' 차단 
    ========================================= */
-div[data-baseweb="select"] > div::after,
-div[data-baseweb="select"] > div::before,
-div[data-baseweb="input"] > div::after,
-div[data-baseweb="input"] > div::before {
-    display: none !important;
-    content: none !important;
-    border: none !important;
-    background: transparent !important;
-}
-
-/* 본체 테두리 디자인 덮어쓰기 */
+/* 1. Baseweb 셀렉트박스 & 인풋창 테두리를 1px로 강제 고정 */
 div[data-baseweb="select"] > div,
 div[data-baseweb="input"] > div {
-    border: 1px solid var(--nv-line-strong) !important;
+    border-width: 1px !important;
+    border-bottom-width: 1px !important; /* 하단 1px 고정 */
+    border-style: solid !important;
+    border-color: var(--nv-line-strong) !important;
     border-radius: var(--nv-radius) !important;
     box-shadow: none !important;
-    background-color: #FFFFFF !important;
-    transition: all 0.2s ease !important;
 }
 
+/* 2. 포커스(클릭)되었을 때 하단만 굵어지는 현상 차단 및 전체 1px 테두리 + 은은한 섀도우 */
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="select"] > div:focus,
+div[data-baseweb="select"] > div:active,
+div[data-baseweb="input"] > div:focus-within,
+div[data-baseweb="input"] > div:focus,
+div[data-baseweb="input"] > div:active {
+    border-width: 1px !important;
+    border-bottom-width: 1px !important; /* 포커스 시에도 무조건 1px 유지 */
+    border-color: var(--nv-primary) !important;
+    box-shadow: 0 0 0 1px var(--nv-primary) !important; 
+    border-radius: var(--nv-radius) !important;
+}
+
+/* 3. 호버 시 테두리 색상 변경 */
 div[data-baseweb="select"] > div:hover,
 div[data-baseweb="input"] > div:hover {
     border-color: var(--nv-primary) !important;
 }
 
-/* 포커스 시 (하단 굵은 줄 없이 얇고 예쁜 전체 포커스링만 표시) */
-div[data-baseweb="select"] > div:focus-within,
-div[data-baseweb="input"] > div:focus-within {
-    border-color: var(--nv-primary) !important;
-    box-shadow: 0 0 0 1px var(--nv-primary) !important; 
+/* 4. 스트림릿이 몰래 생성해서 밑줄을 긋는 ::after / ::before 가상 요소 완전히 파괴 */
+div[data-baseweb="select"] > div::after,
+div[data-baseweb="select"] > div::before,
+div[data-baseweb="input"] > div::after,
+div[data-baseweb="input"] > div::before {
+    content: none !important;
+    display: none !important;
+    border: none !important;
+    height: 0 !important;
 }
 
 
@@ -221,33 +230,51 @@ div[role="listbox"] ul li:hover *, div[role="listbox"] ul li[aria-selected="true
 
 JS_AUTO_CLOSE = """
 <script>
-// 드롭다운 옵션 클릭 시 포커스를 잃게 만들어 자동으로 닫히게 하는 스크립트
-const parentDoc = window.parent.document;
-if (!parentDoc.getElementById('dropdown-auto-close-loaded')) {
-    const marker = parentDoc.createElement('div');
-    marker.id = 'dropdown-auto-close-loaded';
-    marker.style.display = 'none';
-    parentDoc.body.appendChild(marker);
+// 드롭다운 옵션 클릭 시 자동으로 접히게 만드는 강력한 자바스크립트
+const initAutoClose = () => {
+    try {
+        const parentDoc = window.parent.document;
+        // 이미 스크립트가 주입되었는지 확인 (중복 실행 방지)
+        if (!parentDoc || parentDoc.getElementById('dropdown-auto-close-fix')) return;
+        
+        const marker = parentDoc.createElement('div');
+        marker.id = 'dropdown-auto-close-fix';
+        marker.style.display = 'none';
+        parentDoc.body.appendChild(marker);
 
-    parentDoc.addEventListener('click', function(e) {
-        if (e.target.closest('[role="option"]')) {
-            setTimeout(() => {
-                const active = parentDoc.activeElement;
-                if (active) {
-                    active.blur(); // 강제 포커스 해제 -> 드롭다운 접힘
+        // 사용자가 화면을 클릭했을 때 이벤트 감지
+        parentDoc.addEventListener('mouseup', function(e) {
+            let target = e.target;
+            // 클릭한 요소부터 상위로 올라가며 옵션(목록 항목)인지 확인
+            while (target && target !== parentDoc) {
+                if (target.getAttribute && target.getAttribute('role') === 'option') {
+                    // 스트림릿이 클릭을 인지할 수 있도록 0.1초 대기 후 강제 닫기 실행
+                    setTimeout(() => {
+                        // 1. ESC 키보드 이벤트 발생시켜 드롭다운 박스 닫기
+                        const escEvent = new KeyboardEvent('keydown', {
+                            key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                        });
+                        parentDoc.dispatchEvent(escEvent);
+                        
+                        // 2. 포커스 강제 해제 (선택 후 파란 링이 남아있는 현상 방지)
+                        if (parentDoc.activeElement) {
+                            parentDoc.activeElement.blur();
+                        }
+                    }, 100); 
+                    break;
                 }
-                // 확실한 접힘을 위해 가상의 ESC 키 입력 발생
-                parentDoc.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                }));
-            }, 50);
-        }
-    });
-}
+                target = target.parentNode;
+            }
+        }, true);
+    } catch (err) {}
+};
+
+// Streamlit 환경 특성상 로딩 타이밍을 맞추기 위해 1초마다 스크립트 주입 시도
+setInterval(initAutoClose, 1000);
 </script>
 """
 
 def apply_global_css():
     st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    # 스크립트는 HTML 컴포넌트를 통해 백그라운드에 몰래 심어둡니다.
+    # Javascript를 HTML 컴포넌트를 통해 뷰에 숨겨서 렌더링
     components.html(JS_AUTO_CLOSE, height=0, width=0)
