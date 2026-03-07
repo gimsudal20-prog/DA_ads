@@ -22,24 +22,19 @@ except Exception:
 from data import format_currency
 
 def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str = "마케팅 통합 대시보드") -> None:
-    """
-    메인 화면의 큰 공간을 차지하던 기존 Hero 섹션을 제거하고,
-    핵심 정보(최근 수집일)만 좌측 사이드바 상단에 컴팩트하게 표출합니다.
-    """
-    # 1. 최근 수집일 날짜만 추출
     dt_str = "수집 대기 중"
     if latest_dates:
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    # 2. 불필요한 환경/상태 KPI 카드는 모두 제거하고 좌측 메뉴 최상단에 삽입
+    # 사이드바 최상단에 포털 스타일의 간결한 정보창 배치
     st.sidebar.markdown(f"""
-    <div style='padding: 12px 14px; border-radius: 10px; background: #FFFFFF; border: 1px solid var(--nv-line); margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'>
-        <div style='font-size: 11px; color: var(--nv-muted); font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;'>
-            <span>📊</span> {dashboard_title}
+    <div style='padding: 14px 16px; border-radius: 6px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); margin-bottom: 12px;'>
+        <div style='font-size: 12px; color: var(--nv-muted); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;'>
+            <span style='color:var(--nv-primary)'>■</span> {dashboard_title}
         </div>
-        <div style='font-size: 14px; font-weight: 800; color: var(--nv-text); letter-spacing: -0.02em;'>
-            데이터 기준일: <span style='color: var(--nv-primary);'>{dt_str}</span>
+        <div style='font-size: 15px; font-weight: 700; color: #111111; letter-spacing: -0.02em;'>
+            최근 수집: <span style='color: var(--nv-primary); font-weight: 800;'>{dt_str}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -70,10 +65,9 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        # 인디고 색상으로 통일
-        c = "#6366F1"
-        if v >= 100: c = "#EF4444"
-        elif v >= 90: c = "#F59E0B"
+        c = "#4876EF" # 사람인 블루
+        if v >= 100: c = "#FF025D"
+        elif v >= 90: c = "#FF9839"
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -88,12 +82,12 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             val = row[c]
             if c == "상태":
                 v_str = str(val)
-                bg, text, icon = "#F1F5F9", "#475569", "●"
-                if "적정" in v_str: bg, text, icon = "#D1FAE5", "#047857", "✓"
-                elif "주의" in v_str: bg, text, icon = "#FEF3C7", "#B45309", "!"
-                elif "초과" in v_str: bg, text, icon = "#FEE2E2", "#B91C1C", "▲"
+                bg, text, icon = "#F4F6FA", "#666666", "●"
+                if "적정" in v_str: bg, text, icon = "#EAF7E9", "#408F35", "✓"
+                elif "주의" in v_str: bg, text, icon = "#FFF2E5", "#D86B12", "!"
+                elif "초과" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "▲"
                 
-                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:5px 10px; border-radius:12px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
+                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:4px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
             else:
                 tds.append(f"<td>{val}</td>")
         html_rows.append(f"<tr>{''.join(tds)}</tr>")
@@ -108,20 +102,18 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#0F172A", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#111111", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
         "legend": {"data": [y1_name, y2_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#E2E8F0"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#D7DCE5"}}}],
         "yAxis": [
-            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F1F5F9"}}},
+            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#E5E6E9"}}},
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            # 인디고 색상으로 통일
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#6366F1", "borderRadius": [4,4,0,0]}}, 
-            # 꺾은선 색상 슬레이트로 매칭
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#0F172A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#4876EF", "borderRadius": [2,2,0,0]}}, 
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#222222"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
@@ -133,14 +125,14 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#0F172A", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#111111", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
         "legend": {"data": [y_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#E2E8F0"}}}],
-        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F1F5F9"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#D7DCE5"}}}],
+        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#E5E6E9"}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#6366F1"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#4876EF"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
