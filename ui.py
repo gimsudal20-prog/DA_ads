@@ -99,9 +99,10 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#375FFF"
-        if v >= 100: c = "#FC503D"
-        elif v >= 90: c = "#F67514"
+        # 인디고 색상으로 통일
+        c = "#6366F1"
+        if v >= 100: c = "#EF4444"
+        elif v >= 90: c = "#F59E0B"
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -117,8 +118,8 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             if c == "상태":
                 v_str = str(val)
                 bg, text, icon = "#F1F5F9", "#475569", "●"
-                if "적정" in v_str: bg, text, icon = "#E6F4EA", "#047857", "✓"
-                elif "주의" in v_str: bg, text, icon = "#FFF4E5", "#B45309", "!"
+                if "적정" in v_str: bg, text, icon = "#D1FAE5", "#047857", "✓"
+                elif "주의" in v_str: bg, text, icon = "#FEF3C7", "#B45309", "!"
                 elif "초과" in v_str: bg, text, icon = "#FEE2E2", "#B91C1C", "▲"
                 
                 tds.append(f"<td><span style='background:{bg}; color:{text}; padding:5px 10px; border-radius:12px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
@@ -136,18 +137,20 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#19191A", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#0F172A", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
         "legend": {"data": [y1_name, y2_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#E4E4E4"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#E2E8F0"}}}],
         "yAxis": [
-            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F4F4F4"}}},
+            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F1F5F9"}}},
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#375FFF", "borderRadius": [2,2,0,0]}}, 
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#19191A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            # 인디고 색상으로 통일
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#6366F1", "borderRadius": [4,4,0,0]}}, 
+            # 꺾은선 색상 슬레이트로 매칭
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#0F172A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
@@ -159,14 +162,14 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#19191A", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#0F172A", "fontWeight": 700}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
         "legend": {"data": [y_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#E4E4E4"}}}],
-        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F4F4F4"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#E2E8F0"}}}],
+        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F1F5F9"}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#375FFF"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#6366F1"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
