@@ -27,7 +27,7 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    # 사이드바 최상단에 포털 스타일의 간결한 정보창 배치
+    # 사이드바 상단 정보창
     st.sidebar.markdown(f"""
     <div style='padding: 14px 16px; border-radius: 6px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); margin-bottom: 12px;'>
         <div style='font-size: 12px; color: var(--nv-muted); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;'>
@@ -65,9 +65,9 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#4876EF" # 사람인 블루
-        if v >= 100: c = "#FF025D"
-        elif v >= 90: c = "#FF9839"
+        c = "#4876EF" # 기본 진행률 (파랑)
+        if v >= 100: c = "#FF025D" # 초과 시 (빨강)
+        elif v >= 90: c = "#FF9839" # 주의 시 (주황)
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -85,7 +85,9 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
                 bg, text, icon = "#F4F6FA", "#666666", "●"
                 if "적정" in v_str: bg, text, icon = "#EAF7E9", "#408F35", "✓"
                 elif "주의" in v_str: bg, text, icon = "#FFF2E5", "#D86B12", "!"
-                elif "초과" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "▲"
+                
+                # ✨ 증감 화살표(▲)와 헷갈리지 않게 '✕' 로 변경 완료!
+                elif "초과" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "✕" 
                 
                 tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:4px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
             else:
