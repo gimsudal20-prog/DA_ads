@@ -81,8 +81,58 @@ button[data-testid="baseButton-primary"]:hover {
     background-color: var(--nv-primary) !important;
 }
 
+
 /* =========================================
-   📈 요약(Overview) KPI 카드 레이아웃 & 디자인 [복구 완료]
+   🚨 [NEW] 인풋 & 셀렉트박스 (입력창/드롭다운) 하단 굵은 줄 제거
+   ========================================= */
+div[data-baseweb="select"] > div, 
+div[data-baseweb="input"] > div {
+    border: 1px solid var(--nv-line-strong) !important;
+    border-bottom: 1px solid var(--nv-line-strong) !important; /* 강제 덮어쓰기로 하단 줄 제거 */
+    border-radius: var(--nv-radius) !important;
+    box-shadow: none !important;
+    background-color: #FFFFFF !important;
+    transition: all 0.2s ease !important;
+}
+
+/* 마우스 호버 시 옅은 파란 테두리 */
+div[data-baseweb="select"] > div:hover, 
+div[data-baseweb="input"] > div:hover {
+    border-color: var(--nv-primary) !important;
+}
+
+/* 클릭(포커스) 시 하단 굵은 줄 대신 전체 테두리에 깔끔한 포커스 링 적용 */
+div[data-baseweb="select"] > div:focus-within, 
+div[data-baseweb="input"] > div:focus-within {
+    border-width: 1px !important;
+    border-bottom-width: 1px !important; 
+    border-color: var(--nv-primary) !important;
+    box-shadow: 0 0 0 1px var(--nv-primary) !important; /* 얇고 깔끔한 외곽선 */
+}
+
+/* =========================================
+   🚨 [NEW] 선택된 항목(멀티셀렉트 태그) 뚜렷하게 변경
+   ========================================= */
+[data-baseweb="tag"] {
+    background-color: var(--nv-primary) !important; /* 확실한 사람인 블루 배경 */
+    border: none !important;
+    border-radius: 4px !important;
+    margin-top: 3px !important;
+    margin-bottom: 3px !important;
+}
+
+[data-baseweb="tag"] * { 
+    color: #FFFFFF !important; /* 텍스트는 무조건 하얗게 */
+    font-weight: 600 !important; 
+}
+
+[data-baseweb="tag"] svg {
+    fill: #FFFFFF !important; /* X (닫기) 버튼도 하얗게 */
+}
+
+
+/* =========================================
+   📈 요약(Overview) KPI 카드 레이아웃 & 디자인
    ========================================= */
 .kpi-group-container { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
 .kpi-group { flex: 1; min-width: 250px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); border-radius: var(--nv-radius); padding: 16px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02); }
@@ -201,12 +251,6 @@ div[role="listbox"] ul li[aria-selected="true"] *,
   font-weight: 700 !important;
 }
 
-[data-baseweb="tag"] {
-  background-color: #FFFFFF !important;
-  border: 1px solid var(--nv-line-strong) !important;
-  border-radius: 4px !important;
-}
-[data-baseweb="tag"] * { color: #444444 !important; font-weight: 600 !important; }
 </style>
 """
 
