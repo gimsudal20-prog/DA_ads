@@ -5,6 +5,9 @@ from __future__ import annotations
 import streamlit as st
 import streamlit.components.v1 as components
 
+# =====================================================================
+# 기존에 예쁘게 나오던 오리지널 CSS는 단 1픽셀도 건드리지 않고 그대로 둡니다.
+# =====================================================================
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
@@ -238,22 +241,33 @@ div[role="listbox"] ul li[aria-selected="true"] *,
 [data-baseweb="tag"] * { color: #FFFFFF !important; }
 
 /* ========================================================
-   [추가 1] 인풋/셀렉트박스 파란줄 방지 & 모든 면 동일한 1px 테두리
+   ✅ [안전 적용] 인풋/셀렉트박스 파란줄 방지 & 포커스 테두리
    ======================================================== */
-div[data-baseweb="select"] > div,
-div[data-baseweb="input"] > div {
+.stSelectbox div[data-baseweb="select"] > div,
+.stMultiSelect div[data-baseweb="select"] > div,
+.stDateInput div[data-baseweb="input"] > div,
+.stTextInput div[data-baseweb="input"] > div {
     border-bottom-width: 1px !important;
+    box-shadow: none !important;
 }
-div[data-baseweb="select"] > div:focus-within,
-div[data-baseweb="input"] > div:focus-within {
-    border-bottom-width: 1px !important;
-    box-shadow: 0 0 0 1px var(--nv-primary) inset !important;
-    border-color: var(--nv-primary) !important;
+
+.stSelectbox div[data-baseweb="select"] > div:focus-within,
+.stMultiSelect div[data-baseweb="select"] > div:focus-within,
+.stDateInput div[data-baseweb="input"] > div:focus-within,
+.stTextInput div[data-baseweb="input"] > div:focus-within {
+    border-color: #335CFF !important;
+    box-shadow: 0 0 0 1px #335CFF inset !important;
 }
-div[data-baseweb="select"] > div::after,
-div[data-baseweb="select"] > div::before,
-div[data-baseweb="input"] > div::after,
-div[data-baseweb="input"] > div::before {
+
+/* 스트림릿 내부 숨겨진 파란 밑줄(after/before) 완전 파괴 */
+.stSelectbox div[data-baseweb="select"] > div::after,
+.stMultiSelect div[data-baseweb="select"] > div::after,
+.stDateInput div[data-baseweb="input"] > div::after,
+.stTextInput div[data-baseweb="input"] > div::after,
+.stSelectbox div[data-baseweb="select"] > div::before,
+.stMultiSelect div[data-baseweb="select"] > div::before,
+.stDateInput div[data-baseweb="input"] > div::before,
+.stTextInput div[data-baseweb="input"] > div::before {
     display: none !important;
     content: none !important;
 }
@@ -261,52 +275,106 @@ div[data-baseweb="input"] > div::before {
 """
 
 # ========================================================
-# [추가 2] 드롭다운 항목 클릭 시 자동으로 접히게 만드는 스크립트
+# ✅ [기능 추가] 드롭다운 접힘 JS & 달력 영어를 한국어로 변환하는 JS
 # ========================================================
-JS_AUTO_CLOSE = """
+JS_CUSTOM_UX = """
 <script>
-const initAutoClose = () => {
-    try {
-        const parentDoc = window.parent.document;
-        if (!parentDoc || parentDoc.getElementById('dropdown-auto-closer')) return;
-        
-        const marker = parentDoc.createElement('div');
-        marker.id = 'dropdown-auto-closer';
-        marker.style.display = 'none';
-        parentDoc.body.appendChild(marker);
+(function() {
+    const parentDoc = window.parent.document;
+    if (parentDoc.getElementById('custom-ux-enhancements')) return;
+    
+    const marker = parentDoc.createElement('div');
+    marker.id = 'custom-ux-enhancements';
+    marker.style.display = 'none';
+    parentDoc.body.appendChild(marker);
 
-        parentDoc.addEventListener('click', function(e) {
-            let target = e.target;
-            let isOptionClicked = false;
-            
-            while (target && target !== parentDoc) {
-                if (target.getAttribute && target.getAttribute('role') === 'option') {
-                    isOptionClicked = true;
-                    break;
+    /* 1. 옵션 선택 시 자동으로 드롭다운 박스 접히게 하기 */
+    parentDoc.addEventListener('click', function(e) {
+        let target = e.target;
+        let isOptionClicked = false;
+        
+        while (target && target !== parentDoc) {
+            if (target.getAttribute && target.getAttribute('role') === 'option') {
+                isOptionClicked = true;
+                break;
+            }
+            target = target.parentNode;
+        }
+        
+        if (isOptionClicked) {
+            setTimeout(function() {
+                // ESC 키 이벤트를 강제로 쏘아 창을 접습니다.
+                const escEvent = new KeyboardEvent('keydown', {
+                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                });
+                if (parentDoc.activeElement) {
+                    parentDoc.activeElement.dispatchEvent(escEvent);
+                    parentDoc.activeElement.blur(); // 파란 포커스 링도 지워줌
+                } else {
+                    parentDoc.dispatchEvent(escEvent);
                 }
-                target = target.parentNode;
-            }
-            
-            if (isOptionClicked) {
-                setTimeout(function() {
-                    const escEvent = new KeyboardEvent('keydown', {
-                        key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                    });
-                    if (parentDoc.activeElement) {
-                        parentDoc.activeElement.dispatchEvent(escEvent);
-                    } else {
-                        parentDoc.dispatchEvent(escEvent);
+            }, 50);
+        }
+    }, true);
+
+    /* 2. 달력 팝업에 뜨는 영어 월(March, April 등)을 한국어 숫자로 예쁘게 변경 (March 2026 -> 2026년 3월) */
+    const monthMap = {
+        "January": "1월", "February": "2월", "March": "3월", "April": "4월",
+        "May": "5월", "June": "6월", "July": "7월", "August": "8월",
+        "September": "9월", "October": "10월", "November": "11월", "December": "12월"
+    };
+
+    const translateCalendar = () => {
+        const popovers = parentDoc.querySelectorAll('[data-baseweb="calendar"], [data-baseweb="popover"]');
+        popovers.forEach(pop => {
+            const walker = parentDoc.createTreeWalker(pop, NodeFilter.SHOW_TEXT, null, false);
+            let node;
+            while ((node = walker.nextNode())) {
+                let text = node.nodeValue;
+                if (text) {
+                    let changed = false;
+                    for (const [eng, kor] of Object.entries(monthMap)) {
+                        // "March 2026" 형태를 "2026년 3월"로 자연스럽게 변경
+                        const regex = new RegExp(`\\\\b${eng}\\\\s+(\\\\d{4})\\\\b`);
+                        if (regex.test(text)) {
+                            text = text.replace(regex, `$1년 ${kor}`);
+                            changed = true;
+                        } 
+                        // 단순 "March"만 있으면 "3월"로 변경
+                        else if (text.includes(eng)) {
+                            text = text.replace(eng, kor);
+                            changed = true;
+                        }
                     }
-                }, 50);
+                    if (changed) {
+                        node.nodeValue = text;
+                    }
+                }
             }
-        }, true);
-    } catch (err) {}
-};
-setInterval(initAutoClose, 1000);
+        });
+    };
+
+    // 화면 어딘가에 달력(팝업)이 열릴 때마다 즉시 감지해서 글자를 번역함
+    const observer = new MutationObserver((mutations) => {
+        let shouldTranslate = false;
+        for (let m of mutations) {
+            if (m.addedNodes.length > 0) {
+                shouldTranslate = true;
+                break;
+            }
+        }
+        if (shouldTranslate) {
+            translateCalendar();
+        }
+    });
+    
+    observer.observe(parentDoc.body, { childList: true, subtree: true });
+})();
 </script>
 """
 
 def apply_global_css():
     st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    components.html(JS_AUTO_CLOSE, height=0, width=0)
+    # 스크립트는 보이지 않게 백그라운드에서 동작합니다.
+    components.html(JS_CUSTOM_UX, height=0, width=0)
 
