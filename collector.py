@@ -261,6 +261,13 @@ def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
 
 def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
+    if ok and isinstance(data, list) and data:
+        return data
+
+    # 쇼핑검색 계정/그룹에서는 ownerId 기반 응답만 내려오는 케이스 대응
+    ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
+    if ok_owner and isinstance(data_owner, list):
+        return data_owner
     return data if ok and isinstance(data, list) else []
 
 def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
@@ -555,10 +562,22 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
                     if not SKIP_AD_DIM:
                         for a in list_ads(customer_id, gid):
-                            if aid := a.get("nccAdId"): 
-                                target_ad_ids.append(aid)
+                            shopping_product = a.get("ad", {}).get("shoppingProduct", {}) if isinstance(a.get("ad", {}), dict) else {}
+                            id_candidates = [
+                                a.get("nccAdId"),
+                                a.get("nccProductId"),
+                                a.get("productId"),
+                                shopping_product.get("nccProductId"),
+                                shopping_product.get("productId"),
+                            ]
+                            id_candidates = [str(x).strip() for x in id_candidates if x is not None and str(x).strip()]
+                            if id_candidates:
+                                # 통계 리포트/실시간 API가 광고ID 또는 상품ID를 혼용해 내려주는 케이스 대응
+                                unique_ids = list(dict.fromkeys(id_candidates))
                                 extracted = extract_ad_creative_fields(a)
-                                ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
+                                for aid in unique_ids:
+                                    target_ad_ids.append(aid)
+                                    ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
                         
                         for ext in list_ad_extensions(customer_id, gid):
                             if ext_id := ext.get("nccAdExtensionId"):
@@ -585,6 +604,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
         
+        target_ad_ids = list(dict.fromkeys([str(x) for x in target_ad_ids if str(x).strip()]))
+
         if target_date == date.today():
             log(f"   ⚠️ [ {account_name} ] 당일 데이터 실시간 우회 조회 중...")
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
