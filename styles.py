@@ -23,9 +23,9 @@ GLOBAL_UI_CSS = """
   --nv-primary-hover: #3A5EBF;
   --nv-primary-soft: #F0F4FF;
   
-  --nv-success: #58B04B;
+  --nv-success: #58B04B;  /* 개선/상승 (초록) */
   --nv-warning: #FF9839;
-  --nv-danger: #FF025D;
+  --nv-danger: #FF025D;   /* 악화/하락 (빨강) */
   --nv-radius: 6px;
 }
 
@@ -82,15 +82,12 @@ button[data-testid="baseButton-primary"]:hover {
 
 
 /* =========================================
-   🚨 [핵심] 인풋 & 셀렉트박스 하단 굵은 줄(Underline) '완벽' 제거 
-   스트림릿 우선순위를 무시하기 위해 클래스를 구체적으로 지정
+   🚨 인풋 & 셀렉트박스 하단 굵은 줄(Underline) '완벽' 제거 
    ========================================= */
-
 .stSelectbox div[data-baseweb="select"] > div,
 .stMultiSelect div[data-baseweb="select"] > div,
 .stTextInput div[data-baseweb="input"] > div,
 .stDateInput div[data-baseweb="input"] > div {
-    /* 기본 상태: 모든 면 1px */
     border-top-width: 1px !important;
     border-right-width: 1px !important;
     border-left-width: 1px !important;
@@ -114,7 +111,6 @@ button[data-testid="baseButton-primary"]:hover {
 .stMultiSelect div[data-baseweb="select"] > div:focus-within,
 .stTextInput div[data-baseweb="input"] > div:focus-within,
 .stDateInput div[data-baseweb="input"] > div:focus-within {
-    /* 선택(포커스) 시: 하단 굵은 줄 방지, 사방으로 깔끔한 1px + 얇은 쉐도우 */
     border-bottom-width: 1px !important; 
     border-color: var(--nv-primary) !important;
     box-shadow: 0 0 0 1px var(--nv-primary) !important; 
@@ -157,8 +153,10 @@ button[data-testid="baseButton-primary"]:hover {
 .kpi .d { font-size: 11px; font-weight: 700; margin-top: 6px; display: inline-block; padding: 2px 6px; border-radius: 2px; }
 .kpi.highlight { border-color: var(--nv-primary); background: var(--nv-primary-soft); }
 .kpi.highlight .v { color: var(--nv-primary); font-size: 20px; }
-.kpi .d.pos { background: #FFE6EE; color: var(--nv-danger); } 
-.kpi .d.neg { background: #E9EFFF; color: var(--nv-primary); } 
+
+/* ✨ 증감 색상 (초록=개선/상승, 빨강=악화/하락) */
+.kpi .d.pos { background: #EAF7E9; color: var(--nv-success); } 
+.kpi .d.neg { background: #FFE6EE; color: var(--nv-danger); } 
 .kpi .d.neu { background: #E5E6E9; color: var(--nv-muted); }
 
 .nv-sec-title {
