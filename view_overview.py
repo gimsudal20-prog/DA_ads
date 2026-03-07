@@ -111,21 +111,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
-            trend_label = "✓ 개선" if improved else "▲ 악화"
+            # ✨ 증감률 화살표와 겹치지 않게 '▲ 악화' -> '✕ 악화' 로 수정
+            trend_label = "✓ 개선" if improved else "✕ 악화"
             delta_text = f"{trend_label} {pct_to_arrow(delta_num)}"
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
     kpi_groups_html = f"""
-    <style>
-    .kpi-group {{
-        background-color: rgba(55, 95, 255, 0.06) !important;
-        border: 1px solid rgba(55, 95, 255, 0.15) !important;
-    }}
-    .kpi-group-title {{
-        color: #2b52ff !important;
-    }}
-    </style>
     <div class='kpi-group-container'>
         <div class='kpi-group'>
             <div class='kpi-group-title'>👀 유입 지표</div>
@@ -146,7 +138,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             <div class='kpi-group-title'>🎯 성과 지표</div>
             <div class='kpi-row'>
                 {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
-                {_kpi_html("환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                 {_kpi_html("전환매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
             </div>
         </div>
