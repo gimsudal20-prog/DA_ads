@@ -66,7 +66,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         except Exception: v = 0.0
         w = min(v, 100)
         c = "#4876EF" # 기본 진행률 (파랑)
-        if v >= 100: c = "#FF025D" # 초과 시 (빨강)
+        if v >= 100: c = "#FF025D" # 초과/악화 시 (빨강)
         elif v >= 90: c = "#FF9839" # 주의 시 (주황)
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
@@ -86,8 +86,8 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
                 if "적정" in v_str: bg, text, icon = "#EAF7E9", "#408F35", "✓"
                 elif "주의" in v_str: bg, text, icon = "#FFF2E5", "#D86B12", "!"
                 
-                # ✨ 증감 화살표(▲)와 헷갈리지 않게 '✕' 로 변경 완료!
-                elif "초과" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "✕" 
+                # ✨ 증감 화살표(▲)와 헷갈리지 않게 '✕' 로 완전 교체 적용!
+                elif "초과" in v_str or "악화" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "✕" 
                 
                 tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:4px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
             else:
