@@ -21,11 +21,10 @@ def _format_avg_rank(value):
     return f"{num:.1f}위"
 
 
-def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
-    """쇼핑검색 일반소재만 남긴다.
-
-    - 캠페인유형이 쇼핑검색인 행만 유지
-    - 확장소재(문구/서브링크 등)로 추정되는 행은 제거
+def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False, include_ext: bool = True) -> pd.DataFrame:
+    """쇼핑검색 소재만 남긴다.
+    - include_ext = True 일 경우 확장소재도 포함하여 리턴 (기본값)
+    - include_ext = False 일 경우 순수 일반상품만 리턴
     """
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df
@@ -36,6 +35,9 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
         is_shopping = campaign_type.eq("쇼핑검색") | campaign_type.eq("") | campaign_type.str.lower().isin(["nan", "none"])
     else:
         is_shopping = campaign_type.eq("쇼핑검색")
+
+    if include_ext:
+        return work[is_shopping].copy()
 
     ad_name = work.get("상품/소재명", pd.Series("", index=work.index)).astype(str)
     ad_title = work.get("ad_title", pd.Series("", index=work.index)).astype(str)
@@ -136,6 +138,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 st.info("파워링크 그룹 데이터가 없습니다.")
             
     with tab_shop:
+        show_ext_main = st.toggle("✨ 쇼핑검색 확장소재(문구/서브링크 등) 포함해서 보기", value=True, key="shop_ext_toggle_main", help="체크 시 확장소재의 비용과 전환 데이터도 표에 합산되어 나타납니다.")
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
         shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
         
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
@@ -144,7 +149,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True)
+            view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True, include_ext=show_ext_main)
 
             if not view_shop.empty:
                 if "캠페인유형" in view_shop.columns:
@@ -196,7 +201,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 else:
                     render_big_table(disp_shop.style.format(fmt), "shop_general_grid_main", 500)
             else:
-                st.info("해당 기간의 쇼핑검색 일반소재(상품) 데이터가 없습니다.")
+                st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
         else:
             st.info("해당 기간의 쇼핑검색 데이터가 없습니다.")
 
@@ -233,7 +238,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
-                # ✨ [NEW] 상세 증감 수치 좌우 대조표 및 색상 표
                 base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
                 render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
 
@@ -274,7 +278,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         view = append_comparison_data(view, base_kw_bundle, valid_keys)
                         metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
 
-                # ✨ [NEW] 광고그룹 상세 대조 및 표 색상
                 base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
                 render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
 
@@ -291,6 +294,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     render_big_table(styled_cmp, "pl_cmp_grp", 500)
                 
         elif cmp_view_mode == "쇼핑검색 - 상품 단위":
+            show_ext_cmp = st.toggle("✨ 쇼핑검색 확장소재(문구/서브링크 등) 포함해서 보기", value=True, key="shop_ext_toggle_cmp")
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
             shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
             if shop_ad_bundle is None or shop_ad_bundle.empty:
                 st.info("비교할 데이터가 없습니다.")
@@ -299,10 +305,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
-                view = _filter_shopping_general_ads(view, allow_unknown_type=True)
+                view = _filter_shopping_general_ads(view, allow_unknown_type=True, include_ext=show_ext_cmp)
                 
                 if view.empty:
-                    st.info("비교할 일반 상품 데이터가 없습니다.")
+                    st.info("비교할 상품/소재 데이터가 없습니다.")
                 else:
                     if "캠페인유형" in view.columns:
                         view["캠페인유형"] = view["캠페인유형"].replace(["", "nan", "None", "none"], np.nan).fillna("쇼핑검색(매핑누락)")
@@ -329,7 +335,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                             view = append_comparison_data(view, base_shop_bundle, valid_keys)
                             metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                             
-                    # ✨ [NEW] 쇼핑상품 상세 대조 및 표 색상
                     base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
                     render_item_comparison_search("상품/소재", view, base_for_search, "상품/소재명", f["start"], f["end"], b1, b2)
 
