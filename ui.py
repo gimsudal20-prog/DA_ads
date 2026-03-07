@@ -22,57 +22,28 @@ except Exception:
 from data import format_currency
 
 def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str = "마케팅 통합 대시보드") -> None:
+    """
+    메인 화면의 큰 공간을 차지하던 기존 Hero 섹션을 제거하고,
+    핵심 정보(최근 수집일)만 좌측 사이드바 상단에 컴팩트하게 표출합니다.
+    """
+    # 1. 최근 수집일 날짜만 추출
     dt_str = "수집 대기 중"
     if latest_dates:
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    logo_html = "<span style='font-size: 32px;'>🏢</span>"
-    for ext in ['png', 'jpg', 'jpeg', 'webp']:
-        path = f"logo.{ext}"
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as f:
-                    encoded = base64.b64encode(f.read()).decode()
-                mime = "image/jpeg" if ext in ['jpg', 'jpeg'] else f"image/{ext}"
-                logo_html = f"<img src='data:{mime};base64,{encoded}' style='max-height: 46px; object-fit: contain;' />"
-                break
-            except Exception:
-                pass
-
-    freshness = "🟢 최신"
-    if dt_str == "수집 대기 중":
-        freshness = "🟠 수집 대기"
-
-    html_str = f"""
-    <div class='nv-hero'>
-        <div class='nv-hero-top'>
-            <div class='nv-hero-brand'>
-                <div>{logo_html}</div>
-                <div>
-                    <h1 class='nv-hero-title'>{dashboard_title}</h1>
-                    <div class='nv-hero-sub'>빌드: {build_tag} · 최신 데이터 기준일: <strong>{dt_str}</strong></div>
-                </div>
-            </div>
-            <div class='nv-fresh-badge'>{freshness}</div>
+    # 2. 불필요한 환경/상태 KPI 카드는 모두 제거하고 좌측 메뉴 최상단에 삽입
+    st.sidebar.markdown(f"""
+    <div style='padding: 12px 14px; border-radius: 10px; background: #FFFFFF; border: 1px solid var(--nv-line); margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'>
+        <div style='font-size: 11px; color: var(--nv-muted); font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;'>
+            <span>📊</span> {dashboard_title}
         </div>
-        <div class='nv-hero-kpis'>
-            <div class='nv-hero-kpi'>
-                <div class='k'>기준일</div>
-                <div class='v'>{dt_str}</div>
-            </div>
-            <div class='nv-hero-kpi'>
-                <div class='k'>환경</div>
-                <div class='v'>Streamlit</div>
-            </div>
-            <div class='nv-hero-kpi'>
-                <div class='k'>상태</div>
-                <div class='v'>{freshness}</div>
-            </div>
+        <div style='font-size: 14px; font-weight: 800; color: var(--nv-text); letter-spacing: -0.02em;'>
+            데이터 기준일: <span style='color: var(--nv-primary);'>{dt_str}</span>
         </div>
     </div>
-    """
-    st.markdown(html_str, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):
     html = f"""
