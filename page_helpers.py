@@ -44,7 +44,6 @@ def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
     elif 28 <= delta <= 31: return ["비교 안함", "전월대비"]
     else: return ["비교 안함", "이전 같은 기간 대비"]
 
-# ✨ [FIX] 실수로 누락되었던 기간 비교 계산 함수 복구!
 def period_compare_range(d1: date, d2: date, cmp_mode: str):
     delta = (d2 - d1).days + 1
     if cmp_mode == "전일대비":
@@ -66,29 +65,32 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             "period_mode": "어제", "d1": default_start, "d2": default_end,
             "top_n_keyword": 300, "top_n_ad": 200, "top_n_campaign": 200, "prefetch_warm": True,
         }
-    if "filters_expanded" not in st.session_state:
-        st.session_state["filters_expanded"] = True
     sv = st.session_state["filters_v8"]
 
     managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-    with st.expander("🔍 조회 기간 및 필터 설정", expanded=st.session_state.get("filters_expanded", True)):
-        st.caption("💡 기본 필터에서 빠르게 조회하고, 필요할 때만 고급 필터를 여세요.")
+    # ✨ 사이드바로 필터 영역 이동
+    with st.sidebar:
+        st.markdown("<div class='nav-sidebar-title'>🔍 조회 및 필터 설정</div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
         manager_sel = sv.get("manager", [])
 
-        basic_col1, basic_col2, basic_col3 = st.columns([1.5, 1.8, 1.7], gap="medium")
-        period_mode = basic_col1.selectbox(
-            "📅 기간 선택",
+        # 1. 기간 설정
+        st.markdown("**📅 기간 설정**")
+        period_mode = st.selectbox(
+            "기간 간편 선택",
             ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
             index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
-            key="f_period_mode"
+            key="f_period_mode",
+            label_visibility="collapsed"
         )
 
         if period_mode == "직접 선택":
-            d1 = basic_col2.date_input("시작일", sv.get("d1", default_start), key="f_d1")
-            d2 = basic_col3.date_input("종료일", sv.get("d2", default_end), key="f_d2")
+            c1, c2 = st.columns(2)
+            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1")
+            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2")
         else:
             if period_mode == "오늘": d2 = d1 = today
             elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
@@ -96,58 +98,47 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
             elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
             else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
-            basic_col2.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
-            basic_col3.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
+            c1, c2 = st.columns(2)
+            c1.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
+            c2.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
 
         if period_mode == "오늘":
-            st.warning("⚠️ '오늘' 데이터는 매체/API 수집 지연으로 일부 지표가 덜 집계될 수 있습니다.")
+            st.warning("⚠️ '오늘' 데이터는 매체 수집 지연으로 일부 지표가 비어있을 수 있습니다.")
 
-        if period_mode != "직접 선택":
-            st.caption(f"📅 선택 기간: {d1} ~ {d2}")
+        st.divider()
 
-        try:
-            basic_filter_container = st.container(border=True)
-        except TypeError:
-            # 구버전 Streamlit 호환: border 파라미터 미지원
-            basic_filter_container = st.container()
+        # 2. 계정 필터
+        st.markdown("**👤 계정 및 담당자**")
+        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
 
-        with basic_filter_container:
-            st.markdown("**기본 필터**")
-            manager_sel = ui_multiselect(st, "담당자 필터", managers, default=sv.get("manager", []), key="f_manager", placeholder="모든 담당자")
+        accounts_by_mgr = accounts
+        if manager_sel:
+            try:
+                dfm = meta.copy()
+                if "manager" in dfm.columns and "account_name" in dfm.columns:
+                    dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
+                    accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
+            except Exception:
+                pass
 
-            accounts_by_mgr = accounts
-            if manager_sel:
-                try:
-                    dfm = meta.copy()
-                    if "manager" in dfm.columns and "account_name" in dfm.columns:
-                        dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
-                        accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
-                except Exception:
-                    pass
+        prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
+        account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
 
-            prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
-            account_sel = ui_multiselect(st, "광고주(계정) 필터", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정 합산보기")
+        st.divider()
+        
+        # 3. 상세(고급) 필터
+        st.markdown("**⚙️ 상세 검색**")
+        q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 검색")
+        type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="모든 광고 보기")
 
-            if st.button("✅ 필터 적용", key="btn_apply_filters", use_container_width=True):
-                # 사용자가 명시적으로 접지 않는 한 필터 박스는 유지한다.
-                st.session_state["filters_expanded"] = True
-                st.rerun()
-
-        with st.expander("고급 필터 (검색/유형)", expanded=False):
-            q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="찾고 싶은 키워드나 캠페인 이름을 입력하세요")
-            type_sel = ui_multiselect(st, "광고 유형 필터", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="모든 광고 보기")
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        
+        # 적용 버튼 (기본색상(Primary)으로 눈에 띄게 처리됨)
+        if st.button("🚀 위 조건으로 데이터 조회", key="btn_apply_filters", use_container_width=True, type="primary"):
+            st.rerun()
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
     st.session_state["filters_v8"] = sv
-
-    prev_manager_count = len(st.session_state.get("_prev_manager_sel", []))
-    prev_account_count = len(st.session_state.get("_prev_account_sel", []))
-    cur_manager_count = len(manager_sel or [])
-    cur_account_count = len(account_sel or [])
-    st.session_state["_prev_manager_sel"] = manager_sel or []
-    st.session_state["_prev_account_sel"] = account_sel or []
-
-    # 담당자/계정 선택 시 필터가 자동으로 접히지 않도록 동작 제거
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
 
@@ -214,7 +205,6 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
         
     roas_delta_col = "ROAS 증감(%)"
-    # 배포 버전/수정 과정에서 컬럼명이 오타(ROAS 증(%))로 생성되어도 안전하게 흡수
     if roas_delta_col not in out.columns and "ROAS 증(%)" in out.columns:
         out[roas_delta_col] = out["ROAS 증(%)"]
     if roas_delta_col not in out.columns:
@@ -229,15 +219,15 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        if "▲" in val: return "color: #e11d48; font-weight: 700;" # Red (상승)
-        if "▼" in val: return "color: #2563eb; font-weight: 700;" # Blue (하락)
+        if "▲" in val: return "color: #EF4444; font-weight: 700;" # Red (상승)
+        if "▼" in val: return "color: #3B82F6; font-weight: 700;" # Blue (하락)
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
-    pass # 사용하지 않는 예전 위젯
+    pass 
 
 def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
-    pass # 사용하지 않는 예전 위젯
+    pass 
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>📊 소재 A/B 비교 (선택한 그룹 내 상위 2개)</div>", unsafe_allow_html=True)
@@ -256,7 +246,7 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
         return f"""
         <div style='background:#F8FAFC; padding:20px; border-radius:12px; border:2px solid #E2E8F0;'>
             <div style='text-align:center; font-size:13px; font-weight:800; color:#475569; margin-bottom:8px;'>{label}</div>
-            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#1E40AF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#6366F1; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
                 <span style='color:#64748B; font-weight:600;'>광고비</span>
                 <span style='font-weight:700; color:#0F172A;'>{format_currency(row.get('광고비',0))}</span>
@@ -441,13 +431,13 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     </div>
     <style>
         .cmp-wrapper {{
-            background:#f8fafc;
-            border:1px solid #d9e4f2;
+            background:#F8FAFC;
+            border:1px solid #E2E8F0;
             border-radius:14px;
             padding:12px;
             margin-top:10px;
             margin-bottom:24px;
-            box-shadow:0 4px 12px rgba(15,23,42,0.06);
+            box-shadow:0 4px 6px -1px rgba(0,0,0,0.05);
         }}
         .cmp-title {{
             font-size:14px;
@@ -471,12 +461,12 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-board {{
             border-radius:12px;
             padding:8px 10px;
-            border:1px solid #d7deea;
+            border:1px solid #CBD5E1;
             background:#ffffff;
         }}
         .cmp-board-right {{
-            background:#eff6ff;
-            border-color:#bfd8ff;
+            background:#EEF2FF;
+            border-color:#A5B4FC;
         }}
         .cmp-board-head {{
             font-size:12px;
@@ -484,12 +474,12 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             text-align:center;
             margin-bottom:4px;
             padding-bottom:6px;
-            border-bottom:1px dashed #dbe4f0;
+            border-bottom:1px dashed #E2E8F0;
             color:#334155;
         }}
 
         .cmp-row {{
-            border-top:1px dashed #dbe4f0;
+            border-top:1px dashed #E2E8F0;
             padding:6px 0;
             min-height:44px;
             display:flex;
@@ -519,7 +509,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             letter-spacing:-0.3px;
         }}
         .cmp-value.emphasize {{
-            color:#dc2626;
+            color:#EF4444;
         }}
         .cmp-sub {{
             margin-top:2px;
@@ -543,9 +533,9 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
             padding:1px 6px;
             display:inline-block;
         }}
-        .delta-up {{ background:#fee2e2; color:#dc2626; }}
-        .delta-down {{ background:#dbeafe; color:#1d4ed8; }}
-        .delta-flat {{ background:#e2e8f0; color:#475569; }}
+        .delta-up {{ background:#FEE2E2; color:#EF4444; }}
+        .delta-down {{ background:#EEF2FF; color:#4F46E5; }}
+        .delta-flat {{ background:#F1F5F9; color:#64748B; }}
         .rate {{ color:#64748b; font-weight:700; }}
 
         @media (max-width: 1024px) {{
