@@ -75,7 +75,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         manager_sel = sv.get("manager", [])
 
-        # 1. 기간 설정
         st.markdown("**📅 기간 선택**")
         period_mode = st.selectbox(
             "기간 간편 선택",
@@ -105,7 +104,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
 
-        # 2. 계정 필터
         st.markdown("**👤 담당자 및 계정**")
         manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체")
 
@@ -124,7 +122,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
         
-        # 3. 상세(고급) 필터
         st.markdown("**⚙️ 상세 필터**")
         q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
         type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
@@ -216,8 +213,9 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        if "▲" in val: return "color: #FF025D; font-weight: 700;" # 포털 스타일 상승
-        if "▼" in val: return "color: #4876EF; font-weight: 700;" # 포털 스타일 하락
+        # ✨ 표 내부 데이터: 상승=초록색, 하락=빨간색으로 통일
+        if "▲" in val: return "color: #58B04B; font-weight: 700;" # Green (상승)
+        if "▼" in val: return "color: #FF025D; font-weight: 700;" # Red (하락)
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
@@ -254,7 +252,7 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E5E6E9;'>
                 <span style='color:#666666; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#FF025D; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
+                <span style='font-weight:800; color:#4876EF; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
                 <span style='color:#999999; font-size:13px;'>노출수</span>
@@ -394,6 +392,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     left_rows = _board_rows(rows, is_right=False)
     right_rows = _board_rows(rows, is_right=True)
 
+    # ✨ 위젯 칩 색상: 상승=초록색, 하락=빨간색으로 통일
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
         <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
@@ -466,7 +465,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         }}
         .cmp-label {{ font-weight:700; font-size:13px; color:#444444; }}
         .cmp-value {{ color:#222222; font-weight:800; font-size:16px; }}
-        .cmp-value.emphasize {{ color:#FF025D; }}
+        .cmp-value.emphasize {{ color:#4876EF; }}
         .cmp-sub {{
             margin-top:4px;
             display:flex;
@@ -477,9 +476,11 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         }}
         .cmp-sub-muted {{ color:#999999; font-weight:600; }}
         .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
-        .delta-up {{ background:#FFE6EE; color:#FF025D; }}
-        .delta-down {{ background:#E9EFFF; color:#4876EF; }}
-        .delta-flat {{ background:#E5E6E9; color:#666666; }}
+        
+        /* 칩 컬러 수정 */
+        .delta-up {{ background:#EAF7E9; color:#58B04B; }} /* 초록 (상승) */
+        .delta-down {{ background:#FFE6EE; color:#FF025D; }} /* 빨강 (하락) */
+        .delta-flat {{ background:#E5E6E9; color:#666666; }} /* 회색 (변동없음) */
         .rate {{ color:#666666; font-weight:600; }}
     </style>
     """).strip()
