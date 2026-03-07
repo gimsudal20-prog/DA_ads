@@ -45,7 +45,6 @@ h1, h2, h3, h4, h5, h6 {
    🔘 버튼 디자인 (포털 사이트 특유의 플랫 디자인)
    ========================================= */
 
-/* 일반(Secondary) 버튼 */
 button[data-testid="baseButton-secondary"] {
     background-color: #FFFFFF !important;
     border: 1px solid var(--nv-line-strong) !important;
@@ -62,7 +61,6 @@ button[data-testid="baseButton-secondary"]:hover {
     background-color: var(--nv-primary-soft) !important;
 }
 
-/* 주요(Primary) 버튼 - 그라데이션 제거, 단색 처리 */
 button[data-testid="baseButton-primary"] {
     background: var(--nv-primary) !important;
     border: 1px solid var(--nv-primary) !important;
@@ -79,15 +77,32 @@ button[data-testid="baseButton-primary"]:hover {
     border-color: var(--nv-primary-hover) !important;
 }
 
-/* 토글(Toggle) 스위치 색상 변경 */
 [data-testid="stCheckbox"] label span[data-baseweb="checkbox"] {
     background-color: var(--nv-primary) !important;
 }
 
 /* =========================================
-   📊 대시보드 UI 디자인 (타이틀, 표, 메트릭)
+   📈 요약(Overview) KPI 카드 레이아웃 & 디자인 [복구 완료]
    ========================================= */
+.kpi-group-container { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+.kpi-group { flex: 1; min-width: 250px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); border-radius: var(--nv-radius); padding: 16px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02); }
+.kpi-group-title { font-size: 14px; font-weight: 700; color: #444444; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
 
+.kpi { background: var(--nv-surface); border: 1px solid var(--nv-line); padding: 14px; border-radius: 4px; transition: border 0.1s ease; }
+.kpi:hover { border-color: var(--nv-primary); background: #FFFFFF; }
+.kpi .k { font-size: 12px; color: var(--nv-muted); font-weight: 600; margin-bottom: 6px; }
+.kpi .v { font-size: 18px; font-weight: 800; color: var(--nv-text); letter-spacing: -0.02em; }
+.kpi .d { font-size: 11px; font-weight: 700; margin-top: 6px; display: inline-block; padding: 2px 6px; border-radius: 2px; }
+.kpi.highlight { border-color: var(--nv-primary); background: var(--nv-primary-soft); }
+.kpi.highlight .v { color: var(--nv-primary); font-size: 20px; }
+.kpi .d.pos { background: #FFE6EE; color: var(--nv-danger); } 
+.kpi .d.neg { background: #E9EFFF; color: var(--nv-primary); } 
+.kpi .d.neu { background: #E5E6E9; color: var(--nv-muted); }
+
+/* =========================================
+   📊 공통 메트릭 & 테이블 UI
+   ========================================= */
 .nv-sec-title {
   font-size: 18px;
   font-weight: 700;
@@ -111,24 +126,20 @@ button[data-testid="baseButton-primary"]:hover {
 .nv-metric-card-value { color: var(--nv-text); font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
 .nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 700; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 4px; }
 
-/* 데이터 테이블 스타일 */
 table.nv-table { width: 100%; border-collapse: collapse; background: var(--nv-bg); font-size: 13px; text-align: left; border: 1px solid var(--nv-line); border-radius: var(--nv-radius); overflow: hidden; }
 table.nv-table th { position: sticky; top: 0; z-index: 2; background: #F8F9FA; padding: 13px 16px; font-weight: 700; color: #444444; border-bottom: 1px solid var(--nv-line-strong); letter-spacing:-0.02em; }
 table.nv-table td { padding: 13px 16px; border-bottom: 1px solid var(--nv-line); vertical-align: middle; color: var(--nv-text); transition: background 0.1s ease; }
 table.nv-table tr:hover td { background: var(--nv-primary-soft); color: var(--nv-primary-hover); }
 
-/* 프로그레스 바 */
 .nv-pbar { display: flex; align-items: center; gap: 10px; min-width: 160px; }
 .nv-pbar-bg { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--nv-line); overflow: hidden; }
 .nv-pbar-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.5s ease; border-radius: 3px; }
 .nv-pbar-txt { min-width: 40px; text-align: right; font-weight: 700; color: var(--nv-text); font-size: 12px; }
 
-/* 탭(Tabs) 디자인 (포털 사이트 네비게이션 형태) */
 [data-baseweb="tab-list"] { gap: 20px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line-strong); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 600; padding: 14px 4px !important; margin: 0 !important; color: var(--nv-muted-light) !important; font-size: 15px; border-radius: 0 !important; }
 [aria-selected="true"] { color: #111111 !important; font-weight: 800 !important; border-bottom: 3px solid var(--nv-primary) !important; box-shadow: none !important; }
 
-/* 아코디언(Expander) 디자인 */
 [data-testid="stExpander"] { border: 1px solid var(--nv-line) !important; border-radius: var(--nv-radius) !important; box-shadow: none !important; background: var(--nv-bg) !important; }
 [data-testid="stExpander"] summary { padding: 16px !important; background-color: var(--nv-surface) !important; border-radius: var(--nv-radius) !important;}
 [data-testid="stExpander"] summary p { font-weight: 700 !important; font-size: 14px !important; color: var(--nv-text) !important; }
@@ -144,7 +155,6 @@ table.nv-table tr:hover td { background: var(--nv-primary-soft); color: var(--nv
 .nav-sidebar-title { font-size: 16px; font-weight: 800; color: #111111; letter-spacing: -0.02em; }
 .nav-sidebar-caption { margin-top: 4px; margin-bottom: 10px; font-size: 12px; color: var(--nv-muted); font-weight: 600; }
 
-/* 사이드바 라디오 버튼(메뉴) */
 [data-testid="stSidebar"] [role="radiogroup"] {
   background: #FFFFFF;
   border: 1px solid var(--nv-line);
@@ -170,7 +180,6 @@ table.nv-table tr:hover td { background: var(--nv-primary-soft); color: var(--nv
   font-weight: 700 !important;
 }
 
-/* 드롭다운 리스트박스 커스텀 */
 div[role="listbox"] ul li,
 [data-baseweb="menu"] [role="option"] {
   border-radius: 4px !important;
@@ -192,7 +201,6 @@ div[role="listbox"] ul li[aria-selected="true"] *,
   font-weight: 700 !important;
 }
 
-/* 태그 색상 */
 [data-baseweb="tag"] {
   background-color: #FFFFFF !important;
   border: 1px solid var(--nv-line-strong) !important;
