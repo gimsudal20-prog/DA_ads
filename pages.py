@@ -39,7 +39,9 @@ def main():
         <div class='nav-sidebar-title'>📌 메뉴 이동</div>
         <div class='nav-sidebar-caption'>보고서 섹션을 선택하세요</div>
         """, unsafe_allow_html=True)
-        if not meta_ready: st.warning("동기화가 필요합니다.")
+        
+        if not meta_ready: 
+            st.warning("동기화가 필요합니다.")
 
         nav_items = [
             "📋 요약",
@@ -51,7 +53,7 @@ def main():
             "⚙️ 설정 및 연결"
         ] if meta_ready else ["⚙️ 설정 및 연결"]
 
-        st.caption("요약 · 분석 · 설정")
+        # 불필요하게 공간을 차지하고 시선을 분산시키던 st.caption("요약 · 분석 · 설정") 삭제
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(f"<div class='nv-h1'>{nav}</div><div style='height:8px'></div>", unsafe_allow_html=True)
