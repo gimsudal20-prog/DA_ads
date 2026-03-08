@@ -5,9 +5,6 @@ from __future__ import annotations
 import streamlit as st
 import streamlit.components.v1 as components
 
-# =====================================================================
-# 대표님이 올려주신 원본 디자인 그대로 유지! (절대 건드리지 않음)
-# =====================================================================
 GLOBAL_UI_CSS = """
 <style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
@@ -180,24 +177,31 @@ table.nv-table tr:hover td { background: var(--nv-primary-soft); color: #1D3DC0;
 [data-testid="stExpander"] summary { padding: 16px !important; background-color: var(--nv-surface) !important; border-radius: var(--nv-radius) !important;}
 [data-testid="stExpander"] summary p { font-weight: 700 !important; font-size: 14px !important; color: var(--nv-text) !important; }
 
+/* ========================================================
+   [사이드바 여백/정렬 깔끔하게 개선]
+   ======================================================== */
 [data-testid="stSidebar"] {
   background: linear-gradient(180deg, #F8FAFF 0%, #F2F6FF 100%) !important;
   border-right: 1px solid #D7E1FF !important;
 }
-[data-testid="stSidebar"] .block-container { padding-top: 0.9rem !important; }
+[data-testid="stSidebar"] .block-container { padding-top: 1.5rem !important; }
 .nav-sidebar-title { font-size: 18px; font-weight: 800; color: #1E3A8A; letter-spacing: -0.02em; }
-.nav-sidebar-caption { margin-top: 4px; margin-bottom: 10px; font-size: 12px; color: #64748B; font-weight: 600; }
+.nav-sidebar-caption { margin-top: 4px; margin-bottom: 16px; font-size: 12px; color: #64748B; font-weight: 600; }
 [data-testid="stSidebar"] [role="radiogroup"] {
   background: #FFFFFF;
   border: 1px solid #D8E3FF;
   border-radius: 12px;
-  padding: 8px;
+  padding: 12px;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label {
   padding: 10px 12px !important;
-  border-radius: 10px !important;
+  margin-bottom: 4px !important;
+  border-radius: 8px !important;
   border: 1px solid transparent;
   transition: all 0.2s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:last-child {
+  margin-bottom: 0px !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {
   background: #EDF2FF !important;
