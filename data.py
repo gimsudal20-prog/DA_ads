@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """data.py - Database connection, caching, and common queries."""
-
 import os
 import pandas as pd
 import numpy as np
@@ -46,14 +45,14 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     try:
         with _engine.connect() as conn: return pd.read_sql(text(query), conn, params=params)
     except Exception as e:
-        st.error(f"데이터베이스 조회 중 오류가 발했습니다: {e}")
+        st.error(f"데이터 조회 오류: {e}")
         return pd.DataFrame()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     try:
         with _engine.begin() as conn: conn.execute(text(query), params or {})
     except Exception as e:
-        st.error(f"DB 실행(삭제/수정) 중 오류 발생: {e}")
+        st.error(f"DB 실행 오류: {e}")
         raise e
 
 def _sql_in_str_list(lst: list) -> str:
@@ -67,13 +66,13 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
         if df is not None:
-            rename_map = {"업체명": "account_name", "커스텀 ID": "customer_id", "커스텀ID": "customer_id", "커스텀 id": "customer_id", "담당자": "manager"}
+            rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
             df = df.rename(columns=rename_map)
             
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
-                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "커스텀 ID", "커스텀 id", "커스텀ID"]), None)
+                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "고객 ID", "고객 id", "고객ID"]), None)
                     if cid_col and "monthly_budget" in old_df.columns:
                         budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
                         df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
@@ -88,7 +87,7 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
             return {"meta": len(df)}
         return {"meta": 0}
     except Exception as e:
-        st.error(f"데이터 적재 중 오류 발생: {e}")
+        st.error(f"업로드 실패: {e}")
         return {"meta": 0}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -96,7 +95,7 @@ def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
     if not df.empty:
-        rename_map = {"업체명": "account_name", "커스텀 ID": "customer_id", "커스텀ID": "customer_id", "커스텀 id": "customer_id", "담당자": "manager"}
+        rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
         df = df.rename(columns=rename_map)
     return df
 
@@ -110,14 +109,16 @@ def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
     if col_name not in dim_campaign.columns: return ["파워링크", "쇼핑검색"]
     
-    mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+    # ✨ POWER_CONTENTS 추가
+    mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
     raw_opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
     opts = list(set([mapping.get(x.upper(), x) for x in raw_opts]))
     return sorted(opts) if opts else ["파워링크", "쇼핑검색"]
 
 def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
     if not df.empty and col_name in df.columns:
-        mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+        # ✨ POWER_CONTENTS 추가
+        mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
         df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
     return df
 
@@ -152,7 +153,7 @@ def format_number_commas(val) -> str:
     except (ValueError, TypeError): return "0"
 
 # ==========================================
-# 4. Data Aggregation Queries (🚀 인덱스 풀가동 최적화 버전)
+# 4. Data Aggregation Queries (캐싱 적용)
 # ==========================================
 @st.cache_data(ttl=600, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
@@ -195,7 +196,7 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
         if c not in df.columns: df[c] = 0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
         
-    if "manager" not in df.columns: df["manager"] = "담당자 미지정"
+    if "manager" not in df.columns: df["manager"] = "미배정"
     if "account_name" not in df.columns: df["account_name"] = df["customer_id"].astype(str)
     return df
 
@@ -204,7 +205,7 @@ def update_monthly_budget(_engine, cid: int, val: int):
         cols = get_table_columns(_engine, "dim_customer")
         if "customer_id" not in cols:
             df = sql_read(_engine, "SELECT * FROM dim_customer")
-            rename_map = {"업체명": "account_name", "커스텀 ID": "customer_id", "커스텀ID": "customer_id", "커스텀 id": "customer_id", "담당자": "manager"}
+            rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
             df = df.rename(columns=rename_map)
             if "monthly_budget" not in df.columns: df["monthly_budget"] = 0
             df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
@@ -213,7 +214,7 @@ def update_monthly_budget(_engine, cid: int, val: int):
                 sql_exec(_engine, "ALTER TABLE dim_customer ADD COLUMN monthly_budget BIGINT DEFAULT 0")
         sql_exec(_engine, "UPDATE dim_customer SET monthly_budget = :val WHERE customer_id = :cid", {"val": val, "cid": cid})
     except Exception as e:
-        st.error(f"예산 저장 중 오류 발생: {e}")
+        st.error(f"예산 업데이트 실패: {e}")
 
 @st.cache_data(ttl=600, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
@@ -225,7 +226,6 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-
     type_join_sql = ""
     type_where_sql = ""
     if type_sel and table_exists(_engine, "dim_campaign"):
@@ -233,12 +233,13 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
         dim_cols = get_table_columns(_engine, "dim_campaign")
         cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
         if "campaign_id" in fact_cols and cp_col in dim_cols:
-            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENT", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+            # ✨ POWER_CONTENTS 매핑 반영
+            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
             db_types = [rev_map.get(t, t) for t in type_sel]
             type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
-
+            
     sql = f"""
         SELECT
             SUM(f.imp) as imp,
@@ -268,7 +269,8 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     
     type_filter_sql = ""
     if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENT", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        # ✨ POWER_CONTENTS 매핑 반영
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
@@ -320,7 +322,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     
     type_filter_sql = ""
     if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENT", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        # ✨ POWER_CONTENTS 매핑 반영
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
@@ -338,7 +341,6 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # 🔥 [핵심] JOIN에 agg.customer_id를 모두 추가하여 인덱스 풀가동 (100배 빨라짐)
     sql = f"""
         WITH agg AS (
             SELECT customer_id, keyword_id,
@@ -381,7 +383,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     
     type_filter_sql = ""
     if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENT", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        # ✨ POWER_CONTENTS 매핑 반영
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
@@ -399,7 +402,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # 🔥 [핵심] 소재 데이터도 완벽한 인덱스 매칭 및 INNER JOIN 적용
     sql = f"""
         WITH agg AS (
             SELECT customer_id, ad_id,
