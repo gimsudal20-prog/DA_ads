@@ -30,18 +30,33 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
 
     work = df.copy()
     campaign_type = work.get("캠페인유형", pd.Series("", index=work.index)).astype(str).str.strip()
+    
+    # 정규식 패턴으로 쇼핑/SHOPPING이 포함된 유형들을 더 유연하게 처리
+    is_shopping_cond = campaign_type.str.contains("쇼핑|SHOPPING", case=False, na=False)
+    
     if allow_unknown_type:
-        is_shopping = campaign_type.eq("쇼핑검색") | campaign_type.eq("") | campaign_type.str.lower().isin(["nan", "none"])
+        is_shopping = is_shopping_cond | campaign_type.eq("") | campaign_type.str.lower().isin(["nan", "none"])
     else:
-        is_shopping = campaign_type.eq("쇼핑검색")
+        is_shopping = is_shopping_cond
 
     ad_name = work.get("상품/소재명", pd.Series("", index=work.index)).astype(str)
-    ad_title = work.get("ad_title", pd.Series("", index=work.index)).astype(str)
-    image_url = work.get("image_url", pd.Series("", index=work.index)).fillna("").astype(str).str.strip().str.lower()
+    
+    if "ad_title" in work.columns:
+        ad_title = work["ad_title"].astype(str)
+    elif "노출용 상품명" in work.columns:
+        ad_title = work["노출용 상품명"].astype(str)
+    else:
+        ad_title = pd.Series("", index=work.index)
 
-    # collector_shop_ext.py 에서 수집되는 확장소재 표기
+    if "image_url" in work.columns:
+        image_url = work["image_url"].fillna("").astype(str).str.strip().str.lower()
+    elif "소재이미지" in work.columns:
+        image_url = work["소재이미지"].fillna("").astype(str).str.strip().str.lower()
+    else:
+        image_url = pd.Series("", index=work.index)
+
+    # 확장소재 여부 판별
     ext_by_name = ad_name.str.contains(r'\[확장소재\]', na=False, regex=True)
-    # collector.py 확장소재: ad_title="[타입]" + image_url=""
     ext_by_title = ad_title.str.match(r'^\[[^\]]+\]$', na=False)
     ext_by_image = image_url.isin(["", "nan", "none"])
     is_ext = ext_by_name | (ext_by_title & ext_by_image)
@@ -144,7 +159,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            # 일반소재(순수 상품)만 필터링
             view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True)
 
             if not view_shop.empty:
@@ -164,14 +178,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 elif "상품/소재명" in view_shop.columns:
                     view_shop["노출용 상품명"] = view_shop["상품/소재명"]
 
-                # ✨ [NEW] 노출용 상품명이 API 문제로 ID(숫자)로만 나왔을 때의 강력한 보정 로직
                 is_invalid_title = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
                 is_valid_name = ~(view_shop["상품/소재명"].astype(str).str.strip().eq("") | view_shop["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view_shop["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
 
-                # 1차 보정: 사용자가 입력한 상품/소재명이 텍스트면 우선 적용
                 view_shop["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view_shop["상품/소재명"], view_shop["노출용 상품명"])
                 
-                # 2차 보정: 그래도 숫자(ID)라면 광고그룹명으로 덮어씀 (쇼핑검색은 1상품 1그룹 세팅이므로 완벽 호환)
                 is_invalid_title_again = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
                 view_shop["노출용 상품명"] = np.where(is_invalid_title_again, view_shop["광고그룹"], view_shop["노출용 상품명"])
 
@@ -185,7 +196,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 c1, c2 = st.columns([2, 2])
                 with c1:
                     if "캠페인" in view_shop.columns and "광고그룹" in view_shop.columns and "노출용 상품명" in view_shop.columns:
-                        # 필터 레이블에서도 보정된 노출용 상품명을 쓰도록 수정
                         view_shop["_filter_label"] = view_shop["캠페인"].astype(str) + " > " + view_shop["광고그룹"].astype(str) + " > " + view_shop["노출용 상품명"].astype(str)
                         items = ["전체"] + sorted([str(x) for x in view_shop["_filter_label"].unique() if str(x).strip()])
                     else:
@@ -335,7 +345,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     elif "상품/소재명" in view.columns:
                         view["노출용 상품명"] = view["상품/소재명"]
                         
-                    # ✨ [NEW] 비교 탭에도 동일한 보정 로직 적용
                     is_invalid_title = view["노출용 상품명"].astype(str).str.strip().eq("") | view["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view["노출용 상품명"].astype(str).str.startswith("소재 (") | view["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
                     is_valid_name = ~(view["상품/소재명"].astype(str).str.strip().eq("") | view["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
                     view["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view["상품/소재명"], view["노출용 상품명"])
@@ -345,7 +354,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     if "avg_rank" in view.columns:
-                        view["평균위"] = view["avg_rank"].apply(_format_avg_rank)
+                        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
                         base_cols.append("평균순위")
                     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                     
@@ -356,7 +365,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                             metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
                             
                     base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
-                    # 검색 렌더링에 사용할 기준도 보정된 노출용 상품명으로 전달
                     render_item_comparison_search("일반 상품", view, base_for_search, "노출용 상품명", f["start"], f["end"], b1, b2)
 
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
