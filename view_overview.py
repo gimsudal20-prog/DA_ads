@@ -17,16 +17,17 @@ from page_helpers import _perf_common_merge_meta
 def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
-
-def _build_periodic_report_text(report_type: str, campaign_type: str, imp: float, clk: float, ctr: float, cost: float, top_keywords: str) -> str:
+# 보고서 형식 업데이트: 보고서 타입 제거, ROAS 및 전환매출 추가, top_keywords_label 동적 반영
+def _build_periodic_report_text(campaign_type: str, imp: float, clk: float, ctr: float, cost: float, roas: float, sales: float, top_keywords_label: str, top_keywords: str) -> str:
     return "\n".join([
-        report_type,
-        f"- {campaign_type}",
+        f"[ {campaign_type} 성과 요약 ]",
         _format_report_line("노출수", f"{int(imp):,}"),
         _format_report_line("클릭수", f"{int(clk):,}"),
         _format_report_line("클릭률", f"{float(ctr):.2f}%"),
-        _format_report_line("클릭이 많았던 키워드", top_keywords),
         _format_report_line("광고 소진비용", f"{int(cost):,}원"),
+        _format_report_line("전환매출", f"{int(sales):,}원"),
+        _format_report_line("ROAS", f"{float(roas):.2f}%"),
+        _format_report_line(top_keywords_label, top_keywords),
     ])
 
 
@@ -111,7 +112,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
-            # ✨ 증감률 화살표와 겹치지 않게 '▲ 악화' -> '✕ 악화' 로 수정
             trend_label = "✓ 개선" if improved else "✕ 악화"
             delta_text = f"{trend_label} {pct_to_arrow(delta_num)}"
         cls_hl = " highlight" if highlight else ""
@@ -159,36 +159,47 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.info(f"🧭 KPI 해석: {insight}")
 
     with st.expander("📝 보고서 내보내기", expanded=False):
-        report_type = st.radio("보고서 타입", ["주간보고서", "월간보고서"], horizontal=True, key="overview_report_type")
         report_campaign_type = selected_type_label
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
 
         st.session_state[report_loaded_key] = True
 
         top_keywords_text = "-"
+        
+        # 캠페인 유형에 따라 보고서 키워드 로직 동적 분기
+        is_shopping = False
+        if type_sel and any("쇼핑" in t or "SHOPPING" in str(t).upper() for t in type_sel):
+            is_shopping = True
+            
+        sort_col = "conv" if is_shopping else "clk"
+        top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
+
         if st.session_state.get(report_loaded_key, False):
             with st.spinner("키워드 집계 중..."):
                 kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-            if not kw_bundle.empty and {"keyword", "clk"}.issubset(kw_bundle.columns):
+            if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
                 kw_top = kw_bundle.copy()
-                kw_top["clk"] = pd.to_numeric(kw_top["clk"], errors="coerce").fillna(0)
-                kw_top = kw_top.groupby("keyword", as_index=False)["clk"].sum().sort_values("clk", ascending=False).head(3)
+                kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
+                kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
                 if not kw_top.empty:
                     top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
+        
         report_text = _build_periodic_report_text(
-            report_type=report_type,
             campaign_type=report_campaign_type,
             imp=float(report_cur.get("imp", 0.0) or 0.0),
             clk=float(report_cur.get("clk", 0.0) or 0.0),
             ctr=float(report_cur.get("ctr", 0.0) or 0.0),
             cost=float(report_cur.get("cost", 0.0) or 0.0),
+            roas=float(report_cur.get("roas", 0.0) or 0.0),
+            sales=float(report_cur.get("sales", 0.0) or 0.0),
+            top_keywords_label=top_keywords_label,
             top_keywords=top_keywords_text,
         )
         st.code(report_text, language="text")
         st.download_button(
             "📥 요약 보고서 txt 내보내기",
             data=report_text,
-            file_name=f"{report_type}_요약_{f['start']}_{f['end']}.txt",
+            file_name=f"요약보고서_{f['start']}_{f['end']}.txt",
             mime="text/plain",
             use_container_width=True,
         )
