@@ -31,8 +31,6 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
-
-
 def _normalize_merge_keys(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     out = df.copy()
     for k in keys:
@@ -75,13 +73,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     }).copy()
     view = _add_perf_metrics(view)
 
+    # 1. 병합 전 기존 컬럼과 충돌 방지 로직 보강
     if not kw_bundle_cur.empty:
         rank_map_camp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id"])
         if not rank_map_camp.empty:
             key_cols = ["customer_id", "campaign_id"]
             view = _normalize_merge_keys(view, key_cols)
             rank_map_camp = _normalize_merge_keys(rank_map_camp, key_cols)
+            if "avg_rank" in view.columns:
+                view = view.drop(columns=["avg_rank"])
             view = view.merge(rank_map_camp, on=key_cols, how="left")
+            
     if "avg_rank" in view.columns:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
@@ -130,6 +132,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     key_cols_grp = ["customer_id", "campaign_id", "adgroup_id"]
                     grouped = _normalize_merge_keys(grouped, key_cols_grp)
                     rank_map_grp = _normalize_merge_keys(rank_map_grp, key_cols_grp)
+                    if "avg_rank" in grouped.columns:
+                        grouped = grouped.drop(columns=["avg_rank"])
                     grouped = grouped.merge(rank_map_grp, on=key_cols_grp, how="left")
                     grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
 
@@ -170,6 +174,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 key_cols_cmp = ["customer_id", "campaign_id"]
                 view_cmp = _normalize_merge_keys(view_cmp, key_cols_cmp)
                 base_rank_map = _normalize_merge_keys(base_rank_map, key_cols_cmp)
+                if "base_avg_rank" in view_cmp.columns:
+                    view_cmp = view_cmp.drop(columns=["base_avg_rank"])
                 view_cmp = view_cmp.merge(base_rank_map, on=key_cols_cmp, how="left")
 
         base_for_search = base_bundle.rename(columns={"campaign_name": "캠페인"}) if not base_bundle.empty else pd.DataFrame()
