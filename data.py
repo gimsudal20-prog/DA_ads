@@ -32,7 +32,8 @@ def table_exists(engine, table_name: str) -> bool:
         except Exception: return False
     return table_name in st.session_state["_table_names_cache"]
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# ✨ [수정됨] max_entries=20 추가
+@st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     try:
         with _engine.connect() as conn:
@@ -40,7 +41,8 @@ def get_table_columns(_engine, table_name: str) -> list:
             return [r[0] for r in res]
     except Exception: return []
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] 범용 sql_read는 쿼리가 다양할 수 있으므로 max_entries=30 설정
+@st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     try:
         with _engine.connect() as conn: return pd.read_sql(text(query), conn, params=params)
@@ -90,7 +92,8 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
         st.error(f"업로드 실패: {e}")
         return {"meta": 0}
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
@@ -99,7 +102,8 @@ def get_meta(_engine) -> pd.DataFrame:
         df = df.rename(columns=rename_map)
     return df
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
     return sql_read(_engine, "SELECT * FROM dim_campaign")
@@ -109,7 +113,6 @@ def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
     if col_name not in dim_campaign.columns: return ["파워링크", "쇼핑검색"]
     
-    # ✨ POWER_CONTENTS 추가
     mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
     raw_opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
     opts = list(set([mapping.get(x.upper(), x) for x in raw_opts]))
@@ -117,12 +120,12 @@ def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
 
 def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
     if not df.empty and col_name in df.columns:
-        # ✨ POWER_CONTENTS 추가
         mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
         df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
     return df
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     dates = {}
     for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily"]:
@@ -155,7 +158,9 @@ def format_number_commas(val) -> str:
 # ==========================================
 # 4. Data Aggregation Queries (캐싱 적용)
 # ==========================================
-@st.cache_data(ttl=600, show_spinner=False)
+
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
     if meta.empty: return pd.DataFrame()
@@ -216,13 +221,15 @@ def update_monthly_budget(_engine, cid: int, val: int):
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=20 추가
+@st.cache_data(ttl=600, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
@@ -233,7 +240,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
         dim_cols = get_table_columns(_engine, "dim_campaign")
         cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
         if "campaign_id" in fact_cols and cp_col in dim_cols:
-            # ✨ POWER_CONTENTS 매핑 반영
             rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
             db_types = [rev_map.get(t, t) for t in type_sel]
             type_list_str = ",".join([f"'{x}'" for x in db_types])
@@ -259,7 +265,8 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
     return row
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] 메모리 차지가 큰 함수 - max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
@@ -269,7 +276,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     
     type_filter_sql = ""
     if type_sel:
-        # ✨ POWER_CONTENTS 매핑 반영
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
@@ -312,7 +318,8 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     df = _map_campaign_types(df, 'campaign_type')
     return df
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] 메모리 차지가 매우 큰 함수 - max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
@@ -322,7 +329,6 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     
     type_filter_sql = ""
     if type_sel:
-        # ✨ POWER_CONTENTS 매핑 반영
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
@@ -368,7 +374,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] 메모리 차지가 큰 함수 - max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
@@ -383,7 +390,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     
     type_filter_sql = ""
     if type_sel:
-        # ✨ POWER_CONTENTS 매핑 반영
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
         db_types = [rev_map.get(t, t) for t in type_sel]
         type_list_str = ",".join([f"'{x}'" for x in db_types])
@@ -429,7 +435,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
