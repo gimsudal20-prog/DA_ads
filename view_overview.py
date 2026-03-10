@@ -17,7 +17,6 @@ from page_helpers import _perf_common_merge_meta
 def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
-# 보고서 형식 업데이트: 보고서 타입 제거, ROAS 및 전환매출 추가, top_keywords_label 동적 반영
 def _build_periodic_report_text(campaign_type: str, imp: float, clk: float, ctr: float, cost: float, roas: float, sales: float, top_keywords_label: str, top_keywords: str) -> str:
     return "\n".join([
         f"[ {campaign_type} 성과 요약 ]",
@@ -39,7 +38,8 @@ def _selected_type_label(type_sel: tuple) -> str:
     return ", ".join(type_sel)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         return query_keyword_bundle(_engine, start_dt, end_dt, list(cids), type_sel, topn_cost=0)
@@ -47,7 +47,8 @@ def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tup
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
@@ -55,7 +56,8 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+# ✨ [수정됨] max_entries=10 추가
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         ts = query_campaign_timeseries(_engine, trend_d1, end_dt, cids, type_sel)
@@ -166,7 +168,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         top_keywords_text = "-"
         
-        # 캠페인 유형에 따라 보고서 키워드 로직 동적 분기
         is_shopping = False
         if type_sel and any("쇼핑" in t or "SHOPPING" in str(t).upper() for t in type_sel):
             is_shopping = True
