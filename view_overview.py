@@ -139,6 +139,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
 
     selected_type_label = _selected_type_label(type_sel)
+    
+    # ==========================================
+    # 1. 전체 성과 요약
+    # ==========================================
     st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     
     cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
@@ -196,7 +200,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
-    # ✨ 테이블 공통 헬퍼 변수 및 함수 선언
+    # 테이블 공통 헬퍼 변수 및 함수 선언
     def format_for_csv(df):
         out_df = df.copy()
         for col in out_df.columns:
@@ -258,7 +262,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # ✨ 유형별 성과 요약 (신규 추가)
+    # 2. 유형별 성과 요약
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏷️ 유형별 성과 요약</div>", unsafe_allow_html=True)
     
@@ -325,7 +329,66 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # ✨ 업체별 성과 요약
+    # 3. 주간 성과 요약
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
+    with st.spinner("주간 데이터 집계 중..."):
+        base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        
+        if base_weekly_ts is not None and not base_weekly_ts.empty:
+            weekly_ts = base_weekly_ts.groupby('dt')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            weekly_ts['dt'] = pd.to_datetime(weekly_ts['dt'])
+            
+            def _get_week_info(dt_val):
+                d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
+                start = d - timedelta(days=d.weekday())
+                end = start + timedelta(days=6)
+                thursday = start + timedelta(days=3)
+                month = thursday.month
+                week_num = (thursday.day - 1) // 7 + 1
+                return f"{month}월 {week_num}주차 ({start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')})", start
+            
+            week_info = weekly_ts['dt'].apply(_get_week_info)
+            weekly_ts['week_label'] = [x[0] for x in week_info]
+            weekly_ts['week_start'] = [x[1] for x in week_info]
+            
+            weekly_grp = weekly_ts.groupby(['week_start', 'week_label'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            weekly_grp = weekly_grp.sort_values('week_start', ascending=True)
+            
+            weekly_grp['ctr'] = np.where(weekly_grp['imp'] > 0, weekly_grp['clk'] / weekly_grp['imp'] * 100, 0)
+            weekly_grp['cpc'] = np.where(weekly_grp['clk'] > 0, weekly_grp['cost'] / weekly_grp['clk'], 0)
+            weekly_grp['roas'] = np.where(weekly_grp['cost'] > 0, weekly_grp['sales'] / weekly_grp['cost'] * 100, 0)
+            
+            weekly_disp = weekly_grp[['week_label', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
+            weekly_disp.columns = ['주간', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
+            
+            styled_weekly = weekly_disp.style.format({
+                '노출수': '{:,.0f}',
+                '클릭수': '{:,.0f}',
+                '클릭률(%)': '{:,.2f}%',
+                '광고비': '{:,.0f}원',
+                'CPC': '{:,.0f}원',
+                '전환수': '{:,.0f}',
+                '전환매출': '{:,.0f}원',
+                'ROAS(%)': '{:,.0f}%'
+            })
+            
+            st.dataframe(styled_weekly, use_container_width=True, hide_index=True)
+            
+            csv_weekly_data = format_for_csv(weekly_disp).to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 주간 성과 요약 CSV 다운로드",
+                data=csv_weekly_data,
+                file_name=f"주간_성과_요약_{f['start']}_{f['end']}.csv",
+                mime="text/csv",
+                key="download_weekly_csv"
+            )
+        else:
+            st.info("해당 기간의 주간 데이터가 없습니다.")
+
+
+    # ==========================================
+    # 4. 상세 분석 (업체별 전체 및 캠페인 상세)
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
 
@@ -383,7 +446,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        # CSV 다운로드 버튼
         csv_account_data = format_for_csv(df_display).to_csv(index=False).encode('utf-8-sig')
         st.download_button(
             label="📥 업체별 전체 성과 요약 CSV 다운로드",
@@ -393,9 +455,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             key="download_account_csv"
         )
 
-        # ==========================================
-        # 특정 업체 선택 시 캠페인 상세 현황 표출
-        # ==========================================
         st.markdown("<div style='margin-top:24px; font-weight:700; font-size:16px;'>🔍 업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
         selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체를 선택하세요", options=merged['account_name'].tolist())
 
@@ -485,7 +544,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
 
-            # CSV 다운로드 버튼 (캠페인)
             csv_camp_data = format_for_csv(camp_df_display).to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label=f"📥 {selected_account} 캠페인 상세 데이터 CSV 다운로드",
@@ -501,6 +559,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<br>", unsafe_allow_html=True)
 
 
+    # ==========================================
+    # 5. 기타 기능 (보고서 내보내기, 알림, 트렌드)
+    # ==========================================
     with st.expander("📝 보고서 내보내기", expanded=False):
         report_campaign_type = selected_type_label
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
@@ -591,66 +652,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.dataframe(df_show, width="stretch", hide_index=True)
             else:
                 st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 정기적인 점검이 완료되었습니다!")
-
-    st.divider()
-
-    # ==========================================
-    # ✨ 주간 성과 요약 (기본 내장 함수로 안전하게 교체)
-    # ==========================================
-    st.markdown("<div class='nv-sec-title'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
-    with st.spinner("주간 데이터 집계 중..."):
-        base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-        
-        if base_weekly_ts is not None and not base_weekly_ts.empty:
-            weekly_ts = base_weekly_ts.groupby('dt')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
-            weekly_ts['dt'] = pd.to_datetime(weekly_ts['dt'])
-            
-            def _get_week_info(dt_val):
-                d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
-                start = d - timedelta(days=d.weekday())
-                end = start + timedelta(days=6)
-                thursday = start + timedelta(days=3)
-                month = thursday.month
-                week_num = (thursday.day - 1) // 7 + 1
-                return f"{month}월 {week_num}주차 ({start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')})", start
-            
-            week_info = weekly_ts['dt'].apply(_get_week_info)
-            weekly_ts['week_label'] = [x[0] for x in week_info]
-            weekly_ts['week_start'] = [x[1] for x in week_info]
-            
-            weekly_grp = weekly_ts.groupby(['week_start', 'week_label'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
-            weekly_grp = weekly_grp.sort_values('week_start', ascending=True)
-            
-            weekly_grp['ctr'] = np.where(weekly_grp['imp'] > 0, weekly_grp['clk'] / weekly_grp['imp'] * 100, 0)
-            weekly_grp['cpc'] = np.where(weekly_grp['clk'] > 0, weekly_grp['cost'] / weekly_grp['clk'], 0)
-            weekly_grp['roas'] = np.where(weekly_grp['cost'] > 0, weekly_grp['sales'] / weekly_grp['cost'] * 100, 0)
-            
-            weekly_disp = weekly_grp[['week_label', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
-            weekly_disp.columns = ['주간', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
-            
-            styled_weekly = weekly_disp.style.format({
-                '노출수': '{:,.0f}',
-                '클릭수': '{:,.0f}',
-                '클릭률(%)': '{:,.2f}%',
-                '광고비': '{:,.0f}원',
-                'CPC': '{:,.0f}원',
-                '전환수': '{:,.0f}',
-                '전환매출': '{:,.0f}원',
-                'ROAS(%)': '{:,.0f}%'
-            })
-            
-            st.dataframe(styled_weekly, use_container_width=True, hide_index=True)
-            
-            csv_weekly_data = format_for_csv(weekly_disp).to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 주간 성과 요약 CSV 다운로드",
-                data=csv_weekly_data,
-                file_name=f"주간_성과_요약_{f['start']}_{f['end']}.csv",
-                mime="text/csv",
-                key="download_weekly_csv"
-            )
-        else:
-            st.info("해당 기간의 주간 데이터가 없습니다.")
 
     st.divider()
 
