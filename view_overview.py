@@ -54,7 +54,6 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
         return pd.DataFrame()
 
 
-# ✨ 업체별 트렌드 필터링을 지원하기 위해 custom 쿼리 함수 적용
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
@@ -203,22 +202,26 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             return f"{pct:+.1f}% ({diff_fmt})"
 
-    if not cur_camp.empty:
-        cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
-        base_grp = base_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales'])
+    # ✨ 현재나 이전 기간 중 하나라도 데이터가 있으면 표출 (Outer merge)
+    if not cur_camp.empty or not base_camp.empty:
+        base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
+        cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
+        base_grp = base_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=base_cols)
         
         cur_grp['customer_id'] = cur_grp['customer_id'].astype(str)
         base_grp['customer_id'] = base_grp['customer_id'].astype(str)
         
+        # OUTER MERGE를 통해 이전 기간에만 존재하는 계정도 살림
+        merged = pd.merge(cur_grp, base_grp, on='customer_id', how='outer', suffixes=('_cur', '_base')).fillna(0)
+        
         if not meta.empty:
             meta_subset = meta[['customer_id', 'account_name']].copy()
             meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
-            cur_grp = cur_grp.merge(meta_subset, on='customer_id', how='left')
-            cur_grp['account_name'] = cur_grp['account_name'].fillna(cur_grp['customer_id'])
+            merged = merged.merge(meta_subset, on='customer_id', how='left')
+            merged['account_name'] = merged['account_name'].fillna(merged['customer_id'])
         else:
-            cur_grp['account_name'] = cur_grp['customer_id']
+            merged['account_name'] = merged['customer_id']
             
-        merged = cur_grp.merge(base_grp, on='customer_id', how='left', suffixes=('_cur', '_base')).fillna(0)
         merged = merged.sort_values('cost_cur', ascending=False)
         
         table_data = []
@@ -284,24 +287,22 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if selected_account:
             selected_cid = merged[merged['account_name'] == selected_account]['customer_id'].iloc[0]
             
-            cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)]
-            base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)]
+            cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)] if not cur_camp.empty else pd.DataFrame()
+            base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)] if not base_camp.empty else pd.DataFrame()
             
             # 평균순위가 DB에 존재하는 경우 처리
-            has_rank = 'avg_rank' in cur_camp_sub.columns
+            has_rank = ('avg_rank' in cur_camp_sub.columns) or ('avg_rank' in base_camp_sub.columns)
             agg_cols = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
             if has_rank: 
                 agg_cols['avg_rank'] = 'mean'
             
-            cur_camp_grp = cur_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index()
+            base_camp_cols = ['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'] + (['avg_rank'] if has_rank else [])
             
-            if not base_camp_sub.empty:
-                base_camp_grp = base_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index()
-            else:
-                base_cols = ['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'] + (['avg_rank'] if has_rank else [])
-                base_camp_grp = pd.DataFrame(columns=base_cols)
+            cur_camp_grp = cur_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not cur_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
+            base_camp_grp = base_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not base_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
                 
-            camp_merged = cur_camp_grp.merge(base_camp_grp, on='campaign_name', how='left', suffixes=('_cur', '_base')).fillna(0)
+            # ✨ 캠페인 단위도 OUTER MERGE로 과거 실적 있는 캠페인 노출
+            camp_merged = pd.merge(cur_camp_grp, base_camp_grp, on='campaign_name', how='outer', suffixes=('_cur', '_base')).fillna(0)
             camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
             
             camp_table_data = []
@@ -372,7 +373,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
 
     else:
-        st.info("해당 기간의 캠페인 데이터가 없습니다.")
+        st.info("해당 및 비교 기간의 캠페인 데이터가 모두 없습니다.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
