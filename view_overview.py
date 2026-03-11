@@ -164,7 +164,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         <div class='kpi-group'>
             <div class='kpi-group-title'>🎯 성과 지표</div>
             <div class='kpi-row'>
-                {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                 {_kpi_html("전환매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
             </div>
@@ -173,6 +173,27 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
+    # ✨ CSV 내보내기용 포맷팅 함수 (소수점 제거, %, 원 기호 추가)
+    def format_for_csv(df):
+        out_df = df.copy()
+        for col in out_df.columns:
+            if out_df[col].dtype in ['float64', 'int64']:
+                if col in ["노출수", "클릭수", "전환수", "평균순위", "순위"]:
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
+                elif col in ["광고비", "전환매출"]:
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
+                elif "차이" in col:
+                    if "광고비" in col or "매출" in col:
+                        out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
+                    else:
+                        out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
+                elif "증감" in col:
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}%" if pd.notnull(x) and x != 0 else "0%")
+                elif col == "ROAS":
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}%" if pd.notnull(x) else "0%")
+                elif col == "순위 변화":
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}" if pd.notnull(x) and x != 0 else "0")
+        return out_df
 
     # ==========================================
     # ✨ 업체별 성과 요약 및 캠페인 상세 조회
@@ -182,7 +203,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
 
-    # %와 절대 증감 수치를 계산하여 반환하는 함수 (숫자로 유지하여 정렬을 활성화)
     def calc_pct_diff(c, b):
         diff = c - b
         if b == 0:
@@ -248,29 +268,28 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
         df_display = pd.DataFrame(table_data)
         
-        # 증감 색상 로직 (숫자 기반)
         def color_delta(val):
             if pd.isna(val) or val == 0: return 'color: #888888;'
             return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
             
         styled_df = df_display.style.format({
             "노출수": "{:,.0f}",
-            "노출 증감": "{:+.1f}%",
+            "노출 증감": "{:+.0f}%",
             "노출 차이": "{:+,.0f}",
             "클릭수": "{:,.0f}",
-            "클릭 증감": "{:+.1f}%",
+            "클릭 증감": "{:+.0f}%",
             "클릭 차이": "{:+,.0f}",
             "광고비": "{:,.0f}원",
-            "광고비 증감": "{:+.1f}%",
+            "광고비 증감": "{:+.0f}%",
             "광고비 차이": "{:+,.0f}원",
             "전환수": "{:,.0f}",
-            "전환 증감": "{:+.1f}%",
+            "전환 증감": "{:+.0f}%",
             "전환 차이": "{:+,.0f}",
             "전환매출": "{:,.0f}원",
-            "매출 증감": "{:+.1f}%",
+            "매출 증감": "{:+.0f}%",
             "매출 차이": "{:+,.0f}원",
-            "ROAS": "{:,.1f}%",
-            "ROAS 증감": "{:+.1f}%"
+            "ROAS": "{:,.0f}%",
+            "ROAS 증감": "{:+.0f}%"
         })
         
         color_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
@@ -281,6 +300,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             styled_df = styled_df.applymap(color_delta, subset=color_cols)
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+        # ✨ CSV 다운로드 버튼
+        csv_account_data = format_for_csv(df_display).to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 업체별 전체 성과 요약 CSV 다운로드",
+            data=csv_account_data,
+            file_name=f"업체별_전체_성과_요약_{f['start']}_{f['end']}.csv",
+            mime="text/csv",
+            key="download_account_csv"
+        )
 
         # ==========================================
         # ✨ 특정 업체 선택 시 캠페인 상세 현황 표출
@@ -294,17 +323,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)] if not cur_camp.empty else pd.DataFrame()
             base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)] if not base_camp.empty else pd.DataFrame()
             
-            # 평균 순위 존재 여부 확인
             has_rank = ('avg_rank' in cur_camp_sub.columns) or ('avg_rank' in base_camp_sub.columns)
             
-            # ✨ 캠페인 유형 존재 여부 및 동적 컬럼 탐색
             type_col = None
             if 'campaign_tp' in cur_camp_sub.columns or 'campaign_tp' in base_camp_sub.columns:
                 type_col = 'campaign_tp'
             elif 'campaign_type' in cur_camp_sub.columns or 'campaign_type' in base_camp_sub.columns:
                 type_col = 'campaign_type'
             
-            # 그룹핑 컬럼 설정
             grp_cols = ['campaign_name']
             if type_col:
                 grp_cols.insert(0, type_col)
@@ -345,7 +371,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 data_row = {"순위": rank + 1}
                 
-                # 캠페인 유형 표기 (한글로 변환)
                 if type_col:
                     raw_tp = str(row[type_col]).upper() if pd.notnull(row[type_col]) else ""
                     data_row["캠페인 유형"] = type_kor_map.get(raw_tp, raw_tp) if raw_tp else "알수없음"
@@ -386,33 +411,34 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             camp_df_display = pd.DataFrame(camp_table_data)
             
-            fmt_dict = {
+            fmt_dict_camp = {
                 "노출수": "{:,.0f}",
-                "노출 증감": "{:+.1f}%",
+                "노출 증감": "{:+.0f}%",
                 "노출 차이": "{:+,.0f}",
                 "클릭수": "{:,.0f}",
-                "클릭 증감": "{:+.1f}%",
+                "클릭 증감": "{:+.0f}%",
                 "클릭 차이": "{:+,.0f}",
                 "광고비": "{:,.0f}원",
-                "광고비 증감": "{:+.1f}%",
+                "광고비 증감": "{:+.0f}%",
                 "광고비 차이": "{:+,.0f}원",
                 "전환수": "{:,.0f}",
-                "전환 증감": "{:+.1f}%",
+                "전환 증감": "{:+.0f}%",
                 "전환 차이": "{:+,.0f}",
                 "전환매출": "{:,.0f}원",
-                "매출 증감": "{:+.1f}%",
+                "매출 증감": "{:+.0f}%",
                 "매출 차이": "{:+,.0f}원",
-                "ROAS": "{:,.1f}%",
-                "ROAS 증감": "{:+.1f}%"
+                "ROAS": "{:,.0f}%",
+                "ROAS 증감": "{:+.0f}%"
             }
+            
             color_cols_camp = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
             
             if has_rank:
-                fmt_dict["평균순위"] = "{:.1f}"
-                fmt_dict["순위 변화"] = "{:+.1f}"
+                fmt_dict_camp["평균순위"] = "{:.0f}"
+                fmt_dict_camp["순위 변화"] = "{:+.0f}"
                 color_cols_camp.append("순위 변화")
                 
-            styled_camp_df = camp_df_display.style.format(fmt_dict)
+            styled_camp_df = camp_df_display.style.format(fmt_dict_camp)
             
             if hasattr(styled_camp_df, 'map'):
                 styled_camp_df = styled_camp_df.map(color_delta, subset=color_cols_camp)
@@ -420,6 +446,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 styled_camp_df = styled_camp_df.applymap(color_delta, subset=color_cols_camp)
                 
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
+
+            # ✨ CSV 다운로드 버튼 (캠페인)
+            csv_camp_data = format_for_csv(camp_df_display).to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label=f"📥 {selected_account} 캠페인 상세 데이터 CSV 다운로드",
+                data=csv_camp_data,
+                file_name=f"{selected_account}_캠페인_상세_{f['start']}_{f['end']}.csv",
+                mime="text/csv",
+                key="download_camp_csv"
+            )
 
     else:
         st.info("해당 및 비교 기간의 캠페인 데이터가 모두 없습니다.")
@@ -600,7 +636,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
 
                 styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Purples', subset=['ROAS(%)']).format({
-                    '광고비': '{:,.0f}', '전환수': '{:,.1f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.2f}%'
+                    '광고비': '{:,.0f}', '전환수': '{:,.0f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.0f}%'
                 })
 
                 st.dataframe(styled_df, width="stretch", hide_index=True)
