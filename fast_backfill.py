@@ -3,7 +3,13 @@ import argparse
 import os
 from datetime import datetime, timedelta
 
-# GitHub Actions에서 날짜를 인자로 받기 위해 argparse 사용
+# ✨ 깡통 .env 파일이 깃허브 Secrets를 지우지 못하도록 override=False 로 변경!
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False) 
+except ImportError:
+    pass
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--start", type=str, required=True, help="시작일 (YYYY-MM-DD)")
 parser.add_argument("--end", type=str, required=True, help="종료일 (YYYY-MM-DD)")
@@ -21,12 +27,12 @@ while curr_date <= end_date:
     print(f"📅 [ {d_str} ] 전체 계정 데이터 수집 중...")
     print("="*50)
     
-    # workers=15 로 병렬 수집
     cmd = ["python", "collector.py", "--date", d_str, "--workers", "15"]
     
     try:
-        # ✨ 핵심 수정: 깃허브 환경변수(Secrets)를 자식 프로세스인 collector.py로 강제 복사하여 전달
-        subprocess.run(cmd, check=True, env=os.environ)
+        # 안전하게 환경변수 복사 후 전달
+        env_vars = os.environ.copy()
+        subprocess.run(cmd, check=True, env=env_vars)
     except subprocess.CalledProcessError:
         print(f"⚠️ {d_str} 수집 중 일부 오류 발생 (건너뛰고 다음 날짜 진행)")
         
