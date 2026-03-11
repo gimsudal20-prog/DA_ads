@@ -180,7 +180,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if out_df[col].dtype in ['float64', 'int64']:
                 if col in ["노출수", "클릭수", "전환수", "평균순위", "순위"]:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
-                elif col in ["광고비", "전환매출"]:
+                elif col in ["광고비", "전환매출", "CPC"]:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
                 elif "차이" in col:
                     if "광고비" in col or "매출" in col:
@@ -189,8 +189,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
                 elif "증감" in col:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}%" if pd.notnull(x) and x != 0 else "0%")
-                elif col == "ROAS":
+                elif col in ["ROAS", "ROAS(%)"]:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}%" if pd.notnull(x) else "0%")
+                elif col == "클릭률(%)":
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:,.2f}%" if pd.notnull(x) else "0.00%")
                 elif col == "순위 변화":
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}" if pd.notnull(x) and x != 0 else "0")
         return out_df
@@ -553,6 +555,70 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.dataframe(df_show, width="stretch", hide_index=True)
             else:
                 st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 정기적인 점검이 완료되었습니다!")
+
+    st.divider()
+
+    # ==========================================
+    # ✨ 특정 기간별(주간) 요약 추가
+    # ==========================================
+    st.markdown("<div class='nv-sec-title'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
+    with st.spinner("주간 데이터 집계 중..."):
+        # 전체 계정에 대한 일자별 데이터 로드
+        weekly_ts = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        
+        if weekly_ts is not None and not weekly_ts.empty:
+            def _get_week_info(dt_val):
+                d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
+                # 월요일 기준 시작, 일요일 기준 끝
+                start = d - timedelta(days=d.weekday())
+                end = start + timedelta(days=6)
+                # 한국 기준 N월 M주차 판별 (해당 주의 목요일 기준)
+                thursday = start + timedelta(days=3)
+                month = thursday.month
+                week_num = (thursday.day - 1) // 7 + 1
+                return f"{month}월 {week_num}주차 ({start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')})", start
+            
+            # 주차 정보 컬럼 추가
+            week_info = weekly_ts['dt'].apply(_get_week_info)
+            weekly_ts['week_label'] = [x[0] for x in week_info]
+            weekly_ts['week_start'] = [x[1] for x in week_info]
+            
+            # 주차별 합산
+            weekly_grp = weekly_ts.groupby(['week_start', 'week_label'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            weekly_grp = weekly_grp.sort_values('week_start', ascending=True)
+            
+            # 2차 지표 계산
+            weekly_grp['ctr'] = np.where(weekly_grp['imp'] > 0, weekly_grp['clk'] / weekly_grp['imp'] * 100, 0)
+            weekly_grp['cpc'] = np.where(weekly_grp['clk'] > 0, weekly_grp['cost'] / weekly_grp['clk'], 0)
+            weekly_grp['roas'] = np.where(weekly_grp['cost'] > 0, weekly_grp['sales'] / weekly_grp['cost'] * 100, 0)
+            
+            weekly_disp = weekly_grp[['week_label', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
+            weekly_disp.columns = ['주간', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
+            
+            styled_weekly = weekly_disp.style.format({
+                '노출수': '{:,.0f}',
+                '클릭수': '{:,.0f}',
+                '클릭률(%)': '{:,.2f}%',
+                '광고비': '{:,.0f}원',
+                'CPC': '{:,.0f}원',
+                '전환수': '{:,.0f}',
+                '전환매출': '{:,.0f}원',
+                'ROAS(%)': '{:,.0f}%'
+            })
+            
+            st.dataframe(styled_weekly, use_container_width=True, hide_index=True)
+            
+            # CSV 다운로드
+            csv_weekly_data = format_for_csv(weekly_disp).to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 주간 성과 요약 CSV 다운로드",
+                data=csv_weekly_data,
+                file_name=f"주간_성과_요약_{f['start']}_{f['end']}.csv",
+                mime="text/csv",
+                key="download_weekly_csv"
+            )
+        else:
+            st.info("해당 기간의 주간 데이터가 없습니다.")
 
     st.divider()
 
