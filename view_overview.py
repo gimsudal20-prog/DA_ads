@@ -91,7 +91,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     selected_type_label = _selected_type_label(type_sel)
     st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_mode}</span></div>", unsafe_allow_html=True)
+    
+    # ✨ 비교 기간에 대한 정확한 날짜 표기 추가
+    cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
+    st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
     base = base_summary
@@ -197,7 +200,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "전환매출": c_sales,
                 "매출 증감": safe_pct(c_sales, b_sales),
                 "ROAS": c_roas,
-                "ROAS 증감(p)": c_roas - b_roas
+                "ROAS 증감": c_roas - b_roas
             })
             
         df_display = pd.DataFrame(table_data)
@@ -212,13 +215,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%",
             "전환수": "{:,.0f}", "전환 증감": "{:+.1f}%",
             "전환매출": "{:,.0f}원", "매출 증감": "{:+.1f}%",
-            "ROAS": "{:,.1f}%", "ROAS 증감(p)": "{:+.1f}%p"
+            "ROAS": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
         })
         
         if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감'])
         else:
-            styled_df = styled_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감'])
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -234,11 +237,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)]
             base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)]
             
-            cur_camp_grp = cur_camp_sub.groupby('campaign_name')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            # 평균순위가 DB에 존재하는 경우 처리
+            has_rank = 'avg_rank' in cur_camp_sub.columns
+            agg_cols = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
+            if has_rank: 
+                agg_cols['avg_rank'] = 'mean'
+            
+            cur_camp_grp = cur_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index()
+            
             if not base_camp_sub.empty:
-                base_camp_grp = base_camp_sub.groupby('campaign_name')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+                base_camp_grp = base_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index()
             else:
-                base_camp_grp = pd.DataFrame(columns=['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'])
+                base_cols = ['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'] + (['avg_rank'] if has_rank else [])
+                base_camp_grp = pd.DataFrame(columns=base_cols)
                 
             camp_merged = cur_camp_grp.merge(base_camp_grp, on='campaign_name', how='left', suffixes=('_cur', '_base')).fillna(0)
             camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
@@ -251,9 +262,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
                 b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
                 
-                camp_table_data.append({
+                data_row = {
                     "순위": rank + 1,
                     "캠페인명": row['campaign_name'],
+                }
+                
+                # 평균순위 지표 추가
+                if has_rank:
+                    c_rank = row.get('avg_rank_cur', 0)
+                    b_rank = row.get('avg_rank_base', 0)
+                    data_row["평균순위"] = c_rank if c_rank > 0 else 0
+                    data_row["순위 증감"] = c_rank - b_rank if (b_rank > 0 and c_rank > 0) else 0
+
+                data_row.update({
                     "노출수": c_imp,
                     "노출 증감": safe_pct(c_imp, b_imp),
                     "클릭수": c_clk,
@@ -265,24 +286,35 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     "전환매출": c_sales,
                     "매출 증감": safe_pct(c_sales, b_sales),
                     "ROAS": c_roas,
-                    "ROAS 증감(p)": c_roas - b_roas
+                    "ROAS 증감": c_roas - b_roas
                 })
+                
+                camp_table_data.append(data_row)
                 
             camp_df_display = pd.DataFrame(camp_table_data)
             
-            styled_camp_df = camp_df_display.style.format({
+            # 포맷 및 증감 색상 지정
+            fmt_dict = {
                 "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%",
                 "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%",
                 "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%",
                 "전환수": "{:,.0f}", "전환 증감": "{:+.1f}%",
                 "전환매출": "{:,.0f}원", "매출 증감": "{:+.1f}%",
-                "ROAS": "{:,.1f}%", "ROAS 증감(p)": "{:+.1f}%p"
-            })
+                "ROAS": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
+            }
+            color_cols_camp = ['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감']
+            
+            if has_rank:
+                fmt_dict["평균순위"] = "{:.1f}"
+                fmt_dict["순위 증감"] = "{:+.1f}"
+                color_cols_camp.append("순위 증감")
+                
+            styled_camp_df = camp_df_display.style.format(fmt_dict)
             
             if hasattr(styled_camp_df, 'map'):
-                styled_camp_df = styled_camp_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+                styled_camp_df = styled_camp_df.map(color_delta, subset=color_cols_camp)
             else:
-                styled_camp_df = styled_camp_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+                styled_camp_df = styled_camp_df.applymap(color_delta, subset=color_cols_camp)
                 
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
 
@@ -381,7 +413,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.markdown("<div style='margin-top: 16px; font-weight: 700; color: #FC503D; font-size: 14px;'>비용 누수 캠페인 목록</div>", unsafe_allow_html=True)
                     st.dataframe(df_show, width="stretch", hide_index=True)
             else:
-                st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 있습니다!")
+                st.success("✨ 모니터링 결과: 특이한 이상 징후나 비용 누수가 없습니다. 계정이 건강하게 운영되고 정기적인 점검이 완료되었습니다!")
 
     st.divider()
 
