@@ -63,7 +63,6 @@ def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel
         return pd.DataFrame()
 
 
-# ✨ 에러 없이 안전하게 업체별 시계열을 가져오는 함수로 수정
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
@@ -94,7 +93,6 @@ def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel:
         return df
     except Exception:
         try:
-            # 컬럼명이 campaign_type 일 경우를 대비한 Fallback
             if type_sel:
                 type_where_sql = f"AND c.campaign_type IN ({type_list_str})"
             sql = f"""
@@ -198,6 +196,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
+    # ✨ 테이블 공통 헬퍼 변수 및 함수 선언
     def format_for_csv(df):
         out_df = df.copy()
         for col in out_df.columns:
@@ -221,14 +220,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}" if pd.notnull(x) and x != 0 else "0")
         return out_df
 
-    # ==========================================
-    # ✨ 업체별 성과 요약 및 캠페인 상세 조회
-    # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
-    with st.spinner("업체별 데이터 집계 중..."):
-        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
-        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
-
     def calc_pct_diff(c, b):
         diff = c - b
         if b == 0:
@@ -236,6 +227,107 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             pct = (diff) / b * 100.0
         return pct, diff
+
+    def color_delta(val):
+        if pd.isna(val) or val == 0: return 'color: #888888;'
+        return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
+
+    fmt_dict_standard = {
+        "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
+        "클릭수": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
+        "광고비": "{:,.0f}원", "광고비 증감": "{:+.0f}%", "광고비 차이": "{:+,.0f}원",
+        "전환수": "{:,.0f}", "전환 증감": "{:+.0f}%", "전환 차이": "{:+,.0f}",
+        "전환매출": "{:,.0f}원", "매출 증감": "{:+.0f}%", "매출 차이": "{:+,.0f}원",
+        "ROAS": "{:,.0f}%", "ROAS 증감": "{:+.0f}%"
+    }
+    
+    color_cols_standard = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+
+    type_kor_map = {
+        "WEB_SITE": "파워링크", 
+        "SHOPPING": "쇼핑검색", 
+        "POWER_CONTENTS": "파워컨텐츠", 
+        "BRAND_SEARCH": "브랜드검색", 
+        "PLACE": "플레이스"
+    }
+
+    # 하위 상세 데이터 병합 공통 로드
+    with st.spinner("상세 성과 집계 중..."):
+        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+
+
+    # ==========================================
+    # ✨ 유형별 성과 요약 (신규 추가)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏷️ 유형별 성과 요약</div>", unsafe_allow_html=True)
+    
+    type_col = None
+    if not cur_camp.empty and 'campaign_tp' in cur_camp.columns: type_col = 'campaign_tp'
+    elif not cur_camp.empty and 'campaign_type' in cur_camp.columns: type_col = 'campaign_type'
+    elif not base_camp.empty and 'campaign_tp' in base_camp.columns: type_col = 'campaign_tp'
+    elif not base_camp.empty and 'campaign_type' in base_camp.columns: type_col = 'campaign_type'
+
+    if type_col and (not cur_camp.empty or not base_camp.empty):
+        cur_type_grp = cur_camp.groupby(type_col)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=[type_col, 'imp', 'clk', 'cost', 'conv', 'sales'])
+        base_type_grp = base_camp.groupby(type_col)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=[type_col, 'imp', 'clk', 'cost', 'conv', 'sales'])
+        
+        type_merged = pd.merge(cur_type_grp, base_type_grp, on=type_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
+        type_merged = type_merged.sort_values('cost_cur', ascending=False)
+        
+        type_table_data = []
+        for _, row in type_merged.iterrows():
+            c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
+            b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
+            
+            c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+            b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
+            
+            pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
+            pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
+            pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+            pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
+            pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
+            
+            raw_tp = str(row[type_col]).upper() if pd.notnull(row[type_col]) else ""
+            kor_tp = type_kor_map.get(raw_tp, raw_tp) if raw_tp else "기타"
+            
+            type_table_data.append({
+                "캠페인 유형": kor_tp,
+                "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
+                "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
+                "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+                "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
+                "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
+                "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
+            })
+            
+        df_type_display = pd.DataFrame(type_table_data)
+        
+        styled_type_df = df_type_display.style.format(fmt_dict_standard)
+        if hasattr(styled_type_df, 'map'):
+            styled_type_df = styled_type_df.map(color_delta, subset=color_cols_standard)
+        else:
+            styled_type_df = styled_type_df.applymap(color_delta, subset=color_cols_standard)
+            
+        st.dataframe(styled_type_df, use_container_width=True, hide_index=True)
+        
+        csv_type_data = format_for_csv(df_type_display).to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 유형별 성과 요약 CSV 다운로드",
+            data=csv_type_data,
+            file_name=f"유형별_성과_요약_{f['start']}_{f['end']}.csv",
+            mime="text/csv",
+            key="download_type_csv"
+        )
+    else:
+        st.info("캠페인 유형 정보가 없어 유형별 요약을 제공할 수 없습니다.")
+
+
+    # ==========================================
+    # ✨ 업체별 성과 요약
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
 
     if not cur_camp.empty or not base_camp.empty:
         base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
@@ -273,57 +365,21 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             table_data.append({
                 "업체명": row['account_name'],
-                "노출수": c_imp,
-                "노출 증감": pct_imp,
-                "노출 차이": diff_imp,
-                "클릭수": c_clk,
-                "클릭 증감": pct_clk,
-                "클릭 차이": diff_clk,
-                "광고비": c_cost,
-                "광고비 증감": pct_cost,
-                "광고비 차이": diff_cost,
-                "전환수": c_conv,
-                "전환 증감": pct_conv,
-                "전환 차이": diff_conv,
-                "전환매출": c_sales,
-                "매출 증감": pct_sales,
-                "매출 차이": diff_sales,
-                "ROAS": c_roas,
-                "ROAS 증감": c_roas - b_roas
+                "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
+                "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
+                "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+                "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
+                "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
+                "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
             })
             
         df_display = pd.DataFrame(table_data)
         
-        def color_delta(val):
-            if pd.isna(val) or val == 0: return 'color: #888888;'
-            return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
-            
-        styled_df = df_display.style.format({
-            "노출수": "{:,.0f}",
-            "노출 증감": "{:+.0f}%",
-            "노출 차이": "{:+,.0f}",
-            "클릭수": "{:,.0f}",
-            "클릭 증감": "{:+.0f}%",
-            "클릭 차이": "{:+,.0f}",
-            "광고비": "{:,.0f}원",
-            "광고비 증감": "{:+.0f}%",
-            "광고비 차이": "{:+,.0f}원",
-            "전환수": "{:,.0f}",
-            "전환 증감": "{:+.0f}%",
-            "전환 차이": "{:+,.0f}",
-            "전환매출": "{:,.0f}원",
-            "매출 증감": "{:+.0f}%",
-            "매출 차이": "{:+,.0f}원",
-            "ROAS": "{:,.0f}%",
-            "ROAS 증감": "{:+.0f}%"
-        })
-        
-        color_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
-        
+        styled_df = df_display.style.format(fmt_dict_standard)
         if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta, subset=color_cols)
+            styled_df = styled_df.map(color_delta, subset=color_cols_standard)
         else:
-            styled_df = styled_df.applymap(color_delta, subset=color_cols)
+            styled_df = styled_df.applymap(color_delta, subset=color_cols_standard)
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -351,12 +407,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             has_rank = ('avg_rank' in cur_camp_sub.columns) or ('avg_rank' in base_camp_sub.columns)
             
-            type_col = None
-            if 'campaign_tp' in cur_camp_sub.columns or 'campaign_tp' in base_camp_sub.columns:
-                type_col = 'campaign_tp'
-            elif 'campaign_type' in cur_camp_sub.columns or 'campaign_type' in base_camp_sub.columns:
-                type_col = 'campaign_type'
-            
             grp_cols = ['campaign_name']
             if type_col:
                 grp_cols.insert(0, type_col)
@@ -372,14 +422,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             camp_merged = pd.merge(cur_camp_grp, base_camp_grp, on=grp_cols, how='outer', suffixes=('_cur', '_base')).fillna(0)
             camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
-            
-            type_kor_map = {
-                "WEB_SITE": "파워링크", 
-                "SHOPPING": "쇼핑검색", 
-                "POWER_CONTENTS": "파워컨텐츠", 
-                "BRAND_SEARCH": "브랜드검색", 
-                "PLACE": "플레이스"
-            }
             
             camp_table_data = []
             for rank, row in camp_merged.iterrows():
@@ -414,50 +456,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         data_row["순위 변화"] = 0.0
 
                 data_row.update({
-                    "노출수": c_imp,
-                    "노출 증감": pct_imp,
-                    "노출 차이": diff_imp,
-                    "클릭수": c_clk,
-                    "클릭 증감": pct_clk,
-                    "클릭 차이": diff_clk,
-                    "광고비": c_cost,
-                    "광고비 증감": pct_cost,
-                    "광고비 차이": diff_cost,
-                    "전환수": c_conv,
-                    "전환 증감": pct_conv,
-                    "전환 차이": diff_conv,
-                    "전환매출": c_sales,
-                    "매출 증감": pct_sales,
-                    "매출 차이": diff_sales,
-                    "ROAS": c_roas,
-                    "ROAS 증감": c_roas - b_roas
+                    "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
+                    "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
+                    "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+                    "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
+                    "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
+                    "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
                 })
                 
                 camp_table_data.append(data_row)
                 
             camp_df_display = pd.DataFrame(camp_table_data)
             
-            fmt_dict_camp = {
-                "노출수": "{:,.0f}",
-                "노출 증감": "{:+.0f}%",
-                "노출 차이": "{:+,.0f}",
-                "클릭수": "{:,.0f}",
-                "클릭 증감": "{:+.0f}%",
-                "클릭 차이": "{:+,.0f}",
-                "광고비": "{:,.0f}원",
-                "광고비 증감": "{:+.0f}%",
-                "광고비 차이": "{:+,.0f}원",
-                "전환수": "{:,.0f}",
-                "전환 증감": "{:+.0f}%",
-                "전환 차이": "{:+,.0f}",
-                "전환매출": "{:,.0f}원",
-                "매출 증감": "{:+.0f}%",
-                "매출 차이": "{:+,.0f}원",
-                "ROAS": "{:,.0f}%",
-                "ROAS 증감": "{:+.0f}%"
-            }
-            
-            color_cols_camp = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+            fmt_dict_camp = fmt_dict_standard.copy()
+            color_cols_camp = color_cols_standard.copy()
             
             if has_rank:
                 fmt_dict_camp["평균순위"] = "{:.0f}"
@@ -587,7 +599,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ==========================================
     st.markdown("<div class='nv-sec-title'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
     with st.spinner("주간 데이터 집계 중..."):
-        # 기존 캠페인 시계열 데이터를 재사용하여 주간 단위로 묶음 (가장 안전한 방법)
         base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         
         if base_weekly_ts is not None and not base_weekly_ts.empty:
@@ -651,7 +662,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         with st.spinner("트렌드 데이터 집계 중..."):
             ts = _cached_account_timeseries(engine, trend_d1, f["end"], cids, type_sel)
 
-        # ✨ 안전장치: 업체별 분리 쿼리가 에러로 빈 값을 반환했을 경우 전체 합산 쿼리로 대체 (Fallback)
         if ts is None or ts.empty:
             ts = _cached_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
             if ts is not None and not ts.empty:
@@ -672,7 +682,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             st.markdown("<div style='margin-top:8px; margin-bottom:16px;'>", unsafe_allow_html=True)
             
-            # 전체 합산을 맨 위에 두고, 나머지 업체를 정렬하여 리스트 생성
             unique_accounts = ts['account_name'].dropna().unique().tolist()
             if "전체 계정 (합산)" in unique_accounts:
                 unique_accounts.remove("전체 계정 (합산)")
