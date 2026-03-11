@@ -1,4 +1,4 @@
-name: 📊 엑셀 기반 초고속 백필 (accounts2.xlsx)
+name: 📊 엑셀 기반 초고속 백필 (backfill.py)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,6 @@ jobs:
 
     env:
       TZ: Asia/Seoul
-      # ✨ 파이썬 로그가 화면에 실시간으로 즉각 출력되게 만드는 마법의 옵션
       PYTHONUNBUFFERED: 1
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
@@ -43,76 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Backfill using accounts2.xlsx
-        shell: python
+      - name: Run backfill.py
+        # ✨ 복잡한 스크립트 없이 backfill.py 파일 하나만 호출합니다.
         run: |
-          import subprocess
-          import os
-          import pandas as pd
-          from datetime import datetime, timedelta
-          import sys
-
-          start_str = os.getenv("START_DATE")
-          end_str = os.getenv("END_DATE")
-          
-          print(f"📌 작업 구간: {start_str} ~ {end_str}", flush=True)
-
-          try:
-              df = pd.read_excel("accounts2.xlsx")
-              
-              id_col, name_col, mgr_col = None, None, None
-              for c in df.columns:
-                  c_clean = str(c).replace(" ", "").lower()
-                  if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
-                  if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
-                  if c_clean in ["담당자", "manager"]: mgr_col = c
-              
-              if not id_col:
-                  print("❌ accounts2.xlsx에 커스텀ID 컬럼을 찾을 수 없습니다.", flush=True)
-                  sys.exit(1)
-                  
-              targets = []
-              for _, row in df.iterrows():
-                  cid = str(row[id_col]).strip()
-                  if cid and cid.lower() != 'nan':
-                      acc_name = str(row[name_col]) if name_col else "알수없음"
-                      manager = str(row[mgr_col]) if mgr_col else "담당자없음"
-                      targets.append((cid, acc_name, manager))
-                      
-              print(f"\n📋 엑셀에서 총 {len(targets)}개의 타겟 계정을 찾았습니다.", flush=True)
-              for cid, acc, mgr in targets:
-                  print(f"   👤 담당자: {mgr} | 🏢 업체명: {acc} (ID: {cid})", flush=True)
-                  
-          except Exception as e:
-              print(f"❌ accounts2.xlsx 파일을 읽는 중 오류 발생: {e}", flush=True)
-              sys.exit(1)
-
-          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
-          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
-
-          current = start_date
-          while current <= end_date:
-              d_str = current.strftime("%Y-%m-%d")
-              print(f"\n🚀 [ {d_str} ] 데이터 수집 시작...", flush=True)
-              
-              for cid, acc, mgr in targets:
-                  try:
-                      cmd = [
-                          "python", "collector.py", 
-                          "--date", d_str, 
-                          "--customer_id", cid,
-                          "--workers", "2"
-                      ]
-                      # 💡 실시간 로그 출력을 위해 subprocess 설정 변경
-                      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                      for line in process.stdout:
-                          print(line, end='', flush=True)
-                      process.wait()
-                      
-                      if process.returncode != 0:
-                          print(f"❌ {acc}({cid}) 수집 실패: 에러 코드 {process.returncode}", flush=True)
-                          
-                  except Exception as e:
-                      print(f"❌ {acc}({cid}) 서브프로세스 실행 에러: {e}", flush=True)
-                  
-              current += timedelta(days=1)
+          python -u backfill.py --start ${{ env.START_DATE }} --end ${{ env.END_DATE }}
