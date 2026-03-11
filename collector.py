@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (쇼핑검색 수집 보완 버전)
+collector.py - 네이버 검색광고 수집기 (쇼핑검색 및 확장소재 완벽 대응 버전)
 - 쇼핑검색 상품 ID(nccProductId) 및 소재 ID 매핑 강화
-- 부가세 가산 로직 제거
-- DB 및 네이버 API 커넥션 풀 유지로 속도 향상
+- 노출용 제목, 이미지 URL, 확장소재 데이터 완벽 추출
+- DB 및 네이버 API 커넥션 풀 유지로 속도 극대화
+- 한글 엑셀 헤더(업체명, 커스텀 ID) 완벽 인식
 """
 
 from __future__ import annotations
@@ -229,32 +230,49 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
+    
+    # 1. 이미지 추출 (쇼핑검색, 일반소재 모두 대응)
     image_url = ""
     if "image" in ad_inner and isinstance(ad_inner["image"], dict):
         image_url = ad_inner["image"].get("imageUrl", "")
-    if not image_url:
+    if not image_url: 
         image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
-    title = ad_inner.get("headline") or ad_inner.get("title") or ""
-    desc = ad_inner.get("description") or ad_inner.get("desc") or ""
-    if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
-        sp = ad_inner["shoppingProduct"]
-        title = title or sp.get("name") or sp.get("productName") or ""
-        if not image_url: image_url = sp.get("imageUrl", "")
-    if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
+    if not image_url and "shoppingProduct" in ad_inner:
+        image_url = ad_inner["shoppingProduct"].get("imageUrl", "")
+        
+    # 2. 노출용 제목 / 소재 제목 추출
+    title = ""
+    desc = ""
+    
+    # 쇼핑검색의 노출용 제목 (프로모션 문구)
+    if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
         title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
-    if "addPromoText" in ad_inner: desc = desc or ad_inner["addPromoText"]
+    
+    # 쇼핑검색 일반 상품명
+    if not title and "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
+        title = ad_inner["shoppingProduct"].get("name") or ad_inner["shoppingProduct"].get("productName") or ""
+        
+    # 파워링크 일반 제목
+    if not title:
+        title = ad_inner.get("headline") or ad_inner.get("title") or ""
+        
+    # 3. 설명 및 프로모션 텍스트 추출
+    desc = ad_inner.get("description") or ad_inner.get("desc") or ad_inner.get("addPromoText") or ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
+    
     if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
-    if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
     if not title:
         for k, v in ad_inner.items():
             if isinstance(v, dict) and v.get("name"): 
                 title = v.get("name")
                 break
     if not title: title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
+    
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
+    
     creative_text = f"{title} | {desc}".strip(" |")
     if pc_url: creative_text += f" | {pc_url}"
+    
     return {
         "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
         "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
@@ -422,22 +440,51 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     gid = g.get("nccAdgroupId")
                     if not gid: continue
                     ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
+                    
                     if not SKIP_KEYWORD_DIM:
                         for k in list_keywords(customer_id, gid):
                             if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
+                    
                     if not SKIP_AD_DIM:
+                        # 일반 소재 및 쇼핑검색 소재 수집
                         for a in list_ads(customer_id, gid):
-                            # ✨ 쇼핑검색의 nccProductId와 nccAdId를 모두 수집 대상에 포함
                             aid = a.get("nccAdId")
                             pid = a.get("ad", {}).get("shoppingProduct", {}).get("nccProductId")
                             extracted = extract_ad_creative_fields(a)
-                            if aid: target_ad_ids.append(str(aid)); ad_rows.append({"customer_id": customer_id, "ad_id": str(aid), "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
-                            if pid and str(pid) != str(aid): target_ad_ids.append(str(pid)); ad_rows.append({"customer_id": customer_id, "ad_id": str(pid), "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
+                            
+                            if aid: 
+                                target_ad_ids.append(str(aid))
+                                ad_rows.append({"customer_id": customer_id, "ad_id": str(aid), "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
+                            
+                            # 쇼핑검색의 경우 nccProductId도 ID로 사용하여 듀얼 수집
+                            if pid and str(pid) != str(aid): 
+                                target_ad_ids.append(str(pid))
+                                ad_rows.append({"customer_id": customer_id, "ad_id": str(pid), "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
+                        
+                        # ✨ 확장소재 완벽 수집 (이미지 및 제목)
                         for ext in list_ad_extensions(customer_id, gid):
                             if ext_id := ext.get("nccAdExtensionId"):
-                                target_ad_ids.append(str(ext_id)); ext_info = ext.get("adExtension", {}) or ext; ext_type = ext.get("extensionType", "")
+                                target_ad_ids.append(str(ext_id))
+                                ext_info = ext.get("adExtension", {}) or ext
+                                ext_type = ext.get("extensionType", "")
+                                
                                 ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or str(ext_type)
-                                ad_rows.append({"customer_id": customer_id, "ad_id": str(ext_id), "adgroup_id": gid, "ad_name": ext_text, "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), "creative_text": str(ext_text)[:500], "image_url": ""})
+                                ext_img = ext_info.get("pcImageUrl") or ext_info.get("mobileImageUrl") or ext_info.get("imageUrl") or ""
+                                
+                                ad_rows.append({
+                                    "customer_id": customer_id, 
+                                    "ad_id": str(ext_id), 
+                                    "adgroup_id": gid, 
+                                    "ad_name": ext_text, 
+                                    "status": ext.get("status"), 
+                                    "ad_title": f"[{ext_type}] {ext_text}", 
+                                    "ad_desc": ext_text, 
+                                    "pc_landing_url": ext_info.get("pcLandingUrl", ""), 
+                                    "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
+                                    "creative_text": str(ext_text)[:500], 
+                                    "image_url": str(ext_img)[:1000]
+                                })
+                                
             upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
             upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
             if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
@@ -458,8 +505,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", parse_df_combined(dfs.get("CAMPAIGN"), "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)) if dfs.get("CAMPAIGN") is not None else 0
             k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", parse_df_combined(dfs.get("KEYWORD"), "KEYWORD", ["키워드id", "keywordid", "상품id", "productid"], has_rank=True)) if dfs.get("KEYWORD") is not None else 0
-            # ✨ 쇼핑검색의 다양한 ID 헤더를 모두 커버하도록 pk_cands 확장
-            ad_pk_cands = ["광고id", "소재id", "adid", "nccadid", "상품id", "productid", "itemid", "nccproductid"]
+            # 우선순위: 광고/소재ID 우선 탐색, 없으면 상품ID 탐색
+            ad_pk_cands = ["소재id", "adid", "nccadid", "광고id", "상품id", "productid", "itemid", "nccproductid"]
             a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", parse_df_combined(dfs.get("AD"), "AD", ad_pk_cands, has_rank=True)) if dfs.get("AD") is not None else 0
         log(f"   📊 [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
     except Exception as e: log(f"❌ [ {account_name} ] 오류: {str(e)}")
@@ -471,21 +518,39 @@ def main():
     parser.add_argument("--skip_dim", action="store_true"); parser.add_argument("--workers", type=int, default=10)
     args = parser.parse_args()
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
+    
     accounts_info = []
-    if args.customer_id: accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
+    if args.customer_id: 
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
+        # ✨ 엑셀 컬럼 인식 로직 수정 (backfill.py와 완벽 동기화)
         if os.path.exists("accounts.xlsx"):
             try:
                 df_acc = pd.read_excel("accounts.xlsx")
-                id_col = next((c for c in df_acc.columns if str(c).lower() in ["id", "customerid", "customer_id"]), None)
-                name_col = next((c for c in df_acc.columns if str(c).lower() in ["name", "accountname", "account_name"]), None)
+                id_col, name_col = None, None
+                
+                for c in df_acc.columns:
+                    c_clean = str(c).replace(" ", "").lower()
+                    if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id", "고객 id"]: id_col = c
+                    if c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]: name_col = c
+                
                 if id_col and name_col:
                     seen = set()
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
-                        if cid and cid not in seen: accounts_info.append({"id": cid, "name": str(row[name_col])}); seen.add(cid)
-            except Exception: pass
-    if not accounts_info: log("⚠️ 수집할 계정이 없습니다."); return
+                        if cid and cid.lower() != 'nan' and cid not in seen: 
+                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                            seen.add(cid)
+                else:
+                    log(f"❌ accounts.xlsx에 올바른 컬럼이 없습니다. 현재컬럼: {list(df_acc.columns)}")
+            except Exception as e: 
+                log(f"❌ accounts.xlsx 파싱 오류: {e}")
+                
+    if not accounts_info: 
+        log("⚠️ 수집할 계정이 없습니다. 프로그램을 종료합니다.")
+        return
+        
+    # ✨ 병렬 작업(기본 10개 스레드)으로 매우 빠르게 수집 진행
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
