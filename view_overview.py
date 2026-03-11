@@ -162,7 +162,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # ✨ 업체별 성과 요약 (신규 추가)
+    # ✨ 업체별 성과 요약 (신규 추가 및 타입 에러 수정)
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 성과 요약</div>", unsafe_allow_html=True)
     with st.spinner("업체별 데이터 집계 중..."):
@@ -174,12 +174,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
         base_grp = base_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales'])
         
+        # ✨ merge 오류 방지를 위해 customer_id 타입을 모두 문자열(str)로 통일
+        cur_grp['customer_id'] = cur_grp['customer_id'].astype(str)
+        base_grp['customer_id'] = base_grp['customer_id'].astype(str)
+        
         # 메타데이터 병합하여 업체명 가져오기
         if not meta.empty:
-            cur_grp = cur_grp.merge(meta[['customer_id', 'account_name']], on='customer_id', how='left')
-            cur_grp['account_name'] = cur_grp['account_name'].fillna(cur_grp['customer_id'].astype(str))
+            meta_subset = meta[['customer_id', 'account_name']].copy()
+            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str) # 메타데이터도 문자열로 변환
+            
+            cur_grp = cur_grp.merge(meta_subset, on='customer_id', how='left')
+            cur_grp['account_name'] = cur_grp['account_name'].fillna(cur_grp['customer_id'])
         else:
-            cur_grp['account_name'] = cur_grp['customer_id'].astype(str)
+            cur_grp['account_name'] = cur_grp['customer_id']
             
         merged = cur_grp.merge(base_grp, on='customer_id', how='left', suffixes=('_cur', '_base')).fillna(0)
         
