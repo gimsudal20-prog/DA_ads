@@ -1,0 +1,111 @@
+name: 📊 엑셀 기반 초고속 백필 (accounts2.xlsx)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-excel-backfill:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      # ✨ 6대의 서버가 10~11일씩 구간을 나눠서 동시 실행! (속도 대폭 향상)
+      max-parallel: 6 
+      fail-fast: false
+      matrix:
+        period:
+          - {start: "2026-01-01", end: "2026-01-12"}
+          - {start: "2026-01-13", end: "2026-01-24"}
+          - {start: "2026-01-25", end: "2026-02-05"}
+          - {start: "2026-02-06", end: "2026-02-17"}
+          - {start: "2026-02-18", end: "2026-02-28"}
+          - {start: "2026-03-01", end: "2026-03-10"}
+
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      START_DATE: ${{ matrix.period.start }}
+      END_DATE: ${{ matrix.period.end }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+      - name: Run Backfill using accounts2.xlsx
+        shell: python
+        run: |
+          import subprocess
+          import os
+          import pandas as pd
+          from datetime import datetime, timedelta
+
+          start_str = os.getenv("START_DATE")
+          end_str = os.getenv("END_DATE")
+          
+          print(f"📌 작업 구간: {start_str} ~ {end_str}")
+
+          # 1️⃣ accounts2.xlsx 엑셀 파일 읽기
+          try:
+              df = pd.read_excel("accounts2.xlsx")
+              
+              id_col, name_col, mgr_col = None, None, None
+              for c in df.columns:
+                  c_clean = str(c).replace(" ", "").lower()
+                  if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
+                  if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
+                  if c_clean in ["담당자", "manager"]: mgr_col = c
+              
+              if not id_col:
+                  print("❌ accounts2.xlsx에 커스텀ID 컬럼을 찾을 수 없습니다.")
+                  exit(1)
+                  
+              targets = []
+              for _, row in df.iterrows():
+                  cid = str(row[id_col]).strip()
+                  if cid and cid.lower() != 'nan':
+                      acc_name = str(row[name_col]) if name_col else "알수없음"
+                      manager = str(row[mgr_col]) if mgr_col else "담당자없음"
+                      targets.append((cid, acc_name, manager))
+                      
+              print(f"\n📋 엑셀에서 총 {len(targets)}개의 타겟 계정을 찾았습니다.")
+              for cid, acc, mgr in targets:
+                  print(f"   👤 담당자: {mgr} | 🏢 업체명: {acc} (ID: {cid})")
+                  
+          except Exception as e:
+              print(f"❌ accounts2.xlsx 파일을 읽는 중 오류 발생: {e}")
+              exit(1)
+
+          # 2️⃣ 날짜별 & 계정별 백필 루프 실행
+          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+
+          current = start_date
+          while current <= end_date:
+              d_str = current.strftime("%Y-%m-%d")
+              print(f"\n🚀 [ {d_str} ] 데이터 수집 시작...")
+              
+              for cid, acc, mgr in targets:
+                  try:
+                      # API 속도 제한 방지를 위해 workers를 2로 제한
+                      cmd = [
+                          "python", "collector.py", 
+                          "--date", d_str, 
+                          "--customer_id", cid,
+                          "--workers", "2"
+                      ]
+                      subprocess.run(cmd, check=True)
+                  except subprocess.CalledProcessError:
+                      print(f"❌ {acc}({cid}) 수집 실패: {d_str}")
+                  
+              current += timedelta(days=1)
