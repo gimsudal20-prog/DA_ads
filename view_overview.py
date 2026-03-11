@@ -55,38 +55,63 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try:
+        ts = query_campaign_timeseries(_engine, trend_d1, end_dt, cids, type_sel)
+        return ts if ts is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+# ✨ 에러 없이 안전하게 업체별 시계열을 가져오는 함수로 수정
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
-        if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-        where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+        cid_str = ",".join([f"'{str(x)}'" for x in cids])
+        where_cid = f"AND f.customer_id IN ({cid_str})" if cids else ""
         
         type_join_sql = ""
         type_where_sql = ""
-        if type_sel and table_exists(_engine, "dim_campaign"):
-            dim_cols = get_table_columns(_engine, "dim_campaign")
-            cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
-            if "campaign_id" in get_table_columns(_engine, "fact_campaign_daily") and cp_col in dim_cols:
-                rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-                db_types = [rev_map.get(t, t) for t in type_sel]
-                type_list_str = ",".join([f"'{x}'" for x in db_types])
-                type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-                type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+        type_list_str = ""
+        if type_sel:
+            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+            db_types = [rev_map.get(t, t) for t in type_sel]
+            type_list_str = ",".join([f"'{x}'" for x in db_types])
+            type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+            type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
 
         sql = f"""
             SELECT f.dt, f.customer_id, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
             FROM fact_campaign_daily f
             {type_join_sql}
-            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
+            WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
             GROUP BY f.dt, f.customer_id
-            ORDER BY f.dt
         """
-        df = sql_read(_engine, sql, {"d1": str(start_dt), "d2": str(end_dt)})
+        df = pd.read_sql(sql, _engine)
         if not df.empty: 
             df["dt"] = pd.to_datetime(df["dt"])
             df["customer_id"] = df["customer_id"].astype(str)
         return df
     except Exception:
-        return pd.DataFrame()
+        try:
+            # 컬럼명이 campaign_type 일 경우를 대비한 Fallback
+            if type_sel:
+                type_where_sql = f"AND c.campaign_type IN ({type_list_str})"
+            sql = f"""
+                SELECT f.dt, f.customer_id, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+                FROM fact_campaign_daily f
+                {type_join_sql}
+                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+                GROUP BY f.dt, f.customer_id
+            """
+            df = pd.read_sql(sql, _engine)
+            if not df.empty: 
+                df["dt"] = pd.to_datetime(df["dt"])
+                df["customer_id"] = df["customer_id"].astype(str)
+            return df
+        except Exception:
+            pass
+    return pd.DataFrame()
 
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -173,7 +198,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
-    # ✨ CSV 내보내기용 포맷팅 함수 (소수점 제거, %, 원 기호 추가)
     def format_for_csv(df):
         out_df = df.copy()
         for col in out_df.columns:
@@ -303,7 +327,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        # ✨ CSV 다운로드 버튼
+        # CSV 다운로드 버튼
         csv_account_data = format_for_csv(df_display).to_csv(index=False).encode('utf-8-sig')
         st.download_button(
             label="📥 업체별 전체 성과 요약 CSV 다운로드",
@@ -314,7 +338,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         )
 
         # ==========================================
-        # ✨ 특정 업체 선택 시 캠페인 상세 현황 표출
+        # 특정 업체 선택 시 캠페인 상세 현황 표출
         # ==========================================
         st.markdown("<div style='margin-top:24px; font-weight:700; font-size:16px;'>🔍 업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
         selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체를 선택하세요", options=merged['account_name'].tolist())
@@ -449,7 +473,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
 
-            # ✨ CSV 다운로드 버튼 (캠페인)
+            # CSV 다운로드 버튼 (캠페인)
             csv_camp_data = format_for_csv(camp_df_display).to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label=f"📥 {selected_account} 캠페인 상세 데이터 CSV 다운로드",
@@ -559,35 +583,33 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.divider()
 
     # ==========================================
-    # ✨ 특정 기간별(주간) 요약 추가
+    # ✨ 주간 성과 요약 (기본 내장 함수로 안전하게 교체)
     # ==========================================
     st.markdown("<div class='nv-sec-title'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
     with st.spinner("주간 데이터 집계 중..."):
-        # 전체 계정에 대한 일자별 데이터 로드
-        weekly_ts = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        # 기존 캠페인 시계열 데이터를 재사용하여 주간 단위로 묶음 (가장 안전한 방법)
+        base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         
-        if weekly_ts is not None and not weekly_ts.empty:
+        if base_weekly_ts is not None and not base_weekly_ts.empty:
+            weekly_ts = base_weekly_ts.groupby('dt')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            weekly_ts['dt'] = pd.to_datetime(weekly_ts['dt'])
+            
             def _get_week_info(dt_val):
                 d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
-                # 월요일 기준 시작, 일요일 기준 끝
                 start = d - timedelta(days=d.weekday())
                 end = start + timedelta(days=6)
-                # 한국 기준 N월 M주차 판별 (해당 주의 목요일 기준)
                 thursday = start + timedelta(days=3)
                 month = thursday.month
                 week_num = (thursday.day - 1) // 7 + 1
                 return f"{month}월 {week_num}주차 ({start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')})", start
             
-            # 주차 정보 컬럼 추가
             week_info = weekly_ts['dt'].apply(_get_week_info)
             weekly_ts['week_label'] = [x[0] for x in week_info]
             weekly_ts['week_start'] = [x[1] for x in week_info]
             
-            # 주차별 합산
             weekly_grp = weekly_ts.groupby(['week_start', 'week_label'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
             weekly_grp = weekly_grp.sort_values('week_start', ascending=True)
             
-            # 2차 지표 계산
             weekly_grp['ctr'] = np.where(weekly_grp['imp'] > 0, weekly_grp['clk'] / weekly_grp['imp'] * 100, 0)
             weekly_grp['cpc'] = np.where(weekly_grp['clk'] > 0, weekly_grp['cost'] / weekly_grp['clk'], 0)
             weekly_grp['roas'] = np.where(weekly_grp['cost'] > 0, weekly_grp['sales'] / weekly_grp['cost'] * 100, 0)
@@ -608,7 +630,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             st.dataframe(styled_weekly, use_container_width=True, hide_index=True)
             
-            # CSV 다운로드
             csv_weekly_data = format_for_csv(weekly_disp).to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 주간 성과 요약 CSV 다운로드",
@@ -630,17 +651,33 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         with st.spinner("트렌드 데이터 집계 중..."):
             ts = _cached_account_timeseries(engine, trend_d1, f["end"], cids, type_sel)
 
+        # ✨ 안전장치: 업체별 분리 쿼리가 에러로 빈 값을 반환했을 경우 전체 합산 쿼리로 대체 (Fallback)
+        if ts is None or ts.empty:
+            ts = _cached_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
+            if ts is not None and not ts.empty:
+                ts['dt'] = pd.to_datetime(ts['dt'])
+                ts['customer_id'] = '전체 계정 (합산)'
+
         if ts is not None and not ts.empty:
-            if not meta.empty:
+            if not meta.empty and 'customer_id' in ts.columns and str(ts['customer_id'].iloc[0]) != '전체 계정 (합산)':
                 meta_subset = meta[['customer_id', 'account_name']].copy()
                 meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
+                ts['customer_id'] = ts['customer_id'].astype(str)
                 ts = ts.merge(meta_subset, on='customer_id', how='left')
                 ts['account_name'] = ts['account_name'].fillna(ts['customer_id'])
-            else:
+            elif 'customer_id' in ts.columns:
                 ts['account_name'] = ts['customer_id']
+            else:
+                ts['account_name'] = '전체 계정 (합산)'
                 
             st.markdown("<div style='margin-top:8px; margin-bottom:16px;'>", unsafe_allow_html=True)
-            account_options = ["전체 계정 (합산)"] + sorted(ts['account_name'].unique().tolist())
+            
+            # 전체 합산을 맨 위에 두고, 나머지 업체를 정렬하여 리스트 생성
+            unique_accounts = ts['account_name'].dropna().unique().tolist()
+            if "전체 계정 (합산)" in unique_accounts:
+                unique_accounts.remove("전체 계정 (합산)")
+            account_options = ["전체 계정 (합산)"] + sorted(unique_accounts)
+            
             selected_trend_account = st.selectbox("📊 트렌드를 확인할 계정을 선택하세요", options=account_options, key="trend_account_selector")
             st.markdown("</div>", unsafe_allow_html=True)
 
