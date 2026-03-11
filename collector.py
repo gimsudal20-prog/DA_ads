@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v13.4 - 초고속 최적화)
-- 쇼핑검색 상품명 및 썸네일(이미지 URL) 수집 기능 강화
-- 부가세(* 1.1) 가산 로직 전면 제거
-- ✨ [SPEED UP] DB 및 네이버 API 커넥션 풀(Session) 유지 로직 적용으로 속도 10배 향상
+collector.py - 네이버 검색광고 수집기 (v13.6 - 초고속 최적화 & 쇼핑검색 누락 완벽 대응)
+- 쇼핑검색 상품명(valData) 및 썸네일(이미지 URL) 수집 기능 추가
+- 대용량 리포트 누락 소재(쇼핑/확장소재) 자동 감지 및 실시간 통계 백업 수집 로직 적용
+- GitHub Actions 환경변수 충돌 방지 (override=False 적용)
 """
 
 from __future__ import annotations
@@ -30,7 +30,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-load_dotenv(override=True)
+# ✨ GitHub Secrets 덮어쓰기 방지
+load_dotenv(override=False)
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
 API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or "").strip()
@@ -53,9 +54,8 @@ def die(msg: str):
     sys.exit(1)
 
 if not API_KEY or not API_SECRET:
-    die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
+    die("API_KEY 또는 API_SECRET이 설정되지 않았습니다. 깃허브 Secrets 설정을 확인해주세요.")
 
-# ✨ [SPEED UP] 네이버 API 통신 연결(Session) 재사용으로 네트워크 딜레이 최소화
 thread_local = threading.local()
 
 def get_session():
@@ -115,7 +115,6 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     except Exception as e:
         return False, None
 
-# ✨ [SPEED UP] DB 연결을 맺고 끊기를 반복하지 않도록 pool_size 할당 및 pool_pre_ping 활성화
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
@@ -264,7 +263,6 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     if ok and isinstance(data, list) and data:
         return data
 
-    # 쇼핑검색 계정/그룹에서는 ownerId 기반 응답만 내려오는 케이스 대응
     ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
     if ok_owner and isinstance(data_owner, list):
         return data_owner
@@ -286,14 +284,19 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
+    # 1. 쇼핑검색 상품 정보
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         sp = ad_inner["shoppingProduct"]
         title = title or sp.get("name") or sp.get("productName") or ""
         if not image_url:
             image_url = sp.get("imageUrl", "")
             
-    if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
-        title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
+    # ✨ 2. 쇼핑검색 valData 노드에서 이미지 및 노출상품명 추출 (추가된 기능)
+    if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
+        val_data = ad_inner["valData"]
+        title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
+        if not image_url:
+            image_url = val_data.get("imageUrl") or val_data.get("image") or ""
 
     if "addPromoText" in ad_inner:
         desc = desc or ad_inner["addPromoText"]
@@ -572,7 +575,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             ]
                             id_candidates = [str(x).strip() for x in id_candidates if x is not None and str(x).strip()]
                             if id_candidates:
-                                # 통계 리포트/실시간 API가 광고ID 또는 상품ID를 혼용해 내려주는 케이스 대응
                                 unique_ids = list(dict.fromkeys(id_candidates))
                                 extracted = extract_ad_creative_fields(a)
                                 for aid in unique_ids:
@@ -680,18 +682,15 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             "rank_sum": 0.0, "rank_cnt": 0
                         }
             
-            ext_ids = []
-            try:
-                with engine.connect() as conn:
-                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
-                    ext_ids = [str(r[0]) for r in res]
-            except Exception: pass
-                
-            if ext_ids:
-                ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
-                for r in ext_stats_raw:
+            # ✨ 리포트 누락 소재(쇼핑검색 일반/확장소재 등) 통계 자동 보완 처리 (추가된 기능)
+            missing_ad_ids = [aid for aid in target_ad_ids if str(aid) not in ad_stat]
+            
+            if missing_ad_ids and not SKIP_AD_STATS:
+                missing_stats_raw = get_stats_range(customer_id, missing_ad_ids, target_date)
+                for r in missing_stats_raw:
                     eid = str(r.get("id"))
-                    if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+                    if eid not in ad_stat:
+                        ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
                     ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
                     ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
                     ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
@@ -719,7 +718,7 @@ def main():
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
     
     print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
