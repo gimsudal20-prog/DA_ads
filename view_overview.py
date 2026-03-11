@@ -64,56 +64,6 @@ def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try:
-        cid_str = ",".join([f"'{str(x)}'" for x in cids])
-        where_cid = f"AND f.customer_id IN ({cid_str})" if cids else ""
-        
-        type_join_sql = ""
-        type_where_sql = ""
-        type_list_str = ""
-        if type_sel:
-            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-            db_types = [rev_map.get(t, t) for t in type_sel]
-            type_list_str = ",".join([f"'{x}'" for x in db_types])
-            type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-            type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
-
-        sql = f"""
-            SELECT f.dt, f.customer_id, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
-            FROM fact_campaign_daily f
-            {type_join_sql}
-            WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
-            GROUP BY f.dt, f.customer_id
-        """
-        df = pd.read_sql(sql, _engine)
-        if not df.empty: 
-            df["dt"] = pd.to_datetime(df["dt"])
-            df["customer_id"] = df["customer_id"].astype(str)
-        return df
-    except Exception:
-        try:
-            if type_sel:
-                type_where_sql = f"AND c.campaign_type IN ({type_list_str})"
-            sql = f"""
-                SELECT f.dt, f.customer_id, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
-                FROM fact_campaign_daily f
-                {type_join_sql}
-                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
-                GROUP BY f.dt, f.customer_id
-            """
-            df = pd.read_sql(sql, _engine)
-            if not df.empty: 
-                df["dt"] = pd.to_datetime(df["dt"])
-                df["customer_id"] = df["customer_id"].astype(str)
-            return df
-        except Exception:
-            pass
-    return pd.DataFrame()
-
-
-# ✨ 유형별 시계열(주간 데이터 등)을 추출하기 위한 쿼리 추가
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         cid_str = ",".join([f"'{str(x)}'" for x in cids])
@@ -151,6 +101,55 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             df = pd.read_sql(sql, _engine)
             if not df.empty: 
                 df["dt"] = pd.to_datetime(df["dt"])
+            return df
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+# ✨ 트렌드 차트용 쿼리: 업체별 + 유형별 필터링을 모두 지원하기 위해 customer_id와 campaign_tp를 함께 가져옵니다.
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def _cached_trend_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try:
+        cid_str = ",".join([f"'{str(x)}'" for x in cids])
+        where_cid = f"AND f.customer_id IN ({cid_str})" if cids else ""
+        
+        type_join_sql = "LEFT JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+        type_where_sql = ""
+        type_list_str = ""
+        if type_sel:
+            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+            db_types = [rev_map.get(t, t) for t in type_sel]
+            type_list_str = ",".join([f"'{x}'" for x in db_types])
+            type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
+
+        sql = f"""
+            SELECT f.dt, f.customer_id, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+            FROM fact_campaign_daily f
+            {type_join_sql}
+            WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+            GROUP BY f.dt, f.customer_id, c.campaign_tp
+        """
+        df = pd.read_sql(sql, _engine)
+        if not df.empty: 
+            df["dt"] = pd.to_datetime(df["dt"])
+            df["customer_id"] = df["customer_id"].astype(str)
+        return df
+    except Exception:
+        try:
+            if type_sel:
+                type_where_sql = f"AND c.campaign_type IN ({type_list_str})"
+            sql = f"""
+                SELECT f.dt, f.customer_id, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+                FROM fact_campaign_daily f
+                {type_join_sql}
+                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+                GROUP BY f.dt, f.customer_id, c.campaign_type
+            """
+            df = pd.read_sql(sql, _engine)
+            if not df.empty: 
+                df["dt"] = pd.to_datetime(df["dt"])
+                df["customer_id"] = df["customer_id"].astype(str)
             return df
         except Exception:
             pass
@@ -302,7 +301,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "PLACE": "플레이스"
     }
 
-    # 하위 상세 데이터 병합을 위한 공통 데이터 로드
     with st.spinner("상세 성과 데이터 로딩 중..."):
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
@@ -344,7 +342,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             kor_tp = type_kor_map.get(raw_tp, raw_tp) if raw_tp else "기타"
             
             type_table_data.append({
-                "캠페인 유형": kor_tp,
+                "캠페 유형": kor_tp,
                 "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
                 "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
                 "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
@@ -390,10 +388,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             def _get_week_info(dt_val):
                 d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
-                # 월요일 기준 시작, 일요일 기준 끝
                 start = d - timedelta(days=d.weekday())
                 end = start + timedelta(days=6)
-                # 한국 기준 N월 M주차 판별 (해당 주의 목요일 기준)
                 thursday = start + timedelta(days=3)
                 month = thursday.month
                 week_num = (thursday.day - 1) // 7 + 1
@@ -643,7 +639,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 mime="text/csv",
                 key="download_camp_csv"
             )
-
     else:
         st.info("상세 분석을 위한 업체 데이터가 없습니다.")
 
@@ -746,22 +741,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.divider()
 
-    st.markdown("<div class='nv-sec-title'>트렌드 및 요일별 효율 분석</div>", unsafe_allow_html=True)
-    with st.expander("📈 트렌드 차트 보기", expanded=False):
+    # ==========================================
+    # ✨ 6. 트렌드 차트 (업체별 + 유형별 교차 필터 적용)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title'>📈 트렌드 및 요일별 효율 분석</div>", unsafe_allow_html=True)
+    with st.expander("차트 펼쳐보기", expanded=False):
         st.session_state[trend_loaded_key] = True
 
         trend_d1 = min(f["start"], date.today() - timedelta(days=7))
         with st.spinner("트렌드 데이터 집계 중..."):
-            ts = _cached_account_timeseries(engine, trend_d1, f["end"], cids, type_sel)
-
-        if ts is None or ts.empty:
-            ts = _cached_campaign_timeseries(engine, trend_d1, f["end"], cids, type_sel)
-            if ts is not None and not ts.empty:
-                ts['dt'] = pd.to_datetime(ts['dt'])
-                ts['customer_id'] = '전체 계정 (합산)'
+            ts = _cached_trend_timeseries(engine, trend_d1, f["end"], cids, type_sel)
 
         if ts is not None and not ts.empty:
-            if not meta.empty and 'customer_id' in ts.columns and str(ts['customer_id'].iloc[0]) != '전체 계정 (합산)':
+            # 1) 업체명 맵핑
+            if not meta.empty and 'customer_id' in ts.columns:
                 meta_subset = meta[['customer_id', 'account_name']].copy()
                 meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
                 ts['customer_id'] = ts['customer_id'].astype(str)
@@ -772,77 +765,100 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             else:
                 ts['account_name'] = '전체 계정 (합산)'
                 
+            # 2) 유형명 맵핑
+            if 'campaign_tp' not in ts.columns:
+                ts['campaign_tp'] = ts.get('campaign_type', '알수없음')
+            ts['캠페인 유형'] = ts['campaign_tp'].str.upper().map(type_kor_map).fillna(ts['campaign_tp'])
+            
             st.markdown("<div style='margin-top:8px; margin-bottom:16px;'>", unsafe_allow_html=True)
             
+            # 셀렉트박스 옵션 생성
             unique_accounts = ts['account_name'].dropna().unique().tolist()
-            if "전체 계정 (합산)" in unique_accounts:
-                unique_accounts.remove("전체 계정 (합산)")
+            if "전체 계정 (합산)" in unique_accounts: unique_accounts.remove("전체 계정 (합산)")
             account_options = ["전체 계정 (합산)"] + sorted(unique_accounts)
             
-            selected_trend_account = st.selectbox("📊 트렌드를 확인할 계정을 선택하세요", options=account_options, key="trend_account_selector")
+            unique_types = ts['캠페인 유형'].dropna().unique().tolist()
+            if "전체 유형 (합산)" in unique_types: unique_types.remove("전체 유형 (합산)")
+            type_options = ["전체 유형 (합산)"] + sorted(unique_types)
+            
+            # 레이아웃: 계정 선택 | 유형 선택 나란히 배치
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_trend_account = st.selectbox("🏢 계정 선택", options=account_options, key="trend_account_selector")
+            with col2:
+                selected_trend_type = st.selectbox("🏷️ 캠페인 유형 선택", options=type_options, key="trend_type_selector")
+                
             st.markdown("</div>", unsafe_allow_html=True)
 
-            if selected_trend_account == "전체 계정 (합산)":
-                analysis_ts = ts.groupby('dt')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            # 선택 조건 필터링
+            analysis_ts = ts.copy()
+            if selected_trend_account != "전체 계정 (합산)":
+                analysis_ts = analysis_ts[analysis_ts['account_name'] == selected_trend_account]
+            if selected_trend_type != "전체 유형 (합산)":
+                analysis_ts = analysis_ts[analysis_ts['캠페인 유형'] == selected_trend_type]
+                
+            # 필터링 후 일자별 그룹핑
+            analysis_ts = analysis_ts.groupby('dt')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+
+            if analysis_ts.empty:
+                st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
             else:
-                analysis_ts = ts[ts['account_name'] == selected_trend_account].copy()
+                tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 히트맵"])
+                with tab_trend:
+                    trend_ts = analysis_ts.copy()
+                    trend_ts["roas"] = np.where(
+                        pd.to_numeric(trend_ts["cost"], errors="coerce").fillna(0) > 0,
+                        round((pd.to_numeric(trend_ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(trend_ts["cost"], errors="coerce").fillna(0) * 100.0), 1),
+                        0.0
+                    )
 
-            tab_trend, tab_dow = st.tabs(["전체 트렌드", "요일별 히트맵"])
-            with tab_trend:
-                trend_ts = analysis_ts.copy()
-                trend_ts["roas"] = np.where(
-                    pd.to_numeric(trend_ts["cost"], errors="coerce").fillna(0) > 0,
-                    round((pd.to_numeric(trend_ts["sales"], errors="coerce").fillna(0) / pd.to_numeric(trend_ts["cost"], errors="coerce").fillna(0) * 100.0), 1),
-                    0.0
-                )
+                    trend_metric_options = {
+                        "광고비 + ROAS": {"col": "cost", "label": "광고비(원)", "mode": "dual"},
+                        "클릭수": {"col": "clk", "label": "클릭수", "mode": "single"},
+                        "노출수": {"col": "imp", "label": "노출수", "mode": "single"},
+                        "전환수": {"col": "conv", "label": "전환수", "mode": "single"},
+                    }
 
-                trend_metric_options = {
-                    "광고비 + ROAS": {"col": "cost", "label": "광고비(원)", "mode": "dual"},
-                    "클릭수": {"col": "clk", "label": "클릭수", "mode": "single"},
-                    "노출수": {"col": "imp", "label": "노출수", "mode": "single"},
-                    "전환수": {"col": "conv", "label": "전환수", "mode": "single"},
-                }
+                    selected_trend_metric = st.selectbox(
+                        "전체트렌드 지표 선택",
+                        list(trend_metric_options.keys()),
+                        index=0,
+                        key="overview_trend_metric_selector"
+                    )
+                    selected_cfg = trend_metric_options[selected_trend_metric]
+                    trend_ts[selected_cfg["col"]] = pd.to_numeric(trend_ts[selected_cfg["col"]], errors="coerce").fillna(0)
 
-                selected_trend_metric = st.selectbox(
-                    "전체트렌드 지표 선택",
-                    list(trend_metric_options.keys()),
-                    index=0,
-                    key="overview_trend_metric_selector"
-                )
-                selected_cfg = trend_metric_options[selected_trend_metric]
-                trend_ts[selected_cfg["col"]] = pd.to_numeric(trend_ts[selected_cfg["col"]], errors="coerce").fillna(0)
-
-                if selected_cfg["mode"] == "dual":
-                    if HAS_ECHARTS:
-                        render_echarts_dual_axis("일자별 광고비 및 ROAS", trend_ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
+                    if selected_cfg["mode"] == "dual":
+                        if HAS_ECHARTS:
+                            render_echarts_dual_axis("일자별 광고비 및 ROAS", trend_ts, "dt", "cost", "광고비(원)", "roas", "ROAS(%)", height=320)
+                        else:
+                            st.line_chart(trend_ts.set_index("dt")[["cost", "roas"]], height=320)
                     else:
-                        st.line_chart(trend_ts.set_index("dt")[["cost", "roas"]], height=320)
-                else:
-                    chart_title = f"일자별 {selected_cfg['label']}"
-                    if HAS_ECHARTS:
-                        render_echarts_single_axis(chart_title, trend_ts, "dt", selected_cfg["col"], selected_cfg["label"], height=320)
-                    else:
-                        st.line_chart(trend_ts.set_index("dt")[[selected_cfg["col"]]], height=320)
+                        chart_title = f"일자별 {selected_cfg['label']}"
+                        if HAS_ECHARTS:
+                            render_echarts_single_axis(chart_title, trend_ts, "dt", selected_cfg["col"], selected_cfg["label"], height=320)
+                        else:
+                            st.line_chart(trend_ts.set_index("dt")[[selected_cfg["col"]]], height=320)
 
-            with tab_dow:
-                ts_dow = analysis_ts.copy()
-                ts_dow["요일"] = ts_dow["dt"].dt.day_name()
-                dow_map = {'Monday': '월', 'Tuesday': '화', 'Wednesday': '수', 'Thursday': '목', 'Friday': '금', 'Saturday': '토', 'Sunday': '일'}
-                ts_dow["요일"] = ts_dow["요일"].map(dow_map)
+                with tab_dow:
+                    ts_dow = analysis_ts.copy()
+                    ts_dow["요일"] = ts_dow["dt"].dt.day_name()
+                    dow_map = {'Monday': '월', 'Tuesday': '화', 'Wednesday': '수', 'Thursday': '목', 'Friday': '금', 'Saturday': '토', 'Sunday': '일'}
+                    ts_dow["요일"] = ts_dow["요일"].map(dow_map)
 
-                dow_df = ts_dow.groupby("요일")[["cost", "conv", "sales"]].sum().reset_index()
-                dow_df["ROAS(%)"] = np.where(dow_df["cost"] > 0, dow_df["sales"] / dow_df["cost"] * 100, 0)
+                    dow_df = ts_dow.groupby("요일")[["cost", "conv", "sales"]].sum().reset_index()
+                    dow_df["ROAS(%)"] = np.where(dow_df["cost"] > 0, dow_df["sales"] / dow_df["cost"] * 100, 0)
 
-                cat_dtype = pd.CategoricalDtype(categories=['월', '화', '수', '목', '금', '토', '일'], ordered=True)
-                dow_df["요일"] = dow_df["요일"].astype(cat_dtype)
-                dow_df = dow_df.sort_values("요일")
+                    cat_dtype = pd.CategoricalDtype(categories=['월', '화', '수', '목', '금', '토', '일'], ordered=True)
+                    dow_df["요일"] = dow_df["요일"].astype(cat_dtype)
+                    dow_df = dow_df.sort_values("요일")
 
-                dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
+                    dow_disp = dow_df.rename(columns={"cost": "광고비", "conv": "전환수", "sales": "전환매출"})
 
-                styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Purples', subset=['ROAS(%)']).format({
-                    '광고비': '{:,.0f}', '전환수': '{:,.0f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.0f}%'
-                })
+                    styled_df = dow_disp.style.background_gradient(cmap='Blues', subset=['광고비']).background_gradient(cmap='Purples', subset=['ROAS(%)']).format({
+                        '광고비': '{:,.0f}', '전환수': '{:,.0f}', '전환매출': '{:,.0f}', 'ROAS(%)': '{:,.0f}%'
+                    })
 
-                st.dataframe(styled_df, width="stretch", hide_index=True)
+                    st.dataframe(styled_df, width="stretch", hide_index=True)
         else:
             st.info("선택한 조건에 대한 트렌드 데이터가 없습니다.")
