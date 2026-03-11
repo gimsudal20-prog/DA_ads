@@ -1,5 +1,6 @@
 import subprocess
 import argparse
+import os
 from datetime import datetime, timedelta
 
 # GitHub Actions에서 날짜를 인자로 받기 위해 argparse 사용
@@ -24,7 +25,8 @@ while curr_date <= end_date:
     cmd = ["python", "collector.py", "--date", d_str, "--workers", "15"]
     
     try:
-        subprocess.run(cmd, check=True)
+        # ✨ 핵심 수정: 깃허브 환경변수(Secrets)를 자식 프로세스인 collector.py로 강제 복사하여 전달
+        subprocess.run(cmd, check=True, env=os.environ)
     except subprocess.CalledProcessError:
         print(f"⚠️ {d_str} 수집 중 일부 오류 발생 (건너뛰고 다음 날짜 진행)")
         
