@@ -294,18 +294,40 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)] if not cur_camp.empty else pd.DataFrame()
             base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)] if not base_camp.empty else pd.DataFrame()
             
+            # 평균 순위 존재 여부 확인
             has_rank = ('avg_rank' in cur_camp_sub.columns) or ('avg_rank' in base_camp_sub.columns)
+            
+            # ✨ 캠페인 유형 존재 여부 및 동적 컬럼 탐색
+            type_col = None
+            if 'campaign_tp' in cur_camp_sub.columns or 'campaign_tp' in base_camp_sub.columns:
+                type_col = 'campaign_tp'
+            elif 'campaign_type' in cur_camp_sub.columns or 'campaign_type' in base_camp_sub.columns:
+                type_col = 'campaign_type'
+            
+            # 그룹핑 컬럼 설정
+            grp_cols = ['campaign_name']
+            if type_col:
+                grp_cols.insert(0, type_col)
+                
             agg_cols = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
             if has_rank: 
                 agg_cols['avg_rank'] = 'mean'
             
-            base_camp_cols = ['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'] + (['avg_rank'] if has_rank else [])
+            base_camp_cols = grp_cols + ['imp', 'clk', 'cost', 'conv', 'sales'] + (['avg_rank'] if has_rank else [])
             
-            cur_camp_grp = cur_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not cur_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
-            base_camp_grp = base_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not base_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
+            cur_camp_grp = cur_camp_sub.groupby(grp_cols).agg(agg_cols).reset_index() if not cur_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
+            base_camp_grp = base_camp_sub.groupby(grp_cols).agg(agg_cols).reset_index() if not base_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
                 
-            camp_merged = pd.merge(cur_camp_grp, base_camp_grp, on='campaign_name', how='outer', suffixes=('_cur', '_base')).fillna(0)
+            camp_merged = pd.merge(cur_camp_grp, base_camp_grp, on=grp_cols, how='outer', suffixes=('_cur', '_base')).fillna(0)
             camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
+            
+            type_kor_map = {
+                "WEB_SITE": "파워링크", 
+                "SHOPPING": "쇼핑검색", 
+                "POWER_CONTENTS": "파워컨텐츠", 
+                "BRAND_SEARCH": "브랜드검색", 
+                "PLACE": "플레이스"
+            }
             
             camp_table_data = []
             for rank, row in camp_merged.iterrows():
@@ -321,10 +343,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
                 pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
                 
-                data_row = {
-                    "순위": rank + 1,
-                    "캠페인명": row['campaign_name'],
-                }
+                data_row = {"순위": rank + 1}
+                
+                # 캠페인 유형 표기 (한글로 변환)
+                if type_col:
+                    raw_tp = str(row[type_col]).upper() if pd.notnull(row[type_col]) else ""
+                    data_row["캠페인 유형"] = type_kor_map.get(raw_tp, raw_tp) if raw_tp else "알수없음"
+                    
+                data_row["캠페인명"] = row['campaign_name']
                 
                 if has_rank:
                     c_rank = row.get('avg_rank_cur', 0)
