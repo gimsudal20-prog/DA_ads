@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-collector.py - 네이버 검색광고 수집기 (v13.4 - 초고속 최적화)
-- 쇼핑검색 상품명 및 썸네일(이미지 URL) 수집 기능 강화
+collector.py - 네이버 검색광고 수집기 (v13.5 - 초고속 최적화 & 쇼핑검색 누락 완벽 대응)
+- 쇼핑검색 상품명(valData) 및 썸네일(이미지 URL) 수집 기능 추가
+- 대용량 리포트 누락 소재(쇼핑/확장소재) 자동 감지 및 실시간 통계 백업 수집 로직 적용
 - 부가세(* 1.1) 가산 로직 전면 제거
-- ✨ [SPEED UP] DB 및 네이버 API 커넥션 풀(Session) 유지 로직 적용으로 속도 10배 향상
+- DB 및 네이버 API 커넥션 풀(Session) 유지 로직 적용으로 속도 10배 향상
 """
 
 from __future__ import annotations
@@ -286,14 +287,20 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     title = ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ""
     
+    # 1. 쇼핑검색 상품 정보 (shoppingProduct 노드 확인)
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         sp = ad_inner["shoppingProduct"]
         title = title or sp.get("name") or sp.get("productName") or ""
         if not image_url:
             image_url = sp.get("imageUrl", "")
             
-    if not title and "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
-        title = ad_inner["valData"].get("productName") or ad_inner["valData"].get("title") or ""
+    # ✨ 2. 쇼핑검색 상품 정보 (가장 핵심인 valData 노드에서 이미지 및 노출상품명 추출 추가)
+    if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
+        val_data = ad_inner["valData"]
+        # customProductName 이 있으면 최우선 적용, 없으면 productName
+        title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
+        if not image_url:
+            image_url = val_data.get("imageUrl") or val_data.get("image") or ""
 
     if "addPromoText" in ad_inner:
         desc = desc or ad_inner["addPromoText"]
@@ -680,18 +687,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             "rank_sum": 0.0, "rank_cnt": 0
                         }
             
-            ext_ids = []
-            try:
-                with engine.connect() as conn:
-                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
-                    ext_ids = [str(r[0]) for r in res]
-            except Exception: pass
-                
-            if ext_ids:
-                ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
-                for r in ext_stats_raw:
+            # AD 대용량 리포트에서 통계를 얻지 못한 누락된 소재 ID 추출 (쇼핑검색 상품 및 확장소재 모두 포함)
+            missing_ad_ids = [aid for aid in target_ad_ids if str(aid) not in ad_stat]
+            
+            if missing_ad_ids and not SKIP_AD_STATS:
+                # 누락된 ID들에 대해서만 실시간 통계 API 조회
+                missing_stats_raw = get_stats_range(customer_id, missing_ad_ids, target_date)
+                for r in missing_stats_raw:
                     eid = str(r.get("id"))
-                    if eid not in ad_stat: ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+                    if eid not in ad_stat:
+                        ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
                     ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
                     ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
                     ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
@@ -719,7 +724,7 @@ def main():
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
     
     print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
