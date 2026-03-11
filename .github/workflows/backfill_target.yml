@@ -1,4 +1,4 @@
-name: 🎯 특정 계정 완벽 백필 (소재 포함)
+name: 🚀 특정 계정 초고속 백필 (소재 포함 / 병렬 처리)
 
 on:
   workflow_dispatch:
@@ -7,15 +7,28 @@ jobs:
   run-target-backfill:
     runs-on: ubuntu-latest
     
+    strategy:
+      # ✨ 6대의 깃허브 서버가 아래 6개 구간을 동시에 긁어옵니다! (속도 6배 증가)
+      max-parallel: 6 
+      fail-fast: false
+      matrix:
+        period:
+          - {start: "2026-01-01", end: "2026-01-12"}
+          - {start: "2026-01-13", end: "2026-01-24"}
+          - {start: "2026-01-25", end: "2026-02-05"}
+          - {start: "2026-02-06", end: "2026-02-17"}
+          - {start: "2026-02-18", end: "2026-02-28"}
+          - {start: "2026-03-01", end: "2026-03-10"}
+
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      # 타겟 계정과 기간 설정
+      # 🎯 타겟 계정 설정
       TARGET_CUSTOMER_ID: "406051"
-      START_DATE: "2026-01-01"
-      END_DATE: "2026-03-10"
+      START_DATE: ${{ matrix.period.start }}
+      END_DATE: ${{ matrix.period.end }}
 
     steps:
       - name: Checkout code
@@ -31,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run Full Backfill Loop
+      - name: Run Fast Backfill Loop
         shell: python
         run: |
           import subprocess
@@ -53,8 +66,7 @@ jobs:
               d_str = current.strftime("%Y-%m-%d")
               
               try:
-                  # ✨ --skip_dim 옵션을 제거하여 광고 소재(이미지, 텍스트)와 키워드를 매일 완벽하게 수집합니다.
-                  # 1개 업체만 하므로 --workers는 기본값이나 1로 두어도 충분히 빠릅니다.
+                  # --skip_dim을 쓰지 않아 소재까지 긁어오지만, 병렬 처리라 훨씬 빠릅니다.
                   cmd = [
                       "python", "collector.py", 
                       "--date", d_str, 
