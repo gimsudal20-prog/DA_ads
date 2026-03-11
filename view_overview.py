@@ -182,27 +182,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
 
-    # %와 절대 증감 수치를 함께 출력하는 헬퍼 함수
-    def safe_pct_str(c, b, is_currency=False, is_float=False):
+    # %와 절대 증감 수치를 계산하여 반환하는 함수 (숫자로 유지하여 정렬을 활성화)
+    def calc_pct_diff(c, b):
         diff = c - b
         if b == 0:
             pct = 100.0 if c > 0 else 0.0
         else:
             pct = (diff) / b * 100.0
-        
-        if abs(pct) < 0.001 and abs(diff) < 0.001:
-            return "0.0% (0원)" if is_currency else ("0.0% (0.0)" if is_float else "0.0% (0)")
-            
-        diff_fmt = f"{diff:+,.0f}"
-        if is_float:
-            diff_fmt = f"{diff:+.1f}"
-            
-        if is_currency:
-            return f"{pct:+.1f}% ({diff_fmt}원)"
-        else:
-            return f"{pct:+.1f}% ({diff_fmt})"
+        return pct, diff
 
-    # ✨ 현재나 이전 기간 중 하나라도 데이터가 있으면 표출 (Outer merge)
     if not cur_camp.empty or not base_camp.empty:
         base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
         cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
@@ -211,7 +199,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cur_grp['customer_id'] = cur_grp['customer_id'].astype(str)
         base_grp['customer_id'] = base_grp['customer_id'].astype(str)
         
-        # OUTER MERGE를 통해 이전 기간에만 존재하는 계정도 살림
         merged = pd.merge(cur_grp, base_grp, on='customer_id', how='outer', suffixes=('_cur', '_base')).fillna(0)
         
         if not meta.empty:
@@ -232,49 +219,66 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
             b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
             
+            pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
+            pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
+            pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+            pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
+            pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
+            
             table_data.append({
                 "업체명": row['account_name'],
                 "노출수": c_imp,
-                "노출 증감": safe_pct_str(c_imp, b_imp),
+                "노출 증감": pct_imp,
+                "노출 차이": diff_imp,
                 "클릭수": c_clk,
-                "클릭 증감": safe_pct_str(c_clk, b_clk),
+                "클릭 증감": pct_clk,
+                "클릭 차이": diff_clk,
                 "광고비": c_cost,
-                "광고비 증감": safe_pct_str(c_cost, b_cost, is_currency=True),
+                "광고비 증감": pct_cost,
+                "광고비 차이": diff_cost,
                 "전환수": c_conv,
-                "전환 증감": safe_pct_str(c_conv, b_conv),
+                "전환 증감": pct_conv,
+                "전환 차이": diff_conv,
                 "전환매출": c_sales,
-                "매출 증감": safe_pct_str(c_sales, b_sales, is_currency=True),
+                "매출 증감": pct_sales,
+                "매출 차이": diff_sales,
                 "ROAS": c_roas,
-                "ROAS 증감(p)": f"{c_roas - b_roas:+.1f}%p"
+                "ROAS 증감": c_roas - b_roas
             })
             
         df_display = pd.DataFrame(table_data)
         
+        # 증감 색상 로직 (숫자 기반)
         def color_delta(val):
-            val_str = str(val)
-            if pd.isna(val) or val_str in ("0.0% (0)", "0.0% (0원)", "0.0% (0.0)", "+0.0%p", "-0.0%p", "0.0%p", "0.0%"):
-                return 'color: #888888;'
-            
-            if val_str.startswith('+'):
-                return 'color: #FC503D; font-weight: bold;'
-            elif val_str.startswith('-'):
-                return 'color: #375FFF; font-weight: bold;'
-                
-            return 'color: #888888;'
+            if pd.isna(val) or val == 0: return 'color: #888888;'
+            return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
             
         styled_df = df_display.style.format({
             "노출수": "{:,.0f}",
+            "노출 증감": "{:+.1f}%",
+            "노출 차이": "{:+,.0f}",
             "클릭수": "{:,.0f}",
+            "클릭 증감": "{:+.1f}%",
+            "클릭 차이": "{:+,.0f}",
             "광고비": "{:,.0f}원",
+            "광고비 증감": "{:+.1f}%",
+            "광고비 차이": "{:+,.0f}원",
             "전환수": "{:,.0f}",
+            "전환 증감": "{:+.1f}%",
+            "전환 차이": "{:+,.0f}",
             "전환매출": "{:,.0f}원",
-            "ROAS": "{:,.1f}%"
+            "매출 증감": "{:+.1f}%",
+            "매출 차이": "{:+,.0f}원",
+            "ROAS": "{:,.1f}%",
+            "ROAS 증감": "{:+.1f}%"
         })
         
+        color_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+        
         if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.map(color_delta, subset=color_cols)
         else:
-            styled_df = styled_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.applymap(color_delta, subset=color_cols)
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -290,7 +294,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)] if not cur_camp.empty else pd.DataFrame()
             base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)] if not base_camp.empty else pd.DataFrame()
             
-            # 평균순위가 DB에 존재하는 경우 처리
             has_rank = ('avg_rank' in cur_camp_sub.columns) or ('avg_rank' in base_camp_sub.columns)
             agg_cols = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
             if has_rank: 
@@ -301,7 +304,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cur_camp_grp = cur_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not cur_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
             base_camp_grp = base_camp_sub.groupby('campaign_name').agg(agg_cols).reset_index() if not base_camp_sub.empty else pd.DataFrame(columns=base_camp_cols)
                 
-            # ✨ 캠페인 단위도 OUTER MERGE로 과거 실적 있는 캠페인 노출
             camp_merged = pd.merge(cur_camp_grp, base_camp_grp, on='campaign_name', how='outer', suffixes=('_cur', '_base')).fillna(0)
             camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
             
@@ -313,55 +315,76 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
                 b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
                 
+                pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
+                pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
+                pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+                pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
+                pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
+                
                 data_row = {
                     "순위": rank + 1,
                     "캠페인명": row['campaign_name'],
                 }
                 
-                # 평균순위 지표 추가
                 if has_rank:
                     c_rank = row.get('avg_rank_cur', 0)
                     b_rank = row.get('avg_rank_base', 0)
                     data_row["평균순위"] = c_rank if c_rank > 0 else 0
                     
                     if b_rank > 0 and c_rank > 0:
-                        data_row["순위 증감"] = safe_pct_str(c_rank, b_rank, is_float=True)
+                        data_row["순위 변화"] = c_rank - b_rank
                     else:
-                        data_row["순위 증감"] = "0.0% (0.0)"
+                        data_row["순위 변화"] = 0.0
 
                 data_row.update({
                     "노출수": c_imp,
-                    "노출 증감": safe_pct_str(c_imp, b_imp),
+                    "노출 증감": pct_imp,
+                    "노출 차이": diff_imp,
                     "클릭수": c_clk,
-                    "클릭 증감": safe_pct_str(c_clk, b_clk),
+                    "클릭 증감": pct_clk,
+                    "클릭 차이": diff_clk,
                     "광고비": c_cost,
-                    "광고비 증감": safe_pct_str(c_cost, b_cost, is_currency=True),
+                    "광고비 증감": pct_cost,
+                    "광고비 차이": diff_cost,
                     "전환수": c_conv,
-                    "전환 증감": safe_pct_str(c_conv, b_conv),
+                    "전환 증감": pct_conv,
+                    "전환 차이": diff_conv,
                     "전환매출": c_sales,
-                    "매출 증감": safe_pct_str(c_sales, b_sales, is_currency=True),
+                    "매출 증감": pct_sales,
+                    "매출 차이": diff_sales,
                     "ROAS": c_roas,
-                    "ROAS 증감(p)": f"{c_roas - b_roas:+.1f}%p"
+                    "ROAS 증감": c_roas - b_roas
                 })
                 
                 camp_table_data.append(data_row)
                 
             camp_df_display = pd.DataFrame(camp_table_data)
             
-            # 포맷 및 증감 색상 지정
             fmt_dict = {
                 "노출수": "{:,.0f}",
+                "노출 증감": "{:+.1f}%",
+                "노출 차이": "{:+,.0f}",
                 "클릭수": "{:,.0f}",
+                "클릭 증감": "{:+.1f}%",
+                "클릭 차이": "{:+,.0f}",
                 "광고비": "{:,.0f}원",
+                "광고비 증감": "{:+.1f}%",
+                "광고비 차이": "{:+,.0f}원",
                 "전환수": "{:,.0f}",
+                "전환 증감": "{:+.1f}%",
+                "전환 차이": "{:+,.0f}",
                 "전환매출": "{:,.0f}원",
-                "ROAS": "{:,.1f}%"
+                "매출 증감": "{:+.1f}%",
+                "매출 차이": "{:+,.0f}원",
+                "ROAS": "{:,.1f}%",
+                "ROAS 증감": "{:+.1f}%"
             }
-            color_cols_camp = ['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)']
+            color_cols_camp = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
             
             if has_rank:
                 fmt_dict["평균순위"] = "{:.1f}"
-                color_cols_camp.append("순위 증감")
+                fmt_dict["순위 변화"] = "{:+.1f}"
+                color_cols_camp.append("순위 변화")
                 
             styled_camp_df = camp_df_display.style.format(fmt_dict)
             
