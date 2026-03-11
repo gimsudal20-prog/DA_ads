@@ -1,0 +1,67 @@
+name: 🎯 특정 계정 완벽 백필 (소재 포함)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-target-backfill:
+    runs-on: ubuntu-latest
+    
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      # 타겟 계정과 기간 설정
+      TARGET_CUSTOMER_ID: "406051"
+      START_DATE: "2026-01-01"
+      END_DATE: "2026-03-10"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+      - name: Run Full Backfill Loop
+        shell: python
+        run: |
+          import subprocess
+          import os
+          from datetime import datetime, timedelta
+
+          start_str = os.getenv("START_DATE")
+          end_str = os.getenv("END_DATE")
+          target_id = os.getenv("TARGET_CUSTOMER_ID")
+          
+          print(f"📌 작업 구간: {start_str} ~ {end_str}")
+          print(f"📌 대상 계정: {target_id}")
+
+          start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+          end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+
+          current = start_date
+          while current <= end_date:
+              d_str = current.strftime("%Y-%m-%d")
+              
+              try:
+                  # ✨ --skip_dim 옵션을 제거하여 광고 소재(이미지, 텍스트)와 키워드를 매일 완벽하게 수집합니다.
+                  # 1개 업체만 하므로 --workers는 기본값이나 1로 두어도 충분히 빠릅니다.
+                  cmd = [
+                      "python", "collector.py", 
+                      "--date", d_str, 
+                      "--customer_id", target_id
+                  ]
+                  subprocess.run(cmd, check=True)
+              except subprocess.CalledProcessError:
+                  print(f"❌ 실패: {d_str}")
+                  
+              current += timedelta(days=1)
