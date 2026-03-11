@@ -1,4 +1,4 @@
-name: Super Fast Backfill (10 Days Chunk)
+name: Super Fast Backfill (Jan 1 ~ Mar 10)
 
 on:
   workflow_dispatch:
@@ -6,29 +6,14 @@ on:
 jobs:
   run-backfill:
     runs-on: ubuntu-latest
-    
-    strategy:
-      # ✨ [핵심 최적화 1] 1개씩 순서대로 하던 작업을 4개 덩어리 동시 실행으로 변경!
-      max-parallel: 4 
-      fail-fast: false
-      matrix:
-        period:
-          - {start: "2026-01-01", end: "2026-01-10"}
-          - {start: "2026-01-11", end: "2026-01-20"}
-          - {start: "2026-01-21", end: "2026-01-31"}
-          - {start: "2026-02-01", end: "2026-02-10"}
-          - {start: "2026-02-11", end: "2026-02-20"}
-          - {start: "2026-02-21", end: "2026-02-28"}
-          - {start: "2026-03-01", end: "2026-03-10"}
 
-  
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
-      START_DATE: ${{ matrix.period.start }}
-      END_DATE: ${{ matrix.period.end }}
+      START_DATE: "2026-01-01"
+      END_DATE: "2026-03-10"
 
     steps:
       - name: Checkout code
@@ -54,7 +39,7 @@ jobs:
 
           start_str = os.getenv("START_DATE")
           end_str = os.getenv("END_DATE")
-          
+
           print(f"📌 작업 구간: {start_str} ~ {end_str}")
 
           start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
@@ -63,14 +48,14 @@ jobs:
           current = start_date
           while current <= end_date:
               d_str = current.strftime("%Y-%m-%d")
-              
+
               try:
-                  # ✨ [핵심 최적화 2] 워커를 5로 줄여서 네이버 API 차단을 피하고 안정적으로 스무스하게 수집
+                  # ✨ 워커를 5로 유지해 API 차단을 줄이고 안정적으로 수집
                   subprocess.run(["python", "collector.py", "--date", d_str, "--skip_dim", "--workers", "5"], check=True)
               except subprocess.CalledProcessError:
                   print(f"❌ 실패: {d_str}")
-              
-              current += timedelta(days=1)
-              time.sleep(3) 
 
-          print(f"✅ {start_str} ~ {end_str} 구간 쾌속 수집 완료!")
+              current += timedelta(days=1)
+              time.sleep(3)
+
+          print(f"✅ {start_str} ~ {end_str} 구간 수집 완료!")
