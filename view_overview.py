@@ -38,7 +38,6 @@ def _selected_type_label(type_sel: tuple) -> str:
     return ", ".join(type_sel)
 
 
-# ✨ max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
@@ -47,7 +46,6 @@ def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tup
         return pd.DataFrame()
 
 
-# ✨ max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
@@ -56,7 +54,6 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
         return pd.DataFrame()
 
 
-# ✨ max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
@@ -148,49 +145,31 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
-    cost_delta = _delta_pct("cost") or 0.0
-    conv_delta = _delta_pct("conv") or 0.0
-    if abs(cost_delta) < 5 and abs(conv_delta) < 5:
-        insight = "광고비/전환 모두 큰 변동이 없어 안정적으로 운영 중입니다."
-    elif cost_delta > conv_delta + 10:
-        insight = f"광고비 증감({cost_delta:+.1f}%) 대비 전환 증감({conv_delta:+.1f}%)이 낮아 효율 악화 가능성이 있습니다."
-    elif conv_delta > cost_delta + 10:
-        insight = f"전환 증감({conv_delta:+.1f}%)이 광고비 증감({cost_delta:+.1f}%)보다 커 효율 개선 흐름입니다."
-    else:
-        insight = f"광고비({cost_delta:+.1f}%)와 전환({conv_delta:+.1f}%)이 유사하게 움직이고 있습니다."
-    st.info(f"🧭 KPI 해석: {insight}")
-
 
     # ==========================================
-    # ✨ 업체별 성과 요약 (신규 추가 및 타입 에러 수정)
+    # ✨ 업체별 성과 요약 및 캠페인 상세 조회
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
     with st.spinner("업체별 데이터 집계 중..."):
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
 
     if not cur_camp.empty:
-        # 업체별 합산
         cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
         base_grp = base_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales'])
         
-        # ✨ merge 오류 방지를 위해 customer_id 타입을 모두 문자열(str)로 통일
         cur_grp['customer_id'] = cur_grp['customer_id'].astype(str)
         base_grp['customer_id'] = base_grp['customer_id'].astype(str)
         
-        # 메타데이터 병합하여 업체명 가져오기
         if not meta.empty:
             meta_subset = meta[['customer_id', 'account_name']].copy()
-            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str) # 메타데이터도 문자열로 변환
-            
+            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
             cur_grp = cur_grp.merge(meta_subset, on='customer_id', how='left')
             cur_grp['account_name'] = cur_grp['account_name'].fillna(cur_grp['customer_id'])
         else:
             cur_grp['account_name'] = cur_grp['customer_id']
             
         merged = cur_grp.merge(base_grp, on='customer_id', how='left', suffixes=('_cur', '_base')).fillna(0)
-        
-        # 광고비 소진 순으로 기본 정렬
         merged = merged.sort_values('cost_cur', ascending=False)
         
         table_data = []
@@ -207,41 +186,106 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
             table_data.append({
                 "업체명": row['account_name'],
-                "광고비(비용)": c_cost,
-                "비용 증감": safe_pct(c_cost, b_cost),
-                "클릭수(유입)": c_clk,
-                "유입 증감": safe_pct(c_clk, b_clk),
-                "전환수(성과)": c_conv,
-                "성과 증감": safe_pct(c_conv, b_conv),
+                "노출수": c_imp,
+                "노출 증감": safe_pct(c_imp, b_imp),
+                "클릭수": c_clk,
+                "클릭 증감": safe_pct(c_clk, b_clk),
+                "광고비": c_cost,
+                "광고비 증감": safe_pct(c_cost, b_cost),
+                "전환수": c_conv,
+                "전환 증감": safe_pct(c_conv, b_conv),
+                "전환매출": c_sales,
+                "매출 증감": safe_pct(c_sales, b_sales),
                 "ROAS": c_roas,
                 "ROAS 증감(p)": c_roas - b_roas
             })
             
         df_display = pd.DataFrame(table_data)
         
-        # 증감 색상 서식 적용 함수 (상승: 빨간색, 하락: 파란색)
         def color_delta(val):
             if pd.isna(val) or val == 0: return 'color: #888888;'
             return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
             
         styled_df = df_display.style.format({
-            "광고비(비용)": "{:,.0f}원",
-            "비용 증감": "{:+.1f}%",
-            "클릭수(유입)": "{:,.0f}",
-            "유입 증감": "{:+.1f}%",
-            "전환수(성과)": "{:,.0f}",
-            "성과 증감": "{:+.1f}%",
-            "ROAS": "{:,.1f}%",
-            "ROAS 증감(p)": "{:+.1f}%p"
+            "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%",
+            "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%",
+            "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%",
+            "전환수": "{:,.0f}", "전환 증감": "{:+.1f}%",
+            "전환매출": "{:,.0f}원", "매출 증감": "{:+.1f}%",
+            "ROAS": "{:,.1f}%", "ROAS 증감(p)": "{:+.1f}%p"
         })
         
-        # Pandas 버전에 따른 map/applymap 호환 처리
         if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta, subset=['비용 증감', '유입 증감', '성과 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
         else:
-            styled_df = styled_df.applymap(color_delta, subset=['비용 증감', '유입 증감', '성과 증감', 'ROAS 증감(p)'])
+            styled_df = styled_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+        # ==========================================
+        # ✨ 특정 업체 선택 시 캠페인 상세 현황 표출
+        # ==========================================
+        st.markdown("<div style='margin-top:24px; font-weight:700; font-size:16px;'>🔍 업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
+        selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체를 선택하세요", options=merged['account_name'].tolist())
+
+        if selected_account:
+            selected_cid = merged[merged['account_name'] == selected_account]['customer_id'].iloc[0]
+            
+            cur_camp_sub = cur_camp[cur_camp['customer_id'].astype(str) == str(selected_cid)]
+            base_camp_sub = base_camp[base_camp['customer_id'].astype(str) == str(selected_cid)]
+            
+            cur_camp_grp = cur_camp_sub.groupby('campaign_name')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            if not base_camp_sub.empty:
+                base_camp_grp = base_camp_sub.groupby('campaign_name')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+            else:
+                base_camp_grp = pd.DataFrame(columns=['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales'])
+                
+            camp_merged = cur_camp_grp.merge(base_camp_grp, on='campaign_name', how='left', suffixes=('_cur', '_base')).fillna(0)
+            camp_merged = camp_merged.sort_values('cost_cur', ascending=False).reset_index(drop=True)
+            
+            camp_table_data = []
+            for rank, row in camp_merged.iterrows():
+                c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
+                b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
+                
+                c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+                b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
+                
+                camp_table_data.append({
+                    "순위": rank + 1,
+                    "캠페인명": row['campaign_name'],
+                    "노출수": c_imp,
+                    "노출 증감": safe_pct(c_imp, b_imp),
+                    "클릭수": c_clk,
+                    "클릭 증감": safe_pct(c_clk, b_clk),
+                    "광고비": c_cost,
+                    "광고비 증감": safe_pct(c_cost, b_cost),
+                    "전환수": c_conv,
+                    "전환 증감": safe_pct(c_conv, b_conv),
+                    "전환매출": c_sales,
+                    "매출 증감": safe_pct(c_sales, b_sales),
+                    "ROAS": c_roas,
+                    "ROAS 증감(p)": c_roas - b_roas
+                })
+                
+            camp_df_display = pd.DataFrame(camp_table_data)
+            
+            styled_camp_df = camp_df_display.style.format({
+                "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%",
+                "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%",
+                "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%",
+                "전환수": "{:,.0f}", "전환 증감": "{:+.1f}%",
+                "전환매출": "{:,.0f}원", "매출 증감": "{:+.1f}%",
+                "ROAS": "{:,.1f}%", "ROAS 증감(p)": "{:+.1f}%p"
+            })
+            
+            if hasattr(styled_camp_df, 'map'):
+                styled_camp_df = styled_camp_df.map(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+            else:
+                styled_camp_df = styled_camp_df.applymap(color_delta, subset=['노출 증감', '클릭 증감', '광고비 증감', '전환 증감', '매출 증감', 'ROAS 증감(p)'])
+                
+            st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
+
     else:
         st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
