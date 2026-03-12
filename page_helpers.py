@@ -210,12 +210,26 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
+# ✨ [수정됨] 문자열(▲/▼ 기호 등) 뿐만 아니라, 실제 숫자(Float/Int) 데이터일 때도 색상을 적용하도록 대응
 def style_table_deltas(val):
-    if pd.isna(val) or val == "-": return ""
+    if pd.isna(val) or val == "-" or val == "": 
+        return ""
+    
+    # 1. 값이 문자열 형태인 경우 (예: "▲ 10%", "+10.5%")
     if isinstance(val, str):
-        # ✨ 표 내부 데이터: 상승=초록색, 하락=빨간색으로 통일
-        if "▲" in val: return "color: #58B04B; font-weight: 700;" # Green (상승)
-        if "▼" in val: return "color: #FF025D; font-weight: 700;" # Red (하락)
+        v_str = val.strip()
+        if "▲" in v_str or v_str.startswith("+"): 
+            return "color: #58B04B; font-weight: 700;" # Green (상승)
+        if "▼" in v_str or v_str.startswith("-"): 
+            return "color: #FF025D; font-weight: 700;" # Red (하락)
+            
+    # 2. 값이 순수 숫자형(Float, Int) 형태인 경우 (정렬 지원을 위해 숫자형 유지 시)
+    elif isinstance(val, (int, float)):
+        if val > 0: 
+            return "color: #58B04B; font-weight: 700;" # Green (상승)
+        elif val < 0: 
+            return "color: #FF025D; font-weight: 700;" # Red (하락)
+            
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
@@ -392,7 +406,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     left_rows = _board_rows(rows, is_right=False)
     right_rows = _board_rows(rows, is_right=True)
 
-    # ✨ 위젯 칩 색상: 상승=초록색, 하락=빨간색으로 통일
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
         <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
@@ -477,7 +490,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:#999999; font-weight:600; }}
         .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
         
-        /* 칩 컬러 수정 */
         .delta-up {{ background:#EAF7E9; color:#58B04B; }} /* 초록 (상승) */
         .delta-down {{ background:#FFE6EE; color:#FF025D; }} /* 빨강 (하락) */
         .delta-flat {{ background:#E5E6E9; color:#666666; }} /* 회색 (변동없음) */
