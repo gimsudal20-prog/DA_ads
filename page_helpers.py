@@ -76,10 +76,15 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         manager_sel = sv.get("manager", [])
 
         st.markdown("**📅 기간 선택**")
+        period_options = ["어제", "오늘", "지난주", "최근 7일", "최근 30일", "이번 달", "지난 달", "직접 선택"]
+        current_mode = sv.get("period_mode", "어제")
+        if current_mode not in period_options:
+            current_mode = "어제"
+            
         period_mode = st.selectbox(
             "기간 간편 선택",
-            ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
-            index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
+            period_options,
+            index=period_options.index(current_mode),
             key="f_period_mode",
             label_visibility="collapsed"
         )
@@ -91,7 +96,11 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         else:
             if period_mode == "오늘": d2 = d1 = today
             elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
+            elif period_mode == "지난주": 
+                d1 = today - timedelta(days=today.weekday() + 7)
+                d2 = d1 + timedelta(days=6)
             elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=29)
             elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
             elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
             else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
@@ -210,26 +219,20 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
-# ✨ [수정됨] 문자열(▲/▼ 기호 등) 뿐만 아니라, 실제 숫자(Float/Int) 데이터일 때도 색상을 적용하도록 대응
 def style_table_deltas(val):
     if pd.isna(val) or val == "-" or val == "": 
         return ""
-    
-    # 1. 값이 문자열 형태인 경우 (예: "▲ 10%", "+10.5%")
     if isinstance(val, str):
         v_str = val.strip()
         if "▲" in v_str or v_str.startswith("+"): 
-            return "color: #58B04B; font-weight: 700;" # Green (상승)
+            return "color: #58B04B; font-weight: 700;"
         if "▼" in v_str or v_str.startswith("-"): 
-            return "color: #FF025D; font-weight: 700;" # Red (하락)
-            
-    # 2. 값이 순수 숫자형(Float, Int) 형태인 경우 (정렬 지원을 위해 숫자형 유지 시)
+            return "color: #FF025D; font-weight: 700;"
     elif isinstance(val, (int, float)):
         if val > 0: 
-            return "color: #58B04B; font-weight: 700;" # Green (상승)
+            return "color: #58B04B; font-weight: 700;"
         elif val < 0: 
-            return "color: #FF025D; font-weight: 700;" # Red (하락)
-            
+            return "color: #FF025D; font-weight: 700;"
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
