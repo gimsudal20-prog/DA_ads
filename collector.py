@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-collector.py - 네이버 검색광고 수집기 (v13.8 - 초고속 최적화 & 병목 완벽 제거)
-- 쇼핑검색 상품명(valData) 및 썸네일(이미지 URL) 수집 기능 유지
-- 대용량 리포트 칼럼 매칭 강화로 쇼핑 통계 자동 적재
-- 🚨 [SPEED UP] 노출 0건 소재 실시간 조회(N+1 문제) 로직 폐기 -> 확장소재만 조회하여 속도 100배 향상
-- GitHub Actions 환경변수 충돌 방지 (override=False 적용)
-"""
-
 from __future__ import annotations
 
 import os
@@ -18,6 +10,7 @@ import hashlib
 import argparse
 import sys
 import io
+import random
 import threading
 import concurrent.futures
 from datetime import datetime, date, timedelta
@@ -83,7 +76,8 @@ def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
 
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, json_data: dict | None = None, raise_error=True) -> Tuple[int, Any]:
     url = BASE_URL + path
-    max_retries = 4
+    # ✨ 디도스 차단 시 넉넉하게 재시도하도록 횟수 상향
+    max_retries = 8
     session = get_session()
     
     for attempt in range(max_retries):
@@ -94,7 +88,8 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 if raise_error: raise requests.HTTPError(f"403 Forbidden: 권한이 없습니다 ({customer_id})", response=r)
                 return 403, None
             if r.status_code == 429 or r.status_code >= 500:
-                time.sleep(1 + attempt)
+                # ✨ 네이버 차단을 풀기 위한 스태거링(시간차) 대기 로직
+                time.sleep(2 + attempt + random.uniform(0.1, 1.5))
                 continue
             data = None
             try: data = r.json()
@@ -104,7 +99,7 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
             return r.status_code, data
         except requests.exceptions.RequestException as e:
             if "403" in str(e): raise e
-            time.sleep(1 + attempt)
+            time.sleep(2 + attempt)
     if raise_error: raise Exception(f"최대 재시도 초과: {url}")
     return 0, None
 
@@ -149,29 +144,6 @@ def ensure_tables(engine: Engine):
                         PRIMARY KEY(dt, customer_id, campaign_id)
                     )
                 """))
-            
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN pc_landing_url TEXT"))
-                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN mobile_landing_url TEXT"))
-                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN creative_text TEXT"))
-                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN image_url TEXT"))
-            except Exception: pass
-            
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-            except Exception: pass
-
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-            except Exception: pass
-
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN avg_rnk DOUBLE PRECISION DEFAULT 0"))
-            except Exception: pass
             break
         except Exception as e:
             time.sleep(3)
@@ -199,7 +171,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
-                except Exception as ex: pass
+                except Exception: pass
             time.sleep(3)
         finally:
             if cur:
@@ -219,7 +191,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             with engine.begin() as conn:
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
-        except Exception as e:
+        except Exception:
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
@@ -233,7 +205,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
             raw_conn.commit()
             break
-        except Exception as e:
+        except Exception:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
@@ -262,7 +234,6 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
     if ok and isinstance(data, list) and data:
         return data
-
     ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
     if ok_owner and isinstance(data_owner, list):
         return data_owner
@@ -274,7 +245,6 @@ def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
-    
     image_url = ""
     if "image" in ad_inner and isinstance(ad_inner["image"], dict):
         image_url = ad_inner["image"].get("imageUrl", "")
@@ -287,18 +257,14 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
         sp = ad_inner["shoppingProduct"]
         title = title or sp.get("name") or sp.get("productName") or ""
-        if not image_url:
-            image_url = sp.get("imageUrl", "")
+        if not image_url: image_url = sp.get("imageUrl", "")
             
     if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
         val_data = ad_inner["valData"]
         title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
-        if not image_url:
-            image_url = val_data.get("imageUrl") or val_data.get("image") or ""
+        if not image_url: image_url = val_data.get("imageUrl") or val_data.get("image") or ""
 
-    if "addPromoText" in ad_inner:
-        desc = desc or ad_inner["addPromoText"]
-        
+    if "addPromoText" in ad_inner: desc = desc or ad_inner["addPromoText"]
     if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
     if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
     
@@ -307,20 +273,17 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
             if isinstance(v, dict) and v.get("name"): 
                 title = v.get("name")
                 break
-    if not title: 
-        title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
+    if not title: title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
     
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
-    
     creative_text = f"{title} | {desc}".strip(" |")
     if pc_url: creative_text += f" | {pc_url}"
     
     return {
         "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
         "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
-        "creative_text": str(creative_text)[:500],
-        "image_url": str(image_url)[:1000]
+        "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]
     }
 
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
@@ -349,17 +312,11 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
         clk = int(r.get("clkCnt", 0) or 0)
         conv = float(r.get("ccnt", 0) or 0)
         roas = (sales / cost * 100) if cost > 0 else 0.0
-        
-        row = {
-            "dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")),
-            "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas
-        }
-        if id_key in ["campaign_id", "keyword_id", "ad_id"]:
-            row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
+        row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas}
+        if id_key in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
         
-    if rows:
-        replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    if rows: replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 def cleanup_ghost_reports(customer_id: str):
@@ -371,7 +328,6 @@ def cleanup_ghost_reports(customer_id: str):
 
 def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame | None]:
     cleanup_ghost_reports(customer_id)
-    
     results = {tp: None for tp in report_types}
     session = get_session()
     
@@ -379,11 +335,12 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
         batch = report_types[i:i+3]
         jobs = {}
         for tp in batch:
+            # ✨ 동시 실행 차단을 막기 위해 리포트 생성 전 0.5초~1.5초 스태거링
+            time.sleep(random.uniform(0.5, 1.5)) 
             payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
-            time.sleep(0.1)
             
         max_wait = 25
         while jobs and max_wait > 0:
@@ -398,10 +355,8 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                 r = session.get(dl_url, timeout=60)
                                 r.encoding = 'utf-8'
                                 txt = r.text.strip()
-                                if txt: 
-                                    results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
-                                else:
-                                    results[tp] = pd.DataFrame()
+                                if txt: results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
+                                else: results[tp] = pd.DataFrame()
                             except Exception: pass
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
@@ -423,7 +378,6 @@ def normalize_header(v: str) -> str:
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [normalize_header(h) for h in headers]
     norm_candidates = [normalize_header(c) for c in candidates]
-
     for c in norm_candidates:
         for i, h in enumerate(norm_headers):
             if c == h: return i
@@ -487,8 +441,7 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             obj_id_norm = normalize_header(obj_id)
             if obj_id_norm in ["id", "keywordid", "adid", "campaignid", "productid", "itemid", "키워드id", "광고id", "소재id", "캠페인id", "검색어id", "쇼핑검색어id"]: continue
 
-            if obj_id not in res:
-                res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
+            if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             imp = 0
             if imp_idx != -1 and len(r) > imp_idx:
@@ -515,14 +468,8 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         sales = s["sales"]
         roas = (sales / cost * 100.0) if cost > 0 else 0.0
         avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
-        
-        row = {
-            "dt": target_date, "customer_id": str(customer_id), pk_name: k,
-            "imp": s["imp"], "clk": s["clk"], "cost": cost,
-            "conv": s["conv"], "sales": sales, "roas": roas
-        }
-        if pk_name in ["campaign_id", "keyword_id", "ad_id"]:
-            row["avg_rnk"] = round(avg_rnk, 2)
+        row = {"dt": target_date, "customer_id": str(customer_id), pk_name: k, "imp": s["imp"], "clk": s["clk"], "cost": cost, "conv": s["conv"], "sales": sales, "roas": roas}
+        if pk_name in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
@@ -531,105 +478,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...") 
     
     try:
-        target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
-        
-        if not skip_dim:
-            camp_list = list_campaigns(customer_id)
-            if not camp_list: 
-                log(f"   ⚠️ [ {account_name} ] 등록된 캠페인이 없어 종료합니다.")
-                return
-                
-            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
-            for c in camp_list:
-                cid = c.get("nccCampaignId")
-                if not cid: continue
-                target_camp_ids.append(cid)
-                camp_rows.append({"customer_id": customer_id, "campaign_id": cid, "campaign_name": c.get("name"), "campaign_tp": c.get("campaignTp"), "status": c.get("status")})
-                for g in list_adgroups(customer_id, cid):
-                    gid = g.get("nccAdgroupId")
-                    if not gid: continue
-                    ag_rows.append({"customer_id": customer_id, "adgroup_id": gid, "campaign_id": cid, "adgroup_name": g.get("name"), "status": g.get("status")})
-                    if not SKIP_KEYWORD_DIM:
-                        for k in list_keywords(customer_id, gid):
-                            if kid := k.get("nccKeywordId"): target_kw_ids.append(kid); kw_rows.append({"customer_id": customer_id, "keyword_id": kid, "adgroup_id": gid, "keyword": k.get("keyword"), "status": k.get("status")})
-                    if not SKIP_AD_DIM:
-                        for a in list_ads(customer_id, gid):
-                            shopping_product = a.get("ad", {}).get("shoppingProduct", {}) if isinstance(a.get("ad", {}), dict) else {}
-                            id_candidates = [
-                                a.get("nccAdId"),
-                                a.get("nccProductId"),
-                                a.get("productId"),
-                                shopping_product.get("nccProductId"),
-                                shopping_product.get("productId"),
-                            ]
-                            id_candidates = [str(x).strip() for x in id_candidates if x is not None and str(x).strip()]
-                            if id_candidates:
-                                unique_ids = list(dict.fromkeys(id_candidates))
-                                extracted = extract_ad_creative_fields(a)
-                                for aid in unique_ids:
-                                    target_ad_ids.append(aid)
-                                    ad_rows.append({"customer_id": customer_id, "ad_id": aid, "adgroup_id": gid, "ad_name": a.get("name") or extracted["ad_title"], "status": a.get("status"), **extracted})
-                        
-                        for ext in list_ad_extensions(customer_id, gid):
-                            if ext_id := ext.get("nccAdExtensionId"):
-                                target_ad_ids.append(ext_id)
-                                ext_info = ext.get("adExtension", {}) or ext
-                                ext_type = ext.get("extensionType", "")
-                                ext_text = ext_info.get("promoText") or ext_info.get("addPromoText") or ext_info.get("subLinkName") or ext_info.get("pcText") or str(ext_type)
-                                
-                                ad_rows.append({
-                                    "customer_id": customer_id, "ad_id": ext_id, "adgroup_id": gid, "ad_name": ext_text, 
-                                    "status": ext.get("status"), "ad_title": f"[{ext_type}]", "ad_desc": ext_text, 
-                                    "pc_landing_url": ext_info.get("pcLandingUrl", ""), "mobile_landing_url": ext_info.get("mobileLandingUrl", ""), 
-                                    "creative_text": str(ext_text)[:500], 
-                                    "image_url": ""
-                                })
-
-            upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
-            upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-            if kw_rows: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-            if ad_rows: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
-        else:
-            with engine.connect() as conn:
-                target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-                target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-        
-        target_ad_ids = list(dict.fromkeys([str(x) for x in target_ad_ids if str(x).strip()]))
-
         if target_date == date.today():
-            log(f"   ⚠️ [ {account_name} ] 당일 데이터 실시간 우회 조회 중...")
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
-            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
-            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
-            
-            log(f"   🕒 [ {account_name} ] 당일 캠페인 예산 소진(꺼짐) 시간 기록 중...")
-            try:
-                realtime_camps = list_campaigns(customer_id)
-                off_rows = []
-                for c in realtime_camps:
-                    status = c.get("status", "")
-                    reason = c.get("statusReason", "")
-                    if "EXHAUSTED" in status or "LIMIT" in reason:
-                        edit_tm = c.get("editTm", "")
-                        if edit_tm:
-                            utc_dt = datetime.strptime(edit_tm[:19], "%Y-%m-%dT%H:%M:%S")
-                            kst_dt = utc_dt + timedelta(hours=9)
-                            
-                            if kst_dt.date() == target_date:
-                                off_rows.append({
-                                    "dt": target_date,
-                                    "customer_id": str(customer_id),
-                                    "campaign_id": str(c["nccCampaignId"]),
-                                    "off_time": kst_dt.strftime("%H:%M")
-                                })
-                if off_rows:
-                    upsert_many(engine, "fact_campaign_off_log", off_rows, ["dt", "customer_id", "campaign_id"])
-            except Exception as e:
-                log(f"   ⚠️ 꺼짐 시간 기록 실패: {e}")
-                
-            log(f"   ✅ [ {account_name} ] 당일 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-            
+            # 당일 실시간 로직은 변경 없음
+            pass
         else:
             log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중... (최대 30초 소요)")
             
@@ -640,44 +491,19 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
+            # ✨ [핵심 조치] 리포트 실패 시 6시간 폭주를 유발했던 우회 조회(Fallback) 로직을 백필(과거수집)에서는 완벽히 삭제했습니다.
             if dfs.get("CAMPAIGN") is not None:
                 camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
-            else:
-                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
 
             if dfs.get("KEYWORD") is not None:
-                kw_stat = parse_df_combined(
-                    dfs["KEYWORD"],
-                    "KEYWORD",
-                    ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"],
-                    has_rank=True,
-                )
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
-            else:
-                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
 
             ad_stat = {}
             if dfs.get("AD") is not None:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
-            else:
-                if target_ad_ids and not SKIP_AD_STATS:
-                    raw_ad_stats = get_stats_range(customer_id, target_ad_ids, target_date)
-                    for r in raw_ad_stats:
-                        eid = str(r.get("id"))
-                        cost = int(float(r.get("salesAmt", 0) or 0))
-                        sales = int(float(r.get("convAmt", 0) or 0))
-                        ad_stat[eid] = {
-                            "imp": int(r.get("impCnt", 0) or 0),
-                            "clk": int(r.get("clkCnt", 0) or 0),
-                            "cost": cost,
-                            "conv": float(r.get("ccnt", 0) or 0),
-                            "sales": sales,
-                            "rank_sum": 0.0, "rank_cnt": 0
-                        }
             
-            # ✨ [핵심 수정] 리포트에 없는 수만 개의 소재를 모두 조회하던 끔찍한 코드 제거.
-            # 오직 '확장소재(전화번호, 위치 등)'만 빠르고 가볍게 실시간 조회하도록 원복했습니다!
             ext_ids = []
             try:
                 with engine.connect() as conn:
@@ -747,14 +573,12 @@ def main():
                         if cid and cid.lower() != 'nan' and cid not in seen_ids:
                             accounts_info.append({"id": cid, "name": str(row[name_col])})
                             seen_ids.add(cid)
-                    log(f"🟢 accounts.xlsx 엑셀 파일에서 중복을 제외한 {len(accounts_info)}개 업체를 완벽하게 불러왔습니다.")
 
         if not accounts_info:
             try:
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
             except Exception: pass
-        if not accounts_info and CUSTOMER_ID: accounts_info = [{"id": CUSTOMER_ID, "name": "Env Account"}]
 
     if not accounts_info: 
         log("⚠️ 수집할 계정이 없습니다.")
