@@ -169,9 +169,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
     state_hash = abs(hash(state_sig))
-    report_loaded_key = f"overview_report_loaded_{state_hash}"
-    alerts_loaded_key = f"overview_alerts_loaded_{state_hash}"
-    trend_loaded_key = f"overview_trend_loaded_{state_hash}"
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -307,6 +304,28 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
+    # 1.5 일자별 성과 추이 (트렌드 차트 복구)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>📈 일자별 성과 추이</div>", unsafe_allow_html=True)
+    
+    with st.spinner("트렌드 차트 데이터 집계 중..."):
+        daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        
+    if daily_ts is not None and not daily_ts.empty:
+        daily_ts_chart = daily_ts.copy()
+        # 누락된 파생 변수(ROAS 등) 계산
+        daily_ts_chart['roas'] = np.where(daily_ts_chart['cost'] > 0, daily_ts_chart['sales'] / daily_ts_chart['cost'] * 100, 0)
+        
+        tab_t1, tab_t2 = st.tabs(["💸 비용 및 매출 추이", "👀 유입 지표 추이"])
+        with tab_t1:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "sales", "전환매출", height=320)
+        with tab_t2:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+    else:
+        st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
+
+
+    # ==========================================
     # 2. 업체별 전체 성과 요약 (테이블)
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
@@ -322,7 +341,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         merged = pd.merge(cur_grp, base_grp, on='customer_id', how='outer', suffixes=('_cur', '_base')).fillna(0)
         
-        # [수정] KeyError 방지: meta 데이터프레임 내에 'customer_id'와 'account_name' 컬럼이 모두 존재할 때만 병합 수행
         if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
             meta_subset = meta[['customer_id', 'account_name']].copy()
             meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
