@@ -25,10 +25,11 @@ def get_engine():
         "keepalives_count": 5
     }
     
+    # 🚀 대용량 백필 데이터 처리를 위해 커넥션 풀 크기 2배 확장
     return create_engine(
         db_url, 
-        pool_size=10, 
-        max_overflow=20, 
+        pool_size=20, 
+        max_overflow=40, 
         pool_pre_ping=True, 
         pool_recycle=300, 
         connect_args=connect_args,
@@ -41,7 +42,6 @@ def db_ping(engine) -> bool:
         return True
     except Exception: return False
 
-# ✨ [속도 복구 1] 매번 확인하던 테이블 존재 여부를 다시 세션 캐시로 저장하여 속도 극대화
 def table_exists(engine, table_name: str) -> bool:
     if "_table_names_cache" not in st.session_state:
         try:
@@ -51,7 +51,6 @@ def table_exists(engine, table_name: str) -> bool:
         except Exception: return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
-# ✨ [속도 복구 2] 뼈대 구조를 물어보느라 지연되던 현상 해결 (1시간 캐시 복구)
 @st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     for attempt in range(3):
@@ -94,7 +93,7 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
             st.error(f"DB 실행 오류: {e}")
             raise e
 
-def _sql_in_str_list(lst: list) -> str:
+def _sql_in_str_list(lst) -> str:
     if not lst: return "''"
     return ",".join(f"'{str(x)}'" for x in lst)
 
@@ -215,7 +214,8 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     meta = get_meta(_engine)
     if meta.empty: return pd.DataFrame()
     
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     
     sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
     df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2)})
@@ -236,7 +236,7 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
         df_b = pd.DataFrame(columns=["customer_id", "bizmoney_balance"])
         
     df = meta.copy()
-    if cids: df = df[df["customer_id"].isin(cids)]
+    if cids_tuple: df = df[df["customer_id"].isin(cids_tuple)]
     
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
@@ -282,13 +282,15 @@ def update_monthly_budget(_engine, cid: int, val: int):
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
 
 @st.cache_data(ttl=600, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     type_join_sql = ""
     type_where_sql = ""
     if type_sel and table_exists(_engine, "dim_campaign"):
@@ -324,7 +326,8 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -374,9 +377,10 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
+def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -428,11 +432,11 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-# ✨ [속도 복구 3] 너무 짧게 줄였던(60초) 소재 조회 쿼리 수명도 다른 것과 동일하게 600초(10분)로 복구
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -492,8 +496,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     df = sql_read(_engine, f"SELECT dt, SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, SUM(conv) as conv, SUM(sales) as sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY dt ORDER BY dt", {"d1": str(d1), "d2": str(d2)})
     if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
     return df
-
