@@ -17,7 +17,8 @@ from page_helpers import *
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
     
-    tab_budget, tab_alert, tab_history = st.tabs(["월 예산 현황", "비즈머니 관리", "꺼짐 기록"])
+    # "꺼짐 기록" 탭 제거
+    tab_budget, tab_alert = st.tabs(["월 예산 현황", "비즈머니 관리"])
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
@@ -165,7 +166,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         if alert_view.empty:
             st.info("비즈머니 관리 데이터가 없습니다.")
         else:
-            # ✨ [FIX] 고갈 예상일에 따라 이모지 텍스트 반환
             def get_depletion_date(days_left):
                 if pd.isna(days_left) or float(days_left) >= 99: return "여유"
                 days = float(days_left)
@@ -177,60 +177,24 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
             display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
-            display_df["최근 평균소진"] = display_df["avg_cost"].apply(lambda x: format_currency(x))
             
-            display_df = display_df[["account_name", "manager", "비즈머니 잔액", "최근 평균소진", "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+            # 동적인 일수 표기로 변경
+            avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
+            display_df[avg_days_label] = display_df["avg_cost"].apply(lambda x: format_currency(x))
             
-            # ✨ [NEW] 표 내부에 직접 눈에 띄게 경고 배경색(빨강, 주황)을 입히는 함수
+            display_df = display_df[["account_name", "manager", "비즈머니 잔액", avg_days_label, "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
+            
             def color_alert(val):
                 if isinstance(val, str) and '🚨' in val:
-                    # 즉시 충전: 진한 빨간 배경 + 흰색 글씨
                     return 'color: white; font-weight: 800; background-color: #EF4444;' 
                 elif isinstance(val, str) and '⚠️' in val:
-                    # 3일 내 소진: 연한 주황 배경 + 짙은 주황 글씨
                     return 'color: #9A3412; font-weight: 700; background-color: #FFEDD5;' 
                 return ''
 
             try:
                 styled_df = display_df.style.map(color_alert, subset=['예상 중단일'])
             except AttributeError:
-                # Pandas 하위 호환성 대비
                 styled_df = display_df.style.applymap(color_alert, subset=['예상 중단일'])
             
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
             st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
-
-    with tab_history:
-        off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
-        if off_log.empty:
-            st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
-        else:
-            dim_camp = load_dim_campaign(engine)
-            if not dim_camp.empty:
-                dim_camp["campaign_id"] = dim_camp["campaign_id"].astype(str)
-                off_log["campaign_id"] = off_log["campaign_id"].astype(str)
-                off_log = off_log.merge(dim_camp[["campaign_id", "campaign_name"]], on="campaign_id", how="left")
-            else:
-                off_log["campaign_name"] = off_log["campaign_id"]
-                
-            if not meta.empty:
-                meta_copy = meta.copy()
-                meta_copy["customer_id"] = meta_copy["customer_id"].astype(str)
-                off_log["customer_id"] = off_log["customer_id"].astype(str)
-                off_log = off_log.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
-            else:
-                off_log["account_name"] = off_log["customer_id"]
-            
-            off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
-            
-            pivot_df = off_log.pivot_table(
-                index=["account_name", "campaign_name"], 
-                columns="dt_str", 
-                values="off_time", 
-                aggfunc='first'
-            ).reset_index()
-            
-            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"}).fillna("-")
-            
-            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록</div>", unsafe_allow_html=True)
-            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
