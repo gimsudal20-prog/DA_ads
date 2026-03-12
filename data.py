@@ -43,17 +43,17 @@ def db_ping(engine) -> bool:
     except Exception: return False
 
 def table_exists(engine, table_name: str) -> bool:
-    if "_table_names_cache" not in st.session_state:
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
-                st.session_state["_table_names_cache"] = [r[0] for r in res]
-        except Exception: return False
-    return table_name in st.session_state["_table_names_cache"]
+    # 뼈대 변경을 즉각 반영하기 위해 세션 캐시 제거, 매번 직접 확인
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
+            tables = [r[0] for r in res]
+            return table_name in tables
+    except Exception: return False
 
-@st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
+# ✨ [핵심 수정] DB에 컬럼이 새로 추가된 것을 바로 인식하지 못하는 1시간짜리 캐시 제거!
+# 이제 매번 DB 구조를 정확히 읽어와서 누락 없이 이미지와 상품명을 가져옵니다.
 def get_table_columns(_engine, table_name: str) -> list:
-    # ✨ 재시도 로직 추가
     for attempt in range(3):
         try:
             with _engine.connect() as conn:
@@ -430,7 +430,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+# ✨ 캐시 시간이 짧아져 데이터 갱신이 빠르도록 처리
+@st.cache_data(ttl=60, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
@@ -438,7 +439,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
     
-    # ✨ [핵심 수정] DB에서 이미지 및 상품명 컬럼을 확실하게 조회하도록 쿼리문 수정
     ad_cols = get_table_columns(_engine, "dim_ad")
     url_select = "ad.pc_landing_url as landing_url" if "pc_landing_url" in ad_cols else "'' as landing_url"
     title_select = "ad.ad_title" if "ad_title" in ad_cols else "ad.ad_name as ad_title"
