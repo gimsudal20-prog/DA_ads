@@ -231,18 +231,23 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0)
                 view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
+                # ✨ 이미지 컬럼 정리 (None 등의 문자열을 진짜 빈칸으로 치환)
                 if "image_url" in view_shop.columns:
+                    view_shop["image_url"] = view_shop["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
                     view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
                     
-                # 덮어쓰기 로직 삭제, 수집된 이름 그대로 렌더링
+                # ✨ 노출용 상품명 컬럼 정리
                 if "ad_title" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"ad_title": "노출용 상품명"})
                 elif "상품/소재명" in view_shop.columns:
                     view_shop["노출용 상품명"] = view_shop["상품/소재명"]
-                
-                # 'nan', 'None' 등의 문자열을 깔끔하게 빈칸으로 치환
+
                 if "노출용 상품명" in view_shop.columns:
-                    view_shop["노출용 상품명"] = view_shop["노출용 상품명"].replace(["nan", "None", "none"], "").fillna("")
+                    view_shop["노출용 상품명"] = view_shop["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
+
+                # 🚨 과거의 억지 덮어쓰기 로직 전면 삭제!
+                # is_invalid_title, is_valid_name, np.where(...) 등 모두 제거
+                # 이제 노출용 상품명이 비어있으면 깨끗하게 빈칸 그대로 출력됩니다.
 
                 base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                 if "avg_rank" in view_shop.columns:
@@ -430,17 +435,19 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                     
+                    # ✨ 이미지 컬럼 정리
                     if "image_url" in view.columns:
+                        view["image_url"] = view["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
                         view = view.rename(columns={"image_url": "소재이미지"})
                         
-                    # 덮어쓰기 로직 삭제, 수집된 이름 그대로 렌더링
+                    # ✨ 노출용 상품명 컬럼 정리
                     if "ad_title" in view.columns:
                         view = view.rename(columns={"ad_title": "노출용 상품명"})
                     elif "상품/소재명" in view.columns:
                         view["노출용 상품명"] = view["상품/소재명"]
                         
                     if "노출용 상품명" in view.columns:
-                        view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none"], "").fillna("")
+                        view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     
