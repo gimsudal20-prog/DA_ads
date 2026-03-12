@@ -7,6 +7,7 @@ import time
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from typing import Dict
 from datetime import date, timedelta
 
@@ -17,7 +18,6 @@ from page_helpers import *
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
     
-    # "꺼짐 기록" 탭 제거
     tab_budget, tab_alert = st.tabs(["월 예산 현황", "비즈머니 관리"])
     
     cids = tuple(f.get("selected_customer_ids", []) or [])
@@ -123,41 +123,74 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 else:
                     sel = st.selectbox("업체 선택", labels, index=0)
                     cid = str(label_to_cid.get(sel, ""))
-                    sk = f"budget_input_{cid}"
                     
-                    if sk not in st.session_state:
-                        selected_budget = budget_view_disp.loc[budget_view_disp["customer_id"].astype(str) == cid, "monthly_budget_val"]
-                        cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
-                        st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
+                    selected_budget = budget_view_disp.loc[budget_view_disp["customer_id"].astype(str) == cid, "monthly_budget_val"]
+                    cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
                     
-                    def format_budget_on_change(key_name):
-                        val = st.session_state.get(key_name, "0")
-                        cleaned = re.sub(r"[^\d]", "", str(val))
-                        if cleaned: st.session_state[key_name] = f"{int(cleaned):,}"
-                        else: st.session_state[key_name] = "0"
-                    
-                    def add_amount_callback(key_name, amount):
-                        val = st.session_state.get(key_name, "0")
-                        cleaned = int(re.sub(r"[^\d]", "", str(val)) or 0)
-                        st.session_state[key_name] = f"{cleaned + amount:,}"
+                    # ✨ [핵심 수정] 실시간 콤마 반영 및 버튼 즉시 작동을 위한 HTML/JS 폼 도입
+                    html_code = f"""
+                    <div style="font-family: sans-serif; background: #F8FAFC; padding: 16px; border-radius: 8px; border: 1px solid #E2E8F0;">
+                        <label style="font-size: 13px; font-weight: 600; color: #444; margin-bottom: 6px; display: block;">새 예산 (원)</label>
+                        <input type="text" id="budgetInput" value="{cur_budget:,}" 
+                               style="width: 100%; padding: 8px 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; text-align: right; font-weight: bold; color: #111;">
+                        
+                        <div style="display: flex; gap: 4px; margin-top: 10px; margin-bottom: 16px;">
+                            <button onclick="addAmount(100000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+10만</button>
+                            <button onclick="addAmount(1000000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+100만</button>
+                            <button onclick="addAmount(10000000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+1000만</button>
+                            <button onclick="resetAmount()" style="flex:1; padding:6px 0; font-size:12px; background:#f1f3f5; border:1px solid #ccc; border-radius:4px; cursor:pointer; color:#555;">초기화</button>
+                        </div>
+                        
+                        <button onclick="submitBudget()" style="width: 100%; padding: 10px; font-size: 15px; font-weight: bold; background: #4876EF; color: white; border: none; border-radius: 6px; cursor: pointer;">저장하기</button>
+                    </div>
 
-                    def reset_amount_callback(key_name):
-                        st.session_state[key_name] = "0"
+                    <script>
+                        const input = document.getElementById('budgetInput');
+                        
+                        function formatNumber(num) {{
+                            return num.toString().replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ",");
+                        }}
+                        
+                        function unformatNumber(str) {{
+                            return parseInt(str.replace(/[^\\d]/g, '') || 0);
+                        }}
 
-                    st.text_input("새 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
-                    raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
+                        input.addEventListener('input', function(e) {{
+                            let val = unformatNumber(e.target.value);
+                            e.target.value = val === 0 ? "" : formatNumber(val);
+                        }});
+                        
+                        input.addEventListener('blur', function(e) {{
+                            if(e.target.value === "") e.target.value = "0";
+                        }});
+
+                        function addAmount(amount) {{
+                            let current = unformatNumber(input.value);
+                            input.value = formatNumber(current + amount);
+                        }}
+
+                        function resetAmount() {{
+                            input.value = "0";
+                        }}
+
+                        function submitBudget() {{
+                            let finalAmount = unformatNumber(input.value);
+                            // Streamlit에 데이터 전달
+                            window.parent.postMessage({{
+                                type: 'streamlit:setComponentValue',
+                                value: finalAmount
+                            }}, '*');
+                        }}
+                    </script>
+                    """
                     
-                    b1, b2, b3, b4 = st.columns(4)
-                    b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000))
-                    b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000))
-                    b3.button("+1000만", key=f"btn_1000_{cid}", on_click=add_amount_callback, args=(sk, 10000000))
-                    b4.button("초기화", key=f"btn_0_{cid}", on_click=reset_amount_callback, args=(sk,))
+                    # 폼을 그리고 입력된 결과값 받기
+                    returned_budget = components.html(html_code, height=220)
                     
-                    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-                    if st.button("저장하기", type="primary", use_container_width=True):
-                        update_monthly_budget(engine, cid, raw_val)
-                        st.success("저장 완료!")
-                        if sk in st.session_state: del st.session_state[sk]
+                    if returned_budget is not None and int(returned_budget) >= 0:
+                        # 저장 실행
+                        update_monthly_budget(engine, cid, int(returned_budget))
+                        st.success("✅ 예산이 즉시 저장되었습니다!")
                         st.cache_data.clear()
                         time.sleep(0.5)
                         st.rerun()
@@ -178,7 +211,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
             display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
             
-            # 동적인 일수 표기로 변경
             avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
             display_df[avg_days_label] = display_df["avg_cost"].apply(lambda x: format_currency(x))
             
