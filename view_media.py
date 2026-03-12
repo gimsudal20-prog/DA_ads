@@ -26,7 +26,6 @@ def page_media(engine, f):
         c1, c2 = st.columns(2)
         
         with c1:
-            # ✨ [FIX 4] 엑셀에 manager 컬럼이 없는 경우 터지지 않도록 예외 처리
             if "manager" in meta.columns:
                 managers = ["전체 담당자"] + sorted([str(x) for x in meta["manager"].dropna().unique().tolist() if str(x).strip()])
                 sel_manager = st.selectbox(" 담당자 선택", managers)
@@ -42,12 +41,26 @@ def page_media(engine, f):
                 st.warning("배정된 업체가 없습니다.")
                 sel_label = None
             else:
+                # [수정] 업체명이나 ID가 비어있을 때 발생하는 NaN 에러 방지 처리
                 opts = df_filtered[["customer_id", "account_name"]].copy()
-                opts["label"] = opts["account_name"] + " (" + opts["customer_id"].astype(str) + ")"
-                labels = sorted(opts["label"].tolist())
-                label_to_cid = dict(zip(opts["label"], opts["customer_id"].astype(str).tolist()))
+                opts["customer_id"] = opts["customer_id"].fillna("").astype(str)
+                opts["account_name"] = opts["account_name"].fillna("이름없음").astype(str)
+                opts["label"] = opts["account_name"] + " (" + opts["customer_id"] + ")"
                 
-                sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels, index=None, placeholder="먼저 업체를 선택해주세요")
+                labels = sorted(opts["label"].unique().tolist())
+                label_to_cid = dict(zip(opts["label"], opts["customer_id"]))
+                
+                # [개선] 사이드바에서 선택한 고객이 있다면 업로드 창에서도 자동으로 기본 선택되도록 연동
+                cids = tuple(f.get("selected_customer_ids", []))
+                default_idx = 0
+                if cids:
+                    target_cid_str = str(cids[0])
+                    for i, lbl in enumerate(labels):
+                        if label_to_cid[lbl] == target_cid_str:
+                            default_idx = i
+                            break
+                            
+                sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels, index=default_idx)
         
         if sel_label:
             target_cid = label_to_cid[sel_label]
