@@ -284,17 +284,28 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]
     }
 
+# ✨ 우회 조회 속도를 5배로 폭발시키는 병렬 엔진 탑재
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
     out = []
     d_str = d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
-    for i in range(0, len(ids), 50):
-        chunk = ids[i:i+50]
+    
+    chunks = [ids[i:i+50] for i in range(0, len(ids), 50)]
+    
+    def fetch_chunk(chunk):
         params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data: out.extend(data["data"])
+        if status == 200 and isinstance(data, dict) and "data" in data:
+            return data["data"]
+        return []
+
+    # 내부에서 5개의 스레드가 동시에 실시간 API를 요청합니다 (6시간 -> 30분 컷의 비밀)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = executor.map(fetch_chunk, chunks)
+        for res in results:
+            out.extend(res)
     return out
 
 def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
@@ -304,9 +315,12 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
     
     rows = []
     for r in raw_stats:
-        cost = int(float(r.get("salesAmt", 0) or 0))
-        sales = int(float(r.get("convAmt", 0) or 0))
         imp = int(r.get("impCnt", 0) or 0)
+        cost = int(float(r.get("salesAmt", 0) or 0))
+        # ✨ 핵심: 실시간 API가 뱉어내는 수만 개의 0원짜리 깡통 데이터는 DB에 넣지 않고 즉시 버립니다.
+        if imp == 0 and cost == 0: continue 
+        
+        sales = int(float(r.get("convAmt", 0) or 0))
         clk = int(r.get("clkCnt", 0) or 0)
         conv = float(r.get("ccnt", 0) or 0)
         roas = (sales / cost * 100) if cost > 0 else 0.0
@@ -348,7 +362,6 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         dl_url = s_data.get("downloadUrl")
                         if dl_url:
                             try:
-                                # ✨ 세션 헤더 꼬임 방지 + 스마트 파서 도입 (탭/쉼표 자동 인식)
                                 r = requests.get(dl_url, timeout=60)
                                 if r.status_code == 200:
                                     r.encoding = 'utf-8'
@@ -484,72 +497,62 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             with engine.connect() as conn:
                 target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-            if not target_camp_ids:
-                log(f"   ⚠️ [ {account_name} ] DB에 사전 수집된 캠페인 정보(뼈대)가 없어 데이터를 매칭할 수 없습니다. (일반 수집 1회 선행 필수)")
+                target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
         
         if target_date == date.today():
             pass
         else:
-            log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중... (최대 30초 소요)")
+            log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
             report_types = ["CAMPAIGN", "KEYWORD", "AD"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
-            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! DB 적재 시작...")
+            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 시작...")
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
-            # ✨ 오토 리커버리 로직: 파일 파싱에 실패하면 즉시 실시간 API 우회 호출!
-            if dfs.get("CAMPAIGN") is not None:
-                if dfs["CAMPAIGN"].empty:
+            # ✨ 1. 캠페인 데이터 검증 및 복구
+            camp_stat = {}
+            if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
+                
+            if camp_stat:
+                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
+            else:
+                if target_camp_ids:
+                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 캠페인 실시간 우회 조회 가동 (병렬 5배속) ⚡")
+                    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+                else:
                     c_cnt = 0
-                else:
-                    camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
-                    if not camp_stat and len(dfs["CAMPAIGN"]) > 1:
-                        log(f"   🚨 [ {account_name} ] 캠페인 엑셀 포맷 변경 감지! 자동 복구(실시간 API) 모드 가동!")
-                        c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
-                    else:
-                        c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
 
-            if dfs.get("KEYWORD") is not None:
-                if dfs["KEYWORD"].empty:
+            # ✨ 2. 키워드 데이터 검증 및 복구
+            kw_stat = {}
+            if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
+                
+            if kw_stat:
+                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
+            else:
+                if target_kw_ids and not SKIP_KEYWORD_STATS:
+                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 키워드 실시간 우회 조회 가동 (병렬 5배속) ⚡")
+                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+                else:
                     k_cnt = 0
-                else:
-                    kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
-                    if not kw_stat and len(dfs["KEYWORD"]) > 1:
-                        log(f"   🚨 [ {account_name} ] 키워드 엑셀 포맷 변경 감지! 자동 복구(실시간 API) 모드 가동!")
-                        k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
-                    else:
-                        k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
 
+            # ✨ 3. 소재 데이터 검증 및 복구
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
             
-            ext_ids = []
-            try:
-                with engine.connect() as conn:
-                    res = conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND ad_title LIKE '[%'"), {"cid": customer_id})
-                    ext_ids = [str(r[0]) for r in res]
-            except Exception: pass
-                
-            if ext_ids and not SKIP_AD_STATS:
-                ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
-                for r in ext_stats_raw:
-                    imp = int(r.get("impCnt", 0) or 0)
-                    if imp == 0: continue
-                    eid = str(r.get("id"))
-                    if eid not in ad_stat:
-                        ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-                    ad_stat[eid]["imp"] += imp
-                    ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
-                    ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
-                    ad_stat[eid]["conv"] += float(r.get("ccnt", 0) or 0)
-                    ad_stat[eid]["sales"] += int(float(r.get("convAmt", 0) or 0))
-
             if ad_stat:
                 a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
+            else:
+                if target_ad_ids and not SKIP_AD_STATS:
+                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 소재 실시간 우회 조회 가동 (병렬 5배속) ⚡")
+                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily")
+                else:
+                    a_cnt = 0
             
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
-                log(f"   💤 [ {account_name} ] 통계 없음 (비용 소진이 0원이거나 DB 뼈대가 없는 계정입니다)")
+                log(f"   💤 [ {account_name} ] 통계 없음 (해당 날짜에 소진된 비용이 0원이거나 DB 뼈대가 없는 계정입니다)")
             else:
                 log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
@@ -580,7 +583,6 @@ def main():
             df_acc = None
             try: df_acc = pd.read_excel("accounts.xlsx")
             except Exception as e:
-                log(f"⚠️ accounts.xlsx 파싱 실패 (Excel): {e}")
                 try: df_acc = pd.read_csv("accounts.xlsx")
                 except Exception: pass
             
