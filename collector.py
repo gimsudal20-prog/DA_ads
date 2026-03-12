@@ -143,6 +143,19 @@ def ensure_tables(engine: Engine):
                         PRIMARY KEY(dt, customer_id, campaign_id)
                     )
                 """))
+            
+            # ✨ [핵심 수정] 기존 DB 테이블에 누락된 이미지/상품명 컬럼을 강제로 추가하는 로직
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT;"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_desc TEXT;"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS pc_landing_url TEXT;"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS mobile_landing_url TEXT;"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS creative_text TEXT;"))
+                    conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS image_url TEXT;"))
+            except Exception as e:
+                log(f"⚠️ DB 스키마 업데이트 실패 (무시 가능할 수 있음): {e}")
+
             break
         except Exception as e:
             time.sleep(3)
@@ -171,6 +184,9 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
+            if attempt == 2:
+                # ✨ 에러를 숨기지 않고 출력하도록 수정
+                log(f"⚠️ [{table}] DB 저장 중 치명적 오류 발생: {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -204,10 +220,12 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
-        except Exception:
+        except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
+            if attempt == 2:
+                log(f"⚠️ [{table}] 통계 DB 저장 중 치명적 오류 발생: {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -488,7 +506,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         
-        # ✨ [버그 수정] 누락되어 있던 구조 데이터(캠페인/그룹/키워드/소재 및 쇼핑이미지) 동기화 로직 복구
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터(캠페인/그룹/키워드/소재 및 이미지) 동기화 시작...")
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
