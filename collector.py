@@ -126,6 +126,7 @@ def ensure_tables(engine: Engine):
     for attempt in range(3):
         try:
             with engine.begin() as conn:
+                # 1. 테이블 생성
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
@@ -143,7 +144,14 @@ def ensure_tables(engine: Engine):
                         PRIMARY KEY(dt, customer_id, campaign_id)
                     )
                 """))
-            
+                
+                # 2. ✨ DB 검색 속도를 미친듯이 높여줄 '인덱스(목차)' 생성 추가 (Timeout 방지)
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_keyword_cid ON dim_keyword(customer_id);"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_ad_cid ON dim_ad(customer_id);"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_campaign_cid ON dim_campaign(customer_id);"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_dt_cid ON fact_keyword_daily(dt, customer_id);"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_dt_cid ON fact_ad_daily(dt, customer_id);"))
+
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT;"))
@@ -250,7 +258,6 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
         return data_owner
     return data if ok and isinstance(data, list) else []
 
-# ✨ [완벽 수정] 네이버 API의 JSON 문자열 변칙을 정확히 해석하고 ID 덮어씌우기를 방지합니다.
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     image_url = ""
@@ -291,10 +298,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
 
     title = title or ad_inner.get("headline") or ad_inner.get("title") or ""
     desc = ad_inner.get("description") or ad_inner.get("desc") or ad_inner.get("addPromoText") or ""
-    
-    # 🚨 [수정 내용]
-    # title이 없을 때 일반 소재 ID(adName)로 억지로 덮어쓰던 과거 로직을 완전히 삭제했습니다.
-    # 사용자의 요청대로 설정된 노출용 상품명이 없으면 깔끔하게 빈칸으로 남겨둡니다!
     
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
