@@ -47,7 +47,7 @@ def die(msg: str):
     sys.exit(1)
 
 if not API_KEY or not API_SECRET:
-    die("API_KEY 또는 API_SECRET이 설정되지 않았습니다. 깃허브 Secrets 설정을 확인해주세요.")
+    die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 
 thread_local = threading.local()
 
@@ -76,7 +76,6 @@ def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
 
 def request_json(method: str, path: str, customer_id: str, params: dict | None = None, json_data: dict | None = None, raise_error=True) -> Tuple[int, Any]:
     url = BASE_URL + path
-    # ✨ 디도스 차단 시 넉넉하게 재시도하도록 횟수 상향
     max_retries = 8
     session = get_session()
     
@@ -88,7 +87,6 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 if raise_error: raise requests.HTTPError(f"403 Forbidden: 권한이 없습니다 ({customer_id})", response=r)
                 return 403, None
             if r.status_code == 429 or r.status_code >= 500:
-                # ✨ 네이버 차단을 풀기 위한 스태거링(시간차) 대기 로직
                 time.sleep(2 + attempt + random.uniform(0.1, 1.5))
                 continue
             data = None
@@ -329,20 +327,18 @@ def cleanup_ghost_reports(customer_id: str):
 def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame | None]:
     cleanup_ghost_reports(customer_id)
     results = {tp: None for tp in report_types}
-    session = get_session()
     
     for i in range(0, len(report_types), 3):
         batch = report_types[i:i+3]
         jobs = {}
         for tp in batch:
-            # ✨ 동시 실행 차단을 막기 위해 리포트 생성 전 0.5초~1.5초 스태거링
             time.sleep(random.uniform(0.5, 1.5)) 
             payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
             
-        max_wait = 25
+        max_wait = 35
         while jobs and max_wait > 0:
             for tp, job_id in list(jobs.items()):
                 s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
@@ -352,11 +348,16 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         dl_url = s_data.get("downloadUrl")
                         if dl_url:
                             try:
-                                r = session.get(dl_url, timeout=60)
-                                r.encoding = 'utf-8'
-                                txt = r.text.strip()
-                                if txt: results[tp] = pd.read_csv(io.StringIO(txt), sep='\t', header=None)
-                                else: results[tp] = pd.DataFrame()
+                                # ✨ 세션 헤더 꼬임 방지 + 스마트 파서 도입 (탭/쉼표 자동 인식)
+                                r = requests.get(dl_url, timeout=60)
+                                if r.status_code == 200:
+                                    r.encoding = 'utf-8'
+                                    txt = r.text.strip()
+                                    if txt:
+                                        sep = '\t' if '\t' in txt else ','
+                                        results[tp] = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str)
+                                    else:
+                                        results[tp] = pd.DataFrame()
                             except Exception: pass
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
@@ -373,7 +374,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
     return results
 
 def normalize_header(v: str) -> str:
-    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "")
+    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [normalize_header(h) for h in headers]
@@ -402,13 +403,13 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
     scan_limit = min(20, len(df))
     norm_pk_cands = [normalize_header(c) for c in pk_cands]
     for i in range(scan_limit):
-        row_vals = [normalize_header(x) for x in df.iloc[i].fillna("")]
+        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
         if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
             header_idx = i
             break
             
     if header_idx != -1:
-        headers = [normalize_header(x) for x in df.iloc[header_idx].fillna("")]
+        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
         df = df.iloc[header_idx+1:].reset_index(drop=True)
         pk_idx = get_col_idx(headers, pk_cands)
         conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
@@ -478,30 +479,49 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...") 
     
     try:
+        target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
+        if skip_dim:
+            with engine.connect() as conn:
+                target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
+            if not target_camp_ids:
+                log(f"   ⚠️ [ {account_name} ] DB에 사전 수집된 캠페인 정보(뼈대)가 없어 데이터를 매칭할 수 없습니다. (일반 수집 1회 선행 필수)")
+        
         if target_date == date.today():
-            # 당일 실시간 로직은 변경 없음
             pass
         else:
             log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중... (최대 30초 소요)")
-            
             report_types = ["CAMPAIGN", "KEYWORD", "AD"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
-            
             log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! DB 적재 시작...")
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
-            # ✨ [핵심 조치] 리포트 실패 시 6시간 폭주를 유발했던 우회 조회(Fallback) 로직을 백필(과거수집)에서는 완벽히 삭제했습니다.
+            # ✨ 오토 리커버리 로직: 파일 파싱에 실패하면 즉시 실시간 API 우회 호출!
             if dfs.get("CAMPAIGN") is not None:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
-                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
+                if dfs["CAMPAIGN"].empty:
+                    c_cnt = 0
+                else:
+                    camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
+                    if not camp_stat and len(dfs["CAMPAIGN"]) > 1:
+                        log(f"   🚨 [ {account_name} ] 캠페인 엑셀 포맷 변경 감지! 자동 복구(실시간 API) 모드 가동!")
+                        c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+                    else:
+                        c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
 
             if dfs.get("KEYWORD") is not None:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
-                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
+                if dfs["KEYWORD"].empty:
+                    k_cnt = 0
+                else:
+                    kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
+                    if not kw_stat and len(dfs["KEYWORD"]) > 1:
+                        log(f"   🚨 [ {account_name} ] 키워드 엑셀 포맷 변경 감지! 자동 복구(실시간 API) 모드 가동!")
+                        k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+                    else:
+                        k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
 
             ad_stat = {}
-            if dfs.get("AD") is not None:
+            if dfs.get("AD") is not None and not dfs["AD"].empty:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
             
             ext_ids = []
@@ -514,10 +534,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if ext_ids and not SKIP_AD_STATS:
                 ext_stats_raw = get_stats_range(customer_id, ext_ids, target_date)
                 for r in ext_stats_raw:
+                    imp = int(r.get("impCnt", 0) or 0)
+                    if imp == 0: continue
                     eid = str(r.get("id"))
                     if eid not in ad_stat:
                         ad_stat[eid] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-                    ad_stat[eid]["imp"] += int(r.get("impCnt", 0) or 0)
+                    ad_stat[eid]["imp"] += imp
                     ad_stat[eid]["clk"] += int(r.get("clkCnt", 0) or 0)
                     ad_stat[eid]["cost"] += int(float(r.get("salesAmt", 0) or 0))
                     ad_stat[eid]["conv"] += float(r.get("ccnt", 0) or 0)
@@ -526,7 +548,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if ad_stat:
                 a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
             
-            log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+                log(f"   💤 [ {account_name} ] 통계 없음 (비용 소진이 0원이거나 DB 뼈대가 없는 계정입니다)")
+            else:
+                log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
