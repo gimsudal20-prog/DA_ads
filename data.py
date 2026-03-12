@@ -438,10 +438,11 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
     
+    # ✨ [핵심 수정] DB에서 이미지 및 상품명 컬럼을 확실하게 조회하도록 쿼리문 수정
     ad_cols = get_table_columns(_engine, "dim_ad")
-    url_col = "pc_landing_url" if "pc_landing_url" in ad_cols else "landing_url"
-    ad_title_col = "ad_title" if "ad_title" in ad_cols else "ad_name"
-    image_select_sql = "ad.image_url" if "image_url" in ad_cols else "''"
+    url_select = "ad.pc_landing_url as landing_url" if "pc_landing_url" in ad_cols else "'' as landing_url"
+    title_select = "ad.ad_title" if "ad_title" in ad_cols else "ad.ad_name as ad_title"
+    image_select = "ad.image_url" if "image_url" in ad_cols else "'' as image_url"
     
     type_filter_sql = ""
     if type_sel:
@@ -475,7 +476,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         SELECT 
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, ad.ad_name, ad.{ad_title_col} as ad_title, {image_select_sql} as image_url, ad.{url_col} as landing_url,
+            a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
