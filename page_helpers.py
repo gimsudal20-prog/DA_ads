@@ -109,7 +109,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
                 d2 = today
                 d1 = date(today.year, today.month, 1)
             elif period_mode == "지난 주":
-                # 월요일(0) ~ 일요일(6) 기준으로 지난 주 계산
                 d2 = today - timedelta(days=today.weekday() + 1)
                 d1 = today - timedelta(days=today.weekday() + 7)
             elif period_mode == "지난 달": 
@@ -153,12 +152,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
         if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
-            st.rerun()
-            
-        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-        # ✨ 강력한 캐시 삭제 버튼 추가: 이것을 누르면 이전 구조 데이터의 기억을 강제로 삭제합니다.
-        if st.button("🔄 캐시 완전 삭제 및 새로고침", key="btn_clear_cache", use_container_width=True):
-            st.cache_data.clear()
             st.rerun()
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
@@ -243,9 +236,8 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
 def style_table_deltas(val):
     if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        # ✨ 표 내부 데이터: 상승=초록색, 하락=빨간색으로 통일
-        if "▲" in val: return "color: #58B04B; font-weight: 700;" # Green (상승)
-        if "▼" in val: return "color: #FF025D; font-weight: 700;" # Red (하락)
+        if "▲" in val: return "color: #58B04B; font-weight: 700;" 
+        if "▼" in val: return "color: #FF025D; font-weight: 700;" 
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
@@ -422,7 +414,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     left_rows = _board_rows(rows, is_right=False)
     right_rows = _board_rows(rows, is_right=True)
 
-    # ✨ 위젯 칩 색상: 상승=초록색, 하락=빨간색으로 통일
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
         <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
@@ -507,10 +498,9 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:#999999; font-weight:600; }}
         .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
         
-        /* 칩 컬러 수정 */
-        .delta-up {{ background:#EAF7E9; color:#58B04B; }} /* 초록 (상승) */
-        .delta-down {{ background:#FFE6EE; color:#FF025D; }} /* 빨강 (하락) */
-        .delta-flat {{ background:#E5E6E9; color:#666666; }} /* 회색 (변동없음) */
+        .delta-up {{ background:#EAF7E9; color:#58B04B; }} 
+        .delta-down {{ background:#FFE6EE; color:#FF025D; }} 
+        .delta-flat {{ background:#E5E6E9; color:#666666; }} 
         .rate {{ color:#666666; font-weight:600; }}
     </style>
     """).strip()
