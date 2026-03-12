@@ -220,6 +220,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
+            # ✨ ad_id 컬럼이 있다면 '상품id'로 맵핑 추가
+            if "ad_id" in view_shop.columns:
+                view_shop["상품id"] = view_shop["ad_id"]
+
             view_shop = _filter_shopping_general_ads(view_shop, allow_unknown_type=True)
 
             if not view_shop.empty:
@@ -231,7 +235,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0)
                 view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
-                # ✨ 이미지 컬럼 정리 (None 등의 문자열을 진짜 빈칸으로 치환)
+                # ✨ 이미지 컬럼 정리
                 if "image_url" in view_shop.columns:
                     view_shop["image_url"] = view_shop["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
                     view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
@@ -245,11 +249,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if "노출용 상품명" in view_shop.columns:
                     view_shop["노출용 상품명"] = view_shop["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
 
-                # 🚨 과거의 억지 덮어쓰기 로직 전면 삭제!
-                # is_invalid_title, is_valid_name, np.where(...) 등 모두 제거
-                # 이제 노출용 상품명이 비어있으면 깨끗하게 빈칸 그대로 출력됩니다.
-
-                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
+                # ✨ "상품/소재명"을 지우고 "상품id"로 대체
+                base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품id"]
                 if "avg_rank" in view_shop.columns:
                     view_shop["평균순위"] = view_shop["avg_rank"].apply(_format_avg_rank)
                     base_cols_shop.append("평균순위")
@@ -422,6 +423,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
                 
+                # ✨ ad_id 컬럼이 있다면 '상품id'로 맵핑 추가
+                if "ad_id" in view.columns:
+                    view["상품id"] = view["ad_id"]
+                    
                 view = _filter_shopping_general_ads(view, allow_unknown_type=True)
                 
                 if view.empty:
@@ -435,12 +440,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                     
-                    # ✨ 이미지 컬럼 정리
                     if "image_url" in view.columns:
                         view["image_url"] = view["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
                         view = view.rename(columns={"image_url": "소재이미지"})
                         
-                    # ✨ 노출용 상품명 컬럼 정리
                     if "ad_title" in view.columns:
                         view = view.rename(columns={"ad_title": "노출용 상품명"})
                     elif "상품/소재명" in view.columns:
@@ -449,7 +452,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     if "노출용 상품명" in view.columns:
                         view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
 
-                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
+                    # ✨ "상품/소재명"을 지우고 "상품id"로 대체
+                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품id"]
                     
                     valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view.columns and (base_shop_bundle is not None and k in base_shop_bundle.columns)]
                     if valid_keys:
@@ -482,3 +486,4 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                         
                     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>쇼핑검색 일반 상품 기간 비교 표</div>", unsafe_allow_html=True)
                     render_big_table(styled_cmp, "shop_cmp_grid", 500)
+
