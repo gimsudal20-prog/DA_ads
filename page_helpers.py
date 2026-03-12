@@ -1,623 +1,503 @@
 # -*- coding: utf-8 -*-
+"""page_helpers.py - Shared UI helpers, filters, and rendering logic for pages."""
+
 from __future__ import annotations
 
 import os
-import time
-import json
-import hmac
-import base64
-import hashlib
-import argparse
-import sys
-import io
-import random
-import threading
-import concurrent.futures
-from datetime import datetime, date, timedelta
-from typing import Any, Dict, List, Tuple
-
-import requests
+import textwrap
+import numpy as np
 import pandas as pd
-import psycopg2
-import psycopg2.extras
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+import streamlit as st
+from datetime import date, timedelta
+from typing import Dict, List
 
-load_dotenv(override=False)
+from data import *
+from ui import *
+from data import pct_change, pct_to_arrow
 
-API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
-API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or "").strip()
-DB_URL = os.getenv("DATABASE_URL", "").strip()
-CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
+BUILD_TAG = os.getenv("APP_BUILD", "")
+TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
+TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
+TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
-BASE_URL = "https://api.searchad.naver.com"
-TIMEOUT = 60
+def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
+    if meta is None or meta.empty: return []
+    df = meta.copy()
+    if manager_sel and "manager" in df.columns:
+        sel = [str(x).strip() for x in manager_sel if str(x).strip()]
+        if sel: df = df[df["manager"].astype(str).str.strip().isin(sel)]
+    if account_sel and "account_name" in df.columns:
+        sel = [str(x).strip() for x in account_sel if str(x).strip()]
+        if sel: df = df[df["account_name"].astype(str).str.strip().isin(sel)]
+    if "customer_id" not in df.columns: return []
+    s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
+    return sorted(s.drop_duplicates().tolist())
 
-SKIP_KEYWORD_DIM = False
-SKIP_AD_DIM = False
-SKIP_KEYWORD_STATS = False  
-SKIP_AD_STATS = False       
+def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
+    try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
+    except Exception: return col.multiselect(label, options, default=default, key=key)
 
-def log(msg: str):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
+    delta = (d2 - d1).days + 1
+    if delta == 1: return ["비교 안함", "전일대비"]
+    elif delta == 7: return ["비교 안함", "전주대비"]
+    elif 28 <= delta <= 31: return ["비교 안함", "전월대비"]
+    else: return ["비교 안함", "이전 같은 기간 대비"]
 
-def die(msg: str):
-    log(f"❌ FATAL: {msg}")
-    sys.exit(1)
+def period_compare_range(d1: date, d2: date, cmp_mode: str):
+    delta = (d2 - d1).days + 1
+    if cmp_mode == "전일대비":
+        return d1 - timedelta(days=1), d2 - timedelta(days=1)
+    elif cmp_mode == "전주대비":
+        return d1 - timedelta(days=7), d2 - timedelta(days=7)
+    else:
+        return d1 - timedelta(days=delta), d1 - timedelta(days=1)
 
-if not API_KEY or not API_SECRET:
-    die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
+def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
+    today = date.today()
+    default_end = today - timedelta(days=1)
+    default_start = default_end
 
-thread_local = threading.local()
+    if "filters_v8" not in st.session_state:
+        st.session_state["filters_v8"] = {
+            "q": "", "manager": [], "account": [], "type_sel": [],
+            "period_mode": "어제", "d1": default_start, "d2": default_end,
+            "top_n_keyword": 300, "top_n_ad": 200, "top_n_campaign": 200, "prefetch_warm": True,
+        }
+    sv = st.session_state["filters_v8"]
 
-def get_session():
-    if not hasattr(thread_local, "session"):
-        thread_local.session = requests.Session()
-    return thread_local.session
+    managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
+    accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
-def now_millis() -> str: return str(int(time.time() * 1000))
+    with st.sidebar:
+        st.markdown("<div class='nav-sidebar-title'>조회 조건 설정</div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
-def sign_path_only(method: str, path: str, timestamp: str, secret: str) -> str:
-    msg = f"{timestamp}.{method}.{path}".encode("utf-8")
-    dig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
-    return base64.b64encode(dig).decode("utf-8")
+        manager_sel = sv.get("manager", [])
 
-def make_headers(method: str, path: str, customer_id: str) -> Dict[str, str]:
-    ts = now_millis()
-    sig = sign_path_only(method.upper(), path, ts, API_SECRET)
+        st.markdown("**📅 기간 선택**")
+        period_options = ["어제", "오늘", "지난주", "최근 7일", "최근 30일", "이번 달", "지난 달", "직접 선택"]
+        current_mode = sv.get("period_mode", "어제")
+        if current_mode not in period_options:
+            current_mode = "어제"
+            
+        period_mode = st.selectbox(
+            "기간 간편 선택",
+            period_options,
+            index=period_options.index(current_mode),
+            key="f_period_mode",
+            label_visibility="collapsed"
+        )
+
+        if period_mode == "직접 선택":
+            c1, c2 = st.columns(2)
+            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1")
+            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2")
+        else:
+            if period_mode == "오늘": d2 = d1 = today
+            elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
+            elif period_mode == "지난주": 
+                d1 = today - timedelta(days=today.weekday() + 7)
+                d2 = d1 + timedelta(days=6)
+            elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=29)
+            elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
+            elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
+            else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
+            c1, c2 = st.columns(2)
+            c1.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
+            c2.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
+
+        if period_mode == "오늘":
+            st.warning("⚠️ '오늘' 데이터는 매체 수집 지연이 있을 수 있습니다.")
+
+        st.divider()
+
+        st.markdown("**👤 담당자 및 계정**")
+        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체")
+
+        accounts_by_mgr = accounts
+        if manager_sel:
+            try:
+                dfm = meta.copy()
+                if "manager" in dfm.columns and "account_name" in dfm.columns:
+                    dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
+                    accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
+            except Exception:
+                pass
+
+        prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
+        account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
+
+        st.divider()
+        
+        st.markdown("**⚙️ 상세 필터**")
+        q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
+        type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
+
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        
+        if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
+            st.rerun()
+
+    sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
+    st.session_state["filters_v8"] = sv
+
+    cids = resolve_customer_ids(meta, manager_sel, account_sel)
+
     return {
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Timestamp": ts,
-        "X-API-KEY": API_KEY,
-        "X-Customer": str(customer_id),
-        "X-Signature": sig,
+        "q": sv["q"], "manager": sv["manager"], "account": sv["account"], "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
+        "start": d1, "end": d2, "period_mode": period_mode, "customer_ids": cids, "selected_customer_ids": cids,
+        "top_n_keyword": int(sv.get("top_n_keyword", 300)), "top_n_ad": int(sv.get("top_n_ad", 200)), "top_n_campaign": int(sv.get("top_n_campaign", 200)),
+        "ready": True,
     }
 
-def request_json(method: str, path: str, customer_id: str, params: dict | None = None, json_data: dict | None = None, raise_error=True) -> Tuple[int, Any]:
-    url = BASE_URL + path
-    max_retries = 8
-    session = get_session()
+def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or meta is None or meta.empty: return df
+    out = df.copy()
+    out["customer_id"] = pd.to_numeric(out["customer_id"], errors="coerce").astype("Int64")
+    out = out.dropna(subset=["customer_id"]).copy()
+    out["customer_id"] = out["customer_id"].astype("int64")
+    meta_copy = meta.copy()
+    meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
+    return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
+
+def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_keys: list) -> pd.DataFrame:
+    if df_prev is None or df_prev.empty or df_cur is None or df_cur.empty:
+        return df_cur
+        
+    df_cur_copy = df_cur.copy()
+    valid_join_keys = [k for k in join_keys if k in df_cur_copy.columns and k in df_prev.columns]
+    if not valid_join_keys: return df_cur_copy
     
-    for attempt in range(max_retries):
-        headers = make_headers(method, path, customer_id)
-        try:
-            r = session.request(method, url, headers=headers, params=params, json=json_data, timeout=TIMEOUT)
-            if r.status_code == 403:
-                if raise_error: raise requests.HTTPError(f"403 Forbidden: 권한이 없습니다 ({customer_id})", response=r)
-                return 403, None
-            if r.status_code == 429 or r.status_code >= 500:
-                time.sleep(2 + attempt + random.uniform(0.1, 1.5))
-                continue
-            data = None
-            try: data = r.json()
-            except Exception as e: data = r.text
-            if raise_error and r.status_code >= 400:
-                raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
-            return r.status_code, data
-        except requests.exceptions.RequestException as e:
-            if "403" in str(e): raise e
-            time.sleep(2 + attempt)
-    if raise_error: raise Exception(f"최대 재시도 초과: {url}")
-    return 0, None
-
-def safe_call(method: str, path: str, customer_id: str, params: dict | None = None) -> Tuple[bool, Any]:
-    try:
-        _, data = request_json(method, path, customer_id, params=params, raise_error=True)
-        return True, data
-    except Exception as e:
-        return False, None
-
-# ✨ DB 커넥션 및 타임아웃 안정화 설정 반영 완료
-def get_engine() -> Engine:
-    if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
-    db_url = DB_URL
-    if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
-    return create_engine(
-        db_url, 
-        pool_size=15, 
-        max_overflow=30, 
-        pool_pre_ping=True,
-        pool_recycle=1800,  # 30분 단위로 끊어진 연결 정리
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, # 타임아웃 5분(300초)으로 연장
-        future=True
-    )
-
-def ensure_tables(engine: Engine):
-    for attempt in range(3):
-        try:
-            with engine.begin() as conn:
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
-                        dt DATE,
-                        customer_id TEXT,
-                        campaign_id TEXT,
-                        off_time TEXT,
-                        PRIMARY KEY(dt, customer_id, campaign_id)
-                    )
-                """))
-            break
-        except Exception as e:
-            time.sleep(3)
-            if attempt == 2: raise e
-
-def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
-    if not rows: return
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in pk_cols]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    pk_str = ", ".join([f'"{c}"' for c in pk_cols])
-    conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols]) if update_cols else f'ON CONFLICT ({pk_str}) DO NOTHING'
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    for k in valid_join_keys:
+        df_cur_copy[k] = df_cur_copy[k].astype(str)
+        df_prev[k] = df_prev[k].astype(str)
+        
+    val_cols = [c for c in ['cost', 'sales', 'conv', 'clk', 'imp'] if c in df_prev.columns]
+    base_tmp = df_prev[valid_join_keys + val_cols].copy()
     
-    tuples = list(df.itertuples(index=False, name=None))
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-            raw_conn.commit()
-            break
-        except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
-
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    if not rows: return
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+    for c in val_cols:
+        base_tmp[c] = pd.to_numeric(base_tmp[c], errors='coerce').fillna(0)
+        
+    base_tmp = base_tmp.groupby(valid_join_keys, as_index=False).sum()
+    base_tmp.rename(columns={'cost':'p_cost', 'sales':'p_sales', 'conv':'p_conv', 'clk':'p_clk', 'imp':'p_imp'}, inplace=True)
     
-    for attempt in range(3):
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
-            break
-        except Exception:
-            time.sleep(3)
-            
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
-    tuples = list(df.itertuples(index=False, name=None))
+    out = df_cur_copy.merge(base_tmp, on=valid_join_keys, how='left')
+    for c in ['p_cost', 'p_sales', 'p_conv', 'p_clk', 'p_imp']:
+        if c in out.columns: out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0)
+        else: out[c] = 0
+        
+    cur_cost = pd.to_numeric(out.get("광고비", 0), errors='coerce').fillna(0)
+    cur_sales = pd.to_numeric(out.get("전환매출", 0), errors='coerce').fillna(0)
+    cur_conv = pd.to_numeric(out.get("전환", 0), errors='coerce').fillna(0)
+    cur_roas = pd.to_numeric(out.get("ROAS(%)", 0), errors='coerce').fillna(0)
     
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-            raw_conn.commit()
-            break
-        except Exception:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
-
-def list_campaigns(customer_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
-    return data if ok and isinstance(data, list) else []
-
-def list_adgroups(customer_id: str, campaign_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": campaign_id})
-    return data if ok and isinstance(data, list) else []
-
-def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/keywords", customer_id, {"nccAdgroupId": adgroup_id})
-    return data if ok and isinstance(data, list) else []
-
-def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
-    if ok and isinstance(data, list) and data:
-        return data
-    ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
-    if ok_owner and isinstance(data_owner, list):
-        return data_owner
-    return data if ok and isinstance(data, list) else []
-
-def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
-    return data if ok and isinstance(data, list) else []
-
-def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
-    ad_inner = ad_obj.get("ad", {})
-    image_url = ""
-    if "image" in ad_inner and isinstance(ad_inner["image"], dict):
-        image_url = ad_inner["image"].get("imageUrl", "")
-    if not image_url:
-        image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
-
-    title = ad_inner.get("headline") or ad_inner.get("title") or ""
-    desc = ad_inner.get("description") or ad_inner.get("desc") or ""
+    out["광고비 증감(%)"] = np.where(out["p_cost"] > 0, (cur_cost - out["p_cost"]) / out["p_cost"] * 100, np.where(cur_cost > 0, 100.0, 0.0))
+    p_roas = np.where(out["p_cost"] > 0, (out["p_sales"] / out["p_cost"]) * 100, 0.0)
+    out["p_roas"] = p_roas  
     
-    if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
-        sp = ad_inner["shoppingProduct"]
-        title = title or sp.get("name") or sp.get("productName") or ""
-        if not image_url: image_url = sp.get("imageUrl", "")
-            
-    if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
-        val_data = ad_inner["valData"]
-        title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
-        if not image_url: image_url = val_data.get("imageUrl") or val_data.get("image") or ""
+    out["ROAS 증감(%)"] = cur_roas - p_roas
+    out["전환 증감"] = cur_conv - out["p_conv"]
+    
+    def fmt_pct(x):
+        if pd.isna(x) or x == 0: return "-"
+        return f"▲ {x:.2f}%" if x > 0 else (f"▼ {abs(x):.2f}%" if x < 0 else "-")
+    def fmt_diff(x):
+        if pd.isna(x) or x == 0: return "-"
+        return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
+        
+    roas_delta_col = "ROAS 증감(%)"
+    if roas_delta_col not in out.columns and "ROAS 증(%)" in out.columns:
+        out[roas_delta_col] = out["ROAS 증(%)"]
+    if roas_delta_col not in out.columns:
+        out[roas_delta_col] = 0
 
-    if "addPromoText" in ad_inner: desc = desc or ad_inner["addPromoText"]
-    if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
-    if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
+    out["광고비 증감(%)"] = out["광고비 증감(%)"].apply(fmt_pct)
+    out[roas_delta_col] = pd.to_numeric(out[roas_delta_col], errors='coerce').fillna(0).apply(fmt_pct)
+    out["전환 증감"] = out["전환 증감"].apply(fmt_diff)
     
-    if not title:
-        for k, v in ad_inner.items():
-            if isinstance(v, dict) and v.get("name"): 
-                title = v.get("name")
-                break
-    if not title: title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
-    
-    pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
-    m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
-    creative_text = f"{title} | {desc}".strip(" |")
-    if pc_url: creative_text += f" | {pc_url}"
-    
-    return {
-        "ad_title": str(title)[:200], "ad_desc": str(desc)[:200], 
-        "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], 
-        "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]
-    }
-
-def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
-    if not ids: return []
-    out = []
-    d_str = d1.strftime("%Y-%m-%d")
-    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
-    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
-    
-    chunks = [ids[i:i+50] for i in range(0, len(ids), 50)]
-    
-    def fetch_chunk(chunk):
-        params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
-        status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data:
-            return data["data"]
-        return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = executor.map(fetch_chunk, chunks)
-        for res in results:
-            out.extend(res)
     return out
 
-def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
-    if not ids: return 0
-    raw_stats = get_stats_range(customer_id, ids, target_date)
-    if not raw_stats: return 0
+def style_table_deltas(val):
+    if pd.isna(val) or val == "-" or val == "": 
+        return ""
+    if isinstance(val, str):
+        v_str = val.strip()
+        if "▲" in v_str or v_str.startswith("+"): 
+            return "color: #58B04B; font-weight: 700;"
+        if "▼" in v_str or v_str.startswith("-"): 
+            return "color: #FF025D; font-weight: 700;"
+    elif isinstance(val, (int, float)):
+        if val > 0: 
+            return "color: #58B04B; font-weight: 700;"
+        elif val < 0: 
+            return "color: #FF025D; font-weight: 700;"
+    return ""
+
+def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
+    pass 
+
+def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
+    pass 
+
+def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
+    st.markdown("<div class='nv-sec-title'>소재 A/B 비교 (상위 2개)</div>", unsafe_allow_html=True)
+    st.caption(f"조회 기간: {d1} ~ {d2}")
     
-    rows = []
-    for r in raw_stats:
-        imp = int(r.get("impCnt", 0) or 0)
-        cost = int(float(r.get("salesAmt", 0) or 0))
-        if imp == 0 and cost == 0: continue 
-        
-        sales = int(float(r.get("convAmt", 0) or 0))
-        clk = int(r.get("clkCnt", 0) or 0)
-        conv = float(r.get("ccnt", 0) or 0)
-        roas = (sales / cost * 100) if cost > 0 else 0.0
-        row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas}
-        if id_key in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
-        rows.append(row)
-        
-    if rows: replace_fact_range(engine, table_name, rows, customer_id, target_date)
-    return len(rows)
-
-def cleanup_ghost_reports(customer_id: str):
-    status, data = request_json("GET", "/stat-reports", customer_id, raise_error=False)
-    if status == 200 and isinstance(data, list):
-        for job in data:
-            if job_id := job.get("reportJobId"):
-                safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-
-def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], target_date: date) -> Dict[str, pd.DataFrame | None]:
-    cleanup_ghost_reports(customer_id)
-    results = {tp: None for tp in report_types}
-    
-    for i in range(0, len(report_types), 3):
-        batch = report_types[i:i+3]
-        jobs = {}
-        for tp in batch:
-            time.sleep(random.uniform(0.5, 1.5)) 
-            payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
-            status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
-            if status == 200 and data and "reportJobId" in data:
-                jobs[tp] = data["reportJobId"]
-            
-        max_wait = 35
-        while jobs and max_wait > 0:
-            for tp, job_id in list(jobs.items()):
-                s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
-                if s_status == 200 and s_data:
-                    stt = s_data.get("status")
-                    if stt == "BUILT":
-                        dl_url = s_data.get("downloadUrl")
-                        if dl_url:
-                            try:
-                                r = requests.get(dl_url, timeout=60)
-                                if r.status_code == 200:
-                                    r.encoding = 'utf-8'
-                                    txt = r.text.strip()
-                                    if txt:
-                                        sep = '\t' if '\t' in txt else ','
-                                        results[tp] = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str)
-                                    else:
-                                        results[tp] = pd.DataFrame()
-                            except Exception: pass
-                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-                        del jobs[tp]
-                    elif stt in ["NONE", "ERROR"]:
-                        results[tp] = pd.DataFrame() if stt == "NONE" else None
-                        safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-                        del jobs[tp]
-            if jobs: time.sleep(1.0)
-            max_wait -= 1
-            
-        for job_id in jobs.values():
-            safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
-            
-    return results
-
-def normalize_header(v: str) -> str:
-    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
-
-def get_col_idx(headers: List[str], candidates: List[str]) -> int:
-    norm_headers = [normalize_header(h) for h in headers]
-    norm_candidates = [normalize_header(c) for c in candidates]
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if c == h: return i
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if c in h and "그룹" not in h: return i
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if h in c and h and "그룹" not in h: return i
-    return -1
-
-def safe_float(v) -> float:
-    if pd.isna(v): return 0.0
-    s = str(v).replace(",", "").strip()
-    if not s or s == "-": return 0.0
-    try: return float(s)
-    except Exception: return 0.0
-
-def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False) -> dict:
-    if df is None or df.empty: return {}
-    header_idx = -1
-    scan_limit = min(20, len(df))
-    norm_pk_cands = [normalize_header(c) for c in pk_cands]
-    for i in range(scan_limit):
-        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
-            header_idx = i
-            break
-            
-    if header_idx != -1:
-        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        df = df.iloc[header_idx+1:].reset_index(drop=True)
-        pk_idx = get_col_idx(headers, pk_cands)
-        conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-        sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
-        imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
-        clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
-        cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
-        rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
-    else:
-        if "CAMPAIGN" in report_tp: pk_idx = 2
-        elif "KEYWORD" in report_tp: pk_idx = 5
-        elif "AD" in report_tp: pk_idx = 5
-        else: return {}
-        imp_idx = 5 if "CAMPAIGN" in report_tp else 8
-        clk_idx = 6 if "CAMPAIGN" in report_tp else 9
-        cost_idx = 7 if "CAMPAIGN" in report_tp else 10
-        conv_idx = -1
-        sales_idx = -1
-        rank_idx = 11
-
-    if pk_idx == -1: return {}
-    
-    res = {}
-    for _, r in df.iterrows():
-        try:
-            if len(r) <= pk_idx: continue
-            obj_id = str(r.iloc[pk_idx]).strip()
-            if not obj_id or obj_id == '-': continue
-            
-            obj_id_norm = normalize_header(obj_id)
-            if obj_id_norm in ["id", "keywordid", "adid", "campaignid", "productid", "itemid", "키워드id", "광고id", "소재id", "캠페인id", "검색어id", "쇼핑검색어id"]: continue
-
-            if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
-            
-            imp = 0
-            if imp_idx != -1 and len(r) > imp_idx:
-                imp = int(safe_float(r.iloc[imp_idx]))
-                res[obj_id]["imp"] += imp
-            if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
-            if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
-            if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-            if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
-            
-            if has_rank and rank_idx != -1 and len(r) > rank_idx:
-                rnk = safe_float(r.iloc[rank_idx])
-                if rnk > 0 and imp > 0:
-                    res[obj_id]["rank_sum"] += (rnk * imp)
-                    res[obj_id]["rank_cnt"] += imp
-        except Exception: pass
-    return res
-
-def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict) -> int:
-    if not stat_res: return 0
-    rows = []
-    for k, s in stat_res.items():
-        cost = s["cost"]
-        sales = s["sales"]
-        roas = (sales / cost * 100.0) if cost > 0 else 0.0
-        avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
-        row = {"dt": target_date, "customer_id": str(customer_id), pk_name: k, "imp": s["imp"], "clk": s["clk"], "cost": cost, "conv": s["conv"], "sales": sales, "roas": roas}
-        if pk_name in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = round(avg_rnk, 2)
-        rows.append(row)
-    replace_fact_range(engine, table_name, rows, customer_id, target_date)
-    return len(rows)
-
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
-    log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...") 
-    
-    try:
-        target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
-        if skip_dim:
-            with engine.connect() as conn:
-                target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-                target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-        
-        if target_date == date.today():
-            pass
-        else:
-            log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
-            report_types = ["CAMPAIGN", "KEYWORD", "AD"]
-            dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
-            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 시작...")
-            
-            c_cnt, k_cnt, a_cnt = 0, 0, 0
-            
-            # ✨ 1. 캠페인 데이터 검증 및 복구
-            camp_stat = {}
-            if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
-                
-            if camp_stat:
-                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
-            else:
-                if target_camp_ids:
-                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 캠페인 실시간 우회 조회 가동 (병렬 5배속) ⚡")
-                    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
-                else:
-                    c_cnt = 0
-
-            # ✨ 2. 키워드 데이터 검증 및 복구
-            kw_stat = {}
-            if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
-                
-            if kw_stat:
-                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
-            else:
-                if target_kw_ids and not SKIP_KEYWORD_STATS:
-                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 키워드 실시간 우회 조회 가동 (병렬 5배속) ⚡")
-                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
-                else:
-                    k_cnt = 0
-
-            # ✨ 3. 소재 데이터 검증 및 복구
-            ad_stat = {}
-            if dfs.get("AD") is not None and not dfs["AD"].empty:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
-            
-            if ad_stat:
-                a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
-            else:
-                if target_ad_ids and not SKIP_AD_STATS:
-                    log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 소재 실시간 우회 조회 가동 (병렬 5배속) ⚡")
-                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily")
-                else:
-                    a_cnt = 0
-            
-            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
-                log(f"   💤 [ {account_name} ] 통계 없음 (해당 날짜에 소진된 비용이 0원이거나 DB 뼈대가 없는 계정입니다)")
-            else:
-                log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-            
-    except Exception as e:
-        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
-
-def main():
-    engine = get_engine()
-    ensure_tables(engine)
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", type=str, default="")
-    parser.add_argument("--customer_id", type=str, default="")
-    parser.add_argument("--skip_dim", action="store_true")
-    # ✨ DB 부하 방지를 위해 기본 동시 스레드를 10에서 5로 축소
-    parser.add_argument("--workers", type=int, default=5)
-    args = parser.parse_args()
-    
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
-    
-    print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
-    print("="*50 + "\n", flush=True)
-
-    accounts_info = []
-    if args.customer_id:
-        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
-    else:
-        if os.path.exists("accounts.xlsx"):
-            df_acc = None
-            try: df_acc = pd.read_excel("accounts.xlsx")
-            except Exception as e:
-                try: df_acc = pd.read_csv("accounts.xlsx")
-                except Exception: pass
-            
-            if df_acc is not None:
-                id_col, name_col = None, None
-                for c in df_acc.columns:
-                    c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
-                    if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
-                
-                if id_col and name_col:
-                    seen_ids = set()
-                    for _, row in df_acc.iterrows():
-                        cid = str(row[id_col]).strip()
-                        if cid and cid.lower() != 'nan' and cid not in seen_ids:
-                            accounts_info.append({"id": cid, "name": str(row[name_col])})
-                            seen_ids.add(cid)
-
-        if not accounts_info:
-            try:
-                with engine.connect() as conn:
-                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
-            except Exception: pass
-
-    if not accounts_info: 
-        log("⚠️ 수집할 계정이 없습니다.")
+    valid_ads = df_grp.sort_values(by=['노출', '광고비'], ascending=[False, False])
+    if len(valid_ads) < 2:
+        st.info("해당 그룹에 비교 가능한 소재가 2개 이상 없습니다.")
+        st.divider()
         return
         
-    log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
+    ad1, ad2 = valid_ads.iloc[0], valid_ads.iloc[1]
+    c1, c2 = st.columns(2)
+    
+    def _card(row, label):
+        return f"""
+        <div style='background:#FFFFFF; padding:20px; border-radius:6px; border:1px solid #D7DCE5;'>
+            <div style='text-align:center; font-size:12px; font-weight:800; color:#666666; margin-bottom:8px;'>{label}</div>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#4876EF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#666666; font-weight:600;'>광고비</span>
+                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('광고비',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:#666666; font-weight:600;'>전환매출</span>
+                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('전환매출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E5E6E9;'>
+                <span style='color:#666666; font-weight:600;'>ROAS</span>
+                <span style='font-weight:800; color:#4876EF; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#999999; font-size:13px;'>노출수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                <span style='color:#999999; font-size:13px;'>클릭수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between;'>
+                <span style='color:#999999; font-size:13px;'>전환수</span>
+                <span style='color:#444444; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
+            </div>
+        </div>
+        """
+    
+    with c1: st.markdown(_card(ad1, "소재 A"), unsafe_allow_html=True)
+    with c2: st.markdown(_card(ad2, "소재 B"), unsafe_allow_html=True)
+    st.divider()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
-        for future in concurrent.futures.as_completed(futures):
-            try: future.result()
-            except Exception: pass
+def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_base: pd.DataFrame, name_col: str, d1: date, d2: date, b1: date, b2: date):
+    items_cur = set(df_cur[name_col].dropna().astype(str).unique()) if not df_cur.empty and name_col in df_cur.columns else set()
+    items_base = set(df_base[name_col].dropna().astype(str).unique()) if not df_base.empty and name_col in df_base.columns else set()
+    all_items = sorted([x for x in list(items_cur | items_base) if str(x).strip() != ""])
 
-if __name__ == "__main__":
-    main()
+    if not all_items:
+        return
+
+    st.markdown(
+        f"<div style='font-size:15px; font-weight:700; margin-top:20px; color:#111;'>🎯 {entity_label} 상세 분석 선택</div>",
+        unsafe_allow_html=True,
+    )
+
+    query = st.text_input("항목 검색", key=f"search_detail_query_{entity_label}_{name_col}", placeholder="이름을 입력해 빠르게 찾기")
+    filtered_items = [item for item in all_items if query.lower() in item.lower()] if query else all_items
+    options = ["선택 안 함"] + filtered_items
+
+    if len(options) == 1:
+        st.info("검색 결과가 없습니다.")
+        return
+
+    selected = st.selectbox("분석 항목", options, key=f"search_detail_{entity_label}_{name_col}")
+    st.caption(f"현재 선택: {selected}" if selected != "선택 안 함" else "선택 없음")
+
+    if selected == "선택 안 함":
+        return
+
+    c_df = df_cur[df_cur[name_col] == selected] if not df_cur.empty else pd.DataFrame()
+    b_df = df_base[df_base[name_col] == selected] if not df_base.empty else pd.DataFrame()
+
+    def _sum_col(df: pd.DataFrame, candidates: list[str]) -> float:
+        if df is None or df.empty:
+            return 0.0
+        for col in candidates:
+            if col in df.columns:
+                return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+        return 0.0
+
+    def _cur_val(candidates_kr: list[str], candidates_en: list[str]) -> float:
+        return _sum_col(c_df, candidates_kr + candidates_en)
+
+    def _base_val(base_cols: list[str], prev_cols: list[str]) -> float:
+        val = _sum_col(b_df, base_cols)
+        if val > 0:
+            return val
+        return _sum_col(c_df, prev_cols)
+
+    c_cost = _cur_val(["광고비"], ["cost"])
+    c_sales = _cur_val(["전환매출"], ["sales"])
+    c_clk = _cur_val(["클릭", "클릭수"], ["clk"])
+    c_imp = _cur_val(["노출", "노출수"], ["imp"])
+    c_conv = _cur_val(["전환", "전환수"], ["conv"])
+    c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+
+    b_cost = _base_val(["광고비", "cost"], ["p_cost"])
+    b_sales = _base_val(["전환매출", "sales"], ["p_sales"])
+    b_clk = _base_val(["클릭", "클릭수", "clk"], ["p_clk"])
+    b_imp = _base_val(["노출", "노출수", "imp"], ["p_imp"])
+    b_conv = _base_val(["전환", "전환수", "conv"], ["p_conv"])
+    b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
+
+    def fmt_krw(v): return f"{int(v):,}원"
+    def fmt_num(v): return f"{int(v):,}"
+    def fmt_pct(v): return f"{v:.1f}%"
+
+    def calc_detail_delta(c, b, is_currency=False, is_pct=False):
+        diff = c - b
+        if b == 0 and c > 0: return "신규"
+        if diff == 0: return "변동 없음"
+        sign = "▲" if diff > 0 else "▼"
+        if is_currency: abs_val = f"{int(abs(diff)):,}원"
+        elif is_pct: abs_val = f"{abs(diff):.1f}%p"
+        else: abs_val = f"{int(abs(diff)):,}" if float(diff).is_integer() else f"{abs(diff):.1f}"
+        word = "증가" if diff > 0 else "감소"
+        return f"{sign} {abs_val} {word}"
+
+    def calc_delta_rate(c, b):
+        if b == 0 and c > 0: return "신규"
+        if b == 0: return "0.0%"
+        return f"{((c - b) / b) * 100:+.1f}%"
+
+    def delta_chip_text(delta_text: str):
+        if delta_text == "변동 없음": return "<span class='delta-chip delta-flat'>변동 없음</span>"
+        if delta_text == "신규": return "<span class='delta-chip delta-up'>▲ 신규</span>"
+        if delta_text.startswith("▲"): return f"<span class='delta-chip delta-up'>{delta_text}</span>"
+        return f"<span class='delta-chip delta-down'>{delta_text}</span>"
+
+    rows = [
+        {"label": "광고비", "base": fmt_krw(b_cost), "curr": fmt_krw(c_cost), "delta": calc_detail_delta(c_cost, b_cost, is_currency=True), "rate": calc_delta_rate(c_cost, b_cost), "emphasis": False},
+        {"label": "전환매출", "base": fmt_krw(b_sales), "curr": fmt_krw(c_sales), "delta": calc_detail_delta(c_sales, b_sales, is_currency=True), "rate": calc_delta_rate(c_sales, b_sales), "emphasis": False},
+        {"label": "ROAS", "base": fmt_pct(b_roas), "curr": fmt_pct(c_roas), "delta": calc_detail_delta(c_roas, b_roas, is_pct=True), "rate": calc_delta_rate(c_roas, b_roas), "emphasis": True},
+        {"label": "노출수", "base": fmt_num(b_imp), "curr": fmt_num(c_imp), "delta": calc_detail_delta(c_imp, b_imp), "rate": calc_delta_rate(c_imp, b_imp), "emphasis": False},
+        {"label": "클릭수", "base": fmt_num(b_clk), "curr": fmt_num(c_clk), "delta": calc_detail_delta(c_clk, b_clk), "rate": calc_delta_rate(c_clk, b_clk), "emphasis": False},
+        {"label": "전환수", "base": fmt_num(b_conv), "curr": fmt_num(c_conv), "delta": calc_detail_delta(c_conv, b_conv), "rate": calc_delta_rate(c_conv, b_conv), "emphasis": False},
+    ]
+
+    def _board_rows(items: list[dict], is_right: bool = False) -> str:
+        html_rows = ""
+        for r in items:
+            curr_cls = "cmp-value emphasize" if r.get("emphasis", False) else "cmp-value"
+            sub_row = (
+                f"<div class='cmp-sub'>{delta_chip_text(r['delta'])}<span class='rate'>({r['rate']})</span></div>"
+                if is_right else "<div class='cmp-sub cmp-sub-muted'>기준 값</div>"
+            )
+            value = r["curr"] if is_right else r["base"]
+            html_rows += f"""
+            <div class='cmp-row'>
+                <div class='cmp-top'>
+                    <span class='cmp-label'>{r['label']}</span>
+                    <span class='{curr_cls}'>{value}</span>
+                </div>
+                {sub_row}
+            </div>
+            """
+        return html_rows
+
+    left_rows = _board_rows(rows, is_right=False)
+    right_rows = _board_rows(rows, is_right=True)
+
+    html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
+        <div class='cmp-title'>선택 항목 상세 비교</div>
+        <div class='cmp-boards'>
+            <div class='cmp-board'>
+                <div class='cmp-board-head'>이전 기간 ({b1} ~ {b2})</div>
+                {left_rows}
+            </div>
+            <div class='cmp-board cmp-board-right'>
+                <div class='cmp-board-head'>선택 기간 ({d1} ~ {d2})</div>
+                {right_rows}
+            </div>
+        </div>
+    </div>
+    <style>
+        .cmp-wrapper {{
+            background:#FFFFFF;
+            border:1px solid #D7DCE5;
+            border-radius:6px;
+            padding:16px;
+            margin-top:10px;
+            margin-bottom:24px;
+        }}
+        .cmp-title {{
+            font-size:14px;
+            font-weight:800;
+            color:#111111;
+            margin-bottom:12px;
+            text-align:center;
+        }}
+        .cmp-boards {{
+            display:grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap:10px;
+            align-items:stretch;
+        }}
+        .cmp-board {{
+            border-radius:4px;
+            padding:10px 12px;
+            border:1px solid #E5E6E9;
+            background:#F8F9FA;
+        }}
+        .cmp-board-right {{
+            background:#F0F4FF;
+            border-color:#C2D3FF;
+        }}
+        .cmp-board-head {{
+            font-size:12px;
+            font-weight:700;
+            text-align:center;
+            margin-bottom:6px;
+            padding-bottom:8px;
+            border-bottom:1px solid #D7DCE5;
+            color:#444444;
+        }}
+
+        .cmp-row {{
+            border-top:1px solid #E5E6E9;
+            padding:8px 0;
+            min-height:44px;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+        }}
+        .cmp-row:first-child {{ border-top:none; }}
+        .cmp-top {{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:12px;
+        }}
+        .cmp-label {{ font-weight:700; font-size:13px; color:#444444; }}
+        .cmp-value {{ color:#222222; font-weight:800; font-size:16px; }}
+        .cmp-value.emphasize {{ color:#4876EF; }}
+        .cmp-sub {{
+            margin-top:4px;
+            display:flex;
+            justify-content:flex-end;
+            gap:4px;
+            align-items:center;
+            font-size:11px;
+        }}
+        .cmp-sub-muted {{ color:#999999; font-weight:600; }}
+        .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
+        
+        .delta-up {{ background:#EAF7E9; color:#58B04B; }} /* 초록 (상승) */
+        .delta-down {{ background:#FFE6EE; color:#FF025D; }} /* 빨강 (하락) */
+        .delta-flat {{ background:#E5E6E9; color:#666666; }} /* 회색 (변동없음) */
+        .rate {{ color:#666666; font-weight:600; }}
+    </style>
+    """).strip()
+    comp_height = 200 + (len(rows) * 50)
+    st.components.v1.html(html, height=max(460, comp_height), scrolling=False)
