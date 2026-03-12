@@ -32,7 +32,6 @@ def table_exists(engine, table_name: str) -> bool:
         except Exception: return False
     return table_name in st.session_state["_table_names_cache"]
 
-# ✨ [수정됨] max_entries=20 추가
 @st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     try:
@@ -41,7 +40,6 @@ def get_table_columns(_engine, table_name: str) -> list:
             return [r[0] for r in res]
     except Exception: return []
 
-# ✨ [수정됨] 범용 sql_read는 쿼리가 다양할 수 있으므로 max_entries=30 설정
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     try:
@@ -68,13 +66,23 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
         if df is not None:
-            rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
+            # ✨ 엑셀 컬럼명 유연성 강화 (collector.py와 일치)
+            rename_map = {}
+            for c in df.columns:
+                c_clean = str(c).replace(" ", "").lower()
+                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
+                    rename_map[c] = "customer_id"
+                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
+                    rename_map[c] = "account_name"
+                elif c_clean in ["담당자", "manager"]:
+                    rename_map[c] = "manager"
+                    
             df = df.rename(columns=rename_map)
             
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
-                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "고객 ID", "고객 id", "고객ID"]), None)
+                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "고객 ID", "고객 id", "고객ID", "커스텀ID", "커스텀id"]), None)
                     if cid_col and "monthly_budget" in old_df.columns:
                         budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
                         df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
@@ -92,17 +100,24 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
         st.error(f"업로드 실패: {e}")
         return {"meta": 0}
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
     if not df.empty:
-        rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
+        # ✨ DB에서 읽어올 때도 컬럼명을 유연하게 매핑
+        rename_map = {}
+        for c in df.columns:
+            c_clean = str(c).replace(" ", "").lower()
+            if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
+                rename_map[c] = "customer_id"
+            elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
+                rename_map[c] = "account_name"
+            elif c_clean in ["담당자", "manager"]:
+                rename_map[c] = "manager"
         df = df.rename(columns=rename_map)
     return df
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
@@ -124,7 +139,6 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
         df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
     return df
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     dates = {}
@@ -159,7 +173,6 @@ def format_number_commas(val) -> str:
 # 4. Data Aggregation Queries (캐싱 적용)
 # ==========================================
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
@@ -210,7 +223,15 @@ def update_monthly_budget(_engine, cid: int, val: int):
         cols = get_table_columns(_engine, "dim_customer")
         if "customer_id" not in cols:
             df = sql_read(_engine, "SELECT * FROM dim_customer")
-            rename_map = {"계정명": "account_name", "고객 ID": "customer_id", "고객ID": "customer_id", "고객 id": "customer_id", "담당자": "manager"}
+            rename_map = {}
+            for c in df.columns:
+                c_clean = str(c).replace(" ", "").lower()
+                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
+                    rename_map[c] = "customer_id"
+                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
+                    rename_map[c] = "account_name"
+                elif c_clean in ["담당자", "manager"]:
+                    rename_map[c] = "manager"
             df = df.rename(columns=rename_map)
             if "monthly_budget" not in df.columns: df["monthly_budget"] = 0
             df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
@@ -221,14 +242,12 @@ def update_monthly_budget(_engine, cid: int, val: int):
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
 
-# ✨ [수정됨] max_entries=20 추가
 @st.cache_data(ttl=600, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"): return {}
@@ -265,7 +284,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
     return row
 
-# ✨ [수정됨] 메모리 차지가 큰 함수 - max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
@@ -318,7 +336,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     df = _map_campaign_types(df, 'campaign_type')
     return df
 
-# ✨ [수정됨] 메모리 차지가 매우 큰 함수 - max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
@@ -374,7 +391,6 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-# ✨ [수정됨] 메모리 차지가 큰 함수 - max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
@@ -435,7 +451,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     df = _map_campaign_types(df, 'campaign_type_label')
     return df
 
-# ✨ [수정됨] max_entries=10 추가
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
