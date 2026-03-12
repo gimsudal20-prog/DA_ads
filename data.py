@@ -55,6 +55,19 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
         st.error(f"DB 실행 오류: {e}")
         raise e
 
+@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
+def ensure_query_indexes(_engine) -> bool:
+    """조회성 집계 쿼리(customer_id + dt 필터) 가속용 인덱스 보장."""
+    try:
+        with _engine.begin() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_campaign_daily_cid_dt ON fact_campaign_daily(customer_id, dt)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_cid_dt ON fact_keyword_daily(customer_id, dt)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_cid_dt ON fact_ad_daily(customer_id, dt)"))
+        return True
+    except Exception:
+        # 인덱스 생성 실패가 조회 자체를 막으면 안 되므로 조용히 통과
+        return False
+
 def _sql_in_str_list(lst: list) -> str:
     if not lst: return "''"
     return ",".join(f"'{str(x)}'" for x in lst)
@@ -286,6 +299,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
+    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
@@ -338,6 +352,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
+    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
     
@@ -393,6 +408,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
+    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
