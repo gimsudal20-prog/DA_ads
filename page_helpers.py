@@ -76,15 +76,10 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         manager_sel = sv.get("manager", [])
 
         st.markdown("**📅 기간 선택**")
-        period_options = ["어제", "오늘", "지난주", "최근 7일", "최근 30일", "이번 달", "지난 달", "직접 선택"]
-        current_mode = sv.get("period_mode", "어제")
-        if current_mode not in period_options:
-            current_mode = "어제"
-            
         period_mode = st.selectbox(
             "기간 간편 선택",
-            period_options,
-            index=period_options.index(current_mode),
+            ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
+            index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
             key="f_period_mode",
             label_visibility="collapsed"
         )
@@ -96,11 +91,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         else:
             if period_mode == "오늘": d2 = d1 = today
             elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
-            elif period_mode == "지난주": 
-                d1 = today - timedelta(days=today.weekday() + 7)
-                d2 = d1 + timedelta(days=6)
             elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=29)
             elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
             elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
             else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
@@ -220,19 +211,11 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     return out
 
 def style_table_deltas(val):
-    if pd.isna(val) or val == "-" or val == "": 
-        return ""
+    if pd.isna(val) or val == "-": return ""
     if isinstance(val, str):
-        v_str = val.strip()
-        if "▲" in v_str or v_str.startswith("+"): 
-            return "color: #58B04B; font-weight: 700;"
-        if "▼" in v_str or v_str.startswith("-"): 
-            return "color: #FF025D; font-weight: 700;"
-    elif isinstance(val, (int, float)):
-        if val > 0: 
-            return "color: #58B04B; font-weight: 700;"
-        elif val < 0: 
-            return "color: #FF025D; font-weight: 700;"
+        # ✨ 표 내부 데이터: 상승=초록색, 하락=빨간색으로 통일
+        if "▲" in val: return "color: #58B04B; font-weight: 700;" # Green (상승)
+        if "▼" in val: return "color: #FF025D; font-weight: 700;" # Red (하락)
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
@@ -409,6 +392,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     left_rows = _board_rows(rows, is_right=False)
     right_rows = _board_rows(rows, is_right=True)
 
+    # ✨ 위젯 칩 색상: 상승=초록색, 하락=빨간색으로 통일
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
         <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
@@ -493,6 +477,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:#999999; font-weight:600; }}
         .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
         
+        /* 칩 컬러 수정 */
         .delta-up {{ background:#EAF7E9; color:#58B04B; }} /* 초록 (상승) */
         .delta-down {{ background:#FFE6EE; color:#FF025D; }} /* 빨강 (하락) */
         .delta-flat {{ background:#E5E6E9; color:#666666; }} /* 회색 (변동없음) */
