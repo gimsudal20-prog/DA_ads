@@ -76,10 +76,16 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         manager_sel = sv.get("manager", [])
 
         st.markdown("**📅 기간 선택**")
+        
+        period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
+        sv_period = sv.get("period_mode", "어제")
+        if sv_period not in period_options:
+            sv_period = "어제"
+            
         period_mode = st.selectbox(
             "기간 간편 선택",
-            ["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"],
-            index=["어제", "오늘", "최근 7일", "이번 달", "지난 달", "직접 선택"].index(sv.get("period_mode", "어제")),
+            period_options,
+            index=period_options.index(sv_period),
             key="f_period_mode",
             label_visibility="collapsed"
         )
@@ -89,12 +95,30 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1")
             d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2")
         else:
-            if period_mode == "오늘": d2 = d1 = today
-            elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
-            elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
-            elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
-            elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
-            else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
+            if period_mode == "오늘": 
+                d2 = d1 = today
+            elif period_mode == "어제": 
+                d2 = d1 = today - timedelta(days=1)
+            elif period_mode == "최근 7일": 
+                d2 = today - timedelta(days=1)
+                d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일": 
+                d2 = today - timedelta(days=1)
+                d1 = d2 - timedelta(days=29)
+            elif period_mode == "이번 달": 
+                d2 = today
+                d1 = date(today.year, today.month, 1)
+            elif period_mode == "지난 주":
+                # 월요일(0) ~ 일요일(6) 기준으로 지난 주 계산
+                d2 = today - timedelta(days=today.weekday() + 1)
+                d1 = today - timedelta(days=today.weekday() + 7)
+            elif period_mode == "지난 달": 
+                d2 = date(today.year, today.month, 1) - timedelta(days=1)
+                d1 = date(d2.year, d2.month, 1)
+            else: 
+                d2 = sv.get("d2", default_end)
+                d1 = sv.get("d1", default_start)
+                
             c1, c2 = st.columns(2)
             c1.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
             c2.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
@@ -129,6 +153,12 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
         if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
+            st.rerun()
+            
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+        # ✨ 강력한 캐시 삭제 버튼 추가: 이것을 누르면 이전 구조 데이터의 기억을 강제로 삭제합니다.
+        if st.button("🔄 캐시 완전 삭제 및 새로고침", key="btn_clear_cache", use_container_width=True):
+            st.cache_data.clear()
             st.rerun()
 
     sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
