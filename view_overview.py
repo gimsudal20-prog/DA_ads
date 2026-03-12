@@ -164,6 +164,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
+    # ✨ [속도 개선] 요약 박스를 위해 가장 가벼운 쿼리만 우선 실행
     cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
 
@@ -240,13 +241,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "PLACE": "플레이스"
     }
 
-    # 하위 상세 데이터 병합을 위한 공통 데이터 로드
-    with st.spinner("성과 데이터 로딩 중..."):
-        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
-        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
-
     # ==========================================
-    # 1. 전체 성과 요약 (KPI Box)
+    # 1. 전체 성과 요약 (KPI Box) - 가장 먼저 렌더링!
     # ==========================================
     st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     
@@ -304,6 +300,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     </div>
     """
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
+
+
+    # ✨ [속도 개선] KPI 박스를 띄워둔 뒤에 무거운 하위 표 데이터를 로딩
+    with st.spinner("상세 성과 표 및 차트 데이터를 불러오는 중... (잠시만 기다려주세요)"):
+        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
 
 
     # ==========================================
@@ -956,3 +958,4 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.dataframe(styled_df, width="stretch", hide_index=True)
         else:
             st.info("선택한 조건에 대한 트렌드 데이터가 없습니다.")
+
