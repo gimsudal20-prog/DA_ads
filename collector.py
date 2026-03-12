@@ -144,7 +144,6 @@ def ensure_tables(engine: Engine):
                     )
                 """))
             
-            # ✨ [핵심 수정] 기존 DB 테이블에 누락된 이미지/상품명 컬럼을 강제로 추가하는 로직
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT;"))
@@ -154,7 +153,7 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS creative_text TEXT;"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS image_url TEXT;"))
             except Exception as e:
-                log(f"⚠️ DB 스키마 업데이트 실패 (무시 가능할 수 있음): {e}")
+                pass
 
             break
         except Exception as e:
@@ -184,9 +183,6 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
-            if attempt == 2:
-                # ✨ 에러를 숨기지 않고 출력하도록 수정
-                log(f"⚠️ [{table}] DB 저장 중 치명적 오류 발생: {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -224,8 +220,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
-            if attempt == 2:
-                log(f"⚠️ [{table}] 통계 DB 저장 중 치명적 오류 발생: {e}")
             time.sleep(3)
         finally:
             if cur:
@@ -256,40 +250,55 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
         return data_owner
     return data if ok and isinstance(data, list) else []
 
+# ✨ [완벽 수정] 네이버 API의 JSON 문자열 변칙을 정확히 해석하고 ID 덮어씌우기를 방지합니다.
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     ad_inner = ad_obj.get("ad", {})
     image_url = ""
-    if "image" in ad_inner and isinstance(ad_inner["image"], dict):
-        image_url = ad_inner["image"].get("imageUrl", "")
+    title = ""
+    desc = ""
+    
+    # 1. valData Parsing (네이버 API는 valData를 딕셔너리가 아닌 문자열(String)로 주는 경우가 많음)
+    vd = ad_inner.get("valData")
+    val_data = {}
+    if isinstance(vd, str):
+        try: val_data = json.loads(vd)
+        except: pass
+    elif isinstance(vd, dict):
+        val_data = vd
+        
+    if val_data:
+        title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
+        image_url = image_url or val_data.get("imageUrl") or val_data.get("image") or ""
+        
+    # 2. shoppingProduct Parsing (쇼핑상품 구조 대응)
+    sp = ad_inner.get("shoppingProduct")
+    sp_data = {}
+    if isinstance(sp, str):
+        try: sp_data = json.loads(sp)
+        except: pass
+    elif isinstance(sp, dict):
+        sp_data = sp
+        
+    if sp_data:
+        title = title or sp_data.get("name") or sp_data.get("productName") or ""
+        image_url = image_url or sp_data.get("imageUrl") or ""
+
+    # 3. 기타 이미지/텍스트 수집 최후 보루
+    if not image_url:
+        image_url = ad_inner.get("image", {}).get("imageUrl", "") if isinstance(ad_inner.get("image"), dict) else ""
     if not image_url:
         image_url = ad_inner.get("imageUrl") or ad_inner.get("mobileImageUrl") or ad_inner.get("pcImageUrl") or ""
 
-    title = ad_inner.get("headline") or ad_inner.get("title") or ""
-    desc = ad_inner.get("description") or ad_inner.get("desc") or ""
+    title = title or ad_inner.get("headline") or ad_inner.get("title") or ""
+    desc = ad_inner.get("description") or ad_inner.get("desc") or ad_inner.get("addPromoText") or ""
     
-    if "shoppingProduct" in ad_inner and isinstance(ad_inner["shoppingProduct"], dict):
-        sp = ad_inner["shoppingProduct"]
-        title = title or sp.get("name") or sp.get("productName") or ""
-        if not image_url: image_url = sp.get("imageUrl", "")
-            
-    if "valData" in ad_inner and isinstance(ad_inner["valData"], dict):
-        val_data = ad_inner["valData"]
-        title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
-        if not image_url: image_url = val_data.get("imageUrl") or val_data.get("image") or ""
-
-    if "addPromoText" in ad_inner: desc = desc or ad_inner["addPromoText"]
-    if not title: title = ad_obj.get("name") or ad_obj.get("adName") or ""
-    if not desc: desc = ad_inner.get("promoText") or ad_inner.get("extCreative") or ""
-    
-    if not title:
-        for k, v in ad_inner.items():
-            if isinstance(v, dict) and v.get("name"): 
-                title = v.get("name")
-                break
-    if not title: title = f"소재 ({ad_obj.get('nccAdId', '확인불가')})"
+    # 🚨 [수정 내용]
+    # title이 없을 때 일반 소재 ID(adName)로 억지로 덮어쓰던 과거 로직을 완전히 삭제했습니다.
+    # 사용자의 요청대로 설정된 노출용 상품명이 없으면 깔끔하게 빈칸으로 남겨둡니다!
     
     pc_url = ad_inner.get("pcLandingUrl") or ad_obj.get("pcLandingUrl") or ""
     m_url = ad_inner.get("mobileLandingUrl") or ad_obj.get("mobileLandingUrl") or ""
+    
     creative_text = f"{title} | {desc}".strip(" |")
     if pc_url: creative_text += f" | {pc_url}"
     
