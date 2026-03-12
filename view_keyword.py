@@ -63,6 +63,60 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
 
     return work[is_shopping & ~is_ext].copy()
 
+
+def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
+    """비교 대상 데이터를 머지하여 상세한 이전수치, 증감, 증감률을 계산합니다."""
+    if view_df.empty: return view_df
+    
+    agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
+    if 'avg_rank' in base_df.columns:
+        agg_dict['avg_rank'] = 'mean'
+        
+    if not base_df.empty:
+        base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+        base_agg = base_agg.rename(columns={'imp': 'b_imp', 'clk': 'b_clk', 'cost': 'b_cost', 'conv': 'b_conv', 'sales': 'b_sales', 'avg_rank': 'b_avg_rank'})
+        merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
+    else:
+        merged = view_df.copy()
+        
+    for c in ['b_imp', 'b_clk', 'b_cost', 'b_conv', 'b_sales']:
+        if c not in merged.columns: merged[c] = 0
+        merged[c] = merged[c].fillna(0)
+        
+    if 'b_avg_rank' not in merged.columns: merged['b_avg_rank'] = np.nan
+
+    merged['이전 노출'] = merged['b_imp']
+    merged['노출 증감'] = merged['노출'] - merged['이전 노출']
+    merged['노출 증감(%)'] = np.where(merged['이전 노출'] > 0, (merged['노출 증감'] / merged['이전 노출']) * 100, np.where(merged['노출'] > 0, 100.0, 0.0))
+
+    merged['이전 클릭'] = merged['b_clk']
+    merged['클릭 증감'] = merged['클릭'] - merged['이전 클릭']
+    merged['클릭 증감(%)'] = np.where(merged['이전 클릭'] > 0, (merged['클릭 증감'] / merged['이전 클릭']) * 100, np.where(merged['클릭'] > 0, 100.0, 0.0))
+
+    merged['이전 광고비'] = merged['b_cost']
+    merged['광고비 증감'] = merged['광고비'] - merged['이전 광고비']
+    merged['광고비 증감(%)'] = np.where(merged['이전 광고비'] > 0, (merged['광고비 증감'] / merged['이전 광고비']) * 100, np.where(merged['광고비'] > 0, 100.0, 0.0))
+
+    merged['이전 CPC(원)'] = np.where(merged['이전 클릭'] > 0, merged['이전 광고비'] / merged['이전 클릭'], 0.0)
+    merged['CPC 증감'] = merged['CPC(원)'] - merged['이전 CPC(원)']
+    merged['CPC 증감(%)'] = np.where(merged['이전 CPC(원)'] > 0, (merged['CPC 증감'] / merged['이전 CPC(원)']) * 100, np.where(merged['CPC(원)'] > 0, 100.0, 0.0))
+
+    merged['이전 전환'] = merged['b_conv']
+    merged['전환 증감'] = merged['전환'] - merged['이전 전환']
+    
+    merged['이전 전환매출'] = merged['b_sales']
+    merged['이전 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 전환매출'] / merged['이전 광고비']) * 100, 0.0)
+    merged['ROAS 증감(%)'] = merged['ROAS(%)'] - merged['이전 ROAS(%)']
+
+    if "avg_rank" in merged.columns:
+        merged['평균순위'] = merged['avg_rank'].apply(_format_avg_rank)
+        merged['이전 평균순위'] = merged['b_avg_rank'].apply(_format_avg_rank)
+        # 평균순위는 값이 작아지는 것이 개선이므로 변동 폭 계산(현재 순위 - 이전 순위)
+        merged['순위 변화'] = np.where((merged['b_avg_rank'] > 0) & (merged['avg_rank'] > 0), merged['avg_rank'] - merged['b_avg_rank'], np.nan)
+        
+    return merged
+
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     if not f.get("ready", False): return
     st.markdown("<div class='nv-sec-title'>그룹 / 키워드 상세 분석</div>", unsafe_allow_html=True)
@@ -227,6 +281,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             st.info("해당 기간의 쇼핑검색 일반상품 데이터가 없습니다.")
 
     with tab_cmp:
+        fmt_cmp = fmt.copy()
+        fmt_cmp.update({
+            "이전 노출": "{:,.0f}", "노출 증감": "{:+,.0f}", "노출 증감(%)": "{:+.2f}%",
+            "이전 클릭": "{:,.0f}", "클릭 증감": "{:+,.0f}", "클릭 증감(%)": "{:+.2f}%",
+            "이전 광고비": "{:,.0f}", "광고비 증감": "{:+,.0f}", "광고비 증감(%)": "{:+.2f}%",
+            "이전 CPC(원)": "{:,.0f}", "CPC 증감": "{:+,.0f}", "CPC 증감(%)": "{:+.2f}%",
+            "이전 전환": "{:,.1f}", "전환 증감": "{:+.1f}",
+            "이전 ROAS(%)": "{:,.2f}%", "ROAS 증감(%)": "{:+.2f}%",
+            "순위 변화": "{:+.1f}"
+        })
+
         cmp_view_mode = st.radio("비교 대상 선택", ["파워링크 - 키워드 단위", "파워링크 - 광고그룹 단위", "쇼핑검색 - 상품 단위"], horizontal=True)
         opts = get_dynamic_cmp_options(f["start"], f["end"])
         cmp_opts = [o for o in opts if o != "비교 안함"]
@@ -248,16 +313,24 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                 
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
-                if "avg_rank" in view.columns:
-                    view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
-                    base_cols.append("평균순위")
-                metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 
-                if not base_kw_bundle.empty:
-                    valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
-                    if valid_keys:
-                        view = append_comparison_data(view, base_kw_bundle, valid_keys)
-                        metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
+                valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
+                if valid_keys:
+                    view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
+                else:
+                    view = _apply_comparison_metrics(view, pd.DataFrame(), [])
+
+                metrics_cols = [
+                    "노출", "이전 노출", "노출 증감", "노출 증감(%)",
+                    "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
+                    "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
+                    "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
+                    "전환", "이전 전환", "전환 증감", 
+                    "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
+                ]
+
+                if "avg_rank" in view.columns:
+                    base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
 
                 base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
                 render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
@@ -265,8 +338,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if not view.empty:
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
                     
-                    styled_cmp = disp.style.format(fmt)
-                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    styled_cmp = disp.style.format(fmt_cmp)
+                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
                     if delta_cols:
                         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
                         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
@@ -280,7 +353,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
             else:
                 grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
                 val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
-                grp_cur = df_pl_raw.groupby(grp_cols, as_index=False)[val_cols].sum()
+                
+                agg_dict = {col: 'sum' for col in val_cols}
+                if 'avg_rank' in df_pl_raw.columns:
+                    agg_dict['avg_rank'] = 'mean'
+                    
+                grp_cur = df_pl_raw.groupby(grp_cols, as_index=False).agg(agg_dict)
                 grp_cur = _perf_common_merge_meta(grp_cur, meta)
                 view = grp_cur.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                 for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
@@ -291,13 +369,24 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 
                 base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
                 base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
-                metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                 
-                if not base_kw_bundle.empty:
-                    valid_keys = [k for k in ['customer_id', 'adgroup_id'] if k in view.columns and k in base_kw_bundle.columns]
-                    if valid_keys:
-                        view = append_comparison_data(view, base_kw_bundle, valid_keys)
-                        metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
+                valid_keys = [k for k in ['customer_id', 'adgroup_id'] if k in view.columns and k in base_kw_bundle.columns]
+                if valid_keys:
+                    view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
+                else:
+                    view = _apply_comparison_metrics(view, pd.DataFrame(), [])
+                    
+                metrics_cols = [
+                    "노출", "이전 노출", "노출 증감", "노출 증감(%)",
+                    "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
+                    "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
+                    "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
+                    "전환", "이전 전환", "전환 증감", 
+                    "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
+                ]
+
+                if "avg_rank" in view.columns:
+                    base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
 
                 base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
                 render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
@@ -305,8 +394,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if not view.empty:
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
                     
-                    styled_cmp = disp.style.format(fmt)
-                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    styled_cmp = disp.style.format(fmt_cmp)
+                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
                     if delta_cols:
                         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
                         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
@@ -353,24 +442,32 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     view["노출용 상품명"] = np.where(is_invalid_title_again, view["광고그룹"], view["노출용 상품명"])
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
-                    if "avg_rank" in view.columns:
-                        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
-                        base_cols.append("평균순위")
-                    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
                     
-                    if base_shop_bundle is not None and not base_shop_bundle.empty:
-                        valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view.columns and k in base_shop_bundle.columns]
-                        if valid_keys:
-                            view = append_comparison_data(view, base_shop_bundle, valid_keys)
-                            metrics_cols.extend(["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"])
-                            
-                    base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if not base_shop_bundle.empty else pd.DataFrame()
+                    valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view.columns and (base_shop_bundle is not None and k in base_shop_bundle.columns)]
+                    if valid_keys:
+                        view = _apply_comparison_metrics(view, base_shop_bundle, valid_keys)
+                    else:
+                        view = _apply_comparison_metrics(view, pd.DataFrame(), [])
+                        
+                    metrics_cols = [
+                        "노출", "이전 노출", "노출 증감", "노출 증감(%)",
+                        "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
+                        "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
+                        "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
+                        "전환", "이전 전환", "전환 증감", 
+                        "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
+                    ]
+
+                    if "avg_rank" in view.columns:
+                        base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
+
+                    base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if base_shop_bundle is not None and not base_shop_bundle.empty else pd.DataFrame()
                     render_item_comparison_search("일반 상품", view, base_for_search, "노출용 상품명", f["start"], f["end"], b1, b2)
 
                     disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
                     
-                    styled_cmp = disp.style.format(fmt)
-                    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp.columns]
+                    styled_cmp = disp.style.format(fmt_cmp)
+                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
                     if delta_cols:
                         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
                         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
