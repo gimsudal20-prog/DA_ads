@@ -23,7 +23,6 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError, StatementError
 
 load_dotenv(override=False)
 
@@ -109,23 +108,23 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     except Exception as e:
         return False, None
 
+# 🚀 Supabase Pro 대응 커넥션 풀 및 오버플로우 한도 상향
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return create_engine(
         db_url, 
-        pool_size=15, # 연결 풀 사이즈 조절 (Supabase 부하 방지)
-        max_overflow=20, 
-        pool_pre_ping=True, 
-        pool_recycle=300, # 5분마다 커넥션 재생성
-        # 타임아웃 시간 대폭 증가 (5분)
-        connect_args={"options": "-c lock_timeout=60000 -c statement_timeout=300000"}, 
+        pool_size=30,      # 기존 15 -> 30으로 증가
+        max_overflow=60,   # 기존 30 -> 60으로 증가
+        pool_pre_ping=True,
+        pool_recycle=1800, 
+        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, 
         future=True
     )
 
 def ensure_tables(engine: Engine):
-    for attempt in range(5):
+    for attempt in range(3):
         try:
             with engine.begin() as conn:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
@@ -146,13 +145,9 @@ def ensure_tables(engine: Engine):
                     )
                 """))
             break
-        except (OperationalError, StatementError) as e:
-            log(f"⚠️ DB 연결 오류 (재시도 중...): {e}")
-            time.sleep(5)
-            if attempt == 4: raise e
         except Exception as e:
             time.sleep(3)
-            if attempt == 4: raise e
+            if attempt == 2: raise e
 
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows: return
@@ -165,20 +160,20 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     
     tuples = list(df.itertuples(index=False, name=None))
-    for attempt in range(5):
+    for attempt in range(3):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            # 🚀 Bulk Insert 페이지 사이즈 대폭 상향 (기존 2000 -> 5000)
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
         except Exception as e:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
-            log(f"⚠️ DB Upsert 오류 (재시도 {attempt+1}/5): {e}")
-            time.sleep(5 + attempt)
+            time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
@@ -192,35 +187,31 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
     
-    for attempt in range(5):
+    for attempt in range(3):
         try:
             with engine.begin() as conn:
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             break
-        except (OperationalError, StatementError) as e:
-            log(f"⚠️ DB Delete 오류 (재시도 {attempt+1}/5): {e}")
-            time.sleep(5)
-            if attempt == 4: raise e
         except Exception:
             time.sleep(3)
             
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
     
-    for attempt in range(5):
+    for attempt in range(3):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
+            # 🚀 Bulk Insert 페이지 사이즈 대폭 상향 (기존 2000 -> 5000)
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
-        except Exception as e:
+        except Exception:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
-            log(f"⚠️ DB Insert 오류 (재시도 {attempt+1}/5): {e}")
-            time.sleep(5 + attempt)
+            time.sleep(3)
         finally:
             if cur:
                 try: cur.close()
@@ -297,7 +288,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]
     }
 
-# ✨ 부하 조절을 위해 병렬 작업 수를 줄임 (5 -> 3)
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
     out = []
@@ -314,7 +304,8 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
             return data["data"]
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    # 🚀 우회 조회 시 병렬 스레드 대폭 상향 (기존 5 -> 20)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results:
             out.extend(res)
@@ -505,16 +496,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         if skip_dim:
-            for attempt in range(5):
-                try:
-                    with engine.connect() as conn:
-                        target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                        target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-                        target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-                    break
-                except Exception as e:
-                    if attempt == 4: raise e
-                    time.sleep(5)
+            with engine.connect() as conn:
+                target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
         
         if target_date == date.today():
             pass
@@ -526,6 +511,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
+            # 1. 캠페인 데이터 검증 및 복구
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
                 camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
@@ -533,163 +519,108 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if camp_stat:
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
             else:
-                log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 캠페인 실시간 우회 조회 가동 (병렬 3배속) ⚡")
-                if not skip_dim:
-                    with engine.connect() as conn:
-                        target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
-                
-            if c_cnt == 0:
-                log(f"   💤 [ {account_name} ] 통계 없음 (해당 날짜에 소진된 비용이 0원이거나 DB 뼈대가 없는 계정입니다)")
-                return
+                if target_camp_ids:
+                    log(f"   🚨 [ {account_name} ] 리포트 누락! 캠페인 실시간 우회 조회 가동 (병렬 20배속) ⚡")
+                    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+                else:
+                    c_cnt = 0
 
+            # 2. 키워드 데이터 검증 및 복구
             kw_stat = {}
             if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "쇼핑검색어id", "keywordid", "queryid"], has_rank=True)
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
+                
             if kw_stat:
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
-            elif not SKIP_KEYWORD_STATS:
-                log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 키워드 실시간 우회 조회 가동 (병렬 3배속) ⚡")
-                if not skip_dim:
-                    with engine.connect() as conn:
-                        target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
-                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+            else:
+                if target_kw_ids and not SKIP_KEYWORD_STATS:
+                    log(f"   🚨 [ {account_name} ] 리포트 누락! 키워드 실시간 우회 조회 가동 (병렬 20배속) ⚡")
+                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+                else:
+                    k_cnt = 0
 
+            # 3. 소재 데이터 검증 및 복구
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", ["소재id", "상품id", "adid", "productid", "itemid"], has_rank=True)
+                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
+            
             if ad_stat:
                 a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
-            elif not SKIP_AD_STATS:
-                log(f"   🚨 [ {account_name} ] 네이버 과거 리포트 보관기한 만료! 소재 실시간 우회 조회 가동 (병렬 3배속) ⚡")
-                if not skip_dim:
-                    with engine.connect() as conn:
-                        target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-                a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily")
-
-            log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-
-        if not skip_dim:
-            camps = list_campaigns(customer_id)
-            if not camps: return
+            else:
+                if target_ad_ids and not SKIP_AD_STATS:
+                    log(f"   🚨 [ {account_name} ] 리포트 누락! 소재 실시간 우회 조회 가동 (병렬 20배속) ⚡")
+                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily")
+                else:
+                    a_cnt = 0
             
-            dim_campaign = []
-            for c in camps:
-                dim_campaign.append({"customer_id": str(customer_id), "campaign_id": str(c["nccCampaignId"]), "campaign_name": str(c["name"]), "campaign_tp": str(c["campaignTp"]), "status": str(c["status"])})
-            upsert_many(engine, "dim_campaign", dim_campaign, ["customer_id", "campaign_id"])
-
-            dim_adgroup = []
-            dim_keyword = []
-            dim_ad = []
-
-            for c in camps:
-                cid_str = str(c["nccCampaignId"])
-                adgroups = list_adgroups(customer_id, cid_str)
-                if not adgroups: continue
-                
-                for a in adgroups:
-                    ag_id = str(a["nccAdgroupId"])
-                    dim_adgroup.append({"customer_id": str(customer_id), "adgroup_id": ag_id, "adgroup_name": str(a["name"]), "campaign_id": cid_str, "status": str(a["status"])})
-
-            upsert_many(engine, "dim_adgroup", dim_adgroup, ["customer_id", "adgroup_id"])
-
-            for a in dim_adgroup:
-                ag_id = a["adgroup_id"]
-                
-                if not SKIP_KEYWORD_DIM:
-                    kws = list_keywords(customer_id, ag_id)
-                    for k in kws:
-                        dim_keyword.append({"customer_id": str(customer_id), "keyword_id": str(k["nccKeywordId"]), "adgroup_id": ag_id, "keyword": str(k["keyword"]), "status": str(k["status"])})
-                        
-                if not SKIP_AD_DIM:
-                    ads = list_ads(customer_id, ag_id)
-                    for ad_obj in ads:
-                        ext = extract_ad_creative_fields(ad_obj)
-                        ad_id_str = str(ad_obj.get("nccAdId") or ad_obj.get("id", ""))
-                        if not ad_id_str: continue
-                        dim_ad.append({"customer_id": str(customer_id), "ad_id": ad_id_str, "adgroup_id": ag_id, "ad_name": ext["ad_title"], "status": str(ad_obj.get("status", "")), "ad_title": ext["ad_title"], "ad_desc": ext["ad_desc"], "pc_landing_url": ext["pc_landing_url"], "mobile_landing_url": ext["mobile_landing_url"], "creative_text": ext["creative_text"], "image_url": ext["image_url"]})
-                        
-                    exts = list_ad_extensions(customer_id, ag_id)
-                    for ext_obj in exts:
-                        ad_id_str = str(ext_obj.get("nccAdExtensionId") or "")
-                        if not ad_id_str: continue
-                        status_str = str(ext_obj.get("status", ""))
-                        type_str = str(ext_obj.get("adExtensionTp", ""))
-                        dim_ad.append({"customer_id": str(customer_id), "ad_id": ad_id_str, "adgroup_id": ag_id, "ad_name": f"[확장소재] {type_str}", "status": status_str, "ad_title": f"[{type_str}]", "ad_desc": "", "pc_landing_url": "", "mobile_landing_url": "", "creative_text": f"[{type_str}] 확장소재", "image_url": ""})
-
-            if dim_keyword: upsert_many(engine, "dim_keyword", dim_keyword, ["customer_id", "keyword_id"])
-            if dim_ad: upsert_many(engine, "dim_ad", dim_ad, ["customer_id", "ad_id"])
-
+            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+                log(f"   💤 [ {account_name} ] 통계 없음 (해당 날짜에 소진된 비용이 0원이거나 DB 뼈대가 없는 계정입니다)")
+            else:
+                log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            
     except Exception as e:
-        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {e}")
+        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--days", type=int, default=1)
-    parser.add_argument("--skip_dim", action="store_true")
-    args = parser.parse_args()
-
     engine = get_engine()
     ensure_tables(engine)
-
-    # 🚀 병렬 실행 스레드 개수 강제 조절 (8 -> 4)
-    max_workers = 4
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", type=str, default="")
+    parser.add_argument("--customer_id", type=str, default="")
+    parser.add_argument("--skip_dim", action="store_true")
+    # 🚀 계정 동시 병렬 처리 수를 기본 20개로 대폭 상향
+    parser.add_argument("--workers", type=int, default=20)
+    args = parser.parse_args()
+    
+    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
+    
+    print("\n" + "="*50, flush=True)
+    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print("="*50 + "\n", flush=True)
 
     accounts_info = []
-    
-    excel_candidates = ["accounts.xlsx", "accounts.csv"]
-    found_excel = False
-    
-    for filename in excel_candidates:
-        if os.path.exists(filename):
-            try:
-                if filename.endswith(".xlsx"):
-                    df = pd.read_excel(filename)
-                else:
-                    df = pd.read_csv(filename)
-                    
-                rename_map = {}
-                for c in df.columns:
-                    c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]: rename_map[c] = "customer_id"
-                    elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]: rename_map[c] = "account_name"
-                    elif c_clean in ["담당자", "manager"]: rename_map[c] = "manager"
-                df = df.rename(columns=rename_map)
-                
-                if "customer_id" in df.columns and "account_name" in df.columns:
-                    for _, row in df.iterrows():
-                        cid = str(row["customer_id"]).strip()
-                        aname = str(row["account_name"]).strip()
-                        if cid and cid.lower() not in ["nan", "none", ""]:
-                            accounts_info.append({"customer_id": cid, "account_name": aname})
-                    found_excel = True
-                    break
+    if args.customer_id:
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
+    else:
+        if os.path.exists("accounts.xlsx"):
+            df_acc = None
+            try: df_acc = pd.read_excel("accounts.xlsx")
             except Exception as e:
-                log(f"⚠️ {filename} 읽기 실패: {e}")
+                try: df_acc = pd.read_csv("accounts.xlsx")
+                except Exception: pass
+            
+            if df_acc is not None:
+                id_col, name_col = None, None
+                for c in df_acc.columns:
+                    c_clean = str(c).replace(" ", "").lower()
+                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
+                    if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
                 
-    if not found_excel:
-        if CUSTOMER_ID:
-            accounts_info.append({"customer_id": CUSTOMER_ID, "account_name": f"Account_{CUSTOMER_ID}"})
-        else:
-            die("수집할 계정 정보가 없습니다. (accounts.xlsx 파일 또는 CUSTOMER_ID 환경변수 필요)")
+                if id_col and name_col:
+                    seen_ids = set()
+                    for _, row in df_acc.iterrows():
+                        cid = str(row[id_col]).strip()
+                        if cid and cid.lower() != 'nan' and cid not in seen_ids:
+                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                            seen_ids.add(cid)
 
-    today = date.today()
-    target_dates = [today - timedelta(days=i) for i in range(1, args.days + 1)]
-    target_dates.reverse()
+        if not accounts_info:
+            try:
+                with engine.connect() as conn:
+                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
+            except Exception: pass
 
-    for t_date in target_dates:
-        print("\n" + "="*50)
-        print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {t_date} ] 🚀🚀🚀")
-        print("="*50)
+    if not accounts_info: 
+        log("⚠️ 수집할 계정이 없습니다.")
+        return
         
-        log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {max_workers}개")
+    log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
-        def _worker(acc):
-            process_account(engine, acc["customer_id"], acc["account_name"], t_date, args.skip_dim)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_worker, acc) for acc in accounts_info]
-            concurrent.futures.wait(futures)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
+        for future in concurrent.futures.as_completed(futures):
+            try: future.result()
+            except Exception: pass
 
 if __name__ == "__main__":
     main()
