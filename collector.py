@@ -108,15 +108,14 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     except Exception as e:
         return False, None
 
-# 🚀 Supabase Pro 대응 커넥션 풀 및 오버플로우 한도 상향
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return create_engine(
         db_url, 
-        pool_size=30,      # 기존 15 -> 30으로 증가
-        max_overflow=60,   # 기존 30 -> 60으로 증가
+        pool_size=30,      
+        max_overflow=60,   
         pool_pre_ping=True,
         pool_recycle=1800, 
         connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, 
@@ -165,7 +164,6 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            # 🚀 Bulk Insert 페이지 사이즈 대폭 상향 (기존 2000 -> 5000)
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
@@ -203,7 +201,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            # 🚀 Bulk Insert 페이지 사이즈 대폭 상향 (기존 2000 -> 5000)
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
@@ -239,10 +236,6 @@ def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
     if ok_owner and isinstance(data_owner, list):
         return data_owner
-    return data if ok and isinstance(data, list) else []
-
-def list_ad_extensions(customer_id: str, adgroup_id: str) -> List[dict]:
-    ok, data = safe_call("GET", "/ncc/ad-extensions", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
@@ -304,7 +297,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
             return data["data"]
         return []
 
-    # 🚀 우회 조회 시 병렬 스레드 대폭 상향 (기존 5 -> 20)
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results:
@@ -495,12 +487,65 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
-        if skip_dim:
+        
+        # ✨ [버그 수정] 누락되어 있던 구조 데이터(캠페인/그룹/키워드/소재 및 쇼핑이미지) 동기화 로직 복구
+        if not skip_dim:
+            log(f"   📥 [ {account_name} ] 구조 데이터(캠페인/그룹/키워드/소재 및 이미지) 동기화 시작...")
+            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+            
+            camps = list_campaigns(customer_id)
+            for c in camps:
+                cid = str(c.get("nccCampaignId"))
+                target_camp_ids.append(cid)
+                camp_rows.append({
+                    "customer_id": str(customer_id), "campaign_id": cid,
+                    "campaign_name": str(c.get("name", "")), "campaign_tp": str(c.get("campaignTp", "")), "status": str(c.get("status", ""))
+                })
+                
+                groups = list_adgroups(customer_id, cid)
+                for g in groups:
+                    gid = str(g.get("nccAdgroupId"))
+                    ag_rows.append({
+                        "customer_id": str(customer_id), "adgroup_id": gid, "campaign_id": cid,
+                        "adgroup_name": str(g.get("name", "")), "status": str(g.get("status", ""))
+                    })
+                    
+                    if not SKIP_KEYWORD_DIM:
+                        kws = list_keywords(customer_id, gid)
+                        for k in kws:
+                            kid = str(k.get("nccKeywordId"))
+                            target_kw_ids.append(kid)
+                            kw_rows.append({
+                                "customer_id": str(customer_id), "keyword_id": kid, "adgroup_id": gid,
+                                "keyword": str(k.get("keyword", "")), "status": str(k.get("status", ""))
+                            })
+                            
+                    if not SKIP_AD_DIM:
+                        ads = list_ads(customer_id, gid)
+                        for ad in ads:
+                            adid = str(ad.get("nccAdId"))
+                            target_ad_ids.append(adid)
+                            ext = extract_ad_creative_fields(ad)
+                            ad_rows.append({
+                                "customer_id": str(customer_id), "ad_id": adid, "adgroup_id": gid,
+                                "ad_name": str(ad.get("name") or ad.get("adName") or ""), "status": str(ad.get("status", "")),
+                                "ad_title": ext["ad_title"], "ad_desc": ext["ad_desc"],
+                                "pc_landing_url": ext["pc_landing_url"], "mobile_landing_url": ext["mobile_landing_url"],
+                                "creative_text": ext["creative_text"], "image_url": ext["image_url"]
+                            })
+
+            upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+            upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+            if not SKIP_KEYWORD_DIM: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+            if not SKIP_AD_DIM: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+            log(f"   ✅ [ {account_name} ] 구조 적재 완료! (소재 이미지 및 상품명 업데이트 됨)")
+            
+        else:
             with engine.connect() as conn:
                 target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-        
+
         if target_date == date.today():
             pass
         else:
@@ -511,7 +556,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
-            # 1. 캠페인 데이터 검증 및 복구
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
                 camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
@@ -525,7 +569,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 else:
                     c_cnt = 0
 
-            # 2. 키워드 데이터 검증 및 복구
             kw_stat = {}
             if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
                 kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
@@ -539,7 +582,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 else:
                     k_cnt = 0
 
-            # 3. 소재 데이터 검증 및 복구
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
                 ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
@@ -568,7 +610,6 @@ def main():
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
-    # 🚀 계정 동시 병렬 처리 수를 기본 20개로 대폭 상향
     parser.add_argument("--workers", type=int, default=20)
     args = parser.parse_args()
     
