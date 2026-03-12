@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """data.py - Database connection, caching, and common queries."""
 import os
+import time
 import pandas as pd
 import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
 from datetime import date
 
 # ==========================================
@@ -15,7 +17,24 @@ def get_engine():
     db_url = os.getenv("DATABASE_URL", "").strip()
     if not db_url: return create_engine("sqlite:///:memory:", future=True)
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
-    return create_engine(db_url, pool_size=10, max_overflow=20, pool_pre_ping=True, pool_recycle=1800, future=True)
+    
+    # ✨ SSL 끊김 방지를 위한 TCP Keepalive 및 Pool 설정 강화
+    connect_args = {
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5
+    }
+    
+    return create_engine(
+        db_url, 
+        pool_size=10, 
+        max_overflow=20, 
+        pool_pre_ping=True, 
+        pool_recycle=300, # 1800초 -> 300초(5분)으로 단축하여 오래된 커넥션 방지
+        connect_args=connect_args,
+        future=True
+    )
 
 def db_ping(engine) -> bool:
     try:
@@ -34,39 +53,48 @@ def table_exists(engine, table_name: str) -> bool:
 
 @st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
-    try:
-        with _engine.connect() as conn:
-            res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
-            return [r[0] for r in res]
-    except Exception: return []
+    # ✨ 재시도 로직 추가
+    for attempt in range(3):
+        try:
+            with _engine.connect() as conn:
+                res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
+                return [r[0] for r in res]
+        except (OperationalError, StatementError, InterfaceError):
+            if attempt == 2: return []
+            time.sleep(0.5)
+        except Exception: return []
 
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
-    try:
-        with _engine.connect() as conn: return pd.read_sql(text(query), conn, params=params)
-    except Exception as e:
-        st.error(f"데이터 조회 오류: {e}")
-        return pd.DataFrame()
+    # ✨ 연결 끊김 시 자동으로 재접속하여 쿼리 실행 (에러 화면 방지)
+    for attempt in range(3):
+        try:
+            with _engine.connect() as conn: 
+                return pd.read_sql(text(query), conn, params=params)
+        except (OperationalError, StatementError, InterfaceError) as e:
+            if attempt == 2:
+                st.error(f"데이터 조회 오류 (연결 끊김 지속): {e}")
+                return pd.DataFrame()
+            time.sleep(0.5) 
+        except Exception as e:
+            st.error(f"데이터 조회 오류: {e}")
+            return pd.DataFrame()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
-    try:
-        with _engine.begin() as conn: conn.execute(text(query), params or {})
-    except Exception as e:
-        st.error(f"DB 실행 오류: {e}")
-        raise e
-
-@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
-def ensure_query_indexes(_engine) -> bool:
-    """조회성 집계 쿼리(customer_id + dt 필터) 가속용 인덱스 보장."""
-    try:
-        with _engine.begin() as conn:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_campaign_daily_cid_dt ON fact_campaign_daily(customer_id, dt)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_cid_dt ON fact_keyword_daily(customer_id, dt)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_cid_dt ON fact_ad_daily(customer_id, dt)"))
-        return True
-    except Exception:
-        # 인덱스 생성 실패가 조회 자체를 막으면 안 되므로 조용히 통과
-        return False
+    # ✨ 재시도 로직 추가
+    for attempt in range(3):
+        try:
+            with _engine.begin() as conn: 
+                conn.execute(text(query), params or {})
+            break
+        except (OperationalError, StatementError, InterfaceError) as e:
+            if attempt == 2:
+                st.error(f"DB 실행 오류 (연결 끊김): {e}")
+                raise e
+            time.sleep(0.5)
+        except Exception as e:
+            st.error(f"DB 실행 오류: {e}")
+            raise e
 
 def _sql_in_str_list(lst: list) -> str:
     if not lst: return "''"
@@ -79,7 +107,6 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
         if df is not None:
-            # ✨ 엑셀 컬럼명 유연성 강화 (collector.py와 일치)
             rename_map = {}
             for c in df.columns:
                 c_clean = str(c).replace(" ", "").lower()
@@ -118,7 +145,6 @@ def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
     if not df.empty:
-        # ✨ DB에서 읽어올 때도 컬럼명을 유연하게 매핑
         rename_map = {}
         for c in df.columns:
             c_clean = str(c).replace(" ", "").lower()
@@ -183,7 +209,7 @@ def format_number_commas(val) -> str:
     except (ValueError, TypeError): return "0"
 
 # ==========================================
-# 4. Data Aggregation Queries (캐싱 적용)
+# 4. Data Aggregation Queries
 # ==========================================
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
@@ -299,7 +325,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
@@ -352,7 +377,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids)})" if cids else ""
     
@@ -408,7 +432,6 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids: list, type_sel: tupl
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
-    ensure_query_indexes(_engine)
     if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     
