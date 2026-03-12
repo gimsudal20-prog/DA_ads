@@ -20,17 +20,25 @@ end_date = datetime.strptime(args.end, "%Y-%m-%d")
 print(f"🚀 대규모 백필 작업을 시작합니다: {args.start} ~ {args.end}")
 
 curr_date = start_date
+is_first_run = True  # ✨ 첫 실행 여부를 확인하는 변수 추가
 
 while curr_date <= end_date:
     d_str = curr_date.strftime("%Y-%m-%d")
     print(f"\n" + "="*50)
-    print(f"📅 [ {d_str} ] 대용량 통계 리포트 초고속 수집 진행 ⚡")
+    print(f"📅 [ {d_str} ] 대용량 통계 리포트 수집 진행 ⚡")
     
-    # ✨ 우회 로직이 제거되었기 때문에 8명으로 세팅해도 네이버 차단 없이 가장 빠릅니다. (무조건 뼈대수집은 스킵)
-    cmd = [sys.executable, "collector.py", "--date", d_str, "--workers", "8", "--skip_dim"]
+    # ✨ 핵심 수정: 첫 날짜에는 뼈대(이미지/상품명)를 확실하게 수집하고, 둘째 날부터 스킵합니다.
+    cmd = [sys.executable, "collector.py", "--date", d_str, "--workers", "8"]
+    
+    if not is_first_run:
+        cmd.append("--skip_dim")
+        print("   ▶ (이후 날짜는 빠른 수집을 위해 뼈대 수집 스킵 옵션 적용)")
+    else:
+        print("   ▶ [첫 실행] 최신 소재 이미지 및 노출용 상품명 뼈대 동기화 진행 중...")
     
     try:
         subprocess.run(cmd, check=True)
+        is_first_run = False  # 성공적으로 끝났으면 다음 반복부터는 무조건 스킵
     except subprocess.CalledProcessError:
         print(f"⚠️ {d_str} 수집 중 일부 오류 발생 (건너뛰고 다음 날짜 진행)")
         
