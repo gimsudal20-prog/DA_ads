@@ -108,6 +108,7 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     except Exception as e:
         return False, None
 
+# ✨ DB 커넥션 및 타임아웃 안정화 설정 반영 완료
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
@@ -116,8 +117,9 @@ def get_engine() -> Engine:
         db_url, 
         pool_size=15, 
         max_overflow=30, 
-        pool_pre_ping=True, 
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=60000"}, 
+        pool_pre_ping=True,
+        pool_recycle=1800,  # 30분 단위로 끊어진 연결 정리
+        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, # 타임아웃 5분(300초)으로 연장
         future=True
     )
 
@@ -284,7 +286,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]
     }
 
-# ✨ 우회 조회 속도를 5배로 폭발시키는 병렬 엔진 탑재
 def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     if not ids: return []
     out = []
@@ -301,7 +302,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
             return data["data"]
         return []
 
-    # 내부에서 5개의 스레드가 동시에 실시간 API를 요청합니다 (6시간 -> 30분 컷의 비밀)
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results:
@@ -317,7 +317,6 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
     for r in raw_stats:
         imp = int(r.get("impCnt", 0) or 0)
         cost = int(float(r.get("salesAmt", 0) or 0))
-        # ✨ 핵심: 실시간 API가 뱉어내는 수만 개의 0원짜리 깡통 데이터는 DB에 넣지 않고 즉시 버립니다.
         if imp == 0 and cost == 0: continue 
         
         sales = int(float(r.get("convAmt", 0) or 0))
@@ -566,7 +565,8 @@ def main():
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
     parser.add_argument("--skip_dim", action="store_true")
-    parser.add_argument("--workers", type=int, default=10)
+    # ✨ DB 부하 방지를 위해 기본 동시 스레드를 10에서 5로 축소
+    parser.add_argument("--workers", type=int, default=5)
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
