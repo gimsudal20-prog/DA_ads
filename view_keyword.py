@@ -234,18 +234,15 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if "image_url" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
                     
+                # 덮어쓰기 로직 삭제, 수집된 이름 그대로 렌더링
                 if "ad_title" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"ad_title": "노출용 상품명"})
                 elif "상품/소재명" in view_shop.columns:
                     view_shop["노출용 상품명"] = view_shop["상품/소재명"]
-
-                is_invalid_title = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
-                is_valid_name = ~(view_shop["상품/소재명"].astype(str).str.strip().eq("") | view_shop["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view_shop["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
-
-                view_shop["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view_shop["상품/소재명"], view_shop["노출용 상품명"])
                 
-                is_invalid_title_again = view_shop["노출용 상품명"].astype(str).str.strip().eq("") | view_shop["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view_shop["노출용 상품명"].astype(str).str.startswith("소재 (") | view_shop["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
-                view_shop["노출용 상품명"] = np.where(is_invalid_title_again, view_shop["광고그룹"], view_shop["노출용 상품명"])
+                # 'nan', 'None' 등의 문자열을 깔끔하게 빈칸으로 치환
+                if "노출용 상품명" in view_shop.columns:
+                    view_shop["노출용 상품명"] = view_shop["노출용 상품명"].replace(["nan", "None", "none"], "").fillna("")
 
                 base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                 if "avg_rank" in view_shop.columns:
@@ -436,17 +433,14 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     if "image_url" in view.columns:
                         view = view.rename(columns={"image_url": "소재이미지"})
                         
+                    # 덮어쓰기 로직 삭제, 수집된 이름 그대로 렌더링
                     if "ad_title" in view.columns:
                         view = view.rename(columns={"ad_title": "노출용 상품명"})
                     elif "상품/소재명" in view.columns:
                         view["노출용 상품명"] = view["상품/소재명"]
                         
-                    is_invalid_title = view["노출용 상품명"].astype(str).str.strip().eq("") | view["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view["노출용 상품명"].astype(str).str.startswith("소재 (") | view["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
-                    is_valid_name = ~(view["상품/소재명"].astype(str).str.strip().eq("") | view["상품/소재명"].astype(str).str.match(r'^[0-9]+$') | view["상품/소재명"].astype(str).str.lower().isin(["nan", "none"]))
-                    view["노출용 상품명"] = np.where(is_invalid_title & is_valid_name, view["상품/소재명"], view["노출용 상품명"])
-                    
-                    is_invalid_title_again = view["노출용 상품명"].astype(str).str.strip().eq("") | view["노출용 상품명"].astype(str).str.match(r'^[0-9]+$') | view["노출용 상품명"].astype(str).str.startswith("소재 (") | view["노출용 상품명"].astype(str).str.lower().isin(["nan", "none"])
-                    view["노출용 상품명"] = np.where(is_invalid_title_again, view["광고그룹"], view["노출용 상품명"])
+                    if "노출용 상품명" in view.columns:
+                        view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none"], "").fillna("")
 
                     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품/소재명"]
                     
