@@ -234,10 +234,32 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     return out
 
 def style_table_deltas(val):
-    if pd.isna(val) or val == "-": return ""
+    if pd.isna(val) or val == "-" or val == "": 
+        return ""
+    
+    color_up = "color: #FF4B4B; font-weight: 700;"    # Red for increase
+    color_down = "color: #1E88E5; font-weight: 700;"  # Blue for decrease
+    
     if isinstance(val, str):
-        if "▲" in val: return "color: #58B04B; font-weight: 700;" 
-        if "▼" in val: return "color: #FF025D; font-weight: 700;" 
+        if "▲" in val: return color_up
+        if "▼" in val: return color_down
+        
+        val_clean = val.replace(",", "").replace("%", "").strip()
+        if val_clean.startswith("+") and len(val_clean) > 1:
+            try:
+                if float(val_clean) > 0: return color_up
+            except ValueError: pass
+        if val_clean.startswith("-") and len(val_clean) > 1:
+            try:
+                if float(val_clean) < 0: return color_down
+            except ValueError: pass
+            
+    elif isinstance(val, (int, float)):
+        if val > 0:
+            return color_up
+        elif val < 0:
+            return color_down
+            
     return ""
 
 def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
