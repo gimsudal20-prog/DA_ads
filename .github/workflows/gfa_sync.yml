@@ -1,0 +1,29 @@
+name: GFA Daily Data Sync
+
+on:
+  schedule:
+    # 매일 한국시간 새벽 3시 실행 (UTC 기준 전날 18:00)
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-gfa-collector:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 불러오기
+        uses: actions/checkout@v3
+
+      - name: Python 3.10 세팅
+        uses: actions/setup-python@v4
+        with:
+            python-version: '3.10'
+
+      - name: 패키지 설치
+        run: |
+          pip install pandas requests sqlalchemy psycopg2-binary openpyxl python-dotenv
+
+      - name: GFA 전용 수집기 실행
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python collector_gfa.py
