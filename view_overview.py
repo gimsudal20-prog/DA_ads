@@ -39,14 +39,6 @@ def _selected_type_label(type_sel: tuple) -> str:
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try:
-        return query_keyword_bundle(_engine, start_dt, end_dt, list(cids), type_sel, topn_cost=0)
-    except Exception:
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
@@ -164,7 +156,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-    # ✨ [속도 개선] 요약 박스를 위해 가장 가벼운 쿼리만 우선 실행
+    # 가장 빠른 집계 쿼리로 KPI 박스부터 즉시 렌더링
     cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
 
@@ -184,9 +176,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     selected_type_label = _selected_type_label(type_sel)
     
-    # ---------------------------------------------------------
-    # 공통 헬퍼 변수 및 함수 선언
-    # ---------------------------------------------------------
     def format_for_csv(df):
         out_df = df.copy()
         for col in out_df.columns:
@@ -241,8 +230,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "PLACE": "플레이스"
     }
 
+
     # ==========================================
-    # 1. 전체 성과 요약 (KPI Box) - 가장 먼저 렌더링!
+    # 1. 전체 성과 요약 (KPI Box)
     # ==========================================
     st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     
@@ -302,8 +292,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
 
-    # ✨ [속도 개선] KPI 박스를 띄워둔 뒤에 무거운 하위 표 데이터를 로딩
-    with st.spinner("상세 성과 표 및 차트 데이터를 불러오는 중... (잠시만 기다려주세요)"):
+    with st.spinner("상세 성과를 로딩 중입니다..."):
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
 
@@ -769,8 +758,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
 
         if st.session_state.get(report_loaded_key, False):
-            with st.spinner("키워드 집계 중..."):
-                kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            with st.spinner("키워드 요약 중..."):
+                # ✨ [속도 개선 핵심] 무제한 다운로드(topn_cost=0) 삭제. 
+                # 데이터 전송량을 대폭 줄여서 상위 100개만 가져온 뒤 거기서 3개를 뽑습니다.
+                kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=100)
+                
             if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
                 kw_top = kw_bundle.copy()
                 kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
@@ -958,4 +950,3 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.dataframe(styled_df, width="stretch", hide_index=True)
         else:
             st.info("선택한 조건에 대한 트렌드 데이터가 없습니다.")
-
