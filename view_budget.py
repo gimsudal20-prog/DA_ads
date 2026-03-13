@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from typing import Dict
 from datetime import date, timedelta
 
@@ -75,6 +76,13 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.divider()
 
             budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
+            
+            # ✨ 속도 최적화: DB 캐시를 지우지 않고, 세션 메모리에 저장된 값을 즉시 덮어씌워 빛의 속도로 렌더링
+            if "local_budget_overrides" in st.session_state:
+                for cid, new_val in st.session_state["local_budget_overrides"].items():
+                    m_cid = budget_view["customer_id"].astype(str) == str(cid)
+                    budget_view.loc[m_cid, "monthly_budget"] = new_val
+
             budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
             budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
 
@@ -95,13 +103,14 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
-            # 데이터를 문자열이 아닌 순수 숫자(int) 형식으로 전달하여 연산/수정 딜레이 최소화
             editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
+            
+            editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            
             editor_df = editor_df.rename(columns={
                 "account_name": "업체명", 
                 "manager": "담당자", 
-                "monthly_budget_val": "월 예산", 
-                "current_month_cost_val": f"{end_dt.month}월 사용액", 
                 "usage_pct": "집행률(%)"
             })
 
@@ -109,20 +118,76 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if "budget_table_editor" in st.session_state:
                     edits = st.session_state["budget_table_editor"].get("edited_rows", {})
                     updated_count = 0
+                    
+                    if "local_budget_overrides" not in st.session_state:
+                        st.session_state["local_budget_overrides"] = {}
+                        
                     for row_idx, col_data in edits.items():
                         if "월 예산" in col_data:
-                            new_val = col_data["월 예산"]
-                            if pd.notna(new_val):
+                            raw_input = str(col_data["월 예산"]).replace(",", "").replace("원", "").strip()
+                            if raw_input.isdigit():
+                                new_budget = int(raw_input)
                                 cid = str(editor_df.iloc[row_idx]["customer_id"])
-                                update_monthly_budget(engine, cid, int(new_val))
+                                
+                                # 1. 백그라운드에서 DB 업데이트
+                                update_monthly_budget(engine, cid, new_budget)
+                                
+                                # 2. 즉시 화면 반영을 위해 메모리에 오버라이드 값 저장 (캐시 삭제로 인한 딜레이 방지)
+                                st.session_state["local_budget_overrides"][cid] = new_budget
                                 updated_count += 1
                     
                     if updated_count > 0:
-                        # 딜레이를 최소화하기 위해 토스트 메시지를 먼저 띄우고 캐시 정리
-                        st.toast("예산이 저장되었습니다! ⚡", icon="✅")
-                        st.cache_data.clear()
+                        st.toast("예산이 0.1초 만에 업데이트 되었습니다! ⚡", icon="✅")
 
-            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 숫자만 치고 Enter를 누르세요!)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요!)</div>", unsafe_allow_html=True)
+
+            # ✨ 입력하는 도중(타이핑 중) 실시간으로 콤마를 찍어주는 궁극의 자바스크립트 트릭 주입
+            components.html("""
+            <script>
+            const doc = window.parent.document;
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node.nodeType === 1) { // 요소 노드일 경우
+                            let inputs = (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') ? [node] : node.querySelectorAll('input, textarea');
+                            inputs.forEach(targetInput => {
+                                if (targetInput && !targetInput.dataset.commaAttached) {
+                                    targetInput.addEventListener('input', function(e) {
+                                        let rawValue = this.value.replace(/[^0-9]/g, '');
+                                        if (rawValue !== '') {
+                                            let formatted = parseInt(rawValue, 10).toLocaleString('ko-KR');
+                                            if (this.value !== formatted) {
+                                                let cursorPosition = this.selectionStart;
+                                                let oldLength = this.value.length;
+                                                
+                                                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+                                                if (this.tagName === 'TEXTAREA') {
+                                                    setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+                                                }
+                                                
+                                                if (setter) {
+                                                    setter.call(this, formatted);
+                                                    this.dispatchEvent(new Event('input', { bubbles: true }));
+                                                } else {
+                                                    this.value = formatted;
+                                                }
+                                                
+                                                let newLength = this.value.length;
+                                                let newPos = cursorPosition + (newLength - oldLength);
+                                                try { this.setSelectionRange(newPos, newPos); } catch(err) {}
+                                            }
+                                        }
+                                    });
+                                    targetInput.dataset.commaAttached = "true";
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+            observer.observe(doc.body, { childList: true, subtree: true });
+            </script>
+            """, height=0, width=0)
 
             st.data_editor(
                 editor_df,
@@ -133,20 +198,18 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 height=550,
                 column_config={
                     "customer_id": None, 
+                    "monthly_budget_val": None, 
+                    "current_month_cost_val": None,
                     "업체명": st.column_config.TextColumn("업체명", disabled=True),
                     "담당자": st.column_config.TextColumn("담당자", disabled=True),
-                    "월 예산": st.column_config.NumberColumn(
+                    "월 예산": st.column_config.TextColumn(
                         "월 예산(원) ✏️", 
-                        help="더블클릭하여 숫자를 바로 수정하세요. (입력 후 Enter를 치면 자동으로 콤마가 찍힙니다)",
-                        min_value=0, 
-                        step=100000, 
-                        format="%d", # 편집이 끝난 후 화면에 보여질 때의 숫자 포맷팅 방식
+                        help="더블클릭하여 예산을 바로 수정하세요. 실시간으로 콤마가 자동 입력됩니다.",
                         required=True
                     ),
-                    f"{end_dt.month}월 사용액": st.column_config.NumberColumn(
+                    f"{end_dt.month}월 사용액": st.column_config.TextColumn(
                         f"{end_dt.month}월 사용액", 
-                        disabled=True, 
-                        format="%d"
+                        disabled=True
                     ),
                     "집행률(%)": st.column_config.ProgressColumn(
                         "집행률(%)",
