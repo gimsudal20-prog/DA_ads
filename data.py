@@ -30,7 +30,7 @@ def get_engine():
         pool_size=20, 
         max_overflow=40, 
         pool_pre_ping=True, 
-        pool_recycle=60, # ✨ 300초 -> 60초로 대폭 단축하여 끊긴 연결을 즉시 버립니다.
+        pool_recycle=60,
         connect_args=connect_args,
         future=True
     )
@@ -58,8 +58,11 @@ def get_table_columns(_engine, table_name: str) -> list:
                 res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
-            if attempt == 2: return []
-            _engine.dispose() # ✨ 핵심: 에러 발생 시 오염된 커넥션 풀을 완전히 박살내고 초기화합니다.
+            if attempt == 2: 
+                # ✨ 자가 치유: 완전히 끊겼다고 판단되면 캐시를 통째로 날려서 다음번에 새 연결을 유도
+                st.cache_resource.clear()
+                return []
+            _engine.dispose()
             time.sleep(0.5)
         except Exception: return []
 
@@ -71,12 +74,12 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
                 return pd.read_sql(text(query), conn, params=params)
         except (OperationalError, StatementError, InterfaceError) as e:
             if attempt == 2:
-                st.error(f"데이터 조회 오류 (연결 끊김 지속): {e}")
+                # ✨ 화면 상단에 빨간 에러창을 띄우는 대신 조용히 엔진 캐시를 날리고 빈 데이터 반환 (화면 깨짐 방지)
+                st.cache_resource.clear()
                 return pd.DataFrame()
-            _engine.dispose() # ✨ 핵심: Supabase가 선을 끊었으면 남은 선들도 다 버리고 새로 연결합니다.
+            _engine.dispose()
             time.sleep(0.5) 
         except Exception as e:
-            st.error(f"데이터 조회 오류: {e}")
             return pd.DataFrame()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
@@ -87,12 +90,11 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
             break
         except (OperationalError, StatementError, InterfaceError) as e:
             if attempt == 2:
-                st.error(f"DB 실행 오류 (연결 끊김): {e}")
+                st.cache_resource.clear()
                 raise e
-            _engine.dispose() # ✨ 핵심: 풀 리셋
+            _engine.dispose()
             time.sleep(0.5)
         except Exception as e:
-            st.error(f"DB 실행 오류: {e}")
             raise e
 
 def _sql_in_str_list(lst) -> str:
