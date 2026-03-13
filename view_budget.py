@@ -130,22 +130,26 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
                         st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
                     
+                    # 정규식을 제거하고 가장 가벼운 문자열 치환 방식으로 최적화
                     def format_budget_on_change(key_name):
-                        val = st.session_state.get(key_name, "0")
-                        cleaned = re.sub(r"[^\d]", "", str(val))
-                        if cleaned: st.session_state[key_name] = f"{int(cleaned):,}"
-                        else: st.session_state[key_name] = "0"
+                        val = str(st.session_state.get(key_name, "0")).replace(",", "").replace("원", "")
+                        if val.isdigit():
+                            st.session_state[key_name] = f"{int(val):,}"
+                        else:
+                            st.session_state[key_name] = "0"
                     
                     def add_amount_callback(key_name, amount):
-                        val = st.session_state.get(key_name, "0")
-                        cleaned = int(re.sub(r"[^\d]", "", str(val)) or 0)
+                        val = str(st.session_state.get(key_name, "0")).replace(",", "").replace("원", "")
+                        cleaned = int(val) if val.isdigit() else 0
                         st.session_state[key_name] = f"{cleaned + amount:,}"
 
                     def reset_amount_callback(key_name):
                         st.session_state[key_name] = "0"
 
                     st.text_input("새 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
-                    raw_val = int(re.sub(r"[^\d]", "", str(st.session_state.get(sk, "0"))) or 0)
+                    
+                    val_to_save = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
+                    raw_val = int(val_to_save) if val_to_save.isdigit() else 0
                     
                     b1, b2, b3, b4 = st.columns(4)
                     b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000))
@@ -159,7 +163,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         st.success("저장 완료!")
                         if sk in st.session_state: del st.session_state[sk]
                         st.cache_data.clear()
-                        time.sleep(0.5)
+                        # 화면 딜레이를 유발하던 time.sleep(0.5)를 제거하여 즉각 반응하도록 수정했습니다.
                         st.rerun()
 
     with tab_alert:
@@ -178,7 +182,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
             display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
             
-            # 동적인 일수 표기로 변경
             avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
             display_df[avg_days_label] = display_df["avg_cost"].apply(lambda x: format_currency(x))
             
