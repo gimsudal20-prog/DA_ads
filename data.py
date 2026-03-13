@@ -25,13 +25,12 @@ def get_engine():
         "keepalives_count": 5
     }
     
-    # 🚀 대용량 백필 데이터 처리를 위해 커넥션 풀 크기 2배 확장
     return create_engine(
         db_url, 
         pool_size=20, 
         max_overflow=40, 
         pool_pre_ping=True, 
-        pool_recycle=300, 
+        pool_recycle=60, # ✨ 300초 -> 60초로 대폭 단축하여 끊긴 연결을 즉시 버립니다.
         connect_args=connect_args,
         future=True
     )
@@ -60,6 +59,7 @@ def get_table_columns(_engine, table_name: str) -> list:
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
             if attempt == 2: return []
+            _engine.dispose() # ✨ 핵심: 에러 발생 시 오염된 커넥션 풀을 완전히 박살내고 초기화합니다.
             time.sleep(0.5)
         except Exception: return []
 
@@ -73,6 +73,7 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
             if attempt == 2:
                 st.error(f"데이터 조회 오류 (연결 끊김 지속): {e}")
                 return pd.DataFrame()
+            _engine.dispose() # ✨ 핵심: Supabase가 선을 끊었으면 남은 선들도 다 버리고 새로 연결합니다.
             time.sleep(0.5) 
         except Exception as e:
             st.error(f"데이터 조회 오류: {e}")
@@ -88,6 +89,7 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
             if attempt == 2:
                 st.error(f"DB 실행 오류 (연결 끊김): {e}")
                 raise e
+            _engine.dispose() # ✨ 핵심: 풀 리셋
             time.sleep(0.5)
         except Exception as e:
             st.error(f"DB 실행 오류: {e}")
