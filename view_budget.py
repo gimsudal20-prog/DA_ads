@@ -7,6 +7,7 @@ import time
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from typing import Dict
 from datetime import date, timedelta
 
@@ -130,41 +131,77 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
                         st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
                     
-                    # 정규식을 제거하고 가장 가벼운 문자열 치환 방식으로 최적화
-                    def format_budget_on_change(key_name):
-                        val = str(st.session_state.get(key_name, "0")).replace(",", "").replace("원", "")
-                        if val.isdigit():
-                            st.session_state[key_name] = f"{int(val):,}"
-                        else:
-                            st.session_state[key_name] = "0"
+                    # ✨ 실시간 입력을 위해 불필요한 on_change 콜백 제거
+                    st.text_input("새 예산 (원)", key=sk)
                     
-                    def add_amount_callback(key_name, amount):
-                        val = str(st.session_state.get(key_name, "0")).replace(",", "").replace("원", "")
-                        cleaned = int(val) if val.isdigit() else 0
-                        st.session_state[key_name] = f"{cleaned + amount:,}"
-
-                    def reset_amount_callback(key_name):
-                        st.session_state[key_name] = "0"
-
-                    st.text_input("새 예산 (원)", key=sk, on_change=format_budget_on_change, args=(sk,))
-                    
-                    val_to_save = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
-                    raw_val = int(val_to_save) if val_to_save.isdigit() else 0
-                    
+                    # ✨ 연속 클릭 버그 해결을 위해 직접 state를 변경하고 즉시 rerun을 호출하도록 수정
                     b1, b2, b3, b4 = st.columns(4)
-                    b1.button("+10만", key=f"btn_10_{cid}", on_click=add_amount_callback, args=(sk, 100000))
-                    b2.button("+100만", key=f"btn_100_{cid}", on_click=add_amount_callback, args=(sk, 1000000))
-                    b3.button("+1000만", key=f"btn_1000_{cid}", on_click=add_amount_callback, args=(sk, 10000000))
-                    b4.button("초기화", key=f"btn_0_{cid}", on_click=reset_amount_callback, args=(sk,))
+                    if b1.button("+10만", key=f"btn_10_{cid}"):
+                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
+                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 100000:,}"
+                        st.rerun()
+                        
+                    if b2.button("+100만", key=f"btn_100_{cid}"):
+                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
+                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 1000000:,}"
+                        st.rerun()
+                        
+                    if b3.button("+1000만", key=f"btn_1000_{cid}"):
+                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
+                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 10000000:,}"
+                        st.rerun()
+                        
+                    if b4.button("초기화", key=f"btn_0_{cid}"):
+                        st.session_state[sk] = "0"
+                        st.rerun()
                     
                     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
                     if st.button("저장하기", type="primary", use_container_width=True):
+                        val_to_save = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
+                        raw_val = int(val_to_save) if val_to_save.isdigit() else 0
+                        
                         update_monthly_budget(engine, cid, raw_val)
                         st.success("저장 완료!")
                         if sk in st.session_state: del st.session_state[sk]
                         st.cache_data.clear()
-                        # 화면 딜레이를 유발하던 time.sleep(0.5)를 제거하여 즉각 반응하도록 수정했습니다.
                         st.rerun()
+
+                    # ✨ 예산 입력창에 타이핑하는 즉시 콤마를 찍어주도록 돕는 자바스크립트 트릭 주입
+                    components.html("""
+                    <script>
+                    const doc = window.parent.document;
+                    function applyCommaHack() {
+                        const inputs = doc.querySelectorAll('input[aria-label="새 예산 (원)"]');
+                        inputs.forEach(input => {
+                            if (!input.dataset.commaAttached) {
+                                input.addEventListener('input', function(e) {
+                                    let cursorPosition = this.selectionStart;
+                                    let oldLength = this.value.length;
+                                    
+                                    let rawValue = this.value.replace(/[^0-9]/g, '');
+                                    let formatted = rawValue ? parseInt(rawValue, 10).toLocaleString('ko-KR') : '';
+                                    
+                                    let nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                                    if(nativeInputValueSetter) {
+                                        nativeInputValueSetter.call(this, formatted);
+                                        // Streamlit의 React 상태를 갱신하기 위한 강제 이벤트 발생
+                                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                                    }
+                                    
+                                    // 커서 위치 보정
+                                    let newLength = this.value.length;
+                                    cursorPosition = cursorPosition + (newLength - oldLength);
+                                    this.setSelectionRange(cursorPosition, cursorPosition);
+                                });
+                                input.dataset.commaAttached = "true";
+                            }
+                        });
+                    }
+                    applyCommaHack();
+                    const observer = new MutationObserver(applyCommaHack);
+                    observer.observe(doc.body, { childList: true, subtree: true });
+                    </script>
+                    """, height=0, width=0)
 
     with tab_alert:
         if alert_view.empty:
