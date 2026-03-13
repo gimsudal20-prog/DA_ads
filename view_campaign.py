@@ -7,7 +7,6 @@ import numpy as np
 import streamlit as st
 from typing import Dict
 
-# ✨ 수정: query_ad_bundle 추가 임포트
 from data import query_campaign_bundle, query_keyword_bundle, query_ad_bundle, query_campaign_off_log, load_dim_campaign
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
@@ -104,7 +103,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         
     return merged
 
-# ✨ 수정: 파워링크(키워드)와 쇼핑검색(소재)을 합쳐 그룹데이터를 온전하게 만들어주는 통합 헬퍼 함수
 def _build_consolidated_adgroup(kw_df, ad_df):
     grp_cols = ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"]
     
@@ -147,8 +145,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
     kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
-    
-    # ✨ 수정: 쇼핑검색 그룹 및 순위 보정을 위해 ad_bundle_cur 데이터까지 수집
     ad_bundle_cur = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
 
     view = pd.DataFrame()
@@ -161,7 +157,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         }).copy()
         view = _add_perf_metrics(view)
 
-        # ✨ 수정: 캠페인 순위 병합 시 쇼핑검색 평균순위(NaN) 증발 방지
         if not kw_bundle_cur.empty:
             rank_map_camp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id"])
             if not rank_map_camp.empty:
@@ -169,15 +164,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 view = _normalize_merge_keys(view, key_cols)
                 rank_map_camp = _normalize_merge_keys(rank_map_camp, key_cols)
                 
-                # 원본 평균순위 백업
                 if "avg_rank" in view.columns:
                     view = view.rename(columns={"avg_rank": "orig_avg_rank"})
                 else:
                     view["orig_avg_rank"] = np.nan
                     
                 view = view.merge(rank_map_camp, on=key_cols, how="left")
-                
-                # 쇼핑검색처럼 rank_map에 값이 없다면 원본 avg_rank(fact_campaign_daily 기반)로 복원!
                 view["avg_rank"] = view["avg_rank"].fillna(view["orig_avg_rank"])
                 view = view.drop(columns=["orig_avg_rank"])
                 
@@ -212,7 +204,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_big_table(disp_main.style.format(fmt), "camp_grid_main", 550)
 
     with tab_group:
-        # ✨ 수정: 통합 헬퍼 함수를 통해 파워링크/쇼핑검색 그룹 데이터 완벽 결합
         grp_cur_raw = _build_consolidated_adgroup(kw_bundle_cur, ad_bundle_cur)
         
         if grp_cur_raw.empty:
@@ -221,7 +212,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             grp = _perf_common_merge_meta(grp_cur_raw, meta)
             grouped = grp.rename(columns={
                 "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인",
-                "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+                "adgroup_name": "광고그룹", "imp": "노출", "클릭": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
             }).copy()
 
             if "avg_rank" in grouped.columns:
@@ -263,7 +254,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         
         base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
-        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50) # ✨ 수정: 비교군에서도 소재 번들 수집
+        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
 
         if cmp_view_mode == "캠페인 단위":
             if view.empty:
@@ -277,9 +268,16 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         key_cols_cmp = ["customer_id", "campaign_id"]
                         base_bundle = _normalize_merge_keys(base_bundle, key_cols_cmp)
                         base_rank_map = _normalize_merge_keys(base_rank_map, key_cols_cmp)
+                        
+                        # ✨ 수정: 비교군 데이터 병합 시에도 쇼핑검색 평균순위 보존!
                         if "avg_rank" in base_bundle.columns:
-                            base_bundle = base_bundle.drop(columns=["avg_rank"])
+                            base_bundle = base_bundle.rename(columns={"avg_rank": "orig_avg_rank"})
+                        else:
+                            base_bundle["orig_avg_rank"] = np.nan
+                            
                         base_bundle = base_bundle.merge(base_rank_map, on=key_cols_cmp, how="left")
+                        base_bundle["avg_rank"] = base_bundle["avg_rank"].fillna(base_bundle["orig_avg_rank"])
+                        base_bundle = base_bundle.drop(columns=["orig_avg_rank"])
 
                 view_cmp = view.copy()
                 if not base_bundle.empty:
@@ -320,7 +318,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 render_big_table(styled_cmp, "camp_cmp_grid", 550)
 
         elif cmp_view_mode == "광고그룹 단위":
-            # ✨ 수정: 그룹 통합 헬퍼를 통해 누락 없이 데이터를 수집하도록 개선
             grp_cur_raw = _build_consolidated_adgroup(kw_bundle_cur, ad_bundle_cur)
             if grp_cur_raw.empty:
                 st.info("비교할 광고그룹 데이터가 없습니다.")
