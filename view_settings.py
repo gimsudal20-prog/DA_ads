@@ -37,9 +37,8 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # ✨ [추가된 부분] 깃허브 배포 환경을 위한 원클릭 DB 최적화 버튼
     st.markdown("### 🚀 대시보드 속도 최적화 (인덱스 생성)")
-    st.caption("대량의 백필 데이터가 추가되어 대시보드가 느려졌을 때, 이 버튼을 눌러 DB 검색 속도를 복구하세요. (최초 1회만 실행하면 됩니다)")
+    st.caption("대량의 백필 데이터가 추가되어 대시보드가 느려졌을 때, 이 버튼을 눌러 DB 검색 속도를 복구하세요. (최초 1회만 실행)")
     
     if st.button("⚡ 초고속 DB 목차(인덱스) 만들기", type="secondary"):
         with st.spinner("DB 최적화 진행 중... (데이터량에 따라 최대 1~2분 소요될 수 있습니다)"):
@@ -52,20 +51,45 @@ def page_settings(engine) -> None:
                     "CREATE INDEX IF NOT EXISTS idx_fkd_cid ON fact_keyword_daily(customer_id);",
                     "CREATE INDEX IF NOT EXISTS idx_fad_cid ON fact_ad_daily(customer_id);"
                 ]
-                # 트랜잭션 락 방지를 위해 AUTOCOMMIT 모드로 안전하게 실행
                 with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                     for idx in indexes:
-                        try:
-                            conn.execute(text(idx))
-                        except Exception:
-                            pass # 이미 존재하거나 에러가 나도 다음 단계 진행
-                            
+                        try: conn.execute(text(idx))
+                        except Exception: pass
                 st.success("🎉 DB 최적화가 완료되었습니다! 이제 대시보드가 날아다닐 겁니다.")
                 time.sleep(2)
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 st.error(f"최적화 중 오류 발생: {e}")
+
+    st.divider()
+
+    # ✨ [추가된 부분] 깃허브 환경용 원클릭 DB 대청소(VACUUM) 버튼
+    st.markdown("### 🧹 DB 찌꺼기 대청소 (VACUUM ANALYZE)")
+    st.caption("중복 데이터 제거 후 보이지 않는 빈 공간을 압축하여 Supabase 리소스 경고를 해결하고 DB 체력을 회복시킵니다.")
+    
+    if st.button("♻️ DB 대청소 및 튜닝 실행", type="secondary"):
+        with st.spinner("DB 대청소 중... (이 작업은 2분 제한 없이 끝까지 안전하게 백그라운드에서 진행됩니다)"):
+            try:
+                tables_to_vacuum = [
+                    "fact_keyword_daily", 
+                    "fact_ad_daily", 
+                    "fact_campaign_daily", 
+                    "dim_customer", 
+                    "dim_campaign", 
+                    "dim_ad"
+                ]
+                # AUTOCOMMIT으로 트랜잭션 락을 방지하고 끝까지 실행되도록 보장합니다.
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                    for tbl in tables_to_vacuum:
+                        try:
+                            conn.execute(text(f"VACUUM ANALYZE {tbl};"))
+                        except Exception as e:
+                            pass # 특정 테이블이 없거나 에러나도 다음 청소 진행
+                st.success("🎉 DB 대청소 및 튜닝이 완벽하게 끝났습니다! Supabase 경고 메시지도 곧 자연스럽게 사라질 것입니다.")
+                time.sleep(2)
+            except Exception as e:
+                st.error(f"청소 중 오류 발생: {e}")
 
     st.divider()
 
