@@ -95,37 +95,34 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
+            # 데이터를 문자열이 아닌 순수 숫자(int) 형식으로 전달하여 연산/수정 딜레이 최소화
             editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
-            
-            # ✨ 화면에 보여줄 때 숫자에 콤마(,)를 붙여서 텍스트로 변환
-            editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-            editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-            
             editor_df = editor_df.rename(columns={
                 "account_name": "업체명", 
                 "manager": "담당자", 
+                "monthly_budget_val": "월 예산", 
+                "current_month_cost_val": f"{end_dt.month}월 사용액", 
                 "usage_pct": "집행률(%)"
             })
 
-            # ✨ 텍스트로 입력받은 값에서 콤마를 다시 제거하고 진짜 숫자로 DB에 저장하는 로직
             def update_budget_from_table():
                 if "budget_table_editor" in st.session_state:
                     edits = st.session_state["budget_table_editor"].get("edited_rows", {})
                     updated_count = 0
                     for row_idx, col_data in edits.items():
                         if "월 예산" in col_data:
-                            raw_input = str(col_data["월 예산"]).replace(",", "").replace("원", "").strip()
-                            if raw_input.isdigit():
-                                new_budget = int(raw_input)
+                            new_val = col_data["월 예산"]
+                            if pd.notna(new_val):
                                 cid = str(editor_df.iloc[row_idx]["customer_id"])
-                                update_monthly_budget(engine, cid, new_budget)
+                                update_monthly_budget(engine, cid, int(new_val))
                                 updated_count += 1
                     
                     if updated_count > 0:
-                        st.toast("예산이 성공적으로 업데이트 되었습니다! 💸", icon="✅")
+                        # 딜레이를 최소화하기 위해 토스트 메시지를 먼저 띄우고 캐시 정리
+                        st.toast("예산이 저장되었습니다! ⚡", icon="✅")
                         st.cache_data.clear()
 
-            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 수정하고 Enter를 누르세요!)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 숫자만 치고 Enter를 누르세요!)</div>", unsafe_allow_html=True)
 
             st.data_editor(
                 editor_df,
@@ -136,18 +133,20 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 height=550,
                 column_config={
                     "customer_id": None, 
-                    "monthly_budget_val": None, 
-                    "current_month_cost_val": None,
                     "업체명": st.column_config.TextColumn("업체명", disabled=True),
                     "담당자": st.column_config.TextColumn("담당자", disabled=True),
-                    "월 예산": st.column_config.TextColumn(
+                    "월 예산": st.column_config.NumberColumn(
                         "월 예산(원) ✏️", 
-                        help="더블클릭 후 숫자를 입력하세요. 콤마를 빼고 숫자만 쳐도 됩니다.",
+                        help="더블클릭하여 숫자를 바로 수정하세요. (입력 후 Enter를 치면 자동으로 콤마가 찍힙니다)",
+                        min_value=0, 
+                        step=100000, 
+                        format="%d", # 편집이 끝난 후 화면에 보여질 때의 숫자 포맷팅 방식
                         required=True
                     ),
-                    f"{end_dt.month}월 사용액": st.column_config.TextColumn(
+                    f"{end_dt.month}월 사용액": st.column_config.NumberColumn(
                         f"{end_dt.month}월 사용액", 
-                        disabled=True
+                        disabled=True, 
+                        format="%d"
                     ),
                     "집행률(%)": st.column_config.ProgressColumn(
                         "집행률(%)",
