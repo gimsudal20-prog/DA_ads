@@ -77,7 +77,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
             
-            # ✨ 속도 최적화: DB 캐시를 지우지 않고, 세션 메모리에 저장된 값을 즉시 덮어씌워 빛의 속도로 렌더링
+            # 속도 최적화: 메모리에 저장된 값을 즉시 덮어씌워 렌더링
             if "local_budget_overrides" in st.session_state:
                 for cid, new_val in st.session_state["local_budget_overrides"].items():
                     m_cid = budget_view["customer_id"].astype(str) == str(cid)
@@ -105,8 +105,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
             
-            editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-            editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            # ✨ 정렬 트릭: 텍스트 상태에서도 숫자 크기순 정렬이 작동하도록 자릿수에 맞춰 공백(Padding)을 채워 넣음
+            editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+            editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
             
             editor_df = editor_df.rename(columns={
                 "account_name": "업체명", 
@@ -124,31 +125,29 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                         
                     for row_idx, col_data in edits.items():
                         if "월 예산" in col_data:
+                            # 저장할 때는 공백과 반점을 모두 제거하여 숫자로 변환
                             raw_input = str(col_data["월 예산"]).replace(",", "").replace("원", "").strip()
                             if raw_input.isdigit():
                                 new_budget = int(raw_input)
                                 cid = str(editor_df.iloc[row_idx]["customer_id"])
                                 
-                                # 1. 백그라운드에서 DB 업데이트
                                 update_monthly_budget(engine, cid, new_budget)
-                                
-                                # 2. 즉시 화면 반영을 위해 메모리에 오버라이드 값 저장 (캐시 삭제로 인한 딜레이 방지)
                                 st.session_state["local_budget_overrides"][cid] = new_budget
                                 updated_count += 1
                     
                     if updated_count > 0:
-                        st.toast("예산이 0.1초 만에 업데이트 되었습니다! ⚡", icon="✅")
+                        # 심플한 문구로 변경
+                        st.toast("예산이 저장되었습니다.", icon="✅")
 
             st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요!)</div>", unsafe_allow_html=True)
 
-            # ✨ 입력하는 도중(타이핑 중) 실시간으로 콤마를 찍어주는 궁극의 자바스크립트 트릭 주입
             components.html("""
             <script>
             const doc = window.parent.document;
             const observer = new MutationObserver((mutations) => {
                 mutations.forEach((mutation) => {
                     mutation.addedNodes.forEach((node) => {
-                        if (node.nodeType === 1) { // 요소 노드일 경우
+                        if (node.nodeType === 1) { 
                             let inputs = (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') ? [node] : node.querySelectorAll('input, textarea');
                             inputs.forEach(targetInput => {
                                 if (targetInput && !targetInput.dataset.commaAttached) {
