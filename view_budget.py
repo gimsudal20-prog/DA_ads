@@ -1,232 +1,165 @@
 # -*- coding: utf-8 -*-
-"""view_budget.py - Budget and Balance page view."""
+"""view_budget.py - Budget management and monitoring page view."""
 
-from __future__ import annotations
-import re
-import time
 import pandas as pd
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
-from typing import Dict
+import time
 from datetime import date, timedelta
+import calendar
 
-from data import *
-from ui import *
-from page_helpers import *
+from data import query_budget_bundle, update_monthly_budget
 
-def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
-    st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
-    
-    tab_budget, tab_alert = st.tabs(["월 예산 현황", "비즈머니 관리"])
-    
-    cids = tuple(f.get("selected_customer_ids", []) or [])
-    yesterday = date.today() - timedelta(days=1)
-    end_dt = f.get("end") or yesterday
-    avg_d2 = end_dt - timedelta(days=1)
-    avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    month_d1 = end_dt.replace(day=1)
-    month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
+def page_budget(meta: pd.DataFrame, engine, f: dict):
+    st.markdown("<div class='nv-sec-title'>💰 예산 및 비즈머니 관리</div>", unsafe_allow_html=True)
+    st.caption("월별 목표 예산을 설정하고, 현재 소진 페이스와 비즈머니 잔액을 모니터링합니다.")
 
-    bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
+    if meta.empty:
+        st.info("등록된 업체 정보가 없습니다. 설정 메뉴에서 동기화를 진행해주세요.")
+        return
 
-    alert_avg_d2 = yesterday
-    alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    alert_bundle = query_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
-    
-    if bundle is None or bundle.empty:
-        biz_view = pd.DataFrame()
-    else:
-        biz_view = bundle.copy()
-        m = biz_view["avg_cost"].astype(float) > 0
-        biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
-        biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
-        biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+    today = date.today()
+    yesterday = today - timedelta(days=1)
 
-    if alert_bundle is None or alert_bundle.empty:
-        alert_view = pd.DataFrame()
-    else:
-        alert_view = alert_bundle.copy()
-        m_alert = alert_view["avg_cost"].astype(float) > 0
-        alert_view.loc[m_alert, "days_cover"] = alert_view.loc[m_alert, "bizmoney_balance"].astype(float) / alert_view.loc[m_alert, "avg_cost"].astype(float)
+    # 현재 월의 1일과 마지막 날 구하기
+    current_month_start = date(today.year, today.month, 1)
+    _, last_day = calendar.monthrange(today.year, today.month)
+    current_month_end = date(today.year, today.month, last_day)
 
-    with tab_budget:
-        if biz_view.empty:
-            st.info("예산 현황 데이터가 없습니다.")
-        else:
-            biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
-            
-            target_roas = st.slider("전사 목표 ROAS (%)", min_value=100, max_value=1000, value=300, step=50)
-            
-            def get_weather(roas, target):
-                if roas >= target: return "☀️ 맑음"
-                elif roas >= target * 0.8: return "☁️ 흐림" 
-                else: return "☔ 비상"
-                
-            biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
-            
-            total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
-            total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
-            count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
+    # 최근 7일 평균 소진액 계산용 (어제 기준)
+    avg_d2 = yesterday
+    avg_d1 = avg_d2 - timedelta(days=6)
+    avg_days = 7
 
-            c1, c2, c3 = st.columns(3)
-            with c1: ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), key='m_total_balance')
-            with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), key='m_month_cost')
-            with c3: ui_metric_or_stmetric('효율 비상 계정', f"{count_rain}건", key='m_need_opt')
+    cids = tuple(f.get("selected_customer_ids", []))
 
-            st.divider()
+    with st.spinner("예산 및 비즈머니 현황을 불러오는 중..."):
+        df = query_budget_bundle(
+            engine,
+            cids,
+            yesterday,
+            avg_d1,
+            avg_d2,
+            current_month_start,
+            yesterday,
+            avg_days
+        )
 
-            budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
-            budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
-            budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
+    if df.empty:
+        st.warning("조회된 예산 데이터가 없습니다.")
+        return
 
-            budget_view["usage_rate"] = 0.0
-            m2 = budget_view["monthly_budget_val"] > 0
-            budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
-            budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
+    # 남은 일수 계산 (오늘부터 말일까지)
+    days_remaining = (current_month_end - today).days + 1
+    if days_remaining <= 0:
+        days_remaining = 1
 
-            def _status(rate: float, budget: int):
-                if budget == 0: return ("미설정", 3)
-                if rate >= 1.0: return ("초과", 0)
-                if rate >= 0.9: return ("주의", 1)
-                return ("적정", 2)
+    # 지표 계산을 위한 안전한 숫자 변환
+    df["monthly_budget"] = pd.to_numeric(df["monthly_budget"], errors="coerce").fillna(0)
+    df["avg_cost"] = pd.to_numeric(df["avg_cost"], errors="coerce").fillna(0)
+    df["current_month_cost"] = pd.to_numeric(df["current_month_cost"], errors="coerce").fillna(0)
+    df["bizmoney_balance"] = pd.to_numeric(df["bizmoney_balance"], errors="coerce").fillna(0)
 
-            tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
-            budget_view["상태"] = tmp[0]
-            budget_view["_rank"] = tmp[1].astype(int)
+    # 예상 소진액 = 현재까지 소진액 + (최근 평균 소진액 * 남은 일수)
+    df["projected_cost"] = df["current_month_cost"] + (df["avg_cost"] * days_remaining)
 
-            budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+    # 예산 소진율
+    df["budget_usage_pct"] = np.where(
+        df["monthly_budget"] > 0,
+        (df["current_month_cost"] / df["monthly_budget"]) * 100,
+        0.0
+    )
 
-            budget_view_disp = budget_view.copy()
-            budget_view_disp["월 예산(원)"] = budget_view_disp["monthly_budget_val"].map(format_number_commas)
-            budget_view_disp[f"{end_dt.month}월 사용액"] = budget_view_disp["current_month_cost_val"].map(format_number_commas)
-            budget_view_disp["집행률(%)"] = budget_view_disp["usage_pct"].map(lambda x: round(float(x), 1) if pd.notna(x) else 0.0)
+    # 예상 소진율
+    df["projected_usage_pct"] = np.where(
+        df["monthly_budget"] > 0,
+        (df["projected_cost"] / df["monthly_budget"]) * 100,
+        0.0
+    )
 
-            disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
-            table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
+    # 남은 예산
+    df["remaining_budget"] = df["monthly_budget"] - df["current_month_cost"]
 
-            c_table, c_form = st.columns([3, 1.2]) 
-            with c_table:
-                st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률</div>", unsafe_allow_html=True)
-                render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
+    # 권장 일일 소진액 = 남은 예산 / 남은 일수
+    df["recommended_daily_cost"] = np.where(
+        df["remaining_budget"] > 0,
+        df["remaining_budget"] / days_remaining,
+        0.0
+    )
 
-            with c_form:
-                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>월 예산 설정</div>", unsafe_allow_html=True)
-                opts = budget_view_disp[["customer_id", "account_name"]].copy()
-                opts["customer_id"] = opts["customer_id"].astype(str)
-                opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
-                labels = opts["label"].tolist()
-                label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
+    # 화면 출력을 위한 데이터프레임 복사
+    disp_df = df.copy()
 
-                if not labels:
-                    st.info("설정 가능한 업체가 없습니다.")
-                else:
-                    sel = st.selectbox("업체 선택", labels, index=0)
-                    cid = str(label_to_cid.get(sel, ""))
-                    
-                    selected_budget = budget_view_disp.loc[budget_view_disp["customer_id"].astype(str) == cid, "monthly_budget_val"]
-                    cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
-                    
-                    # ✨ [핵심 수정] 실시간 콤마 반영 및 버튼 즉시 작동을 위한 HTML/JS 폼 도입
-                    html_code = f"""
-                    <div style="font-family: sans-serif; background: #F8FAFC; padding: 16px; border-radius: 8px; border: 1px solid #E2E8F0;">
-                        <label style="font-size: 13px; font-weight: 600; color: #444; margin-bottom: 6px; display: block;">새 예산 (원)</label>
-                        <input type="text" id="budgetInput" value="{cur_budget:,}" 
-                               style="width: 100%; padding: 8px 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; text-align: right; font-weight: bold; color: #111;">
-                        
-                        <div style="display: flex; gap: 4px; margin-top: 10px; margin-bottom: 16px;">
-                            <button onclick="addAmount(100000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+10만</button>
-                            <button onclick="addAmount(1000000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+100만</button>
-                            <button onclick="addAmount(10000000)" style="flex:1; padding:6px 0; font-size:12px; background:#fff; border:1px solid #ccc; border-radius:4px; cursor:pointer;">+1000만</button>
-                            <button onclick="resetAmount()" style="flex:1; padding:6px 0; font-size:12px; background:#f1f3f5; border:1px solid #ccc; border-radius:4px; cursor:pointer; color:#555;">초기화</button>
-                        </div>
-                        
-                        <button onclick="submitBudget()" style="width: 100%; padding: 10px; font-size: 15px; font-weight: bold; background: #4876EF; color: white; border: none; border-radius: 6px; cursor: pointer;">저장하기</button>
-                    </div>
+    # 데이터 에디터를 위한 컬럼 구성
+    editor_df = disp_df[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost", "budget_usage_pct", "avg_cost", "projected_cost", "projected_usage_pct", "remaining_budget", "recommended_daily_cost", "bizmoney_balance"]].copy()
 
-                    <script>
-                        const input = document.getElementById('budgetInput');
-                        
-                        function formatNumber(num) {{
-                            return num.toString().replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ",");
-                        }}
-                        
-                        function unformatNumber(str) {{
-                            return parseInt(str.replace(/[^\\d]/g, '') || 0);
-                        }}
+    editor_df.columns = ["커스텀ID", "업체명", "담당자", "월 목표 예산(수정가능)", "현재 누적 소진액", "소진율(%)", "최근 7일 평균 소진", "월 예상 소진액", "예상 소진율(%)", "남은 예산", "권장 일일 소진액", "비즈머니 잔액"]
 
-                        input.addEventListener('input', function(e) {{
-                            let val = unformatNumber(e.target.value);
-                            e.target.value = val === 0 ? "" : formatNumber(val);
-                        }});
-                        
-                        input.addEventListener('blur', function(e) {{
-                            if(e.target.value === "") e.target.value = "0";
-                        }});
+    # 에러 방지: 데이터 타입 명시적 변환
+    for col in ["월 목표 예산(수정가능)", "현재 누적 소진액", "최근 7일 평균 소진", "월 예상 소진액", "남은 예산", "권장 일일 소진액", "비즈머니 잔액"]:
+        editor_df[col] = pd.to_numeric(editor_df[col], errors="coerce").fillna(0).astype(int)
 
-                        function addAmount(amount) {{
-                            let current = unformatNumber(input.value);
-                            input.value = formatNumber(current + amount);
-                        }}
+    for col in ["소진율(%)", "예상 소진율(%)"]:
+        editor_df[col] = pd.to_numeric(editor_df[col], errors="coerce").fillna(0.0).astype(float)
 
-                        function resetAmount() {{
-                            input.value = "0";
-                        }}
+    st.markdown("##### 📝 업체별 예산 관리 표")
+    st.caption("💡 **'월 목표 예산'** 칸을 더블 클릭하여 금액을 숫자로 입력하고 Enter를 누르면 실시간으로 저장 및 재계산됩니다.")
 
-                        function submitBudget() {{
-                            let finalAmount = unformatNumber(input.value);
-                            // Streamlit에 데이터 전달
-                            window.parent.postMessage({{
-                                type: 'streamlit:setComponentValue',
-                                value: finalAmount
-                            }}, '*');
-                        }}
-                    </script>
-                    """
-                    
-                    # 폼을 그리고 입력된 결과값 받기
-                    returned_budget = components.html(html_code, height=220)
-                    
-                    if returned_budget is not None and int(returned_budget) >= 0:
-                        # 저장 실행
-                        update_monthly_budget(engine, cid, int(returned_budget))
-                        st.success("✅ 예산이 즉시 저장되었습니다!")
-                        st.cache_data.clear()
-                        time.sleep(0.5)
-                        st.rerun()
+    # st.data_editor 사용
+    edited_df = st.data_editor(
+        editor_df,
+        column_config={
+            "커스텀ID": st.column_config.TextColumn("커스텀ID", disabled=True),
+            "업체명": st.column_config.TextColumn("업체명", disabled=True),
+            "담당자": st.column_config.TextColumn("담당자", disabled=True),
+            "월 목표 예산(수정가능)": st.column_config.NumberColumn(
+                "월 목표 예산(수정가능)",
+                help="이번 달 목표 예산을 입력하세요. (숫자만 입력)",
+                min_value=0,
+                step=10000,
+                format="%d ₩"
+            ),
+            "현재 누적 소진액": st.column_config.NumberColumn("현재 누적 소진액", disabled=True, format="%d ₩"),
+            "소진율(%)": st.column_config.ProgressColumn("소진율(%)", help="현재 누적 소진액 / 목표 예산", format="%.1f%%", min_value=0, max_value=100),
+            "최근 7일 평균 소진": st.column_config.NumberColumn("최근 7일 평균 소진", disabled=True, format="%d ₩"),
+            "월 예상 소진액": st.column_config.NumberColumn("월 예상 소진액", disabled=True, format="%d ₩"),
+            "예상 소진율(%)": st.column_config.NumberColumn("예상 소진율(%)", disabled=True, format="%.1f%%"),
+            "남은 예산": st.column_config.NumberColumn("남은 예산", disabled=True, format="%d ₩"),
+            "권장 일일 소진액": st.column_config.NumberColumn("권장 일일 소진액", disabled=True, format="%d ₩"),
+            "비즈머니 잔액": st.column_config.NumberColumn("비즈머니 잔액", disabled=True, format="%d ₩"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        key="budget_editor"
+    )
 
-    with tab_alert:
-        if alert_view.empty:
-            st.info("비즈머니 관리 데이터가 없습니다.")
-        else:
-            def get_depletion_date(days_left):
-                if pd.isna(days_left) or float(days_left) >= 99: return "여유"
-                days = float(days_left)
-                if days <= 0: return "🚨 즉시 충전"
-                deplete_date = date.today() + timedelta(days=int(days))
-                return deplete_date.strftime("⚠️ %m월 %d일") if days <= 3 else deplete_date.strftime("%m월 %d일")
+    # 변경사항 감지 및 DB 업데이트 로직
+    if "budget_editor" in st.session_state:
+        changes = st.session_state["budget_editor"].get("edited_rows", {})
+        if changes:
+            has_updates = False
+            for row_idx, cols in changes.items():
+                if "월 목표 예산(수정가능)" in cols:
+                    returned_budget = cols["월 목표 예산(수정가능)"]
+                    cid = editor_df.iloc[row_idx]["커스텀ID"]
 
-            alert_view["예상 중단일"] = alert_view["days_cover"].apply(get_depletion_date)
-            
-            display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
-            display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
-            
-            avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
-            display_df[avg_days_label] = display_df["avg_cost"].apply(lambda x: format_currency(x))
-            
-            display_df = display_df[["account_name", "manager", "비즈머니 잔액", avg_days_label, "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
-            
-            def color_alert(val):
-                if isinstance(val, str) and '🚨' in val:
-                    return 'color: white; font-weight: 800; background-color: #EF4444;' 
-                elif isinstance(val, str) and '⚠️' in val:
-                    return 'color: #9A3412; font-weight: 700; background-color: #FFEDD5;' 
-                return ''
+                    # 🚀 [에러 해결 핵심] 빈 문자열, None, 포맷팅된 문자열 등을 모두 안전하게 정수로 변환하는 절대 방어막
+                    try:
+                        if returned_budget is None or pd.isna(returned_budget) or str(returned_budget).strip() == "":
+                            safe_budget = 0
+                        else:
+                            # 콤마, 원, ₩ 등 불필요한 문자 제거 후 float를 거쳐 int로 변환 (완벽 방어)
+                            clean_val = str(returned_budget).replace(',', '').replace('원', '').replace('₩', '').strip()
+                            safe_budget = int(float(clean_val))
+                    except (ValueError, TypeError):
+                        safe_budget = -1 # 변환 완전 실패 시 무시하도록 음수 처리
 
-            try:
-                styled_df = display_df.style.map(color_alert, subset=['예상 중단일'])
-            except AttributeError:
-                styled_df = display_df.style.applymap(color_alert, subset=['예상 중단일'])
-            
-            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
-            st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
+                    if safe_budget >= 0:
+                        update_monthly_budget(engine, int(cid), safe_budget)
+                        has_updates = True
+
+            if has_updates:
+                st.toast("✅ 예산이 성공적으로 업데이트되었습니다!", icon="💾")
+                time.sleep(0.5)
+                st.rerun()
