@@ -2,12 +2,9 @@
 """view_budget.py - Budget and Balance page view."""
 
 from __future__ import annotations
-import re
-import time
 import pandas as pd
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from typing import Dict
 from datetime import date, timedelta
 
@@ -98,110 +95,71 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
-            budget_view_disp = budget_view.copy()
-            budget_view_disp["월 예산(원)"] = budget_view_disp["monthly_budget_val"].map(format_number_commas)
-            budget_view_disp[f"{end_dt.month}월 사용액"] = budget_view_disp["current_month_cost_val"].map(format_number_commas)
-            budget_view_disp["집행률(%)"] = budget_view_disp["usage_pct"].map(lambda x: round(float(x), 1) if pd.notna(x) else 0.0)
+            # ✨ st.data_editor를 위해 데이터 형태 준비 (문자열 변환 없이 숫자형 그대로 유지)
+            editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
+            
+            editor_df = editor_df.rename(columns={
+                "account_name": "업체명", 
+                "manager": "담당자", 
+                "monthly_budget_val": "월 예산", 
+                "current_month_cost_val": f"{end_dt.month}월 사용액", 
+                "usage_pct": "집행률(%)"
+            })
 
-            disp_cols = ["account_name", "manager", "월 예산(원)", f"{end_dt.month}월 사용액", "집행률(%)", "상태"]
-            table_df = budget_view_disp[disp_cols].rename(columns={"account_name": "업체명", "manager": "담당자"}).copy()
-
-            c_table, c_form = st.columns([3, 1.2]) 
-            with c_table:
-                st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률</div>", unsafe_allow_html=True)
-                render_budget_month_table_with_bars(table_df, key="budget_month_table", height=520)
-
-            with c_form:
-                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>월 예산 설정</div>", unsafe_allow_html=True)
-                opts = budget_view_disp[["customer_id", "account_name"]].copy()
-                opts["customer_id"] = opts["customer_id"].astype(str)
-                opts["label"] = opts["account_name"].astype(str) + " (" + opts["customer_id"].astype(str) + ")"
-                labels = opts["label"].tolist()
-                label_to_cid = dict(zip(opts["label"], opts["customer_id"].tolist()))
-
-                if not labels:
-                    st.info("설정 가능한 업체가 없습니다.")
-                else:
-                    sel = st.selectbox("업체 선택", labels, index=0)
-                    cid = str(label_to_cid.get(sel, ""))
-                    sk = f"budget_input_{cid}"
+            # ✨ 표에서 수정이 발생했을 때(엔터를 쳤을 때) DB에 즉시 반영하는 콜백 함수
+            def update_budget_from_table():
+                if "budget_table_editor" in st.session_state:
+                    edits = st.session_state["budget_table_editor"].get("edited_rows", {})
+                    updated_count = 0
+                    for row_idx, col_data in edits.items():
+                        if "월 예산" in col_data:
+                            new_budget = col_data["월 예산"]
+                            if pd.notna(new_budget):
+                                cid = str(editor_df.iloc[row_idx]["customer_id"])
+                                update_monthly_budget(engine, cid, int(new_budget))
+                                updated_count += 1
                     
-                    if sk not in st.session_state:
-                        selected_budget = budget_view_disp.loc[budget_view_disp["customer_id"].astype(str) == cid, "monthly_budget_val"]
-                        cur_budget = int(selected_budget.iloc[0]) if not selected_budget.empty else 0
-                        st.session_state[sk] = f"{cur_budget:,}" if cur_budget > 0 else "0"
-                    
-                    # ✨ 실시간 입력을 위해 불필요한 on_change 콜백 제거
-                    st.text_input("새 예산 (원)", key=sk)
-                    
-                    # ✨ 연속 클릭 버그 해결을 위해 직접 state를 변경하고 즉시 rerun을 호출하도록 수정
-                    b1, b2, b3, b4 = st.columns(4)
-                    if b1.button("+10만", key=f"btn_10_{cid}"):
-                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
-                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 100000:,}"
-                        st.rerun()
-                        
-                    if b2.button("+100만", key=f"btn_100_{cid}"):
-                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
-                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 1000000:,}"
-                        st.rerun()
-                        
-                    if b3.button("+1000만", key=f"btn_1000_{cid}"):
-                        val = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
-                        st.session_state[sk] = f"{(int(val) if val.isdigit() else 0) + 10000000:,}"
-                        st.rerun()
-                        
-                    if b4.button("초기화", key=f"btn_0_{cid}"):
-                        st.session_state[sk] = "0"
-                        st.rerun()
-                    
-                    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-                    if st.button("저장하기", type="primary", use_container_width=True):
-                        val_to_save = str(st.session_state.get(sk, "0")).replace(",", "").replace("원", "")
-                        raw_val = int(val_to_save) if val_to_save.isdigit() else 0
-                        
-                        update_monthly_budget(engine, cid, raw_val)
-                        st.success("저장 완료!")
-                        if sk in st.session_state: del st.session_state[sk]
+                    if updated_count > 0:
+                        st.toast("예산이 성공적으로 업데이트 되었습니다! 💸", icon="✅")
                         st.cache_data.clear()
-                        st.rerun()
 
-                    # ✨ 예산 입력창에 타이핑하는 즉시 콤마를 찍어주도록 돕는 자바스크립트 트릭 주입
-                    components.html("""
-                    <script>
-                    const doc = window.parent.document;
-                    function applyCommaHack() {
-                        const inputs = doc.querySelectorAll('input[aria-label="새 예산 (원)"]');
-                        inputs.forEach(input => {
-                            if (!input.dataset.commaAttached) {
-                                input.addEventListener('input', function(e) {
-                                    let cursorPosition = this.selectionStart;
-                                    let oldLength = this.value.length;
-                                    
-                                    let rawValue = this.value.replace(/[^0-9]/g, '');
-                                    let formatted = rawValue ? parseInt(rawValue, 10).toLocaleString('ko-KR') : '';
-                                    
-                                    let nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                                    if(nativeInputValueSetter) {
-                                        nativeInputValueSetter.call(this, formatted);
-                                        // Streamlit의 React 상태를 갱신하기 위한 강제 이벤트 발생
-                                        this.dispatchEvent(new Event('input', { bubbles: true }));
-                                    }
-                                    
-                                    // 커서 위치 보정
-                                    let newLength = this.value.length;
-                                    cursorPosition = cursorPosition + (newLength - oldLength);
-                                    this.setSelectionRange(cursorPosition, cursorPosition);
-                                });
-                                input.dataset.commaAttached = "true";
-                            }
-                        });
-                    }
-                    applyCommaHack();
-                    const observer = new MutationObserver(applyCommaHack);
-                    observer.observe(doc.body, { childList: true, subtree: true });
-                    </script>
-                    """, height=0, width=0)
+            st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 수정하고 Enter를 누르세요!)</div>", unsafe_allow_html=True)
+
+            # ✨ 폼 레이아웃 대신 네이티브 Data Editor를 전체 너비로 출력
+            st.data_editor(
+                editor_df,
+                key="budget_table_editor",
+                on_change=update_budget_from_table,
+                hide_index=True,
+                use_container_width=True,
+                height=550,
+                column_config={
+                    "customer_id": None, # 광고주 ID는 화면에서 숨김
+                    "업체명": st.column_config.TextColumn("업체명", disabled=True),
+                    "담당자": st.column_config.TextColumn("담당자", disabled=True),
+                    "월 예산": st.column_config.NumberColumn(
+                        "월 예산(원) ✏️", 
+                        help="더블클릭하여 예산을 바로 수정하세요.",
+                        min_value=0, 
+                        step=100000, 
+                        format="%d", # 천단위 콤마 자동 적용
+                        required=True
+                    ),
+                    f"{end_dt.month}월 사용액": st.column_config.NumberColumn(
+                        f"{end_dt.month}월 사용액", 
+                        disabled=True, 
+                        format="%d"
+                    ),
+                    "집행률(%)": st.column_config.ProgressColumn(
+                        "집행률(%)",
+                        help="월 예산 대비 현재 사용액 비율",
+                        format="%.1f%%",
+                        min_value=0,
+                        max_value=100
+                    ),
+                    "상태": st.column_config.TextColumn("상태", disabled=True)
+                }
+            )
 
     with tab_alert:
         if alert_view.empty:
