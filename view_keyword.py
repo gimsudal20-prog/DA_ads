@@ -31,7 +31,6 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
     work = df.copy()
     campaign_type = work.get("캠페인유형", pd.Series("", index=work.index)).astype(str).str.strip()
     
-    # 정규식 패턴으로 쇼핑/SHOPPING이 포함된 유형들을 더 유연하게 처리
     is_shopping_cond = campaign_type.str.contains("쇼핑|SHOPPING", case=False, na=False)
     
     if allow_unknown_type:
@@ -55,7 +54,6 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
     else:
         image_url = pd.Series("", index=work.index)
 
-    # 확장소재 여부 판별
     ext_by_name = ad_name.str.contains(r'\[확장소재\]', na=False, regex=True)
     ext_by_title = ad_title.str.match(r'^\[[^\]]+\]$', na=False)
     ext_by_image = image_url.isin(["", "nan", "none"])
@@ -68,7 +66,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     """비교 대상 데이터를 머지하여 상세한 이전수치, 증감, 증감률을 계산합니다."""
     if view_df.empty: return view_df
     
-    # Merge 시 ValueError(타입 불일치) 방지를 위해 merge_keys의 데이터 타입을 문자열로 통일
     for k in merge_keys:
         if k in view_df.columns:
             view_df[k] = view_df[k].astype(str).str.replace(r'\.0$', '', regex=True)
@@ -118,7 +115,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     if "avg_rank" in merged.columns:
         merged['평균순위'] = merged['avg_rank'].apply(_format_avg_rank)
         merged['이전 평균순위'] = merged['b_avg_rank'].apply(_format_avg_rank)
-        # 평균순위는 값이 작아지는 것이 개선이므로 변동 폭 계산(현재 순위 - 이전 순위)
         merged['순위 변화'] = np.where((merged['b_avg_rank'] > 0) & (merged['avg_rank'] > 0), merged['avg_rank'] - merged['b_avg_rank'], np.nan)
         
     return merged
@@ -129,7 +125,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     st.markdown("<div class='nv-sec-title'>그룹 / 키워드 상세 분석</div>", unsafe_allow_html=True)
     
     cids, type_sel, top_n = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), int(f.get("top_n_keyword", 300))
-    bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=10000)
+    
+    # ✨ [속도 최적화 1] 무식한 10000개 다운로드 방지 -> 꼭 필요한 상위 1000개로 대폭 다이어트
+    with st.spinner("파워링크 데이터 최적화 로딩 중..."):
+        bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=1000)
 
     tab_pl, tab_shop, tab_cmp, tab_neg = st.tabs(["파워링크", "쇼핑검색", "기간 비교", "저효율 키워드"])
     
@@ -212,7 +211,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
     with tab_shop:
         st.markdown("<div style='font-size:13px; color:#666; margin-bottom:12px;'>※ 확장소재(문구/서브링크 등)는 제외되고 순수 일반 상품의 성과만 표시됩니다.</div>", unsafe_allow_html=True)
 
-        shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
+        # ✨ [속도 최적화 2] 0(무제한 다운로드)을 금지하고 1000개로 다이어트
+        with st.spinner("쇼핑검색 데이터 최적화 로딩 중..."):
+            shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=1000, top_k=50)
         
         if shop_ad_bundle is not None and not shop_ad_bundle.empty:
             shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
@@ -220,7 +221,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
 
             if "캠페인유형" not in view_shop.columns and "campaign_type" in view_shop.columns: view_shop["캠페인유형"] = view_shop["campaign_type"]
 
-            # ✨ ad_id 컬럼이 있다면 '상품id'로 맵핑 추가
             if "ad_id" in view_shop.columns:
                 view_shop["상품id"] = view_shop["ad_id"]
 
@@ -235,12 +235,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 view_shop["CPA(원)"] = np.where(view_shop["전환"] > 0, view_shop["광고비"] / view_shop["전환"], 0.0)
                 view_shop["ROAS(%)"] = np.where(view_shop["광고비"] > 0, (view_shop["전환매출"] / view_shop["광고비"]) * 100, 0.0)
 
-                # ✨ 이미지 컬럼 정리
                 if "image_url" in view_shop.columns:
                     view_shop["image_url"] = view_shop["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
                     view_shop = view_shop.rename(columns={"image_url": "소재이미지"})
                     
-                # ✨ 노출용 상품명 컬럼 정리
                 if "ad_title" in view_shop.columns:
                     view_shop = view_shop.rename(columns={"ad_title": "노출용 상품명"})
                 elif "상품/소재명" in view_shop.columns:
@@ -249,7 +247,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                 if "노출용 상품명" in view_shop.columns:
                     view_shop["노출용 상품명"] = view_shop["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
 
-                # ✨ "상품/소재명"을 지우고 "상품id"로 대체
                 base_cols_shop = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품id"]
                 if "avg_rank" in view_shop.columns:
                     view_shop["평균순위"] = view_shop["avg_rank"].apply(_format_avg_rank)
@@ -309,155 +306,83 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
         
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-        if cmp_view_mode == "파워링크 - 키워드 단위":
-            if df_pl_raw.empty:
-                st.info("비교할 파워링크 데이터가 없습니다.")
-            else:
-                base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
-                view = _perf_common_merge_meta(df_pl_raw.sort_values("cost", ascending=False).head(top_n), meta)
-                view = view.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
-                for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
-                view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
-                view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
-                view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
-                view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
-                
-                base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
-                
-                valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
-                if valid_keys:
-                    view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
+        with st.spinner("비교 데이터 로딩 중..."):
+            if cmp_view_mode == "파워링크 - 키워드 단위":
+                if df_pl_raw.empty:
+                    st.info("비교할 파워링크 데이터가 없습니다.")
                 else:
-                    view = _apply_comparison_metrics(view, pd.DataFrame(), [])
-
-                metrics_cols = [
-                    "노출", "이전 노출", "노출 증감", "노출 증감(%)",
-                    "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
-                    "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
-                    "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
-                    "전환", "이전 전환", "전환 증감", 
-                    "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
-                ]
-
-                if "avg_rank" in view.columns:
-                    base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
-
-                base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
-                render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
-
-                if not view.empty:
-                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
-                    
-                    styled_cmp = disp.style.format(fmt_cmp)
-                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
-                    if delta_cols:
-                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
-                        
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 키워드 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(styled_cmp, "pl_cmp_kw", 500)
-
-        elif cmp_view_mode == "파워링크 - 광고그룹 단위":
-            if df_pl_raw.empty:
-                st.info("비교할 파워링크 그룹 데이터가 없습니다.")
-            else:
-                grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
-                val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
-                
-                agg_dict = {col: 'sum' for col in val_cols}
-                if 'avg_rank' in df_pl_raw.columns:
-                    agg_dict['avg_rank'] = 'mean'
-                    
-                grp_cur = df_pl_raw.groupby(grp_cols, as_index=False).agg(agg_dict)
-                grp_cur = _perf_common_merge_meta(grp_cur, meta)
-                view = grp_cur.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
-                for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
-                view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
-                view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
-                view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
-                view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
-                
-                base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=20000)
-                base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
-                
-                valid_keys = [k for k in ['customer_id', 'adgroup_id'] if k in view.columns and k in base_kw_bundle.columns]
-                if valid_keys:
-                    view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
-                else:
-                    view = _apply_comparison_metrics(view, pd.DataFrame(), [])
-                    
-                metrics_cols = [
-                    "노출", "이전 노출", "노출 증감", "노출 증감(%)",
-                    "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
-                    "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
-                    "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
-                    "전환", "이전 전환", "전환 증감", 
-                    "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
-                ]
-
-                if "avg_rank" in view.columns:
-                    base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
-
-                base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
-                render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
-
-                if not view.empty:
-                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                    
-                    styled_cmp = disp.style.format(fmt_cmp)
-                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
-                    if delta_cols:
-                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
-                        
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 그룹 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(styled_cmp, "pl_cmp_grp", 500)
-                
-        elif cmp_view_mode == "쇼핑검색 - 상품 단위":
-            shop_ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
-            if shop_ad_bundle is None or shop_ad_bundle.empty:
-                st.info("비교할 데이터가 없습니다.")
-            else:
-                base_shop_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=0, top_k=50)
-                shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
-                view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
-                if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
-                
-                # ✨ ad_id 컬럼이 있다면 '상품id'로 맵핑 추가
-                if "ad_id" in view.columns:
-                    view["상품id"] = view["ad_id"]
-                    
-                view = _filter_shopping_general_ads(view, allow_unknown_type=True)
-                
-                if view.empty:
-                    st.info("비교할 일반 상품 데이터가 없습니다.")
-                else:
-                    if "캠페인유형" in view.columns:
-                        view["캠페인유형"] = view["캠페인유형"].replace(["", "nan", "None", "none"], np.nan).fillna("쇼핑검색(매핑누락)")
+                    # ✨ [속도 최적화 3] 비교를 위해 20000개 다운로드하던 문제 해결 -> 1000개로 다이어트
+                    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=1000)
+                    view = _perf_common_merge_meta(df_pl_raw.sort_values("cost", ascending=False).head(top_n), meta)
+                    view = view.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
                     for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
                     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
                     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
                     view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
                     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
                     
-                    if "image_url" in view.columns:
-                        view["image_url"] = view["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
-                        view = view.rename(columns={"image_url": "소재이미지"})
-                        
-                    if "ad_title" in view.columns:
-                        view = view.rename(columns={"ad_title": "노출용 상품명"})
-                    elif "상품/소재명" in view.columns:
-                        view["노출용 상품명"] = view["상품/소재명"]
-                        
-                    if "노출용 상품명" in view.columns:
-                        view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
-
-                    # ✨ "상품/소재명"을 지우고 "상품id"로 대체
-                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품id"]
+                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
                     
-                    valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view.columns and (base_shop_bundle is not None and k in base_shop_bundle.columns)]
+                    valid_keys = [k for k in ['customer_id', 'keyword_id'] if k in view.columns and k in base_kw_bundle.columns]
                     if valid_keys:
-                        view = _apply_comparison_metrics(view, base_shop_bundle, valid_keys)
+                        view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
+                    else:
+                        view = _apply_comparison_metrics(view, pd.DataFrame(), [])
+
+                    metrics_cols = [
+                        "노출", "이전 노출", "노출 증감", "노출 증감(%)",
+                        "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
+                        "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
+                        "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
+                        "전환", "이전 전환", "전환 증감", 
+                        "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
+                    ]
+
+                    if "avg_rank" in view.columns:
+                        base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
+
+                    base_for_search = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
+                    render_item_comparison_search("키워드", view, base_for_search, "키워드", f["start"], f["end"], b1, b2)
+
+                    if not view.empty:
+                        disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].copy()
+                        
+                        styled_cmp = disp.style.format(fmt_cmp)
+                        delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
+                        if delta_cols:
+                            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                            
+                        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 키워드 기간 비교 표</div>", unsafe_allow_html=True)
+                        render_big_table(styled_cmp, "pl_cmp_kw", 500)
+
+            elif cmp_view_mode == "파워링크 - 광고그룹 단위":
+                if df_pl_raw.empty:
+                    st.info("비교할 파워링크 그룹 데이터가 없습니다.")
+                else:
+                    grp_cols = [c for c in ['customer_id', 'campaign_type_label', 'campaign_name', 'adgroup_id', 'adgroup_name'] if c in df_pl_raw.columns]
+                    val_cols = [c for c in ['imp', 'clk', 'cost', 'conv', 'sales'] if c in df_pl_raw.columns]
+                    
+                    agg_dict = {col: 'sum' for col in val_cols}
+                    if 'avg_rank' in df_pl_raw.columns:
+                        agg_dict['avg_rank'] = 'mean'
+                        
+                    grp_cur = df_pl_raw.groupby(grp_cols, as_index=False).agg(agg_dict)
+                    grp_cur = _perf_common_merge_meta(grp_cur, meta)
+                    view = grp_cur.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
+                    for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
+                    view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
+                    view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
+                    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
+                    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+                    
+                    # ✨ [속도 최적화 4] 20000개 다운로드 방지 -> 1000개 다이어트
+                    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=1000)
+                    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
+                    
+                    valid_keys = [k for k in ['customer_id', 'adgroup_id'] if k in view.columns and k in base_kw_bundle.columns]
+                    if valid_keys:
+                        view = _apply_comparison_metrics(view, base_kw_bundle, valid_keys)
                     else:
                         view = _apply_comparison_metrics(view, pd.DataFrame(), [])
                         
@@ -473,17 +398,89 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict):
                     if "avg_rank" in view.columns:
                         base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
 
-                    base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if base_shop_bundle is not None and not base_shop_bundle.empty else pd.DataFrame()
-                    render_item_comparison_search("일반 상품", view, base_for_search, "노출용 상품명", f["start"], f["end"], b1, b2)
+                    base_for_search = base_kw_bundle.rename(columns={"adgroup_name": "광고그룹"}) if not base_kw_bundle.empty else pd.DataFrame()
+                    render_item_comparison_search("광고그룹", view, base_for_search, "광고그룹", f["start"], f["end"], b1, b2)
 
-                    disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
-                    
-                    styled_cmp = disp.style.format(fmt_cmp)
-                    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
-                    if delta_cols:
-                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                    if not view.empty:
+                        disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
                         
-                    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>쇼핑검색 일반 상품 기간 비교 표</div>", unsafe_allow_html=True)
-                    render_big_table(styled_cmp, "shop_cmp_grid", 500)
+                        styled_cmp = disp.style.format(fmt_cmp)
+                        delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
+                        if delta_cols:
+                            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                            
+                        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>파워링크 그룹 기간 비교 표</div>", unsafe_allow_html=True)
+                        render_big_table(styled_cmp, "pl_cmp_grp", 500)
+                    
+            elif cmp_view_mode == "쇼핑검색 - 상품 단위":
+                if shop_ad_bundle is None or shop_ad_bundle.empty:
+                    st.info("비교할 데이터가 없습니다.")
+                else:
+                    # ✨ [속도 최적화 5] 무제한 다운로드 금지 -> 1000개 다이어트
+                    base_shop_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=1000, top_k=50)
+                    shop_ad_df = _perf_common_merge_meta(shop_ad_bundle, meta)
+                    view = shop_ad_df.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "상품/소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}).copy()
+                    if "캠페인유형" not in view.columns and "campaign_type" in view.columns: view["캠페인유형"] = view["campaign_type"]
+                    
+                    if "ad_id" in view.columns:
+                        view["상품id"] = view["ad_id"]
+                        
+                    view = _filter_shopping_general_ads(view, allow_unknown_type=True)
+                    
+                    if view.empty:
+                        st.info("비교할 일반 상품 데이터가 없습니다.")
+                    else:
+                        if "캠페인유형" in view.columns:
+                            view["캠페인유형"] = view["캠페인유형"].replace(["", "nan", "None", "none"], np.nan).fillna("쇼핑검색(매핑누락)")
+                        for c in ["광고비", "전환매출", "노출", "클릭", "전환"]: view[c] = pd.to_numeric(view.get(c,0), errors="coerce").fillna(0)
+                        view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
+                        view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
+                        view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
+                        view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+                        
+                        if "image_url" in view.columns:
+                            view["image_url"] = view["image_url"].replace(["nan", "None", "none", "null"], "").fillna("")
+                            view = view.rename(columns={"image_url": "소재이미지"})
+                            
+                        if "ad_title" in view.columns:
+                            view = view.rename(columns={"ad_title": "노출용 상품명"})
+                        elif "상품/소재명" in view.columns:
+                            view["노출용 상품명"] = view["상품/소재명"]
+                            
+                        if "노출용 상품명" in view.columns:
+                            view["노출용 상품명"] = view["노출용 상품명"].replace(["nan", "None", "none", "null"], "").fillna("")
 
+                        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "소재이미지", "노출용 상품명", "상품id"]
+                        
+                        valid_keys = [k for k in ['customer_id', 'ad_id'] if k in view.columns and (base_shop_bundle is not None and k in base_shop_bundle.columns)]
+                        if valid_keys:
+                            view = _apply_comparison_metrics(view, base_shop_bundle, valid_keys)
+                        else:
+                            view = _apply_comparison_metrics(view, pd.DataFrame(), [])
+                            
+                        metrics_cols = [
+                            "노출", "이전 노출", "노출 증감", "노출 증감(%)",
+                            "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
+                            "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
+                            "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
+                            "전환", "이전 전환", "전환 증감", 
+                            "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
+                        ]
+
+                        if "avg_rank" in view.columns:
+                            base_cols.extend(["평균순위", "이전 평균순위", "순위 변화"])
+
+                        base_for_search = base_shop_bundle.rename(columns={"ad_name": "상품/소재명"}) if base_shop_bundle is not None and not base_shop_bundle.empty else pd.DataFrame()
+                        render_item_comparison_search("일반 상품", view, base_for_search, "노출용 상품명", f["start"], f["end"], b1, b2)
+
+                        disp = view[[c for c in base_cols + metrics_cols if c in view.columns]].sort_values("광고비", ascending=False).head(top_n).copy()
+                        
+                        styled_cmp = disp.style.format(fmt_cmp)
+                        delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
+                        if delta_cols:
+                            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+                            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+                            
+                        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>쇼핑검색 일반 상품 기간 비교 표</div>", unsafe_allow_html=True)
+                        render_big_table(styled_cmp, "shop_cmp_grid", 500)
