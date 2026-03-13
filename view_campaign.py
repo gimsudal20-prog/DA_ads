@@ -210,9 +210,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
             grp = _perf_common_merge_meta(grp_cur_raw, meta)
+            # ✨ 수정: "clk": "클릭" 으로 오타 수정 완료
             grouped = grp.rename(columns={
                 "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인",
-                "adgroup_name": "광고그룹", "imp": "노출", "클릭": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+                "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
             }).copy()
 
             if "avg_rank" in grouped.columns:
@@ -269,7 +270,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         base_bundle = _normalize_merge_keys(base_bundle, key_cols_cmp)
                         base_rank_map = _normalize_merge_keys(base_rank_map, key_cols_cmp)
                         
-                        # ✨ 수정: 비교군 데이터 병합 시에도 쇼핑검색 평균순위 보존!
                         if "avg_rank" in base_bundle.columns:
                             base_bundle = base_bundle.rename(columns={"avg_rank": "orig_avg_rank"})
                         else:
