@@ -79,7 +79,6 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .v { font-size: 20px; font-weight: 700; color: var(--nv-text); letter-spacing: -0.02em; line-height: 1.2;}
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
 
-/* ✨ 요약 지면 비용 지표(광고비) 강조 시 파란색이 아니라 기본 텍스트 색상 또는 빨간색 유지 */
 .kpi.highlight .v { color: var(--nv-text); } 
 .kpi.highlight-positive .v { color: var(--nv-primary); font-size: 22px; }
 
@@ -88,10 +87,10 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
 /* ==============================================================
-   2. Tables & Tabs
+   2. Tables & Tabs (✨ 깔끔한 배경색 및 계층 구조 수정)
    ============================================================== */
 div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
-div[data-testid="stDataFrame"] th { background-color: var(--nv-surface) !important; color: var(--nv-muted) !important; font-weight: 600 !important; font-size: 13px; border-bottom: 1px solid var(--nv-line) !important; }
+div[data-testid="stDataFrame"] th { background-color: var(--nv-bg) !important; color: var(--nv-text) !important; font-weight: 700 !important; font-size: 13px; border-bottom: 2px solid var(--nv-line) !important; }
 div[data-testid="stDataFrame"] td { font-size: 13px; color: var(--nv-text) !important; border-bottom: 1px solid var(--nv-surface) !important; }
 div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface) !important; }
 
@@ -99,7 +98,7 @@ div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface)
 [data-baseweb="tab-list"] { gap: 24px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 500; padding: 12px 4px !important; margin: 0 !important; color: var(--nv-muted) !important; font-size: 15px; border-radius: 0 !important; transition: color 0.2s ease; }
 [data-baseweb="tab"]:hover { color: var(--nv-text) !important; }
-[aria-selected="true"] { color: var(--nv-primary) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-primary) !important; box-shadow: none !important; }
+[aria-selected="true"] { color: var(--nv-text) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-text) !important; box-shadow: none !important; background: transparent !important; }
 
 /* ==============================================================
    3. Sidebar & Streamlit Native Elements Deep Customization
@@ -108,22 +107,20 @@ div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface)
 [data-testid="stSidebar"] .block-container { padding-top: 2rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
 .nav-sidebar-title { font-size: 12px; font-weight: 600; color: var(--nv-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
 
-/* ✨ Sidebar Menu (Radio) Deep Theming */
+/* ✨ Sidebar Menu (Radio) Deep Theming (보호색 현상 방지: 흰색 박스 처리) */
 [data-testid="stSidebar"] [role="radiogroup"] { background: transparent; padding: 0; gap: 4px; display: flex; flex-direction: column; }
 [data-testid="stSidebar"] [role="radiogroup"] label { padding: 10px 14px !important; margin-bottom: 2px !important; border-radius: 8px !important; background: transparent !important; border: none !important; transition: all 0.15s ease; }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--nv-line) !important; }
 [data-testid="stSidebar"] [role="radiogroup"] label p { color: var(--nv-muted) !important; font-weight: 500 !important; font-size: 14px !important; }
-/* 선택된 메뉴 배경을 Primary 컬러(Mint)로 */
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: var(--nv-primary) !important; }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-bg) !important; font-weight: 600 !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: var(--nv-bg) !important; box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-text) !important; font-weight: 700 !important; }
 
-/* ✨ Native Selectbox & Multiselect Tag Colors */
+/* ✨ Native Selectbox & Multiselect Tag Colors (배경을 하얀색으로 깔끔하게) */
 div[data-baseweb="select"] > div { border-radius: 8px !important; border-color: var(--nv-line) !important; background: var(--nv-bg) !important; }
 div[data-baseweb="select"] > div:focus-within { box-shadow: 0 0 0 1px var(--nv-primary) inset !important; border-color: var(--nv-primary) !important; }
 
-/* Multiselect 선택된 태그(칩) 배경색을 Mint로 변경 */
-span[data-baseweb="tag"] { background-color: var(--nv-primary-soft) !important; color: var(--nv-primary) !important; font-weight: 600 !important; }
-span[data-baseweb="tag"] > span[role="button"] { fill: var(--nv-primary) !important; color: var(--nv-primary) !important; }
+span[data-baseweb="tag"] { background-color: var(--nv-bg) !important; color: var(--nv-text) !important; font-weight: 500 !important; border: 1px solid var(--nv-line) !important; border-radius: 4px !important; }
+span[data-baseweb="tag"] > span[role="button"] { fill: var(--nv-muted) !important; color: var(--nv-muted) !important; }
 
 /* 체크박스, 토글 버튼 색상 강제 오버라이드 */
 .stCheckbox div[data-testid="stWidgetLabel"] p { color: var(--nv-text); }
