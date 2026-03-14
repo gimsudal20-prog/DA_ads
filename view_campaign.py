@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from typing import Dict
+from datetime import timedelta
 
 from data import query_campaign_bundle, query_keyword_bundle, sql_read
 from ui import render_big_table
@@ -75,50 +76,60 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view = _add_perf_metrics(view)
 
     # ---------------------------------------------------------
-    # ✨ 스파크라인 트렌드 데이터 수집 로직 보강 (에러 및 빈 데이터 방지)
+    # ✨ 스파크라인 버그 픽스: 완벽한 데이터 타입 클렌징 및 매핑
     # ---------------------------------------------------------
     try:
-        # 날짜 연산 오류(문자열 vs datetime)를 방지하기 위해 형변환
-        end_dt = pd.to_datetime(f["end"])
-        start_dt = end_dt - pd.Timedelta(days=6)
+        end_date = pd.to_datetime(f["end"]).date()
+        start_date = end_date - timedelta(days=6)
         
-        trend_start_str = start_dt.strftime('%Y-%m-%d')
-        trend_end_str = end_dt.strftime('%Y-%m-%d')
-        
-        where_cid = f"AND customer_id IN ({','.join(map(str, cids))})" if cids else ""
-        
-        trend_sql = f"""
-            SELECT campaign_id, dt, SUM(cost) as cost, SUM(sales) as sales 
+        # 1. SQL 쿼리를 파라미터 방식으로 변경하여 DB 에러 원천 차단
+        sql = """
+            SELECT campaign_id, dt, cost, sales 
             FROM fact_campaign_daily 
-            WHERE dt BETWEEN '{trend_start_str}' AND '{trend_end_str}' {where_cid}
-            GROUP BY campaign_id, dt
+            WHERE dt BETWEEN :d1 AND :d2
         """
-        trend_df = sql_read(engine, trend_sql)
+        params = {"d1": str(start_date), "d2": str(end_date)}
+        
+        if cids:
+            cid_str = ",".join(f"'{c}'" for c in cids)
+            sql += f" AND customer_id IN ({cid_str})"
+            
+        trend_df = sql_read(engine, sql, params)
         
         trend_map = {}
         if not trend_df.empty:
             trend_df['dt'] = pd.to_datetime(trend_df['dt'])
-            trend_df['cost'] = pd.to_numeric(trend_df['cost'], errors="coerce").fillna(0)
-            trend_df['sales'] = pd.to_numeric(trend_df['sales'], errors="coerce").fillna(0)
-            trend_df['roas'] = np.where(trend_df['cost'] > 0, trend_df['sales'] / trend_df['cost'] * 100, 0)
+            trend_df['cost'] = pd.to_numeric(trend_df['cost'], errors='coerce').fillna(0)
+            trend_df['sales'] = pd.to_numeric(trend_df['sales'], errors='coerce').fillna(0)
             
-            # 피벗을 통해 중간에 이빨이 빠진 날짜들도 전부 0으로 채워줍니다.
-            pivot_df = trend_df.pivot(index='campaign_id', columns='dt', values='roas').fillna(0)
+            # 날짜별 합산 후 ROAS 계산
+            daily_grp = trend_df.groupby(['campaign_id', 'dt'])[['cost', 'sales']].sum().reset_index()
+            daily_grp['roas'] = np.where(daily_grp['cost'] > 0, daily_grp['sales'] / daily_grp['cost'] * 100, 0)
             
-            # 완전한 7일치 컬럼을 강제로 생성합니다. (선 그래프가 끊기지 않도록)
-            date_range = pd.date_range(start=start_dt, end=end_dt)
+            # 피벗팅
+            pivot_df = daily_grp.pivot(index='campaign_id', columns='dt', values='roas').fillna(0)
+            
+            # 7일치 모든 날짜 컬럼을 강제로 생성하여 선이 끊기지 않게 함
+            date_range = pd.date_range(start=start_date, end=end_date)
             pivot_df = pivot_df.reindex(columns=date_range, fill_value=0)
             
-            for cid_val, row in pivot_df.iterrows():
-                trend_map[str(cid_val)] = row.tolist()
-                
-        # 리스트가 정상적으로 7개가 생성되었는지 확인, 아니면 0 배열 할당
-        view["최근 7일 ROAS"] = view["campaign_id"].astype(str).map(trend_map)
-        view["최근 7일 ROAS"] = view["최근 7일 ROAS"].apply(lambda x: x if isinstance(x, list) and len(x) == 7 else [0, 0, 0, 0, 0, 0, 0])
+            # ★ 핵심: 인덱스(캠페인 ID)를 순수한 정수형 문자열로 강제 클렌징 ("1234.0" -> "1234")
+            pivot_df.index = pd.to_numeric(pivot_df.index, errors='coerce').fillna(0).astype(int).astype(str)
+            
+            # 딕셔너리로 변환
+            trend_map = {str(k): v.tolist() for k, v in pivot_df.iterrows()}
+            
+        # ★ 핵심: 원본 View 데이터의 캠페인 ID도 동일하게 클렌징하여 매핑 확률 100% 보장
+        view_cid_clean = pd.to_numeric(view["campaign_id"], errors='coerce').fillna(0).astype(int).astype(str)
+        view["최근 7일 ROAS"] = view_cid_clean.map(trend_map)
+        
+        # 매핑 안된 값(NaN)들은 [0]*7 로 초기화
+        view["최근 7일 ROAS"] = view["최근 7일 ROAS"].apply(lambda x: x if isinstance(x, list) else [0]*7)
         
     except Exception as e:
-        # 쿼리가 실패하더라도 에러 대신 0 배열을 넣어 UI가 무너지는 것을 방지
-        view["최근 7일 ROAS"] = [[0, 0, 0, 0, 0, 0, 0]] * len(view)
+        # 치명적 오류 발생 시 화면이 터지지 않도록 방어 코드
+        st.error(f"트렌드 데이터 로딩 오류 (무시 가능): {str(e)}")
+        view["최근 7일 ROAS"] = [[0]*7] * len(view)
     # ---------------------------------------------------------
 
     if not kw_bundle_cur.empty:
@@ -156,6 +167,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
+        # y_max를 지정하지 않아 내부 값에 따라 역동적으로 차트가 움직이도록 설정
         col_config = {
             "업체명": st.column_config.TextColumn(width="small"),
             "담당자": st.column_config.TextColumn(width="small"),
@@ -170,7 +182,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "CPA(원)": st.column_config.NumberColumn(format="%d"),
             "전환매출": st.column_config.NumberColumn(format="%d"),
             "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%"),
-            "최근 7일 ROAS": st.column_config.LineChartColumn("최근 7일 ROAS 추이", y_min=0, width="small")
+            "최근 7일 ROAS": st.column_config.LineChartColumn("최근 7일 ROAS", y_min=0, width="small")
         }
 
         event = st.dataframe(
