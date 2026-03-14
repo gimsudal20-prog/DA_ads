@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import plotly.express as px  # ✨ [NEW] 파이 차트를 그리기 위한 라이브러리 추가
 from typing import Dict
 
 from data import query_campaign_bundle, query_keyword_bundle, query_campaign_off_log, load_dim_campaign
@@ -124,43 +125,77 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
         # ---------------------------------------------------------
-        # 📊 캠페인 유형별 지출 요약 테이블
+        # 📊 [NEW] 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
         # ---------------------------------------------------------
-        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>📊 캠페인 유형별 지출 요약</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>📊 캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
         
-        type_grp = disp_main.groupby("캠페인유형").agg({"광고비": "sum", "전환매출": "sum"}).reset_index()
-        total_cost = type_grp["광고비"].sum()
-        type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
-        type_grp["ROAS(%)"] = np.where(type_grp["광고비"] > 0, (type_grp["전환매출"] / type_grp["광고비"]) * 100, 0.0)
-        type_grp = type_grp.sort_values("광고비", ascending=False)
-        
-        st.dataframe(
-            type_grp.style.format({"광고비": "{:,.0f}", "ROAS(%)": "{:,.2f}%"}),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
-                "광고비": st.column_config.Column("총 광고비(원)"),
-                "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
-                "ROAS(%)": st.column_config.Column("평균 ROAS(%)")
-            }
-        )
+        col_type, col_device = st.columns([1.5, 1]) # 가로 공간을 1.5 : 1 비율로 분할
+
+        with col_type:
+            # 기존 유형별 지출 요약 표
+            type_grp = disp_main.groupby("캠페인유형").agg({"광고비": "sum", "전환매출": "sum"}).reset_index()
+            total_cost = type_grp["광고비"].sum()
+            type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
+            type_grp["ROAS(%)"] = np.where(type_grp["광고비"] > 0, (type_grp["전환매출"] / type_grp["광고비"]) * 100, 0.0)
+            type_grp = type_grp.sort_values("광고비", ascending=False)
+            
+            st.dataframe(
+                type_grp.style.format({"광고비": "{:,.0f}", "ROAS(%)": "{:,.2f}%"}),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
+                    "광고비": st.column_config.Column("총 광고비(원)"),
+                    "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
+                    "ROAS(%)": st.column_config.Column("평균 ROAS(%)")
+                }
+            )
+
+        with col_device:
+            # ✨ PC/모바일 유입 비중 차트
+            st.markdown("<div style='font-size:13px; color:#555; text-align:center; margin-bottom:5px;'>📱 기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
+            
+            # DB 연동 전, 현재 필터링된 총 광고비를 기준으로 모바일 72%, PC 28%로 가정하여 그리는 UI 데모
+            # 추후 DB에서 기기별 데이터가 수집되면 아래 mock_device_df를 실제 데이터프레임으로 교체하시면 됩니다.
+            mock_device_df = pd.DataFrame({
+                "기기": ["모바일", "PC"],
+                "광고비": [total_cost * 0.72, total_cost * 0.28]
+            })
+            
+            fig = px.pie(
+                mock_device_df, 
+                values="광고비", 
+                names="기기", 
+                hole=0.55, # 가운데가 뚫린 예쁜 도넛 형태
+                color="기기", 
+                color_discrete_map={"모바일": "#335CFF", "PC": "#CBD5E1"} # 모바일은 메인 컬러, PC는 회색으로 강조
+            )
+            
+            # 차트 여백 최소화 및 레이아웃 정리
+            fig.update_layout(
+                margin=dict(t=0, b=0, l=0, r=0), 
+                height=180, 
+                showlegend=True,
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=0.85)
+            )
+            fig.update_traces(textposition='inside', textinfo='percent')
+            
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
         # ---------------------------------------------------------
-        # 종합 성과 테이블 + ✨ 맞춤형 지표(Metric Schema) UI 적용
+        # 종합 성과 테이블 + 맞춤형 지표(Metric Schema) UI
         # ---------------------------------------------------------
         col_title, col_settings = st.columns([4, 1])
         with col_title:
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         with col_settings:
             st.markdown("<div style='margin-top:15px; text-align:right;'>", unsafe_allow_html=True)
-            # st.popover를 활용하여 공간을 낭비하지 않는 깔끔한 필터창 구성
             with st.popover("⚙️ 지표 맞춤 설정", use_container_width=True):
                 st.caption("표에 표시할 데이터를 선택하세요.")
                 selected_metrics = st.multiselect(
                     "지표 항목", 
                     options=all_metrics_cols, 
-                    default=["광고비", "ROAS(%)", "클릭", "전환", "전환매출"], # 초기 기본 노출값 세팅
+                    default=["광고비", "ROAS(%)", "클릭", "전환", "전환매출"], 
                     label_visibility="collapsed"
                 )
             st.markdown("</div>", unsafe_allow_html=True)
@@ -168,12 +203,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
         if not selected_metrics:
-            selected_metrics = ["광고비"] # 모두 지웠을 경우 최소한의 에러 방지용 기본값
+            selected_metrics = ["광고비"] 
 
-        # 사용자가 선택한 컬럼만 조합하여 데이터프레임 필터링
         final_cols = [c for c in base_cols + selected_metrics if c in disp_main.columns]
         
-        # 정렬 기준: 광고비가 있으면 광고비, 없으면 선택된 첫 번째 숫자형 지표
         sort_col = "광고비" if "광고비" in final_cols else (selected_metrics[0] if selected_metrics else final_cols[0])
         disp_main = disp_main[final_cols].sort_values(sort_col, ascending=False).head(top_n)
 
@@ -222,7 +255,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     })
                     kw_view = _add_perf_metrics(kw_view)
                     
-                    # 하위 상세 테이블도 상단에서 선택한 지표 설정(Metric Schema)을 동일하게 따라가도록 동기화
                     kw_final_cols = ["광고그룹", "키워드"] + selected_metrics
                     kw_disp = kw_view[[c for c in kw_final_cols if c in kw_view.columns]].sort_values(sort_col, ascending=False).head(100)
                     
