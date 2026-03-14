@@ -27,18 +27,21 @@ GLOBAL_UI_CSS = """
   /* Status (Positive=Blue, Negative=Red) */
   --nv-success: #0528F2;        /* Positive is now Blue */
   --nv-warning: #F79009;
-  --nv-danger: #F04438;         /* Negative/Alert is Red */
+  --nv-danger: #F04438;         /* Red for Negative/Down */
   
   --nv-radius: 12px;
 }
 
 /* ==============================================================
-   1. 기본 레이아웃 & 폰트 (사이드바 버튼 생존 보장)
+   1. 기본 레이아웃 (✨ 사이드바 절대 보존, 우측 메뉴만 핀셋 제거)
    ============================================================== */
 footer { display: none !important; }
-header[data-testid="stHeader"] { background-color: transparent !important; height: 3rem !important; }
-.stAppToolbar { display: none !important; }
-[data-testid="collapsedControl"] { display: flex !important; visibility: visible !important; z-index: 999999 !important; }
+
+/* 헤더 투명화 */
+header[data-testid="stHeader"] { background-color: transparent !important; }
+
+/* 🚨 우측 상단 Deploy, 햄버거 메뉴 등 '액션 요소'들만 핀셋으로 제거 (사이드바 버튼 생존) */
+[data-testid="stHeaderActionElements"] { display: none !important; }
 
 div.block-container { 
     padding-top: 2rem !important; 
