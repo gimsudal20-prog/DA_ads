@@ -43,6 +43,9 @@ header[data-testid="stHeader"] { background-color: transparent !important; }
 /* 🚨 우측 상단 Deploy, 햄버거 메뉴 등 '액션 요소'들만 핀셋으로 제거 (사이드바 버튼 생존) */
 [data-testid="stHeaderActionElements"] { display: none !important; }
 
+/* ✨ [NEW] 좌측 사이드바 최상단에 자동으로 뜨는 '기본 페이지 네비게이션' 완벽 제거 */
+[data-testid="stSidebarNav"] { display: none !important; }
+
 div.block-container { 
     padding-top: 2rem !important; 
     padding-bottom: 3rem !important; 
