@@ -51,10 +51,9 @@ def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFr
     return grp[keys + ["avg_rank"]]
 
 
-# ✨ [FIX] ROAS 조건부 텍스트 컬러링 함수 (콤마나 % 기호가 붙어도 안전하게 숫자로 변환)
+# ROAS 조건부 텍스트 컬러링 함수
 def highlight_roas_text(val):
     try:
-        # 천 단위 콤마(,)와 퍼센트(%) 기호를 제거한 후 숫자로 변환
         v = float(str(val).replace("%", "").replace(",", ""))
         if 0 <= v < 100.0:
             return 'color: #EF4444; font-weight: 800;' # 적자: 진한 빨간색
@@ -105,7 +104,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     
-    # ✨ [NEW] 숫자에 천 단위 콤마 및 퍼센트 기호를 입혀주는 글로벌 포맷 딕셔너리
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
@@ -123,9 +121,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in disp_main.columns:
             base_cols.append("평균순위")
         
-        metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
-        final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
-        disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
+        all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
         # ---------------------------------------------------------
         # 📊 캠페인 유형별 지출 요약 테이블
@@ -139,7 +135,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         type_grp = type_grp.sort_values("광고비", ascending=False)
         
         st.dataframe(
-            type_grp.style.format({"광고비": "{:,.0f}", "ROAS(%)": "{:,.2f}%"}), # 숫자에 콤마/기호 적용
+            type_grp.style.format({"광고비": "{:,.0f}", "ROAS(%)": "{:,.2f}%"}),
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -151,18 +147,47 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         )
 
         # ---------------------------------------------------------
-        # 종합 성과 테이블
+        # 종합 성과 테이블 + ✨ 맞춤형 지표(Metric Schema) UI 적용
         # ---------------------------------------------------------
-        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
+        col_title, col_settings = st.columns([4, 1])
+        with col_title:
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
+        with col_settings:
+            st.markdown("<div style='margin-top:15px; text-align:right;'>", unsafe_allow_html=True)
+            # st.popover를 활용하여 공간을 낭비하지 않는 깔끔한 필터창 구성
+            with st.popover("⚙️ 지표 맞춤 설정", use_container_width=True):
+                st.caption("표에 표시할 데이터를 선택하세요.")
+                selected_metrics = st.multiselect(
+                    "지표 항목", 
+                    options=all_metrics_cols, 
+                    default=["광고비", "ROAS(%)", "클릭", "전환", "전환매출"], # 초기 기본 노출값 세팅
+                    label_visibility="collapsed"
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+
         st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
-        # ✨ fmt 서식을 적용하여 숫자에 콤마와 % 기호를 렌더링
-        try:
-            styled_main = disp_main.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
-        except AttributeError:
-            styled_main = disp_main.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
+        if not selected_metrics:
+            selected_metrics = ["광고비"] # 모두 지웠을 경우 최소한의 에러 방지용 기본값
 
-        # 숫자는 Styler가 포맷팅하므로 column_config에는 텍스트 너비만 선언하여 깔끔하게 둡니다.
+        # 사용자가 선택한 컬럼만 조합하여 데이터프레임 필터링
+        final_cols = [c for c in base_cols + selected_metrics if c in disp_main.columns]
+        
+        # 정렬 기준: 광고비가 있으면 광고비, 없으면 선택된 첫 번째 숫자형 지표
+        sort_col = "광고비" if "광고비" in final_cols else (selected_metrics[0] if selected_metrics else final_cols[0])
+        disp_main = disp_main[final_cols].sort_values(sort_col, ascending=False).head(top_n)
+
+        active_fmt = {k: v for k, v in fmt.items() if k in selected_metrics}
+        
+        try:
+            styled_main = disp_main.style.format(active_fmt)
+            if "ROAS(%)" in selected_metrics:
+                styled_main = styled_main.map(highlight_roas_text, subset=["ROAS(%)"])
+        except AttributeError:
+            styled_main = disp_main.style.format(active_fmt)
+            if "ROAS(%)" in selected_metrics:
+                styled_main = styled_main.applymap(highlight_roas_text, subset=["ROAS(%)"])
+
         col_config = {
             "업체명": st.column_config.TextColumn(width="small"),
             "담당자": st.column_config.TextColumn(width="small"),
@@ -196,12 +221,19 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                     })
                     kw_view = _add_perf_metrics(kw_view)
-                    kw_disp = kw_view[["광고그룹", "키워드", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
+                    
+                    # 하위 상세 테이블도 상단에서 선택한 지표 설정(Metric Schema)을 동일하게 따라가도록 동기화
+                    kw_final_cols = ["광고그룹", "키워드"] + selected_metrics
+                    kw_disp = kw_view[[c for c in kw_final_cols if c in kw_view.columns]].sort_values(sort_col, ascending=False).head(100)
                     
                     try:
-                        styled_kw = kw_disp.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
+                        styled_kw = kw_disp.style.format(active_fmt)
+                        if "ROAS(%)" in selected_metrics:
+                            styled_kw = styled_kw.map(highlight_roas_text, subset=["ROAS(%)"])
                     except AttributeError:
-                        styled_kw = kw_disp.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
+                        styled_kw = kw_disp.style.format(active_fmt)
+                        if "ROAS(%)" in selected_metrics:
+                            styled_kw = styled_kw.applymap(highlight_roas_text, subset=["ROAS(%)"])
 
                     st.dataframe(
                         styled_kw,
