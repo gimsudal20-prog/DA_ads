@@ -460,7 +460,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
     # ==========================================
-    # ✨ 업체별 KPI 달성 현황 및 트렌드 (스파크라인 그래프)
+    # ✨ [NEW] 업체별 KPI 달성 현황 및 트렌드 (스파크라인 그래프 & 슬라이더)
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>🎯 업체별 KPI 달성 현황 및 성과 트렌드</div>", unsafe_allow_html=True)
     st.caption("각 업체별 목표(KPI)를 설정하고 최근 일자별 비용과 성과의 흐름을 직관적으로 확인하세요.")
@@ -482,10 +482,25 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         acc_ts_df = acc_ts_df.sort_values('dt')
         
         acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
-        acc_totals = acc_totals.sort_values('cost', ascending=False).head(10)
+        acc_totals = acc_totals.sort_values('cost', ascending=False)
         
-        # 🚨 확실한 고유 키 부여를 위해 enumerate 사용 🚨
-        for idx, row in acc_totals.iterrows():
+        # ✨ 슬라이더 추가 (기본 노출값 1)
+        unique_accounts_count = len(acc_totals)
+        st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+        top_n_accounts = st.slider(
+            "📊 표시할 업체 수 조절", 
+            min_value=1, 
+            max_value=max(1, unique_accounts_count), 
+            value=1, # 1개로 기본 세팅
+            step=1,
+            help="한 번에 표시할 업체의 개수를 조절하여 화면을 쾌적하게 유지하세요."
+        )
+        
+        # 슬라이더 값에 따라 보여줄 데이터 개수 제한
+        acc_totals = acc_totals.head(top_n_accounts)
+        
+        # 🚨 ID 중복 방지를 위한 enumerate 인덱스 루프 🚨
+        for idx, (_, row) in enumerate(acc_totals.iterrows()):
             cid_val = row['customer_id']
             acc_name = row['account_name']
             
@@ -501,7 +516,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 with c1:
                     st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
                     
-                    # 🎯 강제적인 고유 키 부여 (문자열 조합 + index)
+                    # 완벽한 고유 키 부여
                     tgt_key = f"tgt_roas_{cid_val}_{idx}"
                     target_roas = st.number_input("🎯 목표 ROAS (%)", value=300, step=50, key=tgt_key, label_visibility="collapsed")
                     
@@ -527,7 +542,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    # 🚨 강제적인 고유 키 부여 🚨
+                    # 🚨 확실한 고유 키 적용 🚨
                     st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
                     
                 with c3:
@@ -552,7 +567,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    # 🚨 강제적인 고유 키 부여 🚨
+                    # 🚨 확실한 고유 키 적용 🚨
                     st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
     else:
         st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
