@@ -218,10 +218,12 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     return out
 
 
-# ✨ 표 색상 최적화 로직! 
-# style_table_deltas 함수 하나를 비용용/수익용 2개로 나누어서 똑똑하게 적용합니다.
+# ✨ 에러의 원인이었던 함수 복구 (캠페인 탭 등에서 뻗지 않도록 방어)
+def style_table_deltas(val):
+    """ 수익, 클릭 등 오르면 좋은 지표용 기본 포맷터 (증가=파랑, 감소=빨강) """
+    return style_table_deltas_positive(val)
+
 def style_table_deltas_positive(val):
-    """ 수익, 클릭 등 오르면 좋은 지표 (증가=파랑, 감소=빨강) """
     if pd.isna(val) or val == "-" or val == "": return ""
     color_up = "color: #0528F2; font-weight: 600;"    # 파랑 (개선)
     color_down = "color: #F04438; font-weight: 600;"  # 빨강 (악화)
@@ -244,7 +246,7 @@ def style_table_deltas_positive(val):
     return ""
 
 def style_table_deltas_negative(val):
-    """ 비용, 단가 등 오르면 나쁜 지표 (증가=빨강, 감소=파랑) """
+    """ 비용, 단가 등 오르면 나쁜 지표용 (증가=빨강, 감소=파랑) """
     if pd.isna(val) or val == "-" or val == "": return ""
     color_up = "color: #F04438; font-weight: 600;"    # 빨강 (악화)
     color_down = "color: #0528F2; font-weight: 600;"  # 파랑 (개선)
@@ -397,7 +399,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         if delta_text == "변동 없음": return "<span class='delta-chip delta-flat'>변동 없음</span>"
         if delta_text == "신규": return "<span class='delta-chip delta-up'>▲ 신규</span>"
         
-        # 비용 지표인 경우 색상 논리 반전
         is_up = delta_text.startswith("▲")
         if is_negative_metric:
             cls = "delta-down" if is_up else "delta-up" 
@@ -513,7 +514,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:var(--nv-muted-light); font-weight:500; }}
         .delta-chip {{ font-size:11px; font-weight:600; border-radius:4px; padding:3px 8px; display:inline-block; }}
         
-        /* ✨ 파란색(긍정) / 빨간색(부정) 칩 */
         .delta-up { background:var(--nv-primary-soft); color:var(--nv-primary); } 
         .delta-down { background:#FEE4E2; color:#F04438; } 
         .delta-flat { background:var(--nv-line); color:var(--nv-muted); } 
