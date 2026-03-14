@@ -240,7 +240,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
     state_hash = abs(hash(state_sig))
     report_loaded_key = f"overview_report_loaded_{state_hash}"
-    alerts_loaded_key = f"overview_alerts_loaded_{state_hash}"
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -549,12 +548,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # 5. 상세 성과 데이터 (캠페인별 / 일자별 표)
+    # 5. 일자별 성과 추이 (차트)
     # ==========================================
-    st.markdown("<div class='nv-sec-title'>상세 성과 데이터</div>", unsafe_allow_html=True)
-
+    st.markdown("<div class='nv-sec-title'>일자별 성과 추이</div>", unsafe_allow_html=True)
+    
     with st.spinner("일자별 데이터 집계 중..."):
         daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+
+    if daily_ts is not None and not daily_ts.empty:
+        daily_ts_chart = daily_ts.copy()
+        daily_ts_chart['roas'] = np.where(daily_ts_chart['cost'] > 0, daily_ts_chart['sales'] / daily_ts_chart['cost'] * 100, 0)
+        
+        tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
+        with tab_t1:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "sales", "전환매출", height=320)
+        with tab_t2:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+    else:
+        st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
+
+
+    # ==========================================
+    # 6. 상세 성과 데이터 (캠페인별 / 일자별 표)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title'>상세 성과 데이터</div>", unsafe_allow_html=True)
 
     tab_det_camp, tab_det_daily = st.tabs(["캠페인별 상세", "일자별 상세"])
     
@@ -622,7 +639,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # 6. 업체별 캠페인 상세 분석
+    # 7. 업체별 캠페인 상세 분석
     # ==========================================
     render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f["start"], f["end"])
     
