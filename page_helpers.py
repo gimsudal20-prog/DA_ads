@@ -221,8 +221,8 @@ def style_table_deltas(val):
     if pd.isna(val) or val == "-" or val == "": 
         return ""
     
-    # ✨ 양수(증가/상승)는 민트색, 음수(감소/하락)는 빨간색 적용
-    color_up = "color: #34C9DA; font-weight: 600;"    
+    # ✨ 양수(증가/상승)는 초록색, 음수(감소/하락)는 빨간색 (SaaS 표준 적용)
+    color_up = "color: #17B26A; font-weight: 600;"    
     color_down = "color: #F04438; font-weight: 600;" 
     
     if isinstance(val, str):
@@ -490,8 +490,8 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:var(--nv-muted-light); font-weight:500; }}
         .delta-chip {{ font-size:11px; font-weight:600; border-radius:4px; padding:3px 8px; display:inline-block; }}
         
-        /* ✨ 상세 대조 칩 컬러 수정 (긍정=Mint, 부정=Red) */
-        .delta-up { background:var(--nv-primary-soft); color:var(--nv-primary); } 
+        /* ✨ 상세 대조 칩 컬러 수정 (초록/빨강) */
+        .delta-up { background:#EAF7E9; color:#17B26A; } 
         .delta-down { background:#FEE4E2; color:#F04438; } 
         .delta-flat { background:var(--nv-line); color:var(--nv-muted); } 
         .rate { color:var(--nv-muted-light); font-weight:500; }
