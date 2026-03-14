@@ -100,7 +100,6 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
     return pd.DataFrame()
 
 
-# ✨ [NEW] 업체별 트렌드 차트를 그리기 위한 데일리 데이터 캐싱 함수
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_account_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     cid_str = ",".join([f"'{str(x)}'" for x in cids])
@@ -461,7 +460,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
     # ==========================================
-    # ✨ [NEW] 업체별 KPI 달성 현황 및 트렌드 (스파크라인 그래프)
+    # ✨ 업체별 KPI 달성 현황 및 트렌드 (스파크라인 그래프)
     # ==========================================
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>🎯 업체별 KPI 달성 현황 및 성과 트렌드</div>", unsafe_allow_html=True)
     st.caption("각 업체별 목표(KPI)를 설정하고 최근 일자별 비용과 성과의 흐름을 직관적으로 확인하세요.")
@@ -482,7 +481,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         acc_ts_df['dt'] = pd.to_datetime(acc_ts_df['dt'])
         acc_ts_df = acc_ts_df.sort_values('dt')
         
-        # 비용을 기준으로 상위 10개 업체만 필터링하여 UI 과부하 방지
         acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
         acc_totals = acc_totals.sort_values('cost', ascending=False).head(10)
         
@@ -518,7 +516,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 with c2:
                     st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
                     fig_cost = px.bar(acc_data, x='dt', y='cost')
-                    fig_cost.update_traces(marker_color='#A8AFB7', marker_line_width=0) # 깔끔한 회색 바
+                    fig_cost.update_traces(marker_color='#A8AFB7', marker_line_width=0)
                     fig_cost.update_layout(
                         margin=dict(l=0, r=0, t=10, b=0), 
                         height=110, 
@@ -527,14 +525,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False})
+                    # ✨ [FIX] 고유 Key 값 추가
+                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}")
                     
                 with c3:
                     st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
                     fig_roas = px.line(acc_data, x='dt', y='roas')
-                    fig_roas.update_traces(line_color='#0528F2', line_width=3) # 뚜렷한 파란색 라인
+                    fig_roas.update_traces(line_color='#0528F2', line_width=3)
                     
-                    # 🎯 사용자가 설정한 목표 ROAS를 빨간 점선으로 표시
                     fig_roas.add_hline(
                         y=target_roas, 
                         line_dash="dot", 
@@ -552,7 +550,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False})
+                    # ✨ [FIX] 고유 Key 값 추가
+                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}")
     else:
         st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
 
