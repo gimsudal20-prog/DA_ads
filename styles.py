@@ -11,7 +11,7 @@ GLOBAL_UI_CSS = """
 
 :root {
   /* Routie Color System */
-  --nv-primary: #34C9DA;        /* Main Color */
+  --nv-primary: #34C9DA;        /* Main Color (Mint) */
   --nv-primary-hover: #67D7E4;  /* Sub 80 */
   --nv-primary-soft: #DFF6F9;   /* Sub 20 */
   
@@ -35,19 +35,10 @@ GLOBAL_UI_CSS = """
 /* 기본 워터마크 숨김 */
 footer { display: none !important; }
 
-/* 안전한 레이아웃 확장 (사이드바 이슈 원천 차단) */
-header[data-testid="stHeader"] {
-    background-color: transparent !important;
-    height: 3rem !important;
-}
-.stAppToolbar {
-    display: none !important;
-}
-[data-testid="collapsedControl"] {
-    display: flex !important;
-    visibility: visible !important;
-    z-index: 999999 !important;
-}
+/* 안전한 레이아웃 확장 */
+header[data-testid="stHeader"] { background-color: transparent !important; height: 3rem !important; }
+.stAppToolbar { display: none !important; }
+[data-testid="collapsedControl"] { z-index: 999999 !important; }
 
 div.block-container { 
     padding-top: 2rem !important; 
@@ -63,46 +54,16 @@ html, body, [class*="css"] {
   background: var(--nv-bg);
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 700 !important;
-  letter-spacing: -0.02em !important;
-  color: var(--nv-text);
-}
+h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !important; color: var(--nv-text); }
 
-.nv-h1 {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: 4px 0 24px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--nv-line);
-}
+.nv-h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 24px; padding-bottom: 12px; border-bottom: 1px solid var(--nv-line); }
+.nv-sec-title { font-size: 17px; font-weight: 700; margin-top: 32px; margin-bottom: 16px; color: var(--nv-text); display: flex; align-items: center; gap: 8px; }
 
-.nv-sec-title {
-  font-size: 17px;
-  font-weight: 700;
-  margin-top: 32px;
-  margin-bottom: 16px;
-  color: var(--nv-text);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* Metric Cards (KPI) */
-.nv-metric-card {
-  background: var(--nv-bg);
-  padding: 20px 24px;
-  border-radius: var(--nv-radius);
-  border: 1px solid var(--nv-line);
-  margin-bottom: 16px;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(25, 25, 26, 0.02);
-}
-.nv-metric-card:hover {
-  border-color: var(--nv-primary);
-  box-shadow: 0 4px 12px rgba(52, 201, 218, 0.08);
-}
+/* ==============================================================
+   1. Metric Cards (KPI)
+   ============================================================== */
+.nv-metric-card { background: var(--nv-bg); padding: 20px 24px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(25, 25, 26, 0.02); }
+.nv-metric-card:hover { border-color: var(--nv-primary); box-shadow: 0 4px 12px rgba(52, 201, 218, 0.08); }
 .nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .nv-metric-card-value { color: var(--nv-text); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
 .nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 600; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 6px; }
@@ -117,14 +78,18 @@ h1, h2, h3, h4, h5, h6 {
 .kpi .k { font-size: 13px; color: var(--nv-muted); font-weight: 500; margin-bottom: 6px; }
 .kpi .v { font-size: 20px; font-weight: 700; color: var(--nv-text); letter-spacing: -0.02em; line-height: 1.2;}
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
-.kpi.highlight .v { color: var(--nv-primary); font-size: 22px; }
 
-/* ✨ KPI 카드 증감 색상 (초록/빨강 적용) */
+/* ✨ 요약 지면 비용 지표(광고비) 강조 시 파란색이 아니라 기본 텍스트 색상 또는 빨간색 유지 */
+.kpi.highlight .v { color: var(--nv-text); } 
+.kpi.highlight-positive .v { color: var(--nv-primary); font-size: 22px; }
+
 .kpi .d.pos { background: #EAF7E9; color: var(--nv-success); }
 .kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
-/* Table Hover & Styling */
+/* ==============================================================
+   2. Tables & Tabs
+   ============================================================== */
 div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
 div[data-testid="stDataFrame"] th { background-color: var(--nv-surface) !important; color: var(--nv-muted) !important; font-weight: 600 !important; font-size: 13px; border-bottom: 1px solid var(--nv-line) !important; }
 div[data-testid="stDataFrame"] td { font-size: 13px; color: var(--nv-text) !important; border-bottom: 1px solid var(--nv-surface) !important; }
@@ -134,43 +99,45 @@ div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface)
 [data-baseweb="tab-list"] { gap: 24px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 500; padding: 12px 4px !important; margin: 0 !important; color: var(--nv-muted) !important; font-size: 15px; border-radius: 0 !important; transition: color 0.2s ease; }
 [data-baseweb="tab"]:hover { color: var(--nv-text) !important; }
-[aria-selected="true"] { color: var(--nv-text) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-text) !important; box-shadow: none !important; }
+[aria-selected="true"] { color: var(--nv-primary) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-primary) !important; box-shadow: none !important; }
 
-/* Sidebar & Navigation */
-[data-testid="stSidebar"] {
-  background: var(--nv-surface) !important;
-  border-right: 1px solid var(--nv-line) !important;
-}
+/* ==============================================================
+   3. Sidebar & Streamlit Native Elements Deep Customization
+   ============================================================== */
+[data-testid="stSidebar"] { background: var(--nv-surface) !important; border-right: 1px solid var(--nv-line) !important; }
 [data-testid="stSidebar"] .block-container { padding-top: 2rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
 .nav-sidebar-title { font-size: 12px; font-weight: 600; color: var(--nv-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
 
-/* Navigation Radio Buttons */
+/* ✨ Sidebar Menu (Radio) Deep Theming */
 [data-testid="stSidebar"] [role="radiogroup"] { background: transparent; padding: 0; gap: 4px; display: flex; flex-direction: column; }
-[data-testid="stSidebar"] [role="radiogroup"] label {
-  padding: 10px 14px !important;
-  margin-bottom: 2px !important;
-  border-radius: 8px !important;
-  background: transparent !important;
-  border: none !important;
-  transition: all 0.15s ease;
-}
+[data-testid="stSidebar"] [role="radiogroup"] label { padding: 10px 14px !important; margin-bottom: 2px !important; border-radius: 8px !important; background: transparent !important; border: none !important; transition: all 0.15s ease; }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--nv-line) !important; }
 [data-testid="stSidebar"] [role="radiogroup"] label p { color: var(--nv-muted) !important; font-weight: 500 !important; font-size: 14px !important; }
+/* 선택된 메뉴 배경을 Primary 컬러(Mint)로 */
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: var(--nv-primary) !important; }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-bg) !important; font-weight: 600 !important; }
+
+/* ✨ Native Selectbox & Multiselect Tag Colors */
+div[data-baseweb="select"] > div { border-radius: 8px !important; border-color: var(--nv-line) !important; background: var(--nv-bg) !important; }
+div[data-baseweb="select"] > div:focus-within { box-shadow: 0 0 0 1px var(--nv-primary) inset !important; border-color: var(--nv-primary) !important; }
+
+/* Multiselect 선택된 태그(칩) 배경색을 Mint로 변경 */
+span[data-baseweb="tag"] { background-color: var(--nv-primary-soft) !important; color: var(--nv-primary) !important; font-weight: 600 !important; }
+span[data-baseweb="tag"] > span[role="button"] { fill: var(--nv-primary) !important; color: var(--nv-primary) !important; }
+
+/* 체크박스, 토글 버튼 색상 강제 오버라이드 */
+.stCheckbox div[data-testid="stWidgetLabel"] p { color: var(--nv-text); }
+.st-bb { background-color: var(--nv-primary) !important; } 
 
 /* Expander */
 [data-testid="stExpander"] { border: 1px solid var(--nv-line) !important; border-radius: var(--nv-radius) !important; box-shadow: none !important; background: var(--nv-bg) !important; overflow: hidden; }
 [data-testid="stExpander"] summary { padding: 14px 16px !important; background-color: var(--nv-surface) !important; border-radius: 0 !important; }
 [data-testid="stExpander"] summary p { font-weight: 600 !important; font-size: 14px !important; color: var(--nv-text) !important; }
 
-/* Clean Inputs */
-div[data-baseweb="select"] > div,
-div[data-baseweb="input"] > div { border-radius: 8px !important; border-color: var(--nv-line) !important; background: var(--nv-bg) !important; }
-div[data-baseweb="select"] > div:focus-within,
-div[data-baseweb="input"] > div:focus-within { box-shadow: 0 0 0 1px var(--nv-primary) inset !important; border-color: var(--nv-primary) !important; }
+/* 버튼 색상 (조회 적용 등) */
+[data-testid="baseButton-primary"] { background-color: var(--nv-primary) !important; color: white !important; border: none !important; border-radius: 8px !important; font-weight: 600 !important;}
+[data-testid="baseButton-primary"]:hover { background-color: var(--nv-primary-hover) !important; }
 
-/* Sidebar Info Box */
 .sidebar-info-box { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 8px; padding: 16px; margin-bottom: 32px; }
 .sidebar-info-label { font-size: 11px; color: var(--nv-muted); font-weight: 600; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
 .sidebar-info-value { font-size: 14px; font-weight: 600; color: var(--nv-text); }
