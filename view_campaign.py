@@ -51,10 +51,11 @@ def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFr
     return grp[keys + ["avg_rank"]]
 
 
-# ✨ ROAS 조건부 텍스트 컬러링 함수
+# ✨ [FIX] ROAS 조건부 텍스트 컬러링 함수 (콤마나 % 기호가 붙어도 안전하게 숫자로 변환)
 def highlight_roas_text(val):
     try:
-        v = float(val)
+        # 천 단위 콤마(,)와 퍼센트(%) 기호를 제거한 후 숫자로 변환
+        v = float(str(val).replace("%", "").replace(",", ""))
         if 0 <= v < 100.0:
             return 'color: #EF4444; font-weight: 800;' # 적자: 진한 빨간색
         elif v >= 300.0:
@@ -103,6 +104,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
+    
+    # ✨ [NEW] 숫자에 천 단위 콤마 및 퍼센트 기호를 입혀주는 글로벌 포맷 딕셔너리
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
@@ -124,7 +127,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-        # ✨ [NEW] 캠페인 유형별 지출 요약 테이블 생성 (어디에 지출이 가장 컸는지 파악)
+        # ---------------------------------------------------------
+        # 📊 캠페인 유형별 지출 요약 테이블
+        # ---------------------------------------------------------
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>📊 캠페인 유형별 지출 요약</div>", unsafe_allow_html=True)
         
         type_grp = disp_main.groupby("캠페인유형").agg({"광고비": "sum", "전환매출": "sum"}).reset_index()
@@ -134,40 +139,35 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         type_grp = type_grp.sort_values("광고비", ascending=False)
         
         st.dataframe(
-            type_grp[["캠페인유형", "광고비", "지출 비중(%)", "ROAS(%)"]],
+            type_grp.style.format({"광고비": "{:,.0f}", "ROAS(%)": "{:,.2f}%"}), # 숫자에 콤마/기호 적용
             use_container_width=True,
             hide_index=True,
             column_config={
                 "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
-                "광고비": st.column_config.NumberColumn("총 광고비(원)", format="%d"),
+                "광고비": st.column_config.Column("총 광고비(원)"),
                 "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
-                "ROAS(%)": st.column_config.NumberColumn("평균 ROAS(%)", format="%.2f%%")
+                "ROAS(%)": st.column_config.Column("평균 ROAS(%)")
             }
         )
 
+        # ---------------------------------------------------------
+        # 종합 성과 테이블
+        # ---------------------------------------------------------
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
+        # ✨ fmt 서식을 적용하여 숫자에 콤마와 % 기호를 렌더링
         try:
-            styled_main = disp_main.style.map(highlight_roas_text, subset=["ROAS(%)"])
+            styled_main = disp_main.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
         except AttributeError:
-            styled_main = disp_main.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+            styled_main = disp_main.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
 
+        # 숫자는 Styler가 포맷팅하므로 column_config에는 텍스트 너비만 선언하여 깔끔하게 둡니다.
         col_config = {
             "업체명": st.column_config.TextColumn(width="small"),
             "담당자": st.column_config.TextColumn(width="small"),
             "캠페인유형": st.column_config.TextColumn(width="small"),
-            "캠페인": st.column_config.TextColumn(width="medium"),
-            "노출": st.column_config.NumberColumn(format="%d"),
-            "클릭": st.column_config.NumberColumn(format="%d"),
-            "CTR(%)": st.column_config.NumberColumn(format="%.2f%%"),
-            "CPC(원)": st.column_config.NumberColumn(format="%d"),
-            # ✨ 광고비를 원래대로 일반 숫자 포맷으로 복구
-            "광고비": st.column_config.NumberColumn(format="%d"),
-            "전환": st.column_config.NumberColumn(format="%.1f"),
-            "CPA(원)": st.column_config.NumberColumn(format="%d"),
-            "전환매출": st.column_config.NumberColumn(format="%d"),
-            "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
+            "캠페인": st.column_config.TextColumn(width="medium")
         }
 
         event = st.dataframe(
@@ -199,9 +199,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     kw_disp = kw_view[["광고그룹", "키워드", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
-                        styled_kw = kw_disp.style.map(highlight_roas_text, subset=["ROAS(%)"])
+                        styled_kw = kw_disp.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
                     except AttributeError:
-                        styled_kw = kw_disp.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+                        styled_kw = kw_disp.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
 
                     st.dataframe(
                         styled_kw,
@@ -209,15 +209,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         hide_index=True,
                         column_config={
                             "광고그룹": st.column_config.TextColumn(width="medium"),
-                            "키워드": st.column_config.TextColumn(width="medium"),
-                            "노출": st.column_config.NumberColumn(format="%d"),
-                            "클릭": st.column_config.NumberColumn(format="%d"),
-                            "CTR(%)": st.column_config.NumberColumn(format="%.2f%%"),
-                            # ✨ 하위 상세 테이블 광고비도 숫자 포맷으로 복구
-                            "광고비": st.column_config.NumberColumn(format="%d"),
-                            "전환": st.column_config.NumberColumn(format="%.1f"),
-                            "전환매출": st.column_config.NumberColumn(format="%d"),
-                            "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
+                            "키워드": st.column_config.TextColumn(width="medium")
                         }
                     )
                 else:
@@ -261,14 +253,16 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
                 
                 try:
-                    styled_grp = disp_grp.style.map(highlight_roas_text, subset=["ROAS(%)"])
+                    styled_grp = disp_grp.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
                 except AttributeError:
-                    styled_grp = disp_grp.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+                    styled_grp = disp_grp.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
 
                 grp_col_config = {
-                    # ✨ 그룹 탭의 광고비도 숫자 포맷으로 복구
-                    "광고비": st.column_config.NumberColumn(format="%d"),
-                    "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
+                    "업체명": st.column_config.TextColumn(width="small"),
+                    "담당자": st.column_config.TextColumn(width="small"),
+                    "캠페인유형": st.column_config.TextColumn(width="small"),
+                    "캠페인": st.column_config.TextColumn(width="medium"),
+                    "광고그룹": st.column_config.TextColumn(width="medium")
                 }
 
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>광고그룹별 성과 데이터</div>", unsafe_allow_html=True)
