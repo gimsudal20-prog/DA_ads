@@ -32,13 +32,13 @@ GLOBAL_UI_CSS = """
   --nv-radius: 12px;
 }
 
-/* 기본 워터마크 숨김 */
+/* ==============================================================
+   1. 기본 레이아웃 & 폰트 (사이드바 버튼 생존 보장)
+   ============================================================== */
 footer { display: none !important; }
-
-/* 안전한 레이아웃 확장 */
 header[data-testid="stHeader"] { background-color: transparent !important; height: 3rem !important; }
 .stAppToolbar { display: none !important; }
-[data-testid="collapsedControl"] { z-index: 999999 !important; }
+[data-testid="collapsedControl"] { display: flex !important; visibility: visible !important; z-index: 999999 !important; }
 
 div.block-container { 
     padding-top: 2rem !important; 
@@ -55,12 +55,10 @@ html, body, [class*="css"] {
 }
 
 h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !important; color: var(--nv-text); }
-
-.nv-h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 24px; padding-bottom: 12px; border-bottom: 1px solid var(--nv-line); }
 .nv-sec-title { font-size: 17px; font-weight: 700; margin-top: 32px; margin-bottom: 16px; color: var(--nv-text); display: flex; align-items: center; gap: 8px; }
 
 /* ==============================================================
-   1. Metric Cards (KPI)
+   2. 요약 지면 KPI 카드
    ============================================================== */
 .nv-metric-card { background: var(--nv-bg); padding: 20px 24px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(25, 25, 26, 0.02); }
 .nv-metric-card:hover { border-color: var(--nv-primary); box-shadow: 0 4px 12px rgba(52, 201, 218, 0.08); }
@@ -68,7 +66,6 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .nv-metric-card-value { color: var(--nv-text); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
 .nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 600; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 6px; }
 
-/* KPI Group Container */
 .kpi-group-container { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
 .kpi-group { flex: 1; min-width: 250px; background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: var(--nv-radius); padding: 20px; box-shadow: 0 1px 3px rgba(25,25,26,0.02); }
 .kpi-group-title { font-size: 14px; font-weight: 700; color: var(--nv-text); margin-bottom: 16px; display: flex; align-items: center; gap: 6px; }
@@ -78,60 +75,88 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .k { font-size: 13px; color: var(--nv-muted); font-weight: 500; margin-bottom: 6px; }
 .kpi .v { font-size: 20px; font-weight: 700; color: var(--nv-text); letter-spacing: -0.02em; line-height: 1.2;}
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
-
 .kpi.highlight .v { color: var(--nv-text); } 
 .kpi.highlight-positive .v { color: var(--nv-primary); font-size: 22px; }
-
 .kpi .d.pos { background: #EAF7E9; color: var(--nv-success); }
 .kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
 /* ==============================================================
-   2. Tables & Tabs (✨ 깔끔한 배경색 및 계층 구조 수정)
+   3. 테이블 & 탭 (✨ 민트색 배경 제거, 하얀색/밑줄 중심의 깔끔한 구조)
    ============================================================== */
-div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
-div[data-testid="stDataFrame"] th { background-color: var(--nv-bg) !important; color: var(--nv-text) !important; font-weight: 700 !important; font-size: 13px; border-bottom: 2px solid var(--nv-line) !important; }
-div[data-testid="stDataFrame"] td { font-size: 13px; color: var(--nv-text) !important; border-bottom: 1px solid var(--nv-surface) !important; }
-div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface) !important; }
+table, div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
+th, div[data-testid="stDataFrame"] th { 
+    background-color: var(--nv-bg) !important; /* 하얀색 바탕 */
+    color: var(--nv-text) !important; 
+    font-weight: 700 !important; 
+    font-size: 13px; 
+    border-bottom: 2px solid var(--nv-line) !important; 
+}
+td, div[data-testid="stDataFrame"] td { font-size: 13px; color: var(--nv-text) !important; border-bottom: 1px solid var(--nv-surface) !important; }
+tr:hover td, div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface) !important; cursor: default; }
 
-/* Tabs */
+/* 탭 활성화 시 민트색 배경 없애고, 밑줄로만 강조 */
 [data-baseweb="tab-list"] { gap: 24px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 500; padding: 12px 4px !important; margin: 0 !important; color: var(--nv-muted) !important; font-size: 15px; border-radius: 0 !important; transition: color 0.2s ease; }
 [data-baseweb="tab"]:hover { color: var(--nv-text) !important; }
-[aria-selected="true"] { color: var(--nv-text) !important; font-weight: 700 !important; border-bottom: 2px solid var(--nv-text) !important; box-shadow: none !important; background: transparent !important; }
+[aria-selected="true"] { 
+    color: var(--nv-text) !important; 
+    font-weight: 700 !important; 
+    border-bottom: 2px solid var(--nv-text) !important; 
+    box-shadow: none !important; 
+    background: transparent !important; 
+}
 
 /* ==============================================================
-   3. Sidebar & Streamlit Native Elements Deep Customization
+   4. 사이드바 (✨ 보호색 현상 해결)
    ============================================================== */
 [data-testid="stSidebar"] { background: var(--nv-surface) !important; border-right: 1px solid var(--nv-line) !important; }
 [data-testid="stSidebar"] .block-container { padding-top: 2rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
 .nav-sidebar-title { font-size: 12px; font-weight: 600; color: var(--nv-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
 
-/* ✨ Sidebar Menu (Radio) Deep Theming (보호색 현상 방지: 흰색 박스 처리) */
 [data-testid="stSidebar"] [role="radiogroup"] { background: transparent; padding: 0; gap: 4px; display: flex; flex-direction: column; }
-[data-testid="stSidebar"] [role="radiogroup"] label { padding: 10px 14px !important; margin-bottom: 2px !important; border-radius: 8px !important; background: transparent !important; border: none !important; transition: all 0.15s ease; }
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding: 10px 14px !important;
+  margin-bottom: 2px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: none !important;
+  transition: all 0.15s ease;
+}
 [data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--nv-line) !important; }
 [data-testid="stSidebar"] [role="radiogroup"] label p { color: var(--nv-muted) !important; font-weight: 500 !important; font-size: 14px !important; }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background: var(--nv-bg) !important; box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important; }
+
+/* 선택된 메뉴는 하얀색 박스로 띄워서, 그 안의 민트색 동그라미가 잘 보이게 함 */
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { 
+    background: var(--nv-bg) !important; 
+    box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important; 
+    border: 1px solid var(--nv-line) !important;
+}
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-text) !important; font-weight: 700 !important; }
 
-/* ✨ Native Selectbox & Multiselect Tag Colors (배경을 하얀색으로 깔끔하게) */
+/* ==============================================================
+   5. 필터 멀티셀렉트 태그 (✨ 눈 아픈 민트색 제거)
+   ============================================================== */
 div[data-baseweb="select"] > div { border-radius: 8px !important; border-color: var(--nv-line) !important; background: var(--nv-bg) !important; }
 div[data-baseweb="select"] > div:focus-within { box-shadow: 0 0 0 1px var(--nv-primary) inset !important; border-color: var(--nv-primary) !important; }
 
-span[data-baseweb="tag"] { background-color: var(--nv-bg) !important; color: var(--nv-text) !important; font-weight: 500 !important; border: 1px solid var(--nv-line) !important; border-radius: 4px !important; }
-span[data-baseweb="tag"] > span[role="button"] { fill: var(--nv-muted) !important; color: var(--nv-muted) !important; }
+/* 태그 칩을 튀지 않게 하얀 배경 + 회색 테두리로 정리 */
+span[data-baseweb="tag"] { 
+    background-color: var(--nv-bg) !important; 
+    color: var(--nv-text) !important; 
+    font-weight: 500 !important; 
+    border: 1px solid var(--nv-line) !important; 
+    border-radius: 4px !important; 
+}
+span[data-baseweb="tag"] > span[role="button"] { fill: var(--nv-muted-light) !important; color: var(--nv-muted-light) !important; }
 
-/* 체크박스, 토글 버튼 색상 강제 오버라이드 */
-.stCheckbox div[data-testid="stWidgetLabel"] p { color: var(--nv-text); }
-.st-bb { background-color: var(--nv-primary) !important; } 
-
-/* Expander */
+/* ==============================================================
+   6. 기타 (Expander, 버튼)
+   ============================================================== */
 [data-testid="stExpander"] { border: 1px solid var(--nv-line) !important; border-radius: var(--nv-radius) !important; box-shadow: none !important; background: var(--nv-bg) !important; overflow: hidden; }
 [data-testid="stExpander"] summary { padding: 14px 16px !important; background-color: var(--nv-surface) !important; border-radius: 0 !important; }
 [data-testid="stExpander"] summary p { font-weight: 600 !important; font-size: 14px !important; color: var(--nv-text) !important; }
 
-/* 버튼 색상 (조회 적용 등) */
 [data-testid="baseButton-primary"] { background-color: var(--nv-primary) !important; color: white !important; border: none !important; border-radius: 8px !important; font-weight: 600 !important;}
 [data-testid="baseButton-primary"]:hover { background-color: var(--nv-primary-hover) !important; }
 
