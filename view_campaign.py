@@ -51,6 +51,19 @@ def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFr
     return grp[keys + ["avg_rank"]]
 
 
+# ✨ [NEW] ROAS 조건부 텍스트 컬러링 함수 (배경색 없이 글자색만 변경하여 깔끔함 유지)
+def highlight_roas_text(val):
+    try:
+        v = float(val)
+        if 0 < v < 100.0:
+            return 'color: #EF4444; font-weight: 800;' # 적자: 진한 빨간색
+        elif v >= 300.0:
+            return 'color: #2563EB; font-weight: 800;' # 고효율: 진한 파란색
+    except:
+        pass
+    return ''
+
+
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
@@ -110,9 +123,18 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
         final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
+        
+        # ✨ [NEW] 최대 광고비 계산 (프로그레스 바 게이지의 기준점)
+        max_cost = float(disp_main["광고비"].max()) if not disp_main.empty and disp_main["광고비"].max() > 0 else 100000
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
+
+        # ✨ [NEW] Styler 적용 (Pandas 버전에 따른 예외 처리 포함)
+        try:
+            styled_main = disp_main.style.map(highlight_roas_text, subset=["ROAS(%)"])
+        except AttributeError:
+            styled_main = disp_main.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
 
         col_config = {
             "업체명": st.column_config.TextColumn(width="small"),
@@ -123,15 +145,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "클릭": st.column_config.NumberColumn(format="%d"),
             "CTR(%)": st.column_config.NumberColumn(format="%.2f%%"),
             "CPC(원)": st.column_config.NumberColumn(format="%d"),
-            "광고비": st.column_config.NumberColumn(format="%d"),
+            # ✨ [NEW] 광고비를 일반 숫자가 아닌 미니 프로그레스 바로 변경
+            "광고비": st.column_config.ProgressColumn("광고비(원)", format="%d", min_value=0, max_value=max_cost),
             "전환": st.column_config.NumberColumn(format="%.1f"),
             "CPA(원)": st.column_config.NumberColumn(format="%d"),
             "전환매출": st.column_config.NumberColumn(format="%d"),
             "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
         }
 
+        # Styled DataFrame을 렌더링
         event = st.dataframe(
-            disp_main,
+            styled_main,
             use_container_width=True,
             hide_index=True,
             selection_mode="single-row",
@@ -158,8 +182,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     kw_view = _add_perf_metrics(kw_view)
                     kw_disp = kw_view[["광고그룹", "키워드", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
+                    max_kw_cost = float(kw_disp["광고비"].max()) if not kw_disp.empty and kw_disp["광고비"].max() > 0 else 10000
+                    
+                    try:
+                        styled_kw = kw_disp.style.map(highlight_roas_text, subset=["ROAS(%)"])
+                    except AttributeError:
+                        styled_kw = kw_disp.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+
                     st.dataframe(
-                        kw_disp,
+                        styled_kw,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
@@ -168,7 +199,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                             "노출": st.column_config.NumberColumn(format="%d"),
                             "클릭": st.column_config.NumberColumn(format="%d"),
                             "CTR(%)": st.column_config.NumberColumn(format="%.2f%%"),
-                            "광고비": st.column_config.NumberColumn(format="%d"),
+                            # ✨ [NEW] 디테일 테이블에도 광고비 프로그레스 바 적용
+                            "광고비": st.column_config.ProgressColumn("광고비(원)", format="%d", min_value=0, max_value=max_kw_cost),
                             "전환": st.column_config.NumberColumn(format="%.1f"),
                             "전환매출": st.column_config.NumberColumn(format="%d"),
                             "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
@@ -214,8 +246,21 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
 
+                # ✨ 그룹 탭에도 동일하게 스타일 적용
+                max_grp_cost = float(disp_grp["광고비"].max()) if not disp_grp.empty and disp_grp["광고비"].max() > 0 else 100000
+                
+                try:
+                    styled_grp = disp_grp.style.map(highlight_roas_text, subset=["ROAS(%)"])
+                except AttributeError:
+                    styled_grp = disp_grp.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+
+                grp_col_config = {
+                    "광고비": st.column_config.ProgressColumn("광고비(원)", format="%d", min_value=0, max_value=max_grp_cost),
+                    "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
+                }
+
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>광고그룹별 성과 데이터</div>", unsafe_allow_html=True)
-                render_big_table(disp_grp.style.format(fmt), "camp_group_grid", 550)
+                st.dataframe(styled_grp, use_container_width=True, hide_index=True, column_config=grp_col_config)
 
     with tab_cmp:
         opts = get_dynamic_cmp_options(f["start"], f["end"])
