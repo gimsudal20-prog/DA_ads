@@ -132,8 +132,8 @@ def calc_pct_diff(c, b):
 
 def color_delta(val):
     if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
-    return 'color: #F04438; font-weight: 600;' if val > 0 else 'color: #34C9DA; font-weight: 600;'
-
+    # 상승(양수)은 Mint, 하락(음수)은 Red
+    return 'color: #34C9DA; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
 
 @st.fragment
 def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f_start, f_end):
