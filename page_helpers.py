@@ -72,7 +72,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     with st.sidebar:
         st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
 
-        st.markdown("<div style='font-size:13px; font-weight:600; color:#62686F; margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
         
         period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
         sv_period = sv.get("period_mode", "어제")
@@ -103,7 +103,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
 
-        st.markdown("<div style='font-size:13px; font-weight:600; color:#62686F; margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
         manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체 담당자")
 
         accounts_by_mgr = accounts
@@ -124,7 +124,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 입력")
             type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
-            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:#62686F;'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
             top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
             top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
             top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
@@ -217,18 +217,18 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
-def style_table_deltas(val):
-    if pd.isna(val) or val == "-" or val == "": 
-        return ""
-    
-    # ✨ 양수(증가/상승)는 초록색, 음수(감소/하락)는 빨간색 (SaaS 표준 적용)
-    color_up = "color: #17B26A; font-weight: 600;"    
-    color_down = "color: #F04438; font-weight: 600;" 
+
+# ✨ 표 색상 최적화 로직! 
+# style_table_deltas 함수 하나를 비용용/수익용 2개로 나누어서 똑똑하게 적용합니다.
+def style_table_deltas_positive(val):
+    """ 수익, 클릭 등 오르면 좋은 지표 (증가=파랑, 감소=빨강) """
+    if pd.isna(val) or val == "-" or val == "": return ""
+    color_up = "color: #0528F2; font-weight: 600;"    # 파랑 (개선)
+    color_down = "color: #F04438; font-weight: 600;"  # 빨강 (악화)
     
     if isinstance(val, str):
         if "▲" in val: return color_up
         if "▼" in val: return color_down
-        
         val_clean = val.replace(",", "").replace("%", "").strip()
         if val_clean.startswith("+") and len(val_clean) > 1:
             try:
@@ -238,18 +238,34 @@ def style_table_deltas(val):
             try:
                 if float(val_clean) < 0: return color_down
             except ValueError: pass
-            
     elif isinstance(val, (int, float)):
         if val > 0: return color_up
         elif val < 0: return color_down
-            
     return ""
 
-def render_side_by_side_metrics(row: pd.Series, prev_label: str, cur_label: str, deltas: dict = None):
-    pass 
+def style_table_deltas_negative(val):
+    """ 비용, 단가 등 오르면 나쁜 지표 (증가=빨강, 감소=파랑) """
+    if pd.isna(val) or val == "-" or val == "": return ""
+    color_up = "color: #F04438; font-weight: 600;"    # 빨강 (악화)
+    color_down = "color: #0528F2; font-weight: 600;"  # 파랑 (개선)
+    
+    if isinstance(val, str):
+        if "▲" in val: return color_up
+        if "▼" in val: return color_down
+        val_clean = val.replace(",", "").replace("%", "").strip()
+        if val_clean.startswith("+") and len(val_clean) > 1:
+            try:
+                if float(val_clean) > 0: return color_up
+            except ValueError: pass
+        if val_clean.startswith("-") and len(val_clean) > 1:
+            try:
+                if float(val_clean) < 0: return color_down
+            except ValueError: pass
+    elif isinstance(val, (int, float)):
+        if val > 0: return color_up
+        elif val < 0: return color_down
+    return ""
 
-def render_comparison_section(df: pd.DataFrame, cmp_mode: str, b1: date, b2: date, d1: date, d2: date, section_title: str = "선택 항목 상세 비교"):
-    pass 
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>소재 A/B 비교 (상위 2개)</div>", unsafe_allow_html=True)
@@ -377,19 +393,26 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         if b == 0: return "0.0%"
         return f"{((c - b) / b) * 100:+.1f}%"
 
-    def delta_chip_text(delta_text: str):
+    def delta_chip_text(delta_text: str, is_negative_metric=False):
         if delta_text == "변동 없음": return "<span class='delta-chip delta-flat'>변동 없음</span>"
         if delta_text == "신규": return "<span class='delta-chip delta-up'>▲ 신규</span>"
-        if delta_text.startswith("▲"): return f"<span class='delta-chip delta-up'>{delta_text}</span>"
-        return f"<span class='delta-chip delta-down'>{delta_text}</span>"
+        
+        # 비용 지표인 경우 색상 논리 반전
+        is_up = delta_text.startswith("▲")
+        if is_negative_metric:
+            cls = "delta-down" if is_up else "delta-up" 
+        else:
+            cls = "delta-up" if is_up else "delta-down"
+            
+        return f"<span class='delta-chip {cls}'>{delta_text}</span>"
 
     rows = [
-        {"label": "광고비", "base": fmt_krw(b_cost), "curr": fmt_krw(c_cost), "delta": calc_detail_delta(c_cost, b_cost, is_currency=True), "rate": calc_delta_rate(c_cost, b_cost), "emphasis": False},
-        {"label": "전환매출", "base": fmt_krw(b_sales), "curr": fmt_krw(c_sales), "delta": calc_detail_delta(c_sales, b_sales, is_currency=True), "rate": calc_delta_rate(c_sales, b_sales), "emphasis": False},
-        {"label": "ROAS", "base": fmt_pct(b_roas), "curr": fmt_pct(c_roas), "delta": calc_detail_delta(c_roas, b_roas, is_pct=True), "rate": calc_delta_rate(c_roas, b_roas), "emphasis": True},
-        {"label": "노출수", "base": fmt_num(b_imp), "curr": fmt_num(c_imp), "delta": calc_detail_delta(c_imp, b_imp), "rate": calc_delta_rate(c_imp, b_imp), "emphasis": False},
-        {"label": "클릭수", "base": fmt_num(b_clk), "curr": fmt_num(c_clk), "delta": calc_detail_delta(c_clk, b_clk), "rate": calc_delta_rate(c_clk, b_clk), "emphasis": False},
-        {"label": "전환수", "base": fmt_num(b_conv), "curr": fmt_num(c_conv), "delta": calc_detail_delta(c_conv, b_conv), "rate": calc_delta_rate(c_conv, b_conv), "emphasis": False},
+        {"label": "광고비", "base": fmt_krw(b_cost), "curr": fmt_krw(c_cost), "delta": calc_detail_delta(c_cost, b_cost, is_currency=True), "rate": calc_delta_rate(c_cost, b_cost), "emphasis": False, "is_neg": True},
+        {"label": "전환매출", "base": fmt_krw(b_sales), "curr": fmt_krw(c_sales), "delta": calc_detail_delta(c_sales, b_sales, is_currency=True), "rate": calc_delta_rate(c_sales, b_sales), "emphasis": False, "is_neg": False},
+        {"label": "ROAS", "base": fmt_pct(b_roas), "curr": fmt_pct(c_roas), "delta": calc_detail_delta(c_roas, b_roas, is_pct=True), "rate": calc_delta_rate(c_roas, b_roas), "emphasis": True, "is_neg": False},
+        {"label": "노출수", "base": fmt_num(b_imp), "curr": fmt_num(c_imp), "delta": calc_detail_delta(c_imp, b_imp), "rate": calc_delta_rate(c_imp, b_imp), "emphasis": False, "is_neg": False},
+        {"label": "클릭수", "base": fmt_num(b_clk), "curr": fmt_num(c_clk), "delta": calc_detail_delta(c_clk, b_clk), "rate": calc_delta_rate(c_clk, b_clk), "emphasis": False, "is_neg": False},
+        {"label": "전환수", "base": fmt_num(b_conv), "curr": fmt_num(c_conv), "delta": calc_detail_delta(c_conv, b_conv), "rate": calc_delta_rate(c_conv, b_conv), "emphasis": False, "is_neg": False},
     ]
 
     def _board_rows(items: list[dict], is_right: bool = False) -> str:
@@ -397,7 +420,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         for r in items:
             curr_cls = "cmp-value emphasize" if r.get("emphasis", False) else "cmp-value"
             sub_row = (
-                f"<div class='cmp-sub'>{delta_chip_text(r['delta'])}<span class='rate'>({r['rate']})</span></div>"
+                f"<div class='cmp-sub'>{delta_chip_text(r['delta'], r.get('is_neg', False))}<span class='rate'>({r['rate']})</span></div>"
                 if is_right else "<div class='cmp-sub cmp-sub-muted'>기준 값</div>"
             )
             value = r["curr"] if is_right else r["base"]
@@ -451,7 +474,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-board-right {{
             background: var(--nv-bg);
             border-color: var(--nv-primary-soft);
-            box-shadow: 0 2px 8px rgba(52, 201, 218, 0.05);
+            box-shadow: 0 2px 8px rgba(5, 40, 242, 0.05);
         }}
         .cmp-board-head {{
             font-size: 13px;
@@ -490,8 +513,8 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         .cmp-sub-muted {{ color:var(--nv-muted-light); font-weight:500; }}
         .delta-chip {{ font-size:11px; font-weight:600; border-radius:4px; padding:3px 8px; display:inline-block; }}
         
-        /* ✨ 상세 대조 칩 컬러 수정 (초록/빨강) */
-        .delta-up { background:#EAF7E9; color:#17B26A; } 
+        /* ✨ 파란색(긍정) / 빨간색(부정) 칩 */
+        .delta-up { background:var(--nv-primary-soft); color:var(--nv-primary); } 
         .delta-down { background:#FEE4E2; color:#F04438; } 
         .delta-flat { background:var(--nv-line); color:var(--nv-muted); } 
         .rate { color:var(--nv-muted-light); font-weight:500; }
