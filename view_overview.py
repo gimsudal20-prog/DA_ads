@@ -129,13 +129,19 @@ def calc_pct_diff(c, b):
         pct = (diff) / b * 100.0
     return pct, diff
 
-def color_delta(val):
+
+# ✨ 요약 지면 테이블의 색상 (파랑/빨강) 설정
+def color_delta_positive(val):
     if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
-    return 'color: #17B26A; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
+    return 'color: #0528F2; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
+
+def color_delta_negative(val):
+    if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
+    return 'color: #F04438; font-weight: 600;' if val > 0 else 'color: #0528F2; font-weight: 600;'
 
 
 @st.fragment
-def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f_start, f_end):
+def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f_start, f_end):
     st.markdown("<div class='nv-sec-title'>업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
     
     if not merged.empty:
@@ -201,22 +207,20 @@ def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standar
             if has_rank:
                 sub_fmt_dict["평균순위"] = "{:,.1f}위"
                 sub_fmt_dict["순위 변화"] = "{:+.1f}"
-                
-            sub_color_cols = color_cols_standard.copy()
-            if has_rank:
-                sub_color_cols.append("순위 변화")
             
             styled_sub_df = df_sub_display.style.format(sub_fmt_dict)
-            if hasattr(styled_sub_df, 'map'):
-                styled_sub_df = styled_sub_df.map(color_delta, subset=sub_color_cols)
-            else:
-                styled_sub_df = styled_sub_df.applymap(color_delta, subset=sub_color_cols)
+            try:
+                styled_sub_df = styled_sub_df.map(color_delta_positive, subset=positive_cols)
+                styled_sub_df = styled_sub_df.map(color_delta_negative, subset=negative_cols)
+            except AttributeError:
+                styled_sub_df = styled_sub_df.applymap(color_delta_positive, subset=positive_cols)
+                styled_sub_df = styled_sub_df.applymap(color_delta_negative, subset=negative_cols)
                 
             st.dataframe(styled_sub_df, use_container_width=True, hide_index=True)
             
             csv_sub_data = format_for_csv(df_sub_display).to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label=f"{selected_account} 캠페인 상세 분석 다운로드",
+                label="해당 캠페인 CSV 다운로드",
                 data=csv_sub_data,
                 file_name=f"{selected_account}_캠페인_상세_{f_start}_{f_end}.csv",
                 mime="text/csv",
@@ -259,7 +263,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "ROAS": "{:,.0f}%", "ROAS 증감": "{:+.0f}%"
     }
     
-    color_cols_standard = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '광고비 증감', '광고비 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+    # 긍정 지표와 부정 지표를 분리하여 서로 다른 색상 룰을 적용합니다.
+    positive_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+    negative_cols = ['광고비 증감', '광고비 차이']
 
     type_kor_map = {
         "WEB_SITE": "파워링크", 
@@ -268,7 +274,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "BRAND_SEARCH": "브랜드검색", 
         "PLACE": "플레이스"
     }
-
 
     # ==========================================
     # 1. 전체 성과 요약 (KPI Box)
@@ -294,11 +299,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cls_delta = "neu"
             delta_text = f"유지 ({delta_num:+.1f}%)"
         else:
+            # 비용은 내려야 긍정(pos), 수익은 올라야 긍정(pos)
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
             delta_text = f"{pct_to_arrow(delta_num)}"
         
-        # ✨ 광고비/CPC 강조는 파란색이 아니라 긍정일때 Mint 적용. 부정일때는 기본.
         if highlight:
             cls_hl = " highlight-positive" if label == "ROAS" else " highlight"
         else:
@@ -395,9 +400,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         styled_df = df_display.style.format(fmt_dict_standard)
         if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta, subset=color_cols_standard)
+            styled_df = styled_df.map(color_delta_positive, subset=positive_cols)
+            styled_df = styled_df.map(color_delta_negative, subset=negative_cols)
         else:
-            styled_df = styled_df.applymap(color_delta, subset=color_cols_standard)
+            styled_df = styled_df.applymap(color_delta_positive, subset=positive_cols)
+            styled_df = styled_df.applymap(color_delta_negative, subset=negative_cols)
             
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -462,9 +469,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         styled_type_df = df_type_display.style.format(fmt_dict_standard)
         if hasattr(styled_type_df, 'map'):
-            styled_type_df = styled_type_df.map(color_delta, subset=color_cols_standard)
+            styled_type_df = styled_type_df.map(color_delta_positive, subset=positive_cols)
+            styled_type_df = styled_type_df.map(color_delta_negative, subset=negative_cols)
         else:
-            styled_type_df = styled_type_df.applymap(color_delta, subset=color_cols_standard)
+            styled_type_df = styled_type_df.applymap(color_delta_positive, subset=positive_cols)
+            styled_type_df = styled_type_df.applymap(color_delta_negative, subset=negative_cols)
             
         st.dataframe(styled_type_df, use_container_width=True, hide_index=True)
         
@@ -646,7 +655,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ==========================================
     # 7. 업체별 캠페인 상세 분석
     # ==========================================
-    render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f["start"], f["end"])
+    render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f["start"], f["end"])
     
     # 보고서 내보내기 
     with st.expander("보고서 내보내기", expanded=False):
