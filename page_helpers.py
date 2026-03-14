@@ -70,12 +70,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
 
     with st.sidebar:
-        st.markdown("<div class='nav-sidebar-title'>조회 조건 설정</div>", unsafe_allow_html=True)
-        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
 
-        manager_sel = sv.get("manager", [])
-
-        st.markdown("**📅 기간 선택**")
+        st.markdown("<div style='font-size:13px; font-weight:600; color:#62686F; margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
         
         period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
         sv_period = sv.get("period_mode", "어제")
@@ -92,43 +89,22 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         if period_mode == "직접 선택":
             c1, c2 = st.columns(2)
-            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1")
-            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2")
+            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1", label_visibility="collapsed")
+            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2", label_visibility="collapsed")
         else:
-            if period_mode == "오늘": 
-                d2 = d1 = today
-            elif period_mode == "어제": 
-                d2 = d1 = today - timedelta(days=1)
-            elif period_mode == "최근 7일": 
-                d2 = today - timedelta(days=1)
-                d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일": 
-                d2 = today - timedelta(days=1)
-                d1 = d2 - timedelta(days=29)
-            elif period_mode == "이번 달": 
-                d2 = today
-                d1 = date(today.year, today.month, 1)
-            elif period_mode == "지난 주":
-                d2 = today - timedelta(days=today.weekday() + 1)
-                d1 = today - timedelta(days=today.weekday() + 7)
-            elif period_mode == "지난 달": 
-                d2 = date(today.year, today.month, 1) - timedelta(days=1)
-                d1 = date(d2.year, d2.month, 1)
-            else: 
-                d2 = sv.get("d2", default_end)
-                d1 = sv.get("d1", default_start)
-                
-            c1, c2 = st.columns(2)
-            c1.text_input("시작일", str(d1), disabled=True, key="f_d1_ro")
-            c2.text_input("종료일", str(d2), disabled=True, key="f_d2_ro")
-
-        if period_mode == "오늘":
-            st.warning("⚠️ '오늘' 데이터는 매체 수집 지연이 있을 수 있습니다.")
+            if period_mode == "오늘": d2 = d1 = today
+            elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
+            elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=29)
+            elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
+            elif period_mode == "지난 주": d2 = today - timedelta(days=today.weekday() + 1); d1 = today - timedelta(days=today.weekday() + 7)
+            elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
+            else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
 
         st.divider()
 
-        st.markdown("**👤 담당자 및 계정**")
-        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체")
+        st.markdown("<div style='font-size:13px; font-weight:600; color:#62686F; margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
+        manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체 담당자")
 
         accounts_by_mgr = accounts
         if manager_sel:
@@ -137,23 +113,21 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
                 if "manager" in dfm.columns and "account_name" in dfm.columns:
                     dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
                     accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
-            except Exception:
-                pass
+            except Exception: pass
 
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
         account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
 
         st.divider()
         
-        # ✨ 사이드바 공간 최적화를 위해 상세 필터를 아코디언 메뉴 안으로 접어둠
-        with st.expander("⚙️ 상세 필터 및 보기 설정", expanded=False):
-            q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
-            type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
+        with st.expander("상세 설정 (검색, 표시 제한)", expanded=False):
+            q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 입력")
+            type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
-            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:13px; font-weight:600;'>출력 데이터 수 제한</div>", unsafe_allow_html=True)
-            top_n_campaign = st.number_input("캠페인 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
-            top_n_keyword = st.number_input("키워드 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
-            top_n_ad = st.number_input("소재 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
+            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:#62686F;'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
+            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
+            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
+            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
 
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
@@ -247,8 +221,9 @@ def style_table_deltas(val):
     if pd.isna(val) or val == "-" or val == "": 
         return ""
     
-    color_up = "color: #FF4B4B; font-weight: 700;"    # 빨간색 (상승/증가)
-    color_down = "color: #1E88E5; font-weight: 700;"  # 파란색 (하락/감소)
+    # 붉은색(악화/초과가 아니라 숫자가 오르는 것 자체를 긍정/부정 판단 없이 스타일링)
+    color_up = "color: #F04438; font-weight: 600;"    
+    color_down = "color: #34C9DA; font-weight: 600;" 
     
     if isinstance(val, str):
         if "▲" in val: return color_up
@@ -265,10 +240,8 @@ def style_table_deltas(val):
             except ValueError: pass
             
     elif isinstance(val, (int, float)):
-        if val > 0:
-            return color_up
-        elif val < 0:
-            return color_down
+        if val > 0: return color_up
+        elif val < 0: return color_down
             
     return ""
 
@@ -293,32 +266,32 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     
     def _card(row, label):
         return f"""
-        <div style='background:#FFFFFF; padding:20px; border-radius:6px; border:1px solid #D7DCE5;'>
-            <div style='text-align:center; font-size:12px; font-weight:800; color:#666666; margin-bottom:8px;'>{label}</div>
-            <h4 style='text-align:center; margin-top:0; margin-bottom:16px; color:#4876EF; font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
+        <div style='background:#FFFFFF; padding:24px; border-radius:12px; border:1px solid var(--nv-line); box-shadow: 0 2px 8px rgba(0,0,0,0.02);'>
+            <div style='text-align:center; font-size:12px; font-weight:600; color:var(--nv-muted); margin-bottom:8px; text-transform:uppercase;'>{label}</div>
+            <h4 style='text-align:center; margin-top:0; margin-bottom:20px; color:var(--nv-text); font-size:15px; font-weight:700;'>{row['소재내용']}</h4>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#666666; font-weight:600;'>광고비</span>
-                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('광고비',0))}</span>
+                <span style='color:var(--nv-muted); font-weight:500; font-size:13px;'>광고비</span>
+                <span style='font-weight:600; color:var(--nv-text); font-size:13px;'>{format_currency(row.get('광고비',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:12px;'>
+                <span style='color:var(--nv-muted); font-weight:500; font-size:13px;'>전환매출</span>
+                <span style='font-weight:600; color:var(--nv-text); font-size:13px;'>{format_currency(row.get('전환매출',0))}</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--nv-line);'>
+                <span style='color:var(--nv-muted); font-weight:500; font-size:13px;'>ROAS</span>
+                <span style='font-weight:700; color:var(--nv-primary); font-size:16px;'>{row.get('ROAS(%)',0):.2f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
-                <span style='color:#666666; font-weight:600;'>전환매출</span>
-                <span style='font-weight:700; color:#222222;'>{format_currency(row.get('전환매출',0))}</span>
+                <span style='color:var(--nv-muted-light); font-size:12px;'>노출수</span>
+                <span style='color:var(--nv-muted); font-size:12px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
             </div>
-            <div style='display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #E5E6E9;'>
-                <span style='color:#666666; font-weight:600;'>ROAS</span>
-                <span style='font-weight:800; color:#4876EF; font-size:15px;'>{row.get('ROAS(%)',0):.2f}%</span>
-            </div>
-            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#999999; font-size:13px;'>노출수</span>
-                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('노출',0))}</span>
-            </div>
-            <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#999999; font-size:13px;'>클릭수</span>
-                <span style='color:#444444; font-size:13px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
+            <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
+                <span style='color:var(--nv-muted-light); font-size:12px;'>클릭수</span>
+                <span style='color:var(--nv-muted); font-size:12px; font-weight:600;'>{format_number_commas(row.get('클릭',0))}</span>
             </div>
             <div style='display:flex; justify-content:space-between;'>
-                <span style='color:#999999; font-size:13px;'>전환수</span>
-                <span style='color:#444444; font-size:13px; font-weight:600;'>{row.get('전환',0):.1f}</span>
+                <span style='color:var(--nv-muted-light); font-size:12px;'>전환수</span>
+                <span style='color:var(--nv-muted); font-size:12px; font-weight:600;'>{row.get('전환',0):.1f}</span>
             </div>
         </div>
         """
@@ -336,7 +309,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         return
 
     st.markdown(
-        f"<div style='font-size:15px; font-weight:700; margin-top:20px; color:#111;'>🎯 {entity_label} 상세 분석 선택</div>",
+        f"<div class='nv-sec-title'>개별 상세 비교 ({entity_label})</div>",
         unsafe_allow_html=True,
     )
 
@@ -348,8 +321,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         st.info("검색 결과가 없습니다.")
         return
 
-    selected = st.selectbox("분석 항목", options, key=f"search_detail_{entity_label}_{name_col}")
-    st.caption(f"현재 선택: {selected}" if selected != "선택 안 함" else "선택 없음")
+    selected = st.selectbox("분석 항목 선택", options, key=f"search_detail_{entity_label}_{name_col}")
 
     if selected == "선택 안 함":
         return
@@ -358,11 +330,9 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     b_df = df_base[df_base[name_col] == selected] if not df_base.empty else pd.DataFrame()
 
     def _sum_col(df: pd.DataFrame, candidates: list[str]) -> float:
-        if df is None or df.empty:
-            return 0.0
+        if df is None or df.empty: return 0.0
         for col in candidates:
-            if col in df.columns:
-                return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+            if col in df.columns: return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
         return 0.0
 
     def _cur_val(candidates_kr: list[str], candidates_en: list[str]) -> float:
@@ -370,8 +340,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
     def _base_val(base_cols: list[str], prev_cols: list[str]) -> float:
         val = _sum_col(b_df, base_cols)
-        if val > 0:
-            return val
+        if val > 0: return val
         return _sum_col(c_df, prev_cols)
 
     c_cost = _cur_val(["광고비"], ["cost"])
@@ -447,7 +416,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     right_rows = _board_rows(rows, is_right=True)
 
     html = textwrap.dedent(f"""    <div class='cmp-wrapper'>
-        <div class='cmp-title'>선택 항목 상세 비교</div>
         <div class='cmp-boards'>
             <div class='cmp-board'>
                 <div class='cmp-board-head'>이전 기간 ({b1} ~ {b2})</div>
@@ -461,80 +429,72 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     </div>
     <style>
         .cmp-wrapper {{
-            background:#FFFFFF;
-            border:1px solid #D7DCE5;
-            border-radius:6px;
-            padding:16px;
-            margin-top:10px;
-            margin-bottom:24px;
-        }}
-        .cmp-title {{
-            font-size:14px;
-            font-weight:800;
-            color:#111111;
-            margin-bottom:12px;
-            text-align:center;
+            background: var(--nv-bg);
+            border: 1px solid var(--nv-line);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 10px;
+            margin-bottom: 24px;
         }}
         .cmp-boards {{
             display:grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap:10px;
+            gap: 16px;
             align-items:stretch;
         }}
         .cmp-board {{
-            border-radius:4px;
-            padding:10px 12px;
-            border:1px solid #E5E6E9;
-            background:#F8F9FA;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid var(--nv-line);
+            background: var(--nv-surface);
         }}
         .cmp-board-right {{
-            background:#F0F4FF;
-            border-color:#C2D3FF;
+            background: var(--nv-bg);
+            border-color: var(--nv-primary-soft);
+            box-shadow: 0 2px 8px rgba(52, 201, 218, 0.05);
         }}
         .cmp-board-head {{
-            font-size:12px;
-            font-weight:700;
-            text-align:center;
-            margin-bottom:6px;
-            padding-bottom:8px;
-            border-bottom:1px solid #D7DCE5;
-            color:#444444;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--nv-line);
+            color: var(--nv-muted);
         }}
 
         .cmp-row {{
-            border-top:1px solid #E5E6E9;
-            padding:8px 0;
-            min-height:44px;
-            display:flex;
-            flex-direction:column;
-            justify-content:center;
+            border-top: 1px dashed var(--nv-line);
+            padding: 12px 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }}
         .cmp-row:first-child {{ border-top:none; }}
         .cmp-top {{
             display:flex;
             justify-content:space-between;
             align-items:center;
-            gap:12px;
         }}
-        .cmp-label {{ font-weight:700; font-size:13px; color:#444444; }}
-        .cmp-value {{ color:#222222; font-weight:800; font-size:16px; }}
-        .cmp-value.emphasize {{ color:#4876EF; }}
+        .cmp-label {{ font-weight:500; font-size:13px; color:var(--nv-muted); }}
+        .cmp-value {{ color:var(--nv-text); font-weight:700; font-size:16px; }}
+        .cmp-value.emphasize {{ color:var(--nv-primary); }}
         .cmp-sub {{
-            margin-top:4px;
+            margin-top:6px;
             display:flex;
             justify-content:flex-end;
-            gap:4px;
+            gap:6px;
             align-items:center;
             font-size:11px;
         }}
-        .cmp-sub-muted {{ color:#999999; font-weight:600; }}
-        .delta-chip {{ font-size:11px; font-weight:700; border-radius:2px; padding:2px 6px; display:inline-block; }}
+        .cmp-sub-muted {{ color:var(--nv-muted-light); font-weight:500; }}
+        .delta-chip {{ font-size:11px; font-weight:600; border-radius:4px; padding:3px 8px; display:inline-block; }}
         
-        .delta-up {{ background:#EAF7E9; color:#58B04B; }} 
-        .delta-down {{ background:#FFE6EE; color:#FF025D; }} 
-        .delta-flat {{ background:#E5E6E9; color:#666666; }} 
-        .rate {{ color:#666666; font-weight:600; }}
+        .delta-up {{ background:#FEE4E2; color:#F04438; }} 
+        .delta-down {{ background:var(--nv-primary-soft); color:var(--nv-primary); }} 
+        .delta-flat {{ background:var(--nv-line); color:var(--nv-muted); }} 
+        .rate {{ color:var(--nv-muted-light); font-weight:500; }}
     </style>
     """).strip()
-    comp_height = 200 + (len(rows) * 50)
+    comp_height = 200 + (len(rows) * 60)
     st.components.v1.html(html, height=max(460, comp_height), scrolling=False)
