@@ -82,22 +82,8 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             df["dt"] = pd.to_datetime(df["dt"])
         return df
     except Exception:
-        try:
-            sql = f"""
-                SELECT f.dt, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
-                FROM fact_campaign_daily f
-                {type_join_sql}
-                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
-                GROUP BY f.dt, c.campaign_type
-            """
-            df = pd.read_sql(sql, _engine)
-            if not df.empty: 
-                df["dt"] = pd.to_datetime(df["dt"])
-            return df
-        except Exception:
-            pass
+        pass
     return pd.DataFrame()
-
 
 def format_for_csv(df):
     out_df = df.copy()
@@ -132,8 +118,9 @@ def calc_pct_diff(c, b):
 
 def color_delta(val):
     if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
-    # 상승(양수)은 Mint, 하락(음수)은 Red
-    return 'color: #34C9DA; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
+    # ✨ 양수(증가/상승)는 초록색, 음수(감소/하락)는 빨간색 (SaaS 표준 적용)
+    return 'color: #17B26A; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
+
 
 @st.fragment
 def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f_start, f_end):
