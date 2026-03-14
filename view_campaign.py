@@ -7,7 +7,7 @@ import numpy as np
 import streamlit as st
 from typing import Dict
 
-from data import query_campaign_bundle, query_keyword_bundle
+from data import query_campaign_bundle, query_keyword_bundle, query_campaign_off_log, load_dim_campaign
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
@@ -55,7 +55,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
         
-    # ✨ [UX 개선 1] 로딩 인지 상태바 생성 (데이터를 불러오기 전 가장 먼저 화면에 렌더링)
     loading_placeholder = st.empty()
     loading_placeholder.info("⏳ 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다. 잠시만 기다려주세요...")
 
@@ -67,7 +66,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
     if bundle is None or bundle.empty:
-        loading_placeholder.empty() # 데이터가 없을 때도 로딩바 제거
+        loading_placeholder.empty()
         return
 
     kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
@@ -90,7 +89,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if "avg_rank" in view.columns:
         view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
-    tab_main, tab_group, tab_cmp = st.tabs(["종합 성과", "그룹 성과", "기간 비교"])
+    tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
@@ -262,6 +261,40 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
 
-    # ✨ [UX 개선 2] 모든 렌더링이 완료되면 로딩바 삭제 후 성공 알림 토스트 출력
+    with tab_history:
+        off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
+        if off_log.empty:
+            st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
+        else:
+            dim_camp = load_dim_campaign(engine)
+            if not dim_camp.empty:
+                dim_camp["campaign_id"] = dim_camp["campaign_id"].astype(str)
+                off_log["campaign_id"] = off_log["campaign_id"].astype(str)
+                off_log = off_log.merge(dim_camp[["campaign_id", "campaign_name"]], on="campaign_id", how="left")
+            else:
+                off_log["campaign_name"] = off_log["campaign_id"]
+                
+            if not meta.empty:
+                meta_copy = meta.copy()
+                meta_copy["customer_id"] = meta_copy["customer_id"].astype(str)
+                off_log["customer_id"] = off_log["customer_id"].astype(str)
+                off_log = off_log.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
+            else:
+                off_log["account_name"] = off_log["customer_id"]
+            
+            off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
+            
+            pivot_df = off_log.pivot_table(
+                index=["account_name", "campaign_name"], 
+                columns="dt_str", 
+                values="off_time", 
+                aggfunc='first'
+            ).reset_index()
+            
+            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"}).fillna("-")
+            
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록</div>", unsafe_allow_html=True)
+            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
+
     loading_placeholder.empty()
     st.toast("✅ 데이터 집계 및 화면 렌더링이 완료되었습니다!", icon="🚀")
