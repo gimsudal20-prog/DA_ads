@@ -57,7 +57,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#34C9DA" # 메인 민트 컬러
+        c = "#0528F2" # ✨ 파란색 테마
         if v >= 100: c = "#F04438" # 초과 시 (빨강)
         elif v >= 90: c = "#F79009" # 주의 시 (주황)
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
@@ -75,7 +75,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             if c == "상태":
                 v_str = str(val)
                 bg, text = "#F8F9FB", "#62686F"
-                if "적정" in v_str: bg, text = "#DFF6F9", "#17B26A"
+                if "적정" in v_str: bg, text = "#E6E9FF", "#0528F2" # 파란색 톤
                 elif "주의" in v_str: bg, text = "#FEF0C7", "#F79009"
                 elif "초과" in v_str or "악화" in v_str: bg, text = "#FEE4E2", "#F04438"
                 
@@ -87,7 +87,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
     table_html = f"<div style='height:{height}px; overflow-y:auto;'><table class='nv-table'><thead><tr>{th_html}</tr></thead><tbody>{''.join(html_rows)}</tbody></table></div>"
     st.markdown(table_html, unsafe_allow_html=True)
 
-# ✨ 이 차트 함수들의 색상을 민트(#34C9DA) 계열로 통일했습니다.
+# ✨ 차트 색상을 #0528F2(파랑) / #E6E9FF(연한파랑) 조합으로 변경
 def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: str, y1_name: str, y2_col: str, y2_name: str, height: int = 300):
     if df.empty: return
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
@@ -105,8 +105,8 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#DFF6F9", "borderRadius": [4,4,0,0]}}, 
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#34C9DA"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#E6E9FF", "borderRadius": [4,4,0,0]}}, 
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#0528F2"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
@@ -124,7 +124,7 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
         "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#DEE2E5"}}}],
         "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F8F9FB"}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#34C9DA"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#0528F2"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
