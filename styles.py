@@ -32,13 +32,22 @@ GLOBAL_UI_CSS = """
   --nv-radius: 12px;
 }
 
-/* 기본 메뉴 및 워터마크 숨김 */
-#MainMenu {visibility: hidden;}
+/* 기본 워터마크 숨김 */
 footer {visibility: hidden;}
 
-/* ✨ 헤더 배경 투명화 및 우측 툴바(Deploy 등)만 숨김. 사이드바 열기 버튼은 생존! */
-header {background-color: transparent !important; }
-.stAppToolbar {display: none !important;}
+/* ✨ 상단 툴바(Deploy, Menu)는 숨기되, 사이드바 열기 버튼(>)만 살려두는 핵심 CSS */
+header[data-testid="stHeader"] {
+    background-color: transparent !important;
+    height: 3rem !important; /* 상단 공간 최소화 */
+}
+.stAppToolbar {
+    display: none !important; /* 우측 거추장스러운 버튼들 날리기 */
+}
+[data-testid="collapsedControl"] {
+    display: flex !important; /* 사이드바 열기 버튼 강제 부활 */
+    visibility: visible !important;
+    z-index: 999999 !important;
+}
 
 div.block-container { 
     padding-top: 2.5rem !important; 
