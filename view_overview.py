@@ -484,7 +484,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
         acc_totals = acc_totals.sort_values('cost', ascending=False).head(10)
         
-        for _, row in acc_totals.iterrows():
+        # 🚨 확실한 고유 키 부여를 위해 enumerate 사용 🚨
+        for idx, row in acc_totals.iterrows():
             cid_val = row['customer_id']
             acc_name = row['account_name']
             
@@ -500,7 +501,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 with c1:
                     st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
                     
-                    tgt_key = f"tgt_roas_{cid_val}"
+                    # 🎯 강제적인 고유 키 부여 (문자열 조합 + index)
+                    tgt_key = f"tgt_roas_{cid_val}_{idx}"
                     target_roas = st.number_input("🎯 목표 ROAS (%)", value=300, step=50, key=tgt_key, label_visibility="collapsed")
                     
                     color = "#0528F2" if curr_roas >= target_roas else "#F04438"
@@ -525,8 +527,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    # ✨ [FIX] 고유 Key 값 추가
-                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}")
+                    # 🚨 강제적인 고유 키 부여 🚨
+                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
                     
                 with c3:
                     st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
@@ -550,8 +552,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         plot_bgcolor='rgba(0,0,0,0)',
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
-                    # ✨ [FIX] 고유 Key 값 추가
-                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}")
+                    # 🚨 강제적인 고유 키 부여 🚨
+                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
     else:
         st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
 
