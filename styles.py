@@ -32,25 +32,31 @@ GLOBAL_UI_CSS = """
   --nv-radius: 12px;
 }
 
-/* 기본 워터마크 숨김 */
-footer {visibility: hidden;}
+/* ✨ [핵심 수정] 상단 헤더 및 사이드바 버튼 복구 로직 */
+/* 하단 Streamlit 워터마크 숨김 */
+footer { display: none !important; }
 
-/* ✨ 상단 툴바(Deploy, Menu)는 숨기되, 사이드바 열기 버튼(>)만 살려두는 핵심 CSS */
+/* 1. 헤더 전체의 배경을 투명하게 만들어 화면을 넓게 쓰도록 유도 (헤더 자체는 살려둠!) */
 header[data-testid="stHeader"] {
     background-color: transparent !important;
-    height: 3rem !important; /* 상단 공간 최소화 */
 }
-.stAppToolbar {
-    display: none !important; /* 우측 거추장스러운 버튼들 날리기 */
+
+/* 2. 우측 상단의 거추장스러운 툴바 버튼(Deploy, Menu, Github)들만 정확히 타겟팅해서 삭제 */
+#MainMenu, 
+.stAppToolbar, 
+[data-testid="stToolbar"], 
+[data-testid="stHeaderActionElements"],
+[data-testid="stAppDeployButton"] {
+    display: none !important;
 }
+
+/* 3. 사이드바 열기(>) 버튼이 항상 콘텐츠 위로 올라와 클릭 가능하도록 z-index 부여 */
 [data-testid="collapsedControl"] {
-    display: flex !important; /* 사이드바 열기 버튼 강제 부활 */
-    visibility: visible !important;
     z-index: 999999 !important;
 }
 
 div.block-container { 
-    padding-top: 2.5rem !important; 
+    padding-top: 3rem !important; /* 콘텐츠가 사이드바 열기 버튼에 너무 바짝 붙지 않도록 약간의 여백 */
     padding-bottom: 3rem !important; 
     max-width: 1400px;
     padding-left: 2rem;
