@@ -62,7 +62,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.session_state["filters_v8"] = {
             "q": "", "manager": [], "account": [], "type_sel": [],
             "period_mode": "어제", "d1": default_start, "d2": default_end,
-            "top_n_keyword": 300, "top_n_ad": 200, "top_n_campaign": 200, "prefetch_warm": True,
+            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True,
         }
     sv = st.session_state["filters_v8"]
 
@@ -145,16 +145,26 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
         
-        st.markdown("**⚙️ 상세 필터**")
-        q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
-        type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
+        # ✨ 사이드바 공간 최적화를 위해 상세 필터를 아코디언 메뉴 안으로 접어둠
+        with st.expander("⚙️ 상세 필터 및 보기 설정", expanded=False):
+            q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명")
+            type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 유형")
+            
+            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:13px; font-weight:600;'>출력 데이터 수 제한</div>", unsafe_allow_html=True)
+            top_n_campaign = st.number_input("캠페인 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
+            top_n_keyword = st.number_input("키워드 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
+            top_n_ad = st.number_input("소재 표시 수", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
 
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
         if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
             st.rerun()
 
-    sv.update({"q": q or "", "manager": manager_sel or [], "account": account_sel or [], "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2})
+    sv.update({
+        "q": q or "", "manager": manager_sel or [], "account": account_sel or [], 
+        "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2,
+        "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad
+    })
     st.session_state["filters_v8"] = sv
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
@@ -237,8 +247,8 @@ def style_table_deltas(val):
     if pd.isna(val) or val == "-" or val == "": 
         return ""
     
-    color_up = "color: #FF4B4B; font-weight: 700;"    # Red for increase
-    color_down = "color: #1E88E5; font-weight: 700;"  # Blue for decrease
+    color_up = "color: #FF4B4B; font-weight: 700;"    # 빨간색 (상승/증가)
+    color_down = "color: #1E88E5; font-weight: 700;"  # 파란색 (하락/감소)
     
     if isinstance(val, str):
         if "▲" in val: return color_up
