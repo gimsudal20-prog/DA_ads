@@ -460,10 +460,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
     # ==========================================
-    # ✨ [NEW] 업체별 KPI 달성 현황 및 트렌드 (스파크라인 그래프 & 슬라이더)
+    # ✨ 업체별 실적 트렌드 (스파크라인 그래프 & 슬라이더)
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>🎯 업체별 KPI 달성 현황 및 성과 트렌드</div>", unsafe_allow_html=True)
-    st.caption("각 업체별 목표(KPI)를 설정하고 최근 일자별 비용과 성과의 흐름을 직관적으로 확인하세요.")
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📈 업체별 실적 요약 및 트렌드</div>", unsafe_allow_html=True)
+    st.caption("최근 일자별 비용과 성과 흐름을 확인하세요. (차트 드래그를 방지하여 깔끔한 뷰를 제공합니다.)")
     
     acc_ts_df = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
     
@@ -484,22 +484,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
         acc_totals = acc_totals.sort_values('cost', ascending=False)
         
-        # ✨ 슬라이더 추가 (기본 노출값 1)
         unique_accounts_count = len(acc_totals)
         st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
         top_n_accounts = st.slider(
             "📊 표시할 업체 수 조절", 
             min_value=1, 
             max_value=max(1, unique_accounts_count), 
-            value=1, # 1개로 기본 세팅
+            value=1,
             step=1,
-            help="한 번에 표시할 업체의 개수를 조절하여 화면을 쾌적하게 유지하세요."
+            help="한 번에 표시할 업체의 개수를 조절하세요."
         )
         
-        # 슬라이더 값에 따라 보여줄 데이터 개수 제한
         acc_totals = acc_totals.head(top_n_accounts)
         
-        # 🚨 ID 중복 방지를 위한 enumerate 인덱스 루프 🚨
         for idx, (_, row) in enumerate(acc_totals.iterrows()):
             cid_val = row['customer_id']
             acc_name = row['account_name']
@@ -516,58 +513,60 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 with c1:
                     st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
                     
-                    # 완벽한 고유 키 부여
-                    tgt_key = f"tgt_roas_{cid_val}_{idx}"
-                    target_roas = st.number_input("🎯 목표 ROAS (%)", value=300, step=50, key=tgt_key, label_visibility="collapsed")
-                    
-                    color = "#0528F2" if curr_roas >= target_roas else "#F04438"
-                    status_emoji = "🔥 달성" if curr_roas >= target_roas else "⚠️ 미달"
-                    
+                    # ✨ 불필요한 목표 KPI 입력창 삭제 및 깔끔한 ROAS 텍스트 렌더링
                     st.markdown(f"""
                         <div style='background:var(--nv-surface); padding:10px 14px; border-radius:8px; margin-top:8px;'>
-                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 평균 ROAS</div>
-                            <div style='font-size:22px; font-weight:800; color:{color};'>{curr_roas:,.0f}% <span style='font-size:13px; font-weight:600;'>{status_emoji}</span></div>
+                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 ROAS</div>
+                            <div style='font-size:22px; font-weight:800; color:#0528F2;'>{curr_roas:,.0f}%</div>
                         </div>
                     """, unsafe_allow_html=True)
                     
                 with c2:
                     st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
                     fig_cost = px.bar(acc_data, x='dt', y='cost')
-                    fig_cost.update_traces(marker_color='#A8AFB7', marker_line_width=0)
+                    
+                    # ✨ 호버 툴팁 포맷 강제 적용 (값만 뜨도록)
+                    fig_cost.update_traces(
+                        marker_color='#A8AFB7', 
+                        marker_line_width=0,
+                        hovertemplate='%{y:,.0f}원<extra></extra>' 
+                    )
+                    
+                    # ✨ 차트 확대/드래그 차단 (fixedrange, dragmode)
                     fig_cost.update_layout(
                         margin=dict(l=0, r=0, t=10, b=0), 
                         height=110, 
-                        xaxis=dict(visible=False, showgrid=False), 
-                        yaxis=dict(visible=False, showgrid=False),
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
                         plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)'
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
                     )
-                    # 🚨 확실한 고유 키 적용 🚨
                     st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
                     
                 with c3:
                     st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
                     fig_roas = px.line(acc_data, x='dt', y='roas')
-                    fig_roas.update_traces(line_color='#0528F2', line_width=3)
                     
-                    fig_roas.add_hline(
-                        y=target_roas, 
-                        line_dash="dot", 
-                        line_color="#F04438", 
-                        annotation_text="목표", 
-                        annotation_position="bottom right",
-                        annotation_font_color="#F04438"
+                    # ✨ 호버 툴팁 포맷 강제 적용 (값만 뜨도록)
+                    fig_roas.update_traces(
+                        line_color='#0528F2', 
+                        line_width=3,
+                        hovertemplate='%{y:,.0f}%<extra></extra>'
                     )
                     
+                    # ✨ 차트 확대/드래그 차단 (fixedrange, dragmode)
                     fig_roas.update_layout(
                         margin=dict(l=0, r=0, t=10, b=0), 
                         height=110, 
-                        xaxis=dict(visible=False, showgrid=False), 
-                        yaxis=dict(visible=False, showgrid=False),
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
                         plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)'
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
                     )
-                    # 🚨 확실한 고유 키 적용 🚨
                     st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
     else:
         st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
