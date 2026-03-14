@@ -82,10 +82,23 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             df["dt"] = pd.to_datetime(df["dt"])
         return df
     except Exception:
-        pass
+        try:
+            sql = f"""
+                SELECT f.dt, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+                FROM fact_campaign_daily f
+                {type_join_sql}
+                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+                GROUP BY f.dt, c.campaign_type
+            """
+            df = pd.read_sql(sql, _engine)
+            if not df.empty: 
+                df["dt"] = pd.to_datetime(df["dt"])
+            return df
+        except Exception:
+            pass
     return pd.DataFrame()
 
-# 공용 포맷팅 함수들
+
 def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
@@ -118,17 +131,16 @@ def calc_pct_diff(c, b):
     return pct, diff
 
 def color_delta(val):
-    if pd.isna(val) or val == 0: return 'color: #888888;'
-    return 'color: #FC503D; font-weight: bold;' if val > 0 else 'color: #375FFF; font-weight: bold;'
+    if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
+    return 'color: #F04438; font-weight: 600;' if val > 0 else 'color: #34C9DA; font-weight: 600;'
 
 
-# ✨ UI 속도 개선: 콤보박스 선택 시 표 영역만 새로고침 되도록 @st.fragment 분리
 @st.fragment
 def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f_start, f_end):
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🔍 업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
     
     if not merged.empty:
-        selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체를 선택하세요", options=merged['account_name'].tolist())
+        selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체 선택", options=merged['account_name'].tolist())
 
         if selected_account:
             selected_cid = merged[merged['account_name'] == selected_account]['customer_id'].iloc[0]
@@ -205,7 +217,7 @@ def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standar
             
             csv_sub_data = format_for_csv(df_sub_display).to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label=f"📥 {selected_account} 캠페인 상세 분석 CSV 다운로드",
+                label=f"{selected_account} 캠페인 상세 분석 다운로드",
                 data=csv_sub_data,
                 file_name=f"{selected_account}_캠페인_상세_{f_start}_{f_end}.csv",
                 mime="text/csv",
@@ -222,9 +234,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-    # 가장 빠른 집계 쿼리로 KPI 박스부터 즉시 렌더링
     cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
     base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+
+    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
+    state_hash = abs(hash(state_sig))
+    report_loaded_key = f"overview_report_loaded_{state_hash}"
+    alerts_loaded_key = f"overview_alerts_loaded_{state_hash}"
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -235,7 +251,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
 
     selected_type_label = _selected_type_label(type_sel)
-    
 
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
@@ -260,10 +275,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ==========================================
     # 1. 전체 성과 요약 (KPI Box)
     # ==========================================
-    st.markdown(f"<div class='nv-sec-title'>📊 {account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     
     cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
-    st.markdown(f"<div style='font-size:13px; font-weight:500; color:#474747; margin-bottom:12px;'>비교 기준: <span style='color:#375FFF; font-weight:700;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
     cur = cur_summary
     base = base_summary
@@ -279,19 +294,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         is_neutral = abs(delta_num) < 5
         if is_neutral:
             cls_delta = "neu"
-            delta_text = f"● 유지 ({delta_num:+.1f}%)"
+            delta_text = f"유지 ({delta_num:+.1f}%)"
         else:
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
-            trend_label = "✓ 개선" if improved else "✕ 악화"
-            delta_text = f"{trend_label} {pct_to_arrow(delta_num)}"
+            delta_text = f"{pct_to_arrow(delta_num)}"
         cls_hl = " highlight" if highlight else ""
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
     kpi_groups_html = f"""
     <div class='kpi-group-container'>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>👀 유입 지표</div>
+            <div class='kpi-group-title'>유입 지표</div>
             <div class='kpi-row'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
@@ -299,14 +313,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             </div>
         </div>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>💸 비용 지표</div>
+            <div class='kpi-group-title'>비용 지표</div>
             <div class='kpi-row'>
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True, improve_when_up=False)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
             </div>
         </div>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>🎯 성과 지표</div>
+            <div class='kpi-group-title'>성과 지표</div>
             <div class='kpi-row'>
                 {_kpi_html("ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
@@ -326,7 +340,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ==========================================
     # 2. 업체별 전체 성과 요약 (테이블)
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏢 업체별 전체 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>업체별 전체 성과 요약</div>", unsafe_allow_html=True)
 
     merged = pd.DataFrame() 
     if not cur_camp.empty or not base_camp.empty:
@@ -385,20 +399,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         csv_account_data = format_for_csv(df_display).to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="📥 업체별 전체 성과 요약 CSV 다운로드",
+            label="업체별 요약 다운로드",
             data=csv_account_data,
             file_name=f"업체별_전체_성과_요약_{f['start']}_{f['end']}.csv",
             mime="text/csv",
             key="download_account_csv"
         )
     else:
-        st.info("해당 및 비교 기간의 캠페인 데이터가 모두 없습니다.")
+        st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
 
     # ==========================================
     # 3. 유형별 성과 요약
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>🏷️ 유형별 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>유형별 성과 요약</div>", unsafe_allow_html=True)
     
     type_col = None
     if not cur_camp.empty and 'campaign_tp' in cur_camp.columns: type_col = 'campaign_tp'
@@ -452,22 +466,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         csv_type_data = format_for_csv(df_type_display).to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="📥 유형별 성과 요약 CSV 다운로드",
+            label="유형별 요약 다운로드",
             data=csv_type_data,
             file_name=f"유형별_성과_요약_{f['start']}_{f['end']}.csv",
             mime="text/csv",
             key="download_type_csv"
         )
-    else:
-        st.info("캠페인 유형 정보가 없어 유형별 요약을 제공할 수 없습니다.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
 
     # ==========================================
     # 4. 주간 성과 요약 (전체 + 유형별 탭)
     # ==========================================
-    st.markdown("<div class='nv-sec-title'>📅 주간 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>주간 성과 요약</div>", unsafe_allow_html=True)
     with st.spinner("주간 데이터 집계 중..."):
         base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
@@ -502,54 +512,46 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 weekly_disp = weekly_grp[['week_label', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
                 weekly_disp.columns = ['주간', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
                 
-                st.dataframe(
-                    weekly_disp.style.format({
-                        '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
-                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
-                        '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
-                    }),
-                    use_container_width=True, hide_index=True
-                )
-            
+                styled_weekly = weekly_disp.style.format({
+                    '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                    '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원', '전환수': '{:,.0f}',
+                    '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+                })
+                
+                st.dataframe(styled_weekly, use_container_width=True, hide_index=True)
+
             with tab_weekly_type:
                 if type_weekly_ts is not None and not type_weekly_ts.empty:
                     type_weekly_ts['dt'] = pd.to_datetime(type_weekly_ts['dt'])
-                    week_info_t = type_weekly_ts['dt'].apply(_get_week_info)
-                    type_weekly_ts['week_label'] = [x[0] for x in week_info_t]
-                    type_weekly_ts['week_start'] = [x[1] for x in week_info_t]
+                    week_info_tp = type_weekly_ts['dt'].apply(_get_week_info)
+                    type_weekly_ts['week_label'] = [x[0] for x in week_info_tp]
+                    type_weekly_ts['week_start'] = [x[1] for x in week_info_tp]
                     
-                    t_col = 'campaign_tp' if 'campaign_tp' in type_weekly_ts.columns else 'campaign_type'
-                    type_weekly_grp = type_weekly_ts.groupby(['week_start', 'week_label', t_col])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+                    weekly_tp_grp = type_weekly_ts.groupby(['week_start', 'week_label', 'campaign_tp'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+                    weekly_tp_grp = weekly_tp_grp.sort_values(['week_start', 'cost'], ascending=[True, False])
                     
-                    type_weekly_grp['campaign_type_kor'] = type_weekly_grp[t_col].apply(lambda x: type_kor_map.get(str(x).upper(), str(x)))
+                    weekly_tp_grp['캠페인 유형'] = weekly_tp_grp['campaign_tp'].str.upper().map(type_kor_map).fillna(weekly_tp_grp['campaign_tp'])
                     
-                    type_weekly_grp = type_weekly_grp.sort_values(['week_start', 'cost'], ascending=[True, False])
+                    weekly_tp_grp['ctr'] = np.where(weekly_tp_grp['imp'] > 0, weekly_tp_grp['clk'] / weekly_tp_grp['imp'] * 100, 0)
+                    weekly_tp_grp['cpc'] = np.where(weekly_tp_grp['clk'] > 0, weekly_tp_grp['cost'] / weekly_tp_grp['clk'], 0)
+                    weekly_tp_grp['roas'] = np.where(weekly_tp_grp['cost'] > 0, weekly_tp_grp['sales'] / weekly_tp_grp['cost'] * 100, 0)
                     
-                    type_weekly_grp['ctr'] = np.where(type_weekly_grp['imp'] > 0, type_weekly_grp['clk'] / type_weekly_grp['imp'] * 100, 0)
-                    type_weekly_grp['cpc'] = np.where(type_weekly_grp['clk'] > 0, type_weekly_grp['cost'] / type_weekly_grp['clk'], 0)
-                    type_weekly_grp['roas'] = np.where(type_weekly_grp['cost'] > 0, type_weekly_grp['sales'] / type_weekly_grp['cost'] * 100, 0)
+                    weekly_tp_disp = weekly_tp_grp[['week_label', '캠페인 유형', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
+                    weekly_tp_disp.columns = ['주간', '캠페인 유형', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
                     
-                    type_weekly_disp = type_weekly_grp[['week_label', 'campaign_type_kor', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
-                    type_weekly_disp.columns = ['주간', '캠페인 유형', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
+                    styled_weekly_tp = weekly_tp_disp.style.format({
+                        '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원', '전환수': '{:,.0f}',
+                        '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+                    })
                     
-                    st.dataframe(
-                        type_weekly_disp.style.format({
-                            '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
-                            '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
-                            '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
-                        }),
-                        use_container_width=True, hide_index=True
-                    )
-                else:
-                    st.info("유형별 주간 데이터가 없습니다.")
-        else:
-            st.info("해당 기간의 주간 성과 데이터가 없습니다.")
+                    st.dataframe(styled_weekly_tp, use_container_width=True, hide_index=True)
 
 
     # ==========================================
     # 5. 상세 성과 데이터 (캠페인별 / 일자별 표)
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top: 32px;'>📋 상세 성과 데이터</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>상세 성과 데이터</div>", unsafe_allow_html=True)
 
     with st.spinner("일자별 데이터 집계 중..."):
         daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
@@ -596,8 +598,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 }),
                 use_container_width=True, hide_index=True
             )
-        else:
-            st.info("캠페인 상세 데이터가 없습니다.")
 
     with tab_det_daily:
         if daily_ts is not None and not daily_ts.empty:
@@ -619,11 +619,48 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 }),
                 use_container_width=True, hide_index=True
             )
-        else:
-            st.info("일자별 상세 데이터가 없습니다.")
 
 
     # ==========================================
     # 6. 업체별 캠페인 상세 분석
     # ==========================================
     render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, color_cols_standard, f["start"], f["end"])
+    
+    # 보고서 내보내기 
+    with st.expander("보고서 내보내기", expanded=False):
+        report_campaign_type = selected_type_label
+        report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+
+        st.session_state[report_loaded_key] = True
+
+        top_keywords_text = "-"
+        is_shopping = False
+        if type_sel and any("쇼핑" in t or "SHOPPING" in str(t).upper() for t in type_sel):
+            is_shopping = True
+            
+        sort_col = "conv" if is_shopping else "clk"
+        top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
+
+        if st.session_state.get(report_loaded_key, False):
+            with st.spinner("키워드 요약 중..."):
+                kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=100)
+                
+            if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
+                kw_top = kw_bundle.copy()
+                kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
+                kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
+                if not kw_top.empty:
+                    top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
+        
+        report_text = _build_periodic_report_text(
+            campaign_type=report_campaign_type,
+            imp=float(report_cur.get("imp", 0.0) or 0.0),
+            clk=float(report_cur.get("clk", 0.0) or 0.0),
+            ctr=float(report_cur.get("ctr", 0.0) or 0.0),
+            cost=float(report_cur.get("cost", 0.0) or 0.0),
+            roas=float(report_cur.get("roas", 0.0) or 0.0),
+            sales=float(report_cur.get("sales", 0.0) or 0.0),
+            top_keywords_label=top_keywords_label,
+            top_keywords=top_keywords_text,
+        )
+        st.code(report_text, language="text")
