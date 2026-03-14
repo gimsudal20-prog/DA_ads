@@ -54,6 +54,11 @@ def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFr
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
+        
+    # ✨ [UX 개선 1] 로딩 인지 상태바 생성 (데이터를 불러오기 전 가장 먼저 화면에 렌더링)
+    loading_placeholder = st.empty()
+    loading_placeholder.info("⏳ 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다. 잠시만 기다려주세요...")
+
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []))
@@ -62,6 +67,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
     if bundle is None or bundle.empty:
+        loading_placeholder.empty() # 데이터가 없을 때도 로딩바 제거
         return
 
     kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
@@ -125,7 +131,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%")
         }
 
-        # 마스터-디테일 (스파크라인 없음, 깔끔하고 에러 없는 버전)
         event = st.dataframe(
             disp_main,
             use_container_width=True,
@@ -256,3 +261,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
+
+    # ✨ [UX 개선 2] 모든 렌더링이 완료되면 로딩바 삭제 후 성공 알림 토스트 출력
+    loading_placeholder.empty()
+    st.toast("✅ 데이터 집계 및 화면 렌더링이 완료되었습니다!", icon="🚀")
