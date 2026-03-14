@@ -87,6 +87,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
     table_html = f"<div style='height:{height}px; overflow-y:auto;'><table class='nv-table'><thead><tr>{th_html}</tr></thead><tbody>{''.join(html_rows)}</tbody></table></div>"
     st.markdown(table_html, unsafe_allow_html=True)
 
+# ✨ 이 차트 함수들의 색상을 민트(#34C9DA) 계열로 통일했습니다.
 def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: str, y1_name: str, y2_col: str, y2_name: str, height: int = 300):
     if df.empty: return
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
