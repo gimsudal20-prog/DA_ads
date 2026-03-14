@@ -24,10 +24,10 @@ GLOBAL_UI_CSS = """
   --nv-muted: #62686F;          /* Gray 700 */
   --nv-text: #19191A;           /* Gray 900 */
   
-  /* Status */
-  --nv-success: #17B26A;
+  /* Status (Global SaaS Standard) */
+  --nv-success: #17B26A;        /* Green for Positive/Up */
   --nv-warning: #F79009;
-  --nv-danger: #F04438;
+  --nv-danger: #F04438;         /* Red for Negative/Down */
   
   --nv-radius: 12px;
 }
@@ -35,7 +35,20 @@ GLOBAL_UI_CSS = """
 /* 기본 워터마크 숨김 */
 footer { display: none !important; }
 
-/* ✨ 안전한 레이아웃 확장 (사이드바 이슈 원천 차단) */
+/* 안전한 레이아웃 확장 (사이드바 이슈 원천 차단) */
+header[data-testid="stHeader"] {
+    background-color: transparent !important;
+    height: 3rem !important;
+}
+.stAppToolbar {
+    display: none !important;
+}
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    z-index: 999999 !important;
+}
+
 div.block-container { 
     padding-top: 2rem !important; 
     padding-bottom: 3rem !important; 
@@ -106,7 +119,8 @@ h1, h2, h3, h4, h5, h6 {
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
 .kpi.highlight .v { color: var(--nv-primary); font-size: 22px; }
 
-.kpi .d.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
+/* ✨ KPI 카드 증감 색상 (초록/빨강 적용) */
+.kpi .d.pos { background: #EAF7E9; color: var(--nv-success); }
 .kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
