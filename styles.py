@@ -32,9 +32,13 @@ GLOBAL_UI_CSS = """
   --nv-radius: 12px;
 }
 
+/* 기본 메뉴 및 워터마크 숨김 */
 #MainMenu {visibility: hidden;}
-header {visibility: hidden;}
 footer {visibility: hidden;}
+
+/* ✨ 헤더 배경 투명화 및 우측 툴바(Deploy 등)만 숨김. 사이드바 열기 버튼은 생존! */
+header {background-color: transparent !important; }
+.stAppToolbar {display: none !important;}
 
 div.block-container { 
     padding-top: 2.5rem !important; 
@@ -106,7 +110,6 @@ h1, h2, h3, h4, h5, h6 {
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
 .kpi.highlight .v { color: var(--nv-primary); font-size: 22px; }
 
-/* ✨ KPI 증감 상태별 컬러 적용 (긍정=Mint, 부정=Red) */
 .kpi .d.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
 .kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
