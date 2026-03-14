@@ -82,7 +82,20 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             df["dt"] = pd.to_datetime(df["dt"])
         return df
     except Exception:
-        pass
+        try:
+            sql = f"""
+                SELECT f.dt, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+                FROM fact_campaign_daily f
+                {type_join_sql}
+                WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+                GROUP BY f.dt, c.campaign_type
+            """
+            df = pd.read_sql(sql, _engine)
+            if not df.empty: 
+                df["dt"] = pd.to_datetime(df["dt"])
+            return df
+        except Exception:
+            pass
     return pd.DataFrame()
 
 def format_for_csv(df):
@@ -118,7 +131,6 @@ def calc_pct_diff(c, b):
 
 def color_delta(val):
     if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
-    # ✨ 양수(증가/상승)는 초록색, 음수(감소/하락)는 빨간색 (SaaS 표준 적용)
     return 'color: #17B26A; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
 
 
@@ -285,7 +297,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
             delta_text = f"{pct_to_arrow(delta_num)}"
-        cls_hl = " highlight" if highlight else ""
+        
+        # ✨ 광고비/CPC 강조는 파란색이 아니라 긍정일때 Mint 적용. 부정일때는 기본.
+        if highlight:
+            cls_hl = " highlight-positive" if label == "ROAS" else " highlight"
+        else:
+            cls_hl = ""
+            
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
     kpi_groups_html = f"""
