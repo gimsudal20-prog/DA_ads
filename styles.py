@@ -103,11 +103,13 @@ h1, h2, h3, h4, h5, h6 {
 .kpi { display: flex; flex-direction: column; justify-content: flex-end; }
 .kpi .k { font-size: 13px; color: var(--nv-muted); font-weight: 500; margin-bottom: 6px; }
 .kpi .v { font-size: 20px; font-weight: 700; color: var(--nv-text); letter-spacing: -0.02em; line-height: 1.2;}
-.kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; }
+.kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
 .kpi.highlight .v { color: var(--nv-primary); font-size: 22px; }
-.kpi .d.pos { color: var(--nv-success); }
-.kpi .d.neg { color: var(--nv-danger); }
-.kpi .d.neu { color: var(--nv-muted-light); }
+
+/* ✨ KPI 증감 상태별 컬러 적용 (긍정=Mint, 부정=Red) */
+.kpi .d.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
+.kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
+.kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
 /* Table Hover & Styling */
 div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
@@ -174,7 +176,6 @@ JS_CUSTOM_ENHANCEMENTS = """
     marker.style.display = 'none';
     parentDoc.body.appendChild(marker);
 
-    // 드롭다운 옵션 선택 시 창 닫기
     parentDoc.addEventListener('click', function(e) {
         let target = e.target;
         let isOptionClicked = false;
