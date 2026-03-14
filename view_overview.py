@@ -387,7 +387,51 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # 2. 업체별 전체 성과 요약 (테이블)
+    # ✨ [RESTORED] 2. 기간별 성과 추이 (일별/주간 차트)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title'>📈 기간별 성과 추이 (일간/주간)</div>", unsafe_allow_html=True)
+    
+    ts_df = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    if not ts_df.empty:
+        ts_df['dt'] = pd.to_datetime(ts_df['dt'])
+        ts_df = ts_df.sort_values('dt')
+        ts_df['roas'] = np.where(ts_df['cost'] > 0, (ts_df['sales'] / ts_df['cost']) * 100, 0.0)
+        
+        tab_daily, tab_weekly = st.tabs(["일별 추이", "주간 추이"])
+        
+        with tab_daily:
+            c_chart1, c_chart2 = st.columns(2)
+            with c_chart1:
+                fig_cost_sales = px.line(ts_df, x='dt', y=['cost', 'sales'], labels={'value': '금액(원)', 'dt': '일자', 'variable': '지표'})
+                fig_cost_sales.update_layout(title="일별 광고비 및 전환매출", height=320, hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_cost_sales, use_container_width=True, key="daily_cost_sales")
+            with c_chart2:
+                fig_roas_ctr = px.line(ts_df, x='dt', y=['roas'], labels={'value': '비율(%)', 'dt': '일자', 'variable': '지표'})
+                fig_roas_ctr.update_layout(title="일별 ROAS(%)", height=320, hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                fig_roas_ctr.update_traces(line_color='#0528F2')
+                st.plotly_chart(fig_roas_ctr, use_container_width=True, key="daily_roas")
+                
+        with tab_weekly:
+            ts_weekly = ts_df.resample('W-MON', on='dt').sum().reset_index()
+            ts_weekly['roas'] = np.where(ts_weekly['cost'] > 0, (ts_weekly['sales'] / ts_weekly['cost']) * 100, 0.0)
+            ts_weekly['주차'] = ts_weekly['dt'].dt.strftime('%m월 %W주차')
+            
+            wc1, wc2 = st.columns(2)
+            with wc1:
+                fig_w_cost_sales = px.bar(ts_weekly, x='주차', y=['cost', 'sales'], barmode='group', labels={'value': '금액(원)', '주차': '주차', 'variable': '지표'})
+                fig_w_cost_sales.update_layout(title="주간 광고비 및 전환매출", height=320, hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_w_cost_sales, use_container_width=True, key="weekly_cost_sales")
+            with wc2:
+                fig_w_roas = px.line(ts_weekly, x='주차', y=['roas'], markers=True, labels={'value': '비율(%)', '주차': '주차', 'variable': '지표'})
+                fig_w_roas.update_layout(title="주간 ROAS(%)", height=320, hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                fig_w_roas.update_traces(line_color='#0528F2')
+                st.plotly_chart(fig_w_roas, use_container_width=True, key="weekly_roas")
+    else:
+        st.info("해당 기간의 시계열 데이터가 없습니다.")
+
+
+    # ==========================================
+    # 3. 업체별 전체 성과 요약 (테이블)
     # ==========================================
     st.markdown("<div class='nv-sec-title'>업체별 전체 성과 요약</div>", unsafe_allow_html=True)
 
@@ -459,118 +503,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     else:
         st.info("해당 기간의 캠페인 데이터가 없습니다.")
 
-    # ==========================================
-    # ✨ 업체별 실적 트렌드 (스파크라인 그래프 & 슬라이더)
-    # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📈 업체별 실적 요약 및 트렌드</div>", unsafe_allow_html=True)
-    st.caption("최근 일자별 비용과 성과 흐름을 확인하세요. (차트 드래그를 방지하여 깔끔한 뷰를 제공합니다.)")
-    
-    acc_ts_df = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
-    
-    if not acc_ts_df.empty:
-        acc_ts_df['customer_id'] = acc_ts_df['customer_id'].astype(str)
-        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
-            meta_subset = meta[['customer_id', 'account_name']].copy()
-            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
-            acc_ts_df = acc_ts_df.merge(meta_subset, on='customer_id', how='left')
-            acc_ts_df['account_name'] = acc_ts_df['account_name'].fillna(acc_ts_df['customer_id'])
-        else:
-            acc_ts_df['account_name'] = acc_ts_df['customer_id']
-            
-        acc_ts_df['roas'] = np.where(acc_ts_df['cost'] > 0, (acc_ts_df['sales'] / acc_ts_df['cost']) * 100, 0.0)
-        acc_ts_df['dt'] = pd.to_datetime(acc_ts_df['dt'])
-        acc_ts_df = acc_ts_df.sort_values('dt')
-        
-        acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
-        acc_totals = acc_totals.sort_values('cost', ascending=False)
-        
-        unique_accounts_count = len(acc_totals)
-        st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
-        top_n_accounts = st.slider(
-            "📊 표시할 업체 수 조절", 
-            min_value=1, 
-            max_value=max(1, unique_accounts_count), 
-            value=1,
-            step=1,
-            help="한 번에 표시할 업체의 개수를 조절하세요."
-        )
-        
-        acc_totals = acc_totals.head(top_n_accounts)
-        
-        for idx, (_, row) in enumerate(acc_totals.iterrows()):
-            cid_val = row['customer_id']
-            acc_name = row['account_name']
-            
-            acc_data = acc_ts_df[acc_ts_df['customer_id'] == cid_val].copy()
-            
-            total_cost = acc_data['cost'].sum()
-            total_sales = acc_data['sales'].sum()
-            curr_roas = (total_sales / total_cost * 100) if total_cost > 0 else 0.0
-            
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([1, 1.5, 1.5])
-                
-                with c1:
-                    st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
-                    
-                    # ✨ 불필요한 목표 KPI 입력창 삭제 및 깔끔한 ROAS 텍스트 렌더링
-                    st.markdown(f"""
-                        <div style='background:var(--nv-surface); padding:10px 14px; border-radius:8px; margin-top:8px;'>
-                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 ROAS</div>
-                            <div style='font-size:22px; font-weight:800; color:#0528F2;'>{curr_roas:,.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                with c2:
-                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
-                    fig_cost = px.bar(acc_data, x='dt', y='cost')
-                    
-                    # ✨ 호버 툴팁 포맷 강제 적용 (값만 뜨도록)
-                    fig_cost.update_traces(
-                        marker_color='#A8AFB7', 
-                        marker_line_width=0,
-                        hovertemplate='%{y:,.0f}원<extra></extra>' 
-                    )
-                    
-                    # ✨ 차트 확대/드래그 차단 (fixedrange, dragmode)
-                    fig_cost.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0), 
-                        height=110, 
-                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
-                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        dragmode=False,
-                        hovermode='x unified'
-                    )
-                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
-                    
-                with c3:
-                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
-                    fig_roas = px.line(acc_data, x='dt', y='roas')
-                    
-                    # ✨ 호버 툴팁 포맷 강제 적용 (값만 뜨도록)
-                    fig_roas.update_traces(
-                        line_color='#0528F2', 
-                        line_width=3,
-                        hovertemplate='%{y:,.0f}%<extra></extra>'
-                    )
-                    
-                    # ✨ 차트 확대/드래그 차단 (fixedrange, dragmode)
-                    fig_roas.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0), 
-                        height=110, 
-                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
-                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        dragmode=False,
-                        hovermode='x unified'
-                    )
-                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
-    else:
-        st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
-
 
     # ==========================================
     # 4. 유형별 성과 요약
@@ -637,5 +569,119 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             mime="text/csv",
             key="download_type_csv"
         )
+
+
+    # ==========================================
+    # ✨ 5. 업체별 실적 트렌드 (스파크라인 그래프 & 슬라이더 에러 완벽 수정)
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📈 업체별 실적 요약 및 트렌드</div>", unsafe_allow_html=True)
+    st.caption("최근 일자별 비용과 성과 흐름을 확인하세요. (차트 드래그를 방지하여 깔끔한 뷰를 제공합니다.)")
+    
+    acc_ts_df = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
+    
+    if not acc_ts_df.empty:
+        acc_ts_df['customer_id'] = acc_ts_df['customer_id'].astype(str)
+        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
+            meta_subset = meta[['customer_id', 'account_name']].copy()
+            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
+            acc_ts_df = acc_ts_df.merge(meta_subset, on='customer_id', how='left')
+            acc_ts_df['account_name'] = acc_ts_df['account_name'].fillna(acc_ts_df['customer_id'])
+        else:
+            acc_ts_df['account_name'] = acc_ts_df['customer_id']
+            
+        acc_ts_df['roas'] = np.where(acc_ts_df['cost'] > 0, (acc_ts_df['sales'] / acc_ts_df['cost']) * 100, 0.0)
+        acc_ts_df['dt'] = pd.to_datetime(acc_ts_df['dt'])
+        acc_ts_df = acc_ts_df.sort_values('dt')
+        
+        acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
+        acc_totals = acc_totals.sort_values('cost', ascending=False)
+        
+        unique_accounts_count = len(acc_totals)
+        st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+        
+        # 🚨 슬라이더 에러 완벽 차단: 업체 수가 1개 이하일 경우 슬라이더를 숨기거나 고정 처리
+        if unique_accounts_count > 1:
+            top_n_accounts = st.slider(
+                "📊 표시할 업체 수 조절", 
+                min_value=1, 
+                max_value=unique_accounts_count, 
+                value=1,
+                step=1,
+                help="한 번에 표시할 업체의 개수를 조절하세요."
+            )
+        else:
+            top_n_accounts = 1
+        
+        acc_totals = acc_totals.head(top_n_accounts)
+        
+        for idx, (_, row) in enumerate(acc_totals.iterrows()):
+            cid_val = row['customer_id']
+            acc_name = row['account_name']
+            
+            acc_data = acc_ts_df[acc_ts_df['customer_id'] == cid_val].copy()
+            
+            total_cost = acc_data['cost'].sum()
+            total_sales = acc_data['sales'].sum()
+            curr_roas = (total_sales / total_cost * 100) if total_cost > 0 else 0.0
+            
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([1, 1.5, 1.5])
+                
+                with c1:
+                    st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
+                    
+                    st.markdown(f"""
+                        <div style='background:var(--nv-surface); padding:10px 14px; border-radius:8px; margin-top:8px;'>
+                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 ROAS</div>
+                            <div style='font-size:22px; font-weight:800; color:#0528F2;'>{curr_roas:,.0f}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                with c2:
+                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
+                    fig_cost = px.bar(acc_data, x='dt', y='cost')
+                    
+                    fig_cost.update_traces(
+                        marker_color='#A8AFB7', 
+                        marker_line_width=0,
+                        hovertemplate='%{y:,.0f}원<extra></extra>' 
+                    )
+                    
+                    fig_cost.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0), 
+                        height=110, 
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
+                    
+                with c3:
+                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
+                    fig_roas = px.line(acc_data, x='dt', y='roas')
+                    
+                    fig_roas.update_traces(
+                        line_color='#0528F2', 
+                        line_width=3,
+                        hovertemplate='%{y:,.0f}%<extra></extra>'
+                    )
+                    
+                    fig_roas.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0), 
+                        height=110, 
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
+    else:
+        st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
+        
         
     render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f["start"], f["end"])
