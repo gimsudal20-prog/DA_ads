@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 import os
-import base64
-import numpy as np
 import pandas as pd
 import streamlit as st
-import altair as alt
 
 from styles import apply_global_css
 
@@ -27,15 +24,10 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
-    # 사이드바 상단 정보창 (margin-bottom을 24px로 넓혀서 아래 메뉴와 구분)
     st.sidebar.markdown(f"""
-    <div style='padding: 14px 16px; border-radius: 6px; background: #FFFFFF; border: 1px solid var(--nv-line-strong); margin-bottom: 24px;'>
-        <div style='font-size: 12px; color: var(--nv-muted); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;'>
-            <span style='color:var(--nv-primary)'>■</span> {dashboard_title}
-        </div>
-        <div style='font-size: 15px; font-weight: 700; color: #111111; letter-spacing: -0.02em;'>
-            최근 수집: <span style='color: var(--nv-primary); font-weight: 800;'>{dt_str}</span>
-        </div>
+    <div class='sidebar-info-box'>
+        <div class='sidebar-info-label'>{dashboard_title}</div>
+        <div class='sidebar-info-value'>최근 수집: <span>{dt_str}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -65,9 +57,9 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#4876EF" # 기본 진행률 (파랑)
-        if v >= 100: c = "#FF025D" # 초과/악화 시 (빨강)
-        elif v >= 90: c = "#FF9839" # 주의 시 (주황)
+        c = "#34C9DA" # 메인 민트 컬러
+        if v >= 100: c = "#F04438" # 초과 시 (빨강)
+        elif v >= 90: c = "#F79009" # 주의 시 (주황)
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -82,14 +74,12 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             val = row[c]
             if c == "상태":
                 v_str = str(val)
-                bg, text, icon = "#F4F6FA", "#666666", "●"
-                if "적정" in v_str: bg, text, icon = "#EAF7E9", "#408F35", "✓"
-                elif "주의" in v_str: bg, text, icon = "#FFF2E5", "#D86B12", "!"
+                bg, text = "#F8F9FB", "#62686F"
+                if "적정" in v_str: bg, text = "#DFF6F9", "#17B26A"
+                elif "주의" in v_str: bg, text = "#FEF0C7", "#F79009"
+                elif "초과" in v_str or "악화" in v_str: bg, text = "#FEE4E2", "#F04438"
                 
-                # ✨ 증감 화살표(▲)와 헷갈리지 않게 '✕' 로 완전 교체 적용!
-                elif "초과" in v_str or "악화" in v_str: bg, text, icon = "#FFE6EE", "#D9004B", "✕" 
-                
-                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:4px; font-weight:700; font-size:12px; letter-spacing:-0.3px;'>{icon} {v_str}</span></td>")
+                tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:6px; font-weight:600; font-size:12px;'>{v_str}</span></td>")
             else:
                 tds.append(f"<td>{val}</td>")
         html_rows.append(f"<tr>{''.join(tds)}</tr>")
@@ -104,22 +94,21 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#111111", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 14, "color": "#19191A", "fontWeight": 600}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
         "legend": {"data": [y1_name, y2_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#D7DCE5"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#DEE2E5"}}}],
         "yAxis": [
-            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#E5E6E9"}}},
+            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F8F9FB"}}},
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#4876EF", "borderRadius": [2,2,0,0]}}, 
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#222222"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#DFF6F9", "borderRadius": [4,4,0,0]}}, 
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#34C9DA"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
-
 
 def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: str, y_name: str, height: int = 300):
     if df.empty: return
@@ -127,14 +116,14 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 15, "color": "#111111", "fontWeight": 700}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 14, "color": "#19191A", "fontWeight": 600}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
         "legend": {"data": [y_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#D7DCE5"}}}],
-        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#E5E6E9"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#DEE2E5"}}}],
+        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F8F9FB"}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#4876EF"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#34C9DA"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
