@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from typing import Dict
-from datetime import timedelta
 
 from data import query_campaign_bundle, query_keyword_bundle, sql_read
 from ui import render_big_table
@@ -76,34 +75,50 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     view = _add_perf_metrics(view)
 
     # ---------------------------------------------------------
-    # ✨ 추가된 로직 1: 캠페인별 '최근 7일 ROAS' 트렌드 데이터 수집
+    # ✨ 스파크라인 트렌드 데이터 수집 로직 보강 (에러 및 빈 데이터 방지)
     # ---------------------------------------------------------
     try:
-        trend_start = f["end"] - timedelta(days=6)
+        # 날짜 연산 오류(문자열 vs datetime)를 방지하기 위해 형변환
+        end_dt = pd.to_datetime(f["end"])
+        start_dt = end_dt - pd.Timedelta(days=6)
+        
+        trend_start_str = start_dt.strftime('%Y-%m-%d')
+        trend_end_str = end_dt.strftime('%Y-%m-%d')
+        
         where_cid = f"AND customer_id IN ({','.join(map(str, cids))})" if cids else ""
         
         trend_sql = f"""
             SELECT campaign_id, dt, SUM(cost) as cost, SUM(sales) as sales 
             FROM fact_campaign_daily 
-            WHERE dt BETWEEN '{trend_start}' AND '{f["end"]}' {where_cid}
+            WHERE dt BETWEEN '{trend_start_str}' AND '{trend_end_str}' {where_cid}
             GROUP BY campaign_id, dt
-            ORDER BY campaign_id, dt
         """
         trend_df = sql_read(engine, trend_sql)
         
         trend_map = {}
         if not trend_df.empty:
+            trend_df['dt'] = pd.to_datetime(trend_df['dt'])
             trend_df['cost'] = pd.to_numeric(trend_df['cost'], errors="coerce").fillna(0)
             trend_df['sales'] = pd.to_numeric(trend_df['sales'], errors="coerce").fillna(0)
             trend_df['roas'] = np.where(trend_df['cost'] > 0, trend_df['sales'] / trend_df['cost'] * 100, 0)
             
-            for cid_val, grp in trend_df.groupby('campaign_id'):
-                trend_map[str(cid_val)] = grp['roas'].tolist()
+            # 피벗을 통해 중간에 이빨이 빠진 날짜들도 전부 0으로 채워줍니다.
+            pivot_df = trend_df.pivot(index='campaign_id', columns='dt', values='roas').fillna(0)
+            
+            # 완전한 7일치 컬럼을 강제로 생성합니다. (선 그래프가 끊기지 않도록)
+            date_range = pd.date_range(start=start_dt, end=end_dt)
+            pivot_df = pivot_df.reindex(columns=date_range, fill_value=0)
+            
+            for cid_val, row in pivot_df.iterrows():
+                trend_map[str(cid_val)] = row.tolist()
                 
+        # 리스트가 정상적으로 7개가 생성되었는지 확인, 아니면 0 배열 할당
         view["최근 7일 ROAS"] = view["campaign_id"].astype(str).map(trend_map)
-        view["최근 7일 ROAS"] = view["최근 7일 ROAS"].apply(lambda x: x if isinstance(x, list) else [0])
-    except Exception:
-        view["최근 7일 ROAS"] = [[0]] * len(view)
+        view["최근 7일 ROAS"] = view["최근 7일 ROAS"].apply(lambda x: x if isinstance(x, list) and len(x) == 7 else [0, 0, 0, 0, 0, 0, 0])
+        
+    except Exception as e:
+        # 쿼리가 실패하더라도 에러 대신 0 배열을 넣어 UI가 무너지는 것을 방지
+        view["최근 7일 ROAS"] = [[0, 0, 0, 0, 0, 0, 0]] * len(view)
     # ---------------------------------------------------------
 
     if not kw_bundle_cur.empty:
@@ -134,7 +149,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in disp_main.columns:
             base_cols.append("평균순위")
         
-        # ✨ 추가된 로직 2: 스파크라인 컬럼 추가 및 UI 렌더링
         metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)", "최근 7일 ROAS"]
         final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
@@ -156,10 +170,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "CPA(원)": st.column_config.NumberColumn(format="%d"),
             "전환매출": st.column_config.NumberColumn(format="%d"),
             "ROAS(%)": st.column_config.NumberColumn(format="%.2f%%"),
-            "최근 7일 ROAS": st.column_config.LineChartColumn("최근 7일 ROAS 추이", y_min=0, y_max=None, width="small")
+            "최근 7일 ROAS": st.column_config.LineChartColumn("최근 7일 ROAS 추이", y_min=0, width="small")
         }
 
-        # 마스터-디테일을 위한 DataFrame 렌더링 및 클릭 이벤트 수신
         event = st.dataframe(
             disp_main,
             use_container_width=True,
@@ -169,7 +182,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             column_config=col_config
         )
 
-        # ✨ 추가된 로직 3: 클릭된 캠페인의 하위 상세 표(Detail) 렌더링
         selected_rows = event.selection.rows
         if selected_rows:
             selected_idx = selected_rows[0]
