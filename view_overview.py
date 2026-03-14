@@ -188,6 +188,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
 
+    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
+    state_hash = abs(hash(state_sig))
+    report_loaded_key = f"overview_report_loaded_{state_hash}"
+
     account_name = "전체 계정"
     if cids and not meta.empty:
         acc_names = meta[meta['customer_id'].isin(cids)]['account_name'].dropna().unique()
@@ -303,7 +307,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # 데이터 사전 생성 (4~8번 내보내기 및 렌더링용)
+    # 데이터 사전 생성 (아코디언 및 내보내기용)
     # ==========================================
     df_display = pd.DataFrame()
     df_type_display = pd.DataFrame()
@@ -314,7 +318,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     export_df_8 = pd.DataFrame()
     merged = pd.DataFrame()
 
-    # (4) 업체별 요약 데이터 연산
+    # 업체별 요약 데이터 연산
     if not cur_camp.empty or not base_camp.empty:
         base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
         cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
@@ -360,7 +364,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             })
         df_display = pd.DataFrame(table_data)
 
-    # (5) 유형별 요약 데이터 연산
+    # 유형별 요약 데이터 연산
     type_col = None
     if not cur_camp.empty and 'campaign_tp' in cur_camp.columns: type_col = 'campaign_tp'
     elif not cur_camp.empty and 'campaign_type' in cur_camp.columns: type_col = 'campaign_type'
@@ -402,7 +406,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             })
         df_type_display = pd.DataFrame(type_table_data)
 
-    # (6) 주간 성과 요약 데이터 연산
+    # 주간 성과 요약 데이터 연산
     def _get_week_info(dt_val):
         d = dt_val.date() if hasattr(dt_val, 'date') else dt_val
         start = d - timedelta(days=d.weekday())
@@ -442,7 +446,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         weekly_tp_disp = weekly_tp_grp[['week_label', '캠페인 유형', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']].copy()
         weekly_tp_disp.columns = ['주간', '캠페인 유형', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
 
-    # (7) 상세 성과 데이터 연산 (캠페인별 / 일자별)
+    # 상세 성과 데이터 연산 (캠페인별 / 일자별)
     if not cur_camp.empty:
         camp_disp = cur_camp.copy()
         camp_disp['roas'] = np.where(camp_disp['cost'] > 0, camp_disp['sales'] / camp_disp['cost'] * 100, 0)
@@ -486,7 +490,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_disp.columns = ['일자', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
         daily_disp = daily_disp.sort_values('일자', ascending=False)
 
-    # (8) 업체별 캠페인 상세 분석 데이터 연산 (For Export & UI)
+    # 업체별 캠페인 상세 분석 데이터 연산 (For Export & UI)
     if not cur_camp.empty or not base_camp.empty:
         has_rank_cur = 'avg_rank' in cur_camp.columns
         has_rank_base = 'avg_rank' in base_camp.columns
@@ -553,30 +557,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     with pd.ExcelWriter(excel_buffer) as writer:
         if not df_display.empty:
-            format_for_csv(df_display).to_excel(writer, sheet_name='4.업체별_전체요약', index=False)
+            format_for_csv(df_display).to_excel(writer, sheet_name='업체별_전체요약', index=False)
             has_data_to_export = True
         if not df_type_display.empty:
-            format_for_csv(df_type_display).to_excel(writer, sheet_name='5.유형별_성과요약', index=False)
+            format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
             has_data_to_export = True
         if not weekly_disp.empty:
-            format_for_csv(weekly_disp).to_excel(writer, sheet_name='6.주간_전체합산', index=False)
+            format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_전체합산', index=False)
             has_data_to_export = True
         if not weekly_tp_disp.empty:
-            format_for_csv(weekly_tp_disp).to_excel(writer, sheet_name='6.주간_유형별상세', index=False)
+            format_for_csv(weekly_tp_disp).to_excel(writer, sheet_name='주간_유형별상세', index=False)
             has_data_to_export = True
         if not camp_disp.empty:
-            format_for_csv(camp_disp).to_excel(writer, sheet_name='7.캠페인별_상세', index=False)
+            format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_상세', index=False)
             has_data_to_export = True
         if not daily_disp.empty:
-            format_for_csv(daily_disp).to_excel(writer, sheet_name='7.일자별_상세', index=False)
+            format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_상세', index=False)
             has_data_to_export = True
         if not export_df_8.empty:
-            format_for_csv(export_df_8.drop(columns=['customer_id'])).to_excel(writer, sheet_name='8.업체별_캠페인상세', index=False)
+            format_for_csv(export_df_8.drop(columns=['customer_id'])).to_excel(writer, sheet_name='업체별_캠페인상세', index=False)
             has_data_to_export = True
     
     if has_data_to_export:
         st.download_button(
-            label="📥 4~8번 통합 데이터 다운로드 (엑셀 시트 분리)",
+            label="📥 통합 데이터 다운로드 (엑셀 시트 분리)",
             data=excel_buffer.getvalue(),
             file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -585,9 +589,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ==========================================
-    # 4. 업체별 전체 성과 요약 (아코디언)
+    # 아코디언 메뉴 영역 (표 UI)
     # ==========================================
-    with st.expander("🏢 4. 업체별 전체 성과 요약", expanded=False):
+    with st.expander("🏢 업체별 전체 성과 요약", expanded=False):
         if not df_display.empty:
             styled_df = df_display.style.format(fmt_dict_standard)
             try:
@@ -602,10 +606,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 데이터가 없습니다.")
 
 
-    # ==========================================
-    # 5. 유형별 성과 요약 (아코디언)
-    # ==========================================
-    with st.expander("🏷️ 5. 유형별 성과 요약", expanded=False):
+    with st.expander("🏷️ 유형별 성과 요약", expanded=False):
         if not df_type_display.empty:
             styled_type_df = df_type_display.style.format(fmt_dict_standard)
             try:
@@ -620,10 +621,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 데이터가 없습니다.")
 
 
-    # ==========================================
-    # 6. 주간 성과 요약 (아코디언)
-    # ==========================================
-    with st.expander("📅 6. 주간 성과 요약", expanded=False):
+    with st.expander("📅 주간 성과 요약", expanded=False):
         if not weekly_disp.empty or not weekly_tp_disp.empty:
             tab_weekly_all, tab_weekly_type = st.tabs(["전체 합산", "유형별 상세"])
             
@@ -648,10 +646,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 주간 트렌드 데이터가 없습니다.")
 
 
-    # ==========================================
-    # 7. 상세 성과 데이터 (아코디언)
-    # ==========================================
-    with st.expander("📋 7. 상세 성과 데이터 (캠페인별 / 일자별)", expanded=False):
+    with st.expander("📋 상세 성과 데이터 (캠페인별 / 일자별)", expanded=False):
         tab_det_camp, tab_det_daily = st.tabs(["캠페인별 상세", "일자별 상세"])
         
         with tab_det_camp:
@@ -681,8 +676,48 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.info("일자별 상세 데이터가 없습니다.")
 
 
-    # ==========================================
-    # 8. 업체별 캠페인 상세 분석 (아코디언)
-    # ==========================================
-    with st.expander("🔍 8. 업체별 캠페인 상세 분석", expanded=False):
+    with st.expander("🔍 업체별 캠페인 상세 분석", expanded=False):
         render_account_campaign_detail(export_df_8, fmt_dict_standard, positive_cols, negative_cols)
+
+
+    # ==========================================
+    # 보고서 내보내기 (텍스트 요약)
+    # ==========================================
+    with st.expander("📝 보고서 내보내기", expanded=False):
+        report_campaign_type = selected_type_label
+        report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+
+        st.session_state[report_loaded_key] = True
+
+        top_keywords_text = "-"
+        is_shopping = False
+        if type_sel and any("쇼핑" in t or "SHOPPING" in str(t).upper() for t in type_sel):
+            is_shopping = True
+            
+        sort_col = "conv" if is_shopping else "clk"
+        top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
+
+        if st.session_state.get(report_loaded_key, False):
+            with st.spinner("키워드 요약 중..."):
+                kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=100)
+                
+            if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
+                kw_top = kw_bundle.copy()
+                kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
+                kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
+                if not kw_top.empty:
+                    top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
+        
+        report_text = _build_periodic_report_text(
+            campaign_type=report_campaign_type,
+            imp=float(report_cur.get("imp", 0.0) or 0.0),
+            clk=float(report_cur.get("clk", 0.0) or 0.0),
+            ctr=float(report_cur.get("ctr", 0.0) or 0.0),
+            cost=float(report_cur.get("cost", 0.0) or 0.0),
+            roas=float(report_cur.get("roas", 0.0) or 0.0),
+            sales=float(report_cur.get("sales", 0.0) or 0.0),
+            top_keywords_label=top_keywords_label,
+            top_keywords=top_keywords_text,
+        )
+        st.code(report_text, language="text")
+
