@@ -151,7 +151,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             )
 
         with col_device:
-            st.markdown("<div style='font-size:13px; color:#555; text-align:center; margin-bottom:5px;'>📱 기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:13px; color:#555; text-align:center; margin-bottom:5px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
             
             mock_device_df = pd.DataFrame({
                 "기기": ["모바일", "PC"],
@@ -185,7 +185,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         # 타이틀을 분할 컬럼 없이 단일 마크다운으로 배치하여 정렬 유지
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:4px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
-        st.caption("💡 표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
+        st.caption("표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
         try:
             styled_main = disp_main.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
