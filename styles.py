@@ -10,10 +10,10 @@ GLOBAL_UI_CSS = """
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 
 :root {
-  /* Routie Color System */
-  --nv-primary: #34C9DA;        /* Main Color (Mint) */
-  --nv-primary-hover: #67D7E4;  /* Sub 80 */
-  --nv-primary-soft: #DFF6F9;   /* Sub 20 */
+  /* ✨ Main Theme Colors (Blue) */
+  --nv-primary: #0528F2;        /* Main Color (Blue) */
+  --nv-primary-hover: #3355FF;  /* Hover Color */
+  --nv-primary-soft: #E6E9FF;   /* Soft Background Color */
   
   /* Grayscale */
   --nv-bg: #FFFFFF;
@@ -24,10 +24,10 @@ GLOBAL_UI_CSS = """
   --nv-muted: #62686F;          /* Gray 700 */
   --nv-text: #19191A;           /* Gray 900 */
   
-  /* Status (Global SaaS Standard) */
-  --nv-success: #17B26A;        /* Green for Positive/Up */
+  /* Status (Positive=Blue, Negative=Red) */
+  --nv-success: #0528F2;        /* Positive is now Blue */
   --nv-warning: #F79009;
-  --nv-danger: #F04438;         /* Red for Negative/Down */
+  --nv-danger: #F04438;         /* Negative/Alert is Red */
   
   --nv-radius: 12px;
 }
@@ -61,7 +61,7 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
    2. 요약 지면 KPI 카드
    ============================================================== */
 .nv-metric-card { background: var(--nv-bg); padding: 20px 24px; border-radius: var(--nv-radius); border: 1px solid var(--nv-line); margin-bottom: 16px; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(25, 25, 26, 0.02); }
-.nv-metric-card:hover { border-color: var(--nv-primary); box-shadow: 0 4px 12px rgba(52, 201, 218, 0.08); }
+.nv-metric-card:hover { border-color: var(--nv-primary); box-shadow: 0 4px 12px rgba(5, 40, 242, 0.08); }
 .nv-metric-card-title { color: var(--nv-muted); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .nv-metric-card-value { color: var(--nv-text); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
 .nv-metric-card-desc { color: var(--nv-primary); font-size: 12px; font-weight: 600; margin-top: 8px; background: var(--nv-primary-soft); display: inline-block; padding: 4px 10px; border-radius: 6px; }
@@ -77,16 +77,17 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700 !important; letter-spacing: -0.02em !i
 .kpi .d { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 6px; border-radius: 4px; display: inline-block;}
 .kpi.highlight .v { color: var(--nv-text); } 
 .kpi.highlight-positive .v { color: var(--nv-primary); font-size: 22px; }
-.kpi .d.pos { background: #EAF7E9; color: var(--nv-success); }
+
+.kpi .d.pos { background: var(--nv-primary-soft); color: var(--nv-success); }
 .kpi .d.neg { background: #FEE4E2; color: var(--nv-danger); }
 .kpi .d.neu { background: var(--nv-surface); color: var(--nv-muted-light); }
 
 /* ==============================================================
-   3. 테이블 & 탭 (✨ 민트색 배경 제거, 하얀색/밑줄 중심의 깔끔한 구조)
+   3. 테이블 & 탭 (하얀색/밑줄 중심의 깔끔한 구조)
    ============================================================== */
 table, div[data-testid="stDataFrame"] table { border-collapse: separate; border-spacing: 0; }
 th, div[data-testid="stDataFrame"] th { 
-    background-color: var(--nv-bg) !important; /* 하얀색 바탕 */
+    background-color: var(--nv-bg) !important; 
     color: var(--nv-text) !important; 
     font-weight: 700 !important; 
     font-size: 13px; 
@@ -95,7 +96,7 @@ th, div[data-testid="stDataFrame"] th {
 td, div[data-testid="stDataFrame"] td { font-size: 13px; color: var(--nv-text) !important; border-bottom: 1px solid var(--nv-surface) !important; }
 tr:hover td, div[data-testid="stDataFrame"] tr:hover td { background-color: var(--nv-surface) !important; cursor: default; }
 
-/* 탭 활성화 시 민트색 배경 없애고, 밑줄로만 강조 */
+/* 탭 활성화 시 강조 */
 [data-baseweb="tab-list"] { gap: 24px; padding-bottom: 0px; border-bottom: 1px solid var(--nv-line); }
 [data-baseweb="tab"] { background: transparent !important; border: none !important; font-weight: 500; padding: 12px 4px !important; margin: 0 !important; color: var(--nv-muted) !important; font-size: 15px; border-radius: 0 !important; transition: color 0.2s ease; }
 [data-baseweb="tab"]:hover { color: var(--nv-text) !important; }
@@ -108,7 +109,7 @@ tr:hover td, div[data-testid="stDataFrame"] tr:hover td { background-color: var(
 }
 
 /* ==============================================================
-   4. 사이드바 (✨ 보호색 현상 해결)
+   4. 사이드바 (메뉴 선택 박스 흰색 처리)
    ============================================================== */
 [data-testid="stSidebar"] { background: var(--nv-surface) !important; border-right: 1px solid var(--nv-line) !important; }
 [data-testid="stSidebar"] .block-container { padding-top: 2rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
@@ -126,7 +127,7 @@ tr:hover td, div[data-testid="stDataFrame"] tr:hover td { background-color: var(
 [data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--nv-line) !important; }
 [data-testid="stSidebar"] [role="radiogroup"] label p { color: var(--nv-muted) !important; font-weight: 500 !important; font-size: 14px !important; }
 
-/* 선택된 메뉴는 하얀색 박스로 띄워서, 그 안의 민트색 동그라미가 잘 보이게 함 */
+/* 선택된 메뉴는 하얀색 박스로 띄워서, 파란색 동그라미가 잘 보이게 함 */
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { 
     background: var(--nv-bg) !important; 
     box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important; 
@@ -135,12 +136,11 @@ tr:hover td, div[data-testid="stDataFrame"] tr:hover td { background-color: var(
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color: var(--nv-text) !important; font-weight: 700 !important; }
 
 /* ==============================================================
-   5. 필터 멀티셀렉트 태그 (✨ 눈 아픈 민트색 제거)
+   5. 필터 멀티셀렉트 태그 (하얀 바탕)
    ============================================================== */
 div[data-baseweb="select"] > div { border-radius: 8px !important; border-color: var(--nv-line) !important; background: var(--nv-bg) !important; }
 div[data-baseweb="select"] > div:focus-within { box-shadow: 0 0 0 1px var(--nv-primary) inset !important; border-color: var(--nv-primary) !important; }
 
-/* 태그 칩을 튀지 않게 하얀 배경 + 회색 테두리로 정리 */
 span[data-baseweb="tag"] { 
     background-color: var(--nv-bg) !important; 
     color: var(--nv-text) !important; 
