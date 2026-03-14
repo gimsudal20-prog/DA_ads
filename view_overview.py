@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
+import io
 from typing import Dict
 from datetime import date, timedelta
 
@@ -184,8 +185,6 @@ def color_delta_negative(val):
 
 @st.fragment
 def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f_start, f_end):
-    st.markdown("<div class='nv-sec-title'>업체별 캠페인 상세 분석</div>", unsafe_allow_html=True)
-    
     if not merged.empty:
         selected_account = st.selectbox("상세 캠페인 성과를 확인할 업체 선택", options=merged['account_name'].tolist())
 
@@ -259,15 +258,8 @@ def render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standar
                 styled_sub_df = styled_sub_df.applymap(color_delta_negative, subset=negative_cols)
                 
             st.dataframe(styled_sub_df, use_container_width=True, hide_index=True)
-            
-            csv_sub_data = format_for_csv(df_sub_display).to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="해당 캠페인 CSV 다운로드",
-                data=csv_sub_data,
-                file_name=f"{selected_account}_캠페인_상세_{f_start}_{f_end}.csv",
-                mime="text/csv",
-                key=f"download_sub_csv_{selected_cid}"
-            )
+    else:
+        st.info("해당 기간의 데이터가 없습니다.")
 
 
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -279,12 +271,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-    cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
-    base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
-
-    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
-    state_hash = abs(hash(state_sig))
-    report_loaded_key = f"overview_report_loaded_{state_hash}"
+    # ---------------------------------------------------------
+    # 데이터 사전 집계 (Data Fetching)
+    # ---------------------------------------------------------
+    with st.spinner("상세 성과를 로딩 중입니다..."):
+        cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+        base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+        acc_ts_df = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -316,8 +314,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "PLACE": "플레이스"
     }
 
+
     # ==========================================
-    # 1. 전체 성과 요약 (KPI Box)
+    # 1. 종합 성과 요약 (전체 유형)
     # ==========================================
     st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     
@@ -381,17 +380,134 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(kpi_groups_html, unsafe_allow_html=True)
 
 
-    with st.spinner("상세 성과를 로딩 중입니다..."):
-        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
-        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+    # ==========================================
+    # 2. 업체별 실적 요약 및 트렌드
+    # ==========================================
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📈 업체별 실적 요약 및 트렌드</div>", unsafe_allow_html=True)
+    st.caption("최근 일자별 비용과 성과 흐름을 확인하세요. (차트 조작을 방지하여 깔끔한 뷰를 제공합니다.)")
+    
+    if not acc_ts_df.empty:
+        acc_ts_df['customer_id'] = acc_ts_df['customer_id'].astype(str)
+        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
+            meta_subset = meta[['customer_id', 'account_name']].copy()
+            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
+            acc_ts_df = acc_ts_df.merge(meta_subset, on='customer_id', how='left')
+            acc_ts_df['account_name'] = acc_ts_df['account_name'].fillna(acc_ts_df['customer_id'])
+        else:
+            acc_ts_df['account_name'] = acc_ts_df['customer_id']
+            
+        acc_ts_df['roas'] = np.where(acc_ts_df['cost'] > 0, (acc_ts_df['sales'] / acc_ts_df['cost']) * 100, 0.0)
+        acc_ts_df['dt'] = pd.to_datetime(acc_ts_df['dt'])
+        acc_ts_df = acc_ts_df.sort_values('dt')
+        
+        acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
+        acc_totals = acc_totals.sort_values('cost', ascending=False)
+        
+        unique_accounts_count = len(acc_totals)
+        st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+        
+        if unique_accounts_count > 1:
+            top_n_accounts = st.slider(
+                "📊 표시할 업체 수 조절", 
+                min_value=1, 
+                max_value=unique_accounts_count, 
+                value=1,
+                step=1,
+                help="한 번에 표시할 업체의 개수를 조절하세요."
+            )
+        else:
+            top_n_accounts = 1
+        
+        acc_totals = acc_totals.head(top_n_accounts)
+        
+        for idx, (_, row) in enumerate(acc_totals.iterrows()):
+            cid_val = row['customer_id']
+            acc_name = row['account_name']
+            
+            acc_data = acc_ts_df[acc_ts_df['customer_id'] == cid_val].copy()
+            
+            total_cost = acc_data['cost'].sum()
+            total_sales = acc_data['sales'].sum()
+            curr_roas = (total_sales / total_cost * 100) if total_cost > 0 else 0.0
+            
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([1, 1.5, 1.5])
+                
+                with c1:
+                    st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
+                    st.markdown(f"""
+                        <div style='background:var(--nv-surface); padding:10px 14px; border-radius:8px; margin-top:8px;'>
+                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 ROAS</div>
+                            <div style='font-size:22px; font-weight:800; color:#0528F2;'>{curr_roas:,.0f}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                with c2:
+                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
+                    fig_cost = px.bar(acc_data, x='dt', y='cost')
+                    fig_cost.update_traces(
+                        marker_color='#A8AFB7', 
+                        marker_line_width=0,
+                        hovertemplate='%{y:,.0f}원<extra></extra>' 
+                    )
+                    fig_cost.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0), 
+                        height=110, 
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
+                    
+                with c3:
+                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
+                    fig_roas = px.line(acc_data, x='dt', y='roas')
+                    fig_roas.update_traces(
+                        line_color='#0528F2', 
+                        line_width=3,
+                        hovertemplate='%{y:,.0f}%<extra></extra>'
+                    )
+                    fig_roas.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0), 
+                        height=110, 
+                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
+                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        dragmode=False,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
+    else:
+        st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
 
 
     # ==========================================
-    # 2. 업체별 전체 성과 요약 (테이블)
+    # 3. 일자별 성과 추이
     # ==========================================
-    st.markdown("<div class='nv-sec-title'>업체별 전체 성과 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
+    
+    if daily_ts is not None and not daily_ts.empty:
+        daily_ts_chart = daily_ts.copy()
+        daily_ts_chart['roas'] = np.where(daily_ts_chart['cost'] > 0, daily_ts_chart['sales'] / daily_ts_chart['cost'] * 100, 0)
+        
+        tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
+        with tab_t1:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "sales", "전환매출", height=320)
+        with tab_t2:
+            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+    else:
+        st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
 
+
+    # ==========================================
+    # 데이터 시트 4 & 5 계산 로직
+    # ==========================================
     merged = pd.DataFrame() 
+    df_display = pd.DataFrame()
     if not cur_camp.empty or not base_camp.empty:
         base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
         cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
@@ -435,154 +551,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
             })
-            
         df_display = pd.DataFrame(table_data)
-        
-        styled_df = df_display.style.format(fmt_dict_standard)
-        if hasattr(styled_df, 'map'):
-            styled_df = styled_df.map(color_delta_positive, subset=positive_cols)
-            styled_df = styled_df.map(color_delta_negative, subset=negative_cols)
-        else:
-            styled_df = styled_df.applymap(color_delta_positive, subset=positive_cols)
-            styled_df = styled_df.applymap(color_delta_negative, subset=negative_cols)
-            
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        csv_account_data = format_for_csv(df_display).to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="업체별 요약 다운로드",
-            data=csv_account_data,
-            file_name=f"업체별_전체_성과_요약_{f['start']}_{f['end']}.csv",
-            mime="text/csv",
-            key="download_account_csv"
-        )
-    else:
-        st.info("해당 기간의 캠페인 데이터가 없습니다.")
-
-
-    # ==========================================
-    # ✨ 3. 업체별 실적 요약 및 트렌드 (스파크라인 그래프 & 슬라이더)
-    # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📈 업체별 실적 요약 및 트렌드</div>", unsafe_allow_html=True)
-    st.caption("최근 일자별 비용과 성과 흐름을 확인하세요. (차트 조작을 방지하여 깔끔한 뷰를 제공합니다.)")
-    
-    acc_ts_df = _cached_account_timeseries(engine, f["start"], f["end"], cids, type_sel)
-    
-    if not acc_ts_df.empty:
-        acc_ts_df['customer_id'] = acc_ts_df['customer_id'].astype(str)
-        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
-            meta_subset = meta[['customer_id', 'account_name']].copy()
-            meta_subset['customer_id'] = meta_subset['customer_id'].astype(str)
-            acc_ts_df = acc_ts_df.merge(meta_subset, on='customer_id', how='left')
-            acc_ts_df['account_name'] = acc_ts_df['account_name'].fillna(acc_ts_df['customer_id'])
-        else:
-            acc_ts_df['account_name'] = acc_ts_df['customer_id']
-            
-        acc_ts_df['roas'] = np.where(acc_ts_df['cost'] > 0, (acc_ts_df['sales'] / acc_ts_df['cost']) * 100, 0.0)
-        acc_ts_df['dt'] = pd.to_datetime(acc_ts_df['dt'])
-        acc_ts_df = acc_ts_df.sort_values('dt')
-        
-        acc_totals = acc_ts_df.groupby(['customer_id', 'account_name'])['cost'].sum().reset_index()
-        acc_totals = acc_totals.sort_values('cost', ascending=False)
-        
-        unique_accounts_count = len(acc_totals)
-        st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
-        
-        # 🚨 슬라이더 에러 방지 처리: 업체 수가 1개 이하일 경우 슬라이더 숨김 🚨
-        if unique_accounts_count > 1:
-            top_n_accounts = st.slider(
-                "📊 표시할 업체 수 조절", 
-                min_value=1, 
-                max_value=unique_accounts_count, 
-                value=1,
-                step=1,
-                help="한 번에 표시할 업체의 개수를 조절하세요."
-            )
-        else:
-            top_n_accounts = 1
-        
-        acc_totals = acc_totals.head(top_n_accounts)
-        
-        for idx, (_, row) in enumerate(acc_totals.iterrows()):
-            cid_val = row['customer_id']
-            acc_name = row['account_name']
-            
-            acc_data = acc_ts_df[acc_ts_df['customer_id'] == cid_val].copy()
-            
-            total_cost = acc_data['cost'].sum()
-            total_sales = acc_data['sales'].sum()
-            curr_roas = (total_sales / total_cost * 100) if total_cost > 0 else 0.0
-            
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([1, 1.5, 1.5])
-                
-                with c1:
-                    st.markdown(f"<div style='font-size:15px; font-weight:700; margin-bottom:12px;'>🏢 {acc_name}</div>", unsafe_allow_html=True)
-                    
-                    # ✨ 불필요한 설정 창 제거 후, 깔끔한 ROAS 텍스트 렌더링
-                    st.markdown(f"""
-                        <div style='background:var(--nv-surface); padding:10px 14px; border-radius:8px; margin-top:8px;'>
-                            <div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>현재 ROAS</div>
-                            <div style='font-size:22px; font-weight:800; color:#0528F2;'>{curr_roas:,.0f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                with c2:
-                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📉 비용(광고비) 소진 추이</div>", unsafe_allow_html=True)
-                    fig_cost = px.bar(acc_data, x='dt', y='cost')
-                    
-                    # ✨ 호버 툴팁 최적화 (값만 깔끔하게)
-                    fig_cost.update_traces(
-                        marker_color='#A8AFB7', 
-                        marker_line_width=0,
-                        hovertemplate='%{y:,.0f}원<extra></extra>' 
-                    )
-                    
-                    # ✨ 차트 확대, 드래그 방지 및 레이아웃 정리
-                    fig_cost.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0), 
-                        height=110, 
-                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
-                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        dragmode=False,
-                        hovermode='x unified'
-                    )
-                    st.plotly_chart(fig_cost, use_container_width=True, config={'displayModeBar': False}, key=f"cost_chart_{cid_val}_{idx}")
-                    
-                with c3:
-                    st.markdown("<div style='font-size:12px; color:var(--nv-muted); font-weight:600;'>📈 ROAS 성과 추이</div>", unsafe_allow_html=True)
-                    fig_roas = px.line(acc_data, x='dt', y='roas')
-                    
-                    # ✨ 호버 툴팁 최적화
-                    fig_roas.update_traces(
-                        line_color='#0528F2', 
-                        line_width=3,
-                        hovertemplate='%{y:,.0f}%<extra></extra>'
-                    )
-                    
-                    # ✨ 차트 확대, 드래그 방지
-                    fig_roas.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0), 
-                        height=110, 
-                        xaxis=dict(visible=False, showgrid=False, fixedrange=True), 
-                        yaxis=dict(visible=False, showgrid=False, fixedrange=True),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        dragmode=False,
-                        hovermode='x unified'
-                    )
-                    st.plotly_chart(fig_roas, use_container_width=True, config={'displayModeBar': False}, key=f"roas_chart_{cid_val}_{idx}")
-    else:
-        st.info("선택하신 기간 내 업체별 트렌드 데이터가 없습니다.")
-
-
-    # ==========================================
-    # 4. 유형별 성과 요약
-    # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>유형별 성과 요약</div>", unsafe_allow_html=True)
-    
+    df_type_display = pd.DataFrame()
     type_col = None
     if not cur_camp.empty and 'campaign_tp' in cur_camp.columns: type_col = 'campaign_tp'
     elif not cur_camp.empty and 'campaign_type' in cur_camp.columns: type_col = 'campaign_type'
@@ -622,37 +593,70 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
             })
-            
         df_type_display = pd.DataFrame(type_table_data)
+
+
+    # ==========================================
+    # ✨ 통합 엑셀 내보내기 버튼 (시트 분리)
+    # ==========================================
+    st.markdown("<div style='margin-top:40px;'></div>", unsafe_allow_html=True)
+    if not df_display.empty or not df_type_display.empty:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer) as writer:
+            if not df_display.empty:
+                format_for_csv(df_display).to_excel(writer, sheet_name='업체별_성과_요약', index=False)
+            if not df_type_display.empty:
+                format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과_요약', index=False)
         
-        styled_type_df = df_type_display.style.format(fmt_dict_standard)
-        if hasattr(styled_type_df, 'map'):
-            styled_type_df = styled_type_df.map(color_delta_positive, subset=positive_cols)
-            styled_type_df = styled_type_df.map(color_delta_negative, subset=negative_cols)
-        else:
-            styled_type_df = styled_type_df.applymap(color_delta_positive, subset=positive_cols)
-            styled_type_df = styled_type_df.applymap(color_delta_negative, subset=negative_cols)
-            
-        st.dataframe(styled_type_df, use_container_width=True, hide_index=True)
-        
-        csv_type_data = format_for_csv(df_type_display).to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="유형별 요약 다운로드",
-            data=csv_type_data,
-            file_name=f"유형별_성과_요약_{f['start']}_{f['end']}.csv",
-            mime="text/csv",
-            key="download_type_csv"
+            label="📥 통합 데이터 다운로드 (엑셀 시트 분할)",
+            data=excel_buffer.getvalue(),
+            file_name=f"통합_성과_데이터_{f['start']}_{f['end']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
         )
 
 
     # ==========================================
-    # ✨ [RESTORED] 5. 주간 성과 요약 (전체 + 유형별 탭)
+    # 4. 업체별 전체 성과 요약 (아코디언)
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>주간 성과 요약</div>", unsafe_allow_html=True)
-    with st.spinner("주간 데이터 집계 중..."):
-        base_weekly_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-        type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
-        
+    with st.expander("🏢 4. 업체별 전체 성과 요약", expanded=False):
+        if not df_display.empty:
+            styled_df = df_display.style.format(fmt_dict_standard)
+            try:
+                styled_df = styled_df.map(color_delta_positive, subset=positive_cols)
+                styled_df = styled_df.map(color_delta_negative, subset=negative_cols)
+            except AttributeError:
+                styled_df = styled_df.applymap(color_delta_positive, subset=positive_cols)
+                styled_df = styled_df.applymap(color_delta_negative, subset=negative_cols)
+                
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("해당 기간의 데이터가 없습니다.")
+
+
+    # ==========================================
+    # 5. 유형별 성과 요약 (아코디언)
+    # ==========================================
+    with st.expander("🏷️ 5. 유형별 성과 요약", expanded=False):
+        if not df_type_display.empty:
+            styled_type_df = df_type_display.style.format(fmt_dict_standard)
+            try:
+                styled_type_df = styled_type_df.map(color_delta_positive, subset=positive_cols)
+                styled_type_df = styled_type_df.map(color_delta_negative, subset=negative_cols)
+            except AttributeError:
+                styled_type_df = styled_type_df.applymap(color_delta_positive, subset=positive_cols)
+                styled_type_df = styled_type_df.applymap(color_delta_negative, subset=negative_cols)
+                
+            st.dataframe(styled_type_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("해당 기간의 데이터가 없습니다.")
+
+
+    # ==========================================
+    # 6. 주간 성과 요약 (아코디언)
+    # ==========================================
+    with st.expander("📅 6. 주간 성과 요약", expanded=False):
         if base_weekly_ts is not None and not base_weekly_ts.empty:
             tab_weekly_all, tab_weekly_type = st.tabs(["전체 합산", "유형별 상세"])
             
@@ -717,141 +721,81 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     })
                     
                     st.dataframe(styled_weekly_tp, use_container_width=True, hide_index=True)
+        else:
+            st.info("해당 기간의 주간 트렌드 데이터가 없습니다.")
 
 
     # ==========================================
-    # ✨ [RESTORED] 6. 일자별 성과 추이 (차트)
+    # 7. 상세 성과 데이터 (아코디언)
     # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>일자별 성과 추이</div>", unsafe_allow_html=True)
-    
-    with st.spinner("일자별 데이터 집계 중..."):
-        daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-
-    if daily_ts is not None and not daily_ts.empty:
-        daily_ts_chart = daily_ts.copy()
-        daily_ts_chart['roas'] = np.where(daily_ts_chart['cost'] > 0, daily_ts_chart['sales'] / daily_ts_chart['cost'] * 100, 0)
+    with st.expander("📋 7. 상세 성과 데이터 (캠페인별 / 일자별)", expanded=False):
+        tab_det_camp, tab_det_daily = st.tabs(["캠페인별 상세", "일자별 상세"])
         
-        tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
-        with tab_t1:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "sales", "전환매출", height=320)
-        with tab_t2:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
-    else:
-        st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
-
-
-    # ==========================================
-    # ✨ [RESTORED] 7. 상세 성과 데이터 (캠페인별 / 일자별 표)
-    # ==========================================
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>상세 성과 데이터</div>", unsafe_allow_html=True)
-
-    tab_det_camp, tab_det_daily = st.tabs(["캠페인별 상세", "일자별 상세"])
-    
-    with tab_det_camp:
-        if not cur_camp.empty:
-            camp_disp = cur_camp.copy()
-            camp_disp['roas'] = np.where(camp_disp['cost'] > 0, camp_disp['sales'] / camp_disp['cost'] * 100, 0)
-            camp_disp['ctr'] = np.where(camp_disp['imp'] > 0, camp_disp['clk'] / camp_disp['imp'] * 100, 0)
-            camp_disp['cpc'] = np.where(camp_disp['clk'] > 0, camp_disp['cost'] / camp_disp['clk'], 0)
-            
-            if 'campaign_type' in camp_disp.columns:
-                camp_disp['campaign_type'] = camp_disp['campaign_type'].apply(lambda x: type_kor_map.get(str(x).upper(), x))
-            elif 'campaign_tp' in camp_disp.columns:
-                camp_disp['campaign_type'] = camp_disp['campaign_tp'].apply(lambda x: type_kor_map.get(str(x).upper(), x))
-            
-            cols = ['campaign_name', 'campaign_type', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']
-            avail_cols = [c for c in cols if c in camp_disp.columns]
-            camp_disp = camp_disp[avail_cols]
-            
-            kor_cols = []
-            for c in avail_cols:
-                if c == 'campaign_name': kor_cols.append('캠페인명')
-                elif c == 'campaign_type': kor_cols.append('캠페인 유형')
-                elif c == 'imp': kor_cols.append('노출수')
-                elif c == 'clk': kor_cols.append('클릭수')
-                elif c == 'ctr': kor_cols.append('클릭률(%)')
-                elif c == 'cost': kor_cols.append('광고비')
-                elif c == 'cpc': kor_cols.append('CPC')
-                elif c == 'conv': kor_cols.append('전환수')
-                elif c == 'sales': kor_cols.append('전환매출')
-                elif c == 'roas': kor_cols.append('ROAS(%)')
+        with tab_det_camp:
+            if not cur_camp.empty:
+                camp_disp = cur_camp.copy()
+                camp_disp['roas'] = np.where(camp_disp['cost'] > 0, camp_disp['sales'] / camp_disp['cost'] * 100, 0)
+                camp_disp['ctr'] = np.where(camp_disp['imp'] > 0, camp_disp['clk'] / camp_disp['imp'] * 100, 0)
+                camp_disp['cpc'] = np.where(camp_disp['clk'] > 0, camp_disp['cost'] / camp_disp['clk'], 0)
                 
-            camp_disp.columns = kor_cols
-            camp_disp = camp_disp.sort_values('광고비', ascending=False)
-            
-            st.dataframe(
-                camp_disp.style.format({
-                    '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
-                    '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
-                    '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
-                }),
-                use_container_width=True, hide_index=True
-            )
-
-    with tab_det_daily:
-        if daily_ts is not None and not daily_ts.empty:
-            daily_disp = daily_ts.copy()
-            daily_disp['roas'] = np.where(daily_disp['cost'] > 0, daily_disp['sales'] / daily_disp['cost'] * 100, 0)
-            daily_disp['ctr'] = np.where(daily_disp['imp'] > 0, daily_disp['clk'] / daily_disp['imp'] * 100, 0)
-            daily_disp['cpc'] = np.where(daily_disp['clk'] > 0, daily_disp['cost'] / daily_disp['clk'], 0)
-            
-            daily_disp['dt'] = daily_disp['dt'].dt.strftime('%Y-%m-%d')
-            daily_disp = daily_disp[['dt', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']]
-            daily_disp.columns = ['일자', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
-            daily_disp = daily_disp.sort_values('일자', ascending=False)
-            
-            st.dataframe(
-                daily_disp.style.format({
-                    '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
-                    '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
-                    '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
-                }),
-                use_container_width=True, hide_index=True
-            )
-
-
-    # ==========================================
-    # ✨ [RESTORED] 8. 업체별 캠페인 상세 분석
-    # ==========================================
-    render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f["start"], f["end"])
-    
-    # ==========================================
-    # ✨ [RESTORED] 9. 보고서 내보내기 
-    # ==========================================
-    with st.expander("보고서 내보내기", expanded=False):
-        report_campaign_type = selected_type_label
-        report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
-
-        st.session_state[report_loaded_key] = True
-
-        top_keywords_text = "-"
-        is_shopping = False
-        if type_sel and any("쇼핑" in t or "SHOPPING" in str(t).upper() for t in type_sel):
-            is_shopping = True
-            
-        sort_col = "conv" if is_shopping else "clk"
-        top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
-
-        if st.session_state.get(report_loaded_key, False):
-            with st.spinner("키워드 요약 중..."):
-                kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=100)
+                if 'campaign_type' in camp_disp.columns:
+                    camp_disp['campaign_type'] = camp_disp['campaign_type'].apply(lambda x: type_kor_map.get(str(x).upper(), x))
+                elif 'campaign_tp' in camp_disp.columns:
+                    camp_disp['campaign_type'] = camp_disp['campaign_tp'].apply(lambda x: type_kor_map.get(str(x).upper(), x))
                 
-            if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
-                kw_top = kw_bundle.copy()
-                kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
-                kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
-                if not kw_top.empty:
-                    top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
-        
-        report_text = _build_periodic_report_text(
-            campaign_type=report_campaign_type,
-            imp=float(report_cur.get("imp", 0.0) or 0.0),
-            clk=float(report_cur.get("clk", 0.0) or 0.0),
-            ctr=float(report_cur.get("ctr", 0.0) or 0.0),
-            cost=float(report_cur.get("cost", 0.0) or 0.0),
-            roas=float(report_cur.get("roas", 0.0) or 0.0),
-            sales=float(report_cur.get("sales", 0.0) or 0.0),
-            top_keywords_label=top_keywords_label,
-            top_keywords=top_keywords_text,
-        )
-        st.code(report_text, language="text")
+                cols = ['campaign_name', 'campaign_type', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']
+                avail_cols = [c for c in cols if c in camp_disp.columns]
+                camp_disp = camp_disp[avail_cols]
+                
+                kor_cols = []
+                for c in avail_cols:
+                    if c == 'campaign_name': kor_cols.append('캠페인명')
+                    elif c == 'campaign_type': kor_cols.append('캠페인 유형')
+                    elif c == 'imp': kor_cols.append('노출수')
+                    elif c == 'clk': kor_cols.append('클릭수')
+                    elif c == 'ctr': kor_cols.append('클릭률(%)')
+                    elif c == 'cost': kor_cols.append('광고비')
+                    elif c == 'cpc': kor_cols.append('CPC')
+                    elif c == 'conv': kor_cols.append('전환수')
+                    elif c == 'sales': kor_cols.append('전환매출')
+                    elif c == 'roas': kor_cols.append('ROAS(%)')
+                    
+                camp_disp.columns = kor_cols
+                camp_disp = camp_disp.sort_values('광고비', ascending=False)
+                
+                st.dataframe(
+                    camp_disp.style.format({
+                        '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
+                        '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+                    }),
+                    use_container_width=True, hide_index=True
+                )
+
+        with tab_det_daily:
+            if daily_ts is not None and not daily_ts.empty:
+                daily_disp = daily_ts.copy()
+                daily_disp['roas'] = np.where(daily_disp['cost'] > 0, daily_disp['sales'] / daily_disp['cost'] * 100, 0)
+                daily_disp['ctr'] = np.where(daily_disp['imp'] > 0, daily_disp['clk'] / daily_disp['imp'] * 100, 0)
+                daily_disp['cpc'] = np.where(daily_disp['clk'] > 0, daily_disp['cost'] / daily_disp['clk'], 0)
+                
+                daily_disp['dt'] = daily_disp['dt'].dt.strftime('%Y-%m-%d')
+                daily_disp = daily_disp[['dt', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']]
+                daily_disp.columns = ['일자', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
+                daily_disp = daily_disp.sort_values('일자', ascending=False)
+                
+                st.dataframe(
+                    daily_disp.style.format({
+                        '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
+                        '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+                    }),
+                    use_container_width=True, hide_index=True
+                )
+
+
+    # ==========================================
+    # 8. 업체별 캠페인 상세 분석 (아코디언)
+    # ==========================================
+    with st.expander("🔍 8. 업체별 캠페인 상세 분석", expanded=False):
+        render_account_campaign_detail(merged, cur_camp, base_camp, fmt_dict_standard, positive_cols, negative_cols, f["start"], f["end"])
