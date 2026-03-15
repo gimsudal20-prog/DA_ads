@@ -52,14 +52,13 @@ def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFr
     return grp[keys + ["avg_rank"]]
 
 
-# ROAS 조건부 텍스트 컬러링 함수
 def highlight_roas_text(val):
     try:
         v = float(str(val).replace("%", "").replace(",", ""))
         if 0 <= v < 100.0:
-            return 'color: #EF4444; font-weight: 800;' # 적자: 진한 빨간색
+            return 'color: #EF4444; font-weight: 800;' 
         elif v >= 300.0:
-            return 'color: #2563EB; font-weight: 800;' # 고효율: 진한 파란색
+            return 'color: #2563EB; font-weight: 800;' 
     except:
         pass
     return ''
@@ -70,7 +69,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
         
     loading_placeholder = st.empty()
-    loading_placeholder.info("⏳ 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다. 잠시만 기다려주세요...")
+    loading_placeholder.info("최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다. 잠시만 기다려주세요...")
 
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
 
@@ -122,12 +121,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in disp_main.columns:
             base_cols.append("평균순위")
         
-        metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+        all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
         # ---------------------------------------------------------
-        # 📊 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
+        # 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
         # ---------------------------------------------------------
-        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>📊 캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
         
         col_type, col_device = st.columns([1.5, 1])
 
@@ -178,14 +177,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
         # ---------------------------------------------------------
-        # 종합 성과 테이블 (무너진 UI 복구)
+        # 종합 성과 테이블
         # ---------------------------------------------------------
-        final_cols = [c for c in base_cols + metrics_cols if c in disp_main.columns]
+        final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
-        # 타이틀을 분할 컬럼 없이 단일 마크다운으로 배치하여 정렬 유지
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:4px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
-        st.caption("표에서 상세 분석을 원하는 **캠페인 행을 클릭**해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
+        st.caption("표에서 상세 분석을 원하는 캠페인 행을 클릭해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
         try:
             styled_main = disp_main.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
@@ -225,6 +223,32 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                     })
                     kw_view = _add_perf_metrics(kw_view)
+                    
+                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>키워드 예산 및 효율 트리맵 (크기: 광고비, 색상: ROAS)</div>", unsafe_allow_html=True)
+                    st.caption("박스 크기가 클수록 광고비를 많이 소진한 키워드이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
+                    
+                    tree_df = kw_view[kw_view['광고비'] > 0].sort_values('광고비', ascending=False).head(100).copy()
+                    if not tree_df.empty:
+                        tree_df['키워드'] = tree_df['키워드'].fillna('기타')
+                        tree_df['광고그룹'] = tree_df['광고그룹'].fillna('기타')
+                        
+                        fig_tree = px.treemap(
+                            tree_df, 
+                            path=[px.Constant(selected_campaign), '광고그룹', '키워드'],
+                            values='광고비',
+                            color='ROAS(%)',
+                            color_continuous_scale='RdBu',
+                            color_continuous_midpoint=100,
+                            hover_data={'광고비': ':,.0f', 'ROAS(%)': ':.0f'}
+                        )
+                        fig_tree.update_traces(
+                            hovertemplate='<b>%{label}</b><br>광고비: %{value:,.0f}원<br>ROAS: %{color:,.0f}%<extra></extra>'
+                        )
+                        fig_tree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=350)
+                        st.plotly_chart(fig_tree, use_container_width=True, config={'displayModeBar': False})
+                    
+                    
+                    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
                     kw_disp = kw_view[["광고그룹", "키워드", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
@@ -342,7 +366,16 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
 
+    # 꺼짐 기록 탭 로직
     with tab_history:
+        # ✨ 조회 기간 계산 및 예외 처리 (3일 미만일 경우 경고)
+        try:
+            days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
+            if days_diff < 3:
+                st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다. 상단 필터에서 기간을 '최근 7일' 이상으로 설정하여 평균 ROAS가 안정적인지 먼저 확인해 주세요.")
+        except Exception:
+            pass
+
         off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
         if off_log.empty:
             st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
@@ -372,10 +405,31 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 aggfunc='first'
             ).reset_index()
             
-            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인명"}).fillna("-")
+            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인"}).fillna("-")
             
-            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록</div>", unsafe_allow_html=True)
-            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
+            if not view.empty and "ROAS(%)" in view.columns:
+                roas_df = view[["업체명", "캠페인", "ROAS(%)"]].drop_duplicates()
+                pivot_df = pivot_df.merge(roas_df, on=["업체명", "캠페인"], how="left")
+                
+                cols = pivot_df.columns.tolist()
+                cols.insert(2, cols.pop(cols.index('ROAS(%)')))
+                pivot_df = pivot_df[cols]
+                
+                pivot_df['ROAS(%)'] = pivot_df['ROAS(%)'].apply(
+                    lambda x: f"{float(x):,.0f}%" if pd.notnull(x) and str(x) != '-' else "-"
+                )
+
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록 및 ROAS 효율 분석</div>", unsafe_allow_html=True)
+            st.caption("표에 파란색(ROAS 300% 이상)으로 표시된 캠페인 중, 예산 부족으로 자주 꺼진 기록이 확인된다면 최우선적으로 예산을 증액하세요.")
+            
+            if "ROAS(%)" in pivot_df.columns:
+                try:
+                    styled_pivot = pivot_df.style.map(highlight_roas_text, subset=["ROAS(%)"])
+                except AttributeError:
+                    styled_pivot = pivot_df.style.applymap(highlight_roas_text, subset=["ROAS(%)"])
+                st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(pivot_df, use_container_width=True, hide_index=True)
 
     loading_placeholder.empty()
-    st.toast("✅ 데이터 집계 및 화면 렌더링이 완료되었습니다!", icon="🚀")
+    st.toast("데이터 집계 및 화면 렌더링이 완료되었습니다.")
