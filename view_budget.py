@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
+import calendar
 from typing import Dict
 from datetime import date, timedelta
 
@@ -13,9 +14,8 @@ from data import *
 from ui import *
 from page_helpers import *
 
-# ✨ UI 속도 개선 1: 예산 관리 표 렌더링 부분을 fragment로 분리하여 부분 렌더링
 @st.fragment
-def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date):
+def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
     editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
     
     editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
@@ -47,9 +47,10 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date):
                         updated_count += 1
             
             if updated_count > 0:
-                st.toast("예산이 저장되었습니다.", icon="✅")
+                st.toast("예산이 저장되었습니다.")
 
-    st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:12px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 💡 (표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요!)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 (현재 권장 소진율: <span style='color:#0528F2;'>{target_pacing_rate*100:.0f}%</span>)</div>", unsafe_allow_html=True)
+    st.caption("표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요. 권장 소진율 대비 10% 이상 차이가 나면 과속/과소 상태로 진단됩니다.")
 
     components.html("""
     <script>
@@ -112,8 +113,8 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date):
             "업체명": st.column_config.TextColumn("업체명", disabled=True),
             "담당자": st.column_config.TextColumn("담당자", disabled=True),
             "월 예산": st.column_config.TextColumn(
-                "월 예산(원) ✏️", 
-                help="더블클릭하여 예산을 바로 수정하세요. 실시간으로 콤마가 자동 입력됩니다.",
+                "월 예산(원)", 
+                help="더블클릭하여 예산을 바로 수정하세요.",
                 required=True
             ),
             f"{end_dt.month}월 사용액": st.column_config.TextColumn(
@@ -131,18 +132,15 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date):
         }
     )
 
-# ✨ UI 속도 개선 2: 비즈머니 알림 표도 독립된 fragment로 분리
+
 @st.fragment
 def render_alert_table(alert_view: pd.DataFrame):
-    # ✨ 요청하신 정렬 로직만 여기에 추가되었습니다. (잔여일 오름차순)
-    alert_view = alert_view.sort_values(by="days_cover", ascending=True, na_position="last")
-
     def get_depletion_date(days_left):
         if pd.isna(days_left) or float(days_left) >= 99: return "여유"
         days = float(days_left)
-        if days <= 0: return "🚨 즉시 충전"
+        if days <= 0: return "즉시 충전 필요"
         deplete_date = date.today() + timedelta(days=int(days))
-        return deplete_date.strftime("⚠️ %m월 %d일") if days <= 3 else deplete_date.strftime("%m월 %d일")
+        return deplete_date.strftime("%m월 %d일 (임박)") if days <= 3 else deplete_date.strftime("%m월 %d일")
 
     alert_view["예상 중단일"] = alert_view["days_cover"].apply(get_depletion_date)
     
@@ -155,9 +153,9 @@ def render_alert_table(alert_view: pd.DataFrame):
     display_df = display_df[["account_name", "manager", "비즈머니 잔액", avg_days_label, "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
     
     def color_alert(val):
-        if isinstance(val, str) and '🚨' in val:
+        if isinstance(val, str) and '충전 필요' in val:
             return 'color: white; font-weight: 800; background-color: #EF4444;' 
-        elif isinstance(val, str) and '⚠️' in val:
+        elif isinstance(val, str) and '임박' in val:
             return 'color: #9A3412; font-weight: 700; background-color: #FFEDD5;' 
         return ''
 
@@ -169,7 +167,7 @@ def render_alert_table(alert_view: pd.DataFrame):
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
 
-# ✨ UI 속도 개선 3: 상단 지표 영역 fragment화 (ROAS 슬라이더 조작 시 전체 렌더링 방지)
+
 @st.fragment
 def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
     biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
@@ -177,9 +175,9 @@ def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
     target_roas = st.slider("전사 목표 ROAS (%)", min_value=100, max_value=1000, value=300, step=50, key="budget_roas_slider")
     
     def get_weather(roas, target):
-        if roas >= target: return "☀️ 맑음"
-        elif roas >= target * 0.8: return "☁️ 흐림" 
-        else: return "☔ 비상"
+        if roas >= target: return "목표 달성"
+        elif roas >= target * 0.8: return "모니터링" 
+        else: return "효율 비상"
         
     biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
     
@@ -205,6 +203,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
     month_d1 = end_dt.replace(day=1)
     month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
+
+    _, days_in_month = calendar.monthrange(end_dt.year, end_dt.month)
+    current_day = end_dt.day
+    target_pacing_rate = current_day / days_in_month
 
     bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
 
@@ -251,10 +253,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
 
             def _status(rate: float, budget: int):
-                if budget == 0: return ("미설정", 3)
-                if rate >= 1.0: return ("초과", 0)
-                if rate >= 0.9: return ("주의", 1)
-                return ("적정", 2)
+                if budget == 0: return ("미설정", 4)
+                if rate >= 1.0: return ("예산 초과", 0)
+                if rate > target_pacing_rate + 0.1: return ("과속 소진", 1)
+                if rate < target_pacing_rate - 0.1: return ("과소 소진", 3)
+                return ("적정 페이스", 2)
 
             tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
             budget_view["상태"] = tmp[0]
@@ -262,7 +265,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
-            render_budget_editor(budget_view, engine, end_dt)
+            render_budget_editor(budget_view, engine, end_dt, target_pacing_rate)
 
     with tab_alert:
         if alert_view.empty:
