@@ -27,20 +27,24 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
     work = df.copy()
     campaign_type = work.get("캠페인유형", pd.Series("", index=work.index)).astype(str).str.strip()
     
-    is_shopping_cond = campaign_type.str.contains("쇼핑|SHOPPING")
-    
     def _is_general_ad(row):
         ctype = str(row.get("캠페인유형", "")).strip()
         if "쇼핑" in ctype or "SHOPPING" in ctype:
-            ad_name = str(row.get("키워드 / 노출용 상품명", "")).strip()
-            if ad_name.startswith("http") or ad_name.endswith(".jpg") or ad_name.endswith(".png"):
+            ad_name = str(row.get("노출용 상품명", "")).strip()
+            
+            # 네이버 확장소재(추가이미지, 추가홍보문구 등) 필터링 강화
+            if ad_name.startswith("http") or ad_name.endswith((".jpg", ".png", ".jpeg", ".gif")):
                 return False
-            if len(ad_name) > 30 and ("할인" in ad_name or "혜택" in ad_name or "리뷰" in ad_name):
+                
+            bad_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "리뷰", "이벤트", "할인"]
+            # 상품명 자체에 '할인'이 들어갈 수 있으므로, 너무 긴 텍스트에 포함된 경우만 확장소재로 간주
+            if any(bad in ad_name for bad in bad_keywords) and len(ad_name) > 15:
                 return False
+                
             return True
         return allow_unknown_type
 
-    if "키워드 / 노출용 상품명" in work.columns:
+    if "노출용 상품명" in work.columns:
         mask = work.apply(_is_general_ad, axis=1)
         return work[mask].copy()
         
@@ -132,7 +136,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     if not df_kw.empty:
         view_kw = df_kw.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
-            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드 / 노출용 상품명",
+            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "노출용 상품명",
             "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
         })
     
@@ -141,7 +145,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         ad_key_col = "ad_title" if "ad_title" in df_ad.columns else "ad_name"
         view_ad = df_ad.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
-            "campaign_name": "캠페인", "adgroup_name": "광고그룹", ad_key_col: "키워드 / 노출용 상품명",
+            "campaign_name": "캠페인", "adgroup_name": "광고그룹", ad_key_col: "노출용 상품명",
             "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
         })
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
@@ -184,7 +188,7 @@ def render_keyword_main(view, top_n, fmt):
     if sel_grp != "전체":
         disp = disp[disp["광고그룹"] == sel_grp]
 
-    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드 / 노출용 상품명"]
+    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "노출용 상품명"]
     if "평균순위" in disp.columns:
         base_cols.append("평균순위")
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -212,11 +216,11 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         st.info("현재 기간의 키워드/소재 데이터가 없습니다.")
         return
 
-    base_kw = base_kw_bundle.rename(columns={"keyword": "키워드 / 노출용 상품명"}) if not base_kw_bundle.empty else pd.DataFrame()
+    base_kw = base_kw_bundle.rename(columns={"keyword": "노출용 상품명"}) if not base_kw_bundle.empty else pd.DataFrame()
     
     if not base_ad_bundle.empty:
         ad_key_col_base = "ad_title" if "ad_title" in base_ad_bundle.columns else "ad_name"
-        base_ad = base_ad_bundle.rename(columns={ad_key_col_base: "키워드 / 노출용 상품명"})
+        base_ad = base_ad_bundle.rename(columns={ad_key_col_base: "노출용 상품명"})
     else:
         base_ad = pd.DataFrame()
         
@@ -224,7 +228,7 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
 
     view_cmp = view.copy()
     if not base_bundle.empty:
-        valid_keys = [k for k in ["customer_id", "adgroup_id", "키워드 / 노출용 상품명"] if k in view_cmp.columns and k in base_bundle.columns]
+        valid_keys = [k for k in ["customer_id", "adgroup_id", "노출용 상품명"] if k in view_cmp.columns and k in base_bundle.columns]
         if valid_keys:
             view_cmp = _apply_comparison_metrics(view_cmp, base_bundle, valid_keys)
         else:
@@ -241,11 +245,11 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
     ]
 
-    base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드 / 노출용 상품명"]
+    base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "노출용 상품명"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
         base_cols_cmp.extend(["평균순위", "이전 평균순위", "순위 변화"])
 
-    render_item_comparison_search("키워드/소재", view_cmp, base_bundle, "키워드 / 노출용 상품명", start_dt, end_dt, b1, b2)
+    render_item_comparison_search("키워드/소재", view_cmp, base_bundle, "노출용 상품명", start_dt, end_dt, b1, b2)
 
     col_camp_cmp, col_grp_cmp = st.columns(2)
     camps_cmp = ["전체"] + sorted([str(x) for x in view_cmp["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view_cmp.columns else ["전체"]
