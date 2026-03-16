@@ -16,9 +16,13 @@ from page_helpers import *
 
 @st.fragment
 def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
-    editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
+    prev_month_dt = (end_dt.replace(day=1) - timedelta(days=1))
+    prev_m_num = prev_month_dt.month
+    
+    editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
     
     editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     
     editor_df = editor_df.rename(columns={
@@ -109,6 +113,7 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
         column_config={
             "customer_id": None, 
             "monthly_budget_val": None, 
+            "prev_month_cost_val": None,
             "current_month_cost_val": None,
             "업체명": st.column_config.TextColumn("업체명", disabled=True),
             "담당자": st.column_config.TextColumn("담당자", disabled=True),
@@ -116,6 +121,10 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
                 "월 예산(원)", 
                 help="더블클릭하여 예산을 바로 수정하세요.",
                 required=True
+            ),
+            f"{prev_m_num}월 사용액": st.column_config.TextColumn(
+                f"{prev_m_num}월 사용액", 
+                disabled=True
             ),
             f"{end_dt.month}월 사용액": st.column_config.TextColumn(
                 f"{end_dt.month}월 사용액", 
@@ -135,6 +144,10 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
 
 @st.fragment
 def render_alert_table(alert_view: pd.DataFrame):
+    # 예상 중단일(남은 일수) 기준으로 오름차순 정렬 (NaN 값은 맨 아래로)
+    alert_view["_sort_days"] = pd.to_numeric(alert_view["days_cover"], errors="coerce").fillna(9999)
+    alert_view = alert_view.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
+
     def get_depletion_date(days_left):
         if pd.isna(days_left) or float(days_left) >= 99: return "여유"
         days = float(days_left)
@@ -201,18 +214,25 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     end_dt = f.get("end") or yesterday
     avg_d2 = end_dt - timedelta(days=1)
     avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
+    
+    # 당월 1일 및 마지막 일 계산
     month_d1 = end_dt.replace(day=1)
     month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
+    
+    # 전월 1일 및 마지막 일 계산
+    prev_month_last_day = month_d1 - timedelta(days=1)
+    prev_month_d1 = prev_month_last_day.replace(day=1)
+    prev_month_d2 = prev_month_last_day
 
     _, days_in_month = calendar.monthrange(end_dt.year, end_dt.month)
     current_day = end_dt.day
     target_pacing_rate = current_day / days_in_month
 
-    bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
+    bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
 
     alert_avg_d2 = yesterday
     alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    alert_bundle = query_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, TOPUP_AVG_DAYS)
+    alert_bundle = query_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
     
     if bundle is None or bundle.empty:
         biz_view = pd.DataFrame()
@@ -237,7 +257,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_budget_kpis(biz_view.copy(), end_dt)
             st.divider()
 
-            budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "current_month_cost"]].copy()
+            budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]].copy()
             
             if "local_budget_overrides" in st.session_state:
                 for cid, new_val in st.session_state["local_budget_overrides"].items():
@@ -245,6 +265,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                     budget_view.loc[m_cid, "monthly_budget"] = new_val
 
             budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
+            budget_view["prev_month_cost_val"] = pd.to_numeric(budget_view.get("prev_month_cost", 0), errors="coerce").fillna(0).astype(int)
             budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
 
             budget_view["usage_rate"] = 0.0
