@@ -32,13 +32,13 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
         if "쇼핑" in ctype or "SHOPPING" in ctype:
             ad_name = str(row.get("노출용 상품명", "")).strip()
             
-            # 네이버 확장소재(추가이미지, 추가홍보문구 등) 필터링 강화
+            # 1. URL이나 이미지 파일명 형태는 즉시 제외 (GFA 이미지 등)
             if ad_name.startswith("http") or ad_name.endswith((".jpg", ".png", ".jpeg", ".gif")):
                 return False
                 
-            bad_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "리뷰", "이벤트", "할인"]
-            # 상품명 자체에 '할인'이 들어갈 수 있으므로, 너무 긴 텍스트에 포함된 경우만 확장소재로 간주
-            if any(bad in ad_name for bad in bad_keywords) and len(ad_name) > 15:
+            # 2. 네이버 검색광고 확장소재 고유 명칭이 포함된 경우 철저히 제외
+            ext_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "파워링크이미지", "추가제목", "플레이스정보"]
+            if any(ext in ad_name for ext in ext_keywords):
                 return False
                 
             return True
@@ -141,11 +141,18 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         })
     
     if not df_ad.empty:
-        # Check if ad_title exists and use it, otherwise fallback to ad_name
-        ad_key_col = "ad_title" if "ad_title" in df_ad.columns else "ad_name"
+        # DB에서 ad_title이 비어있는(NULL) 경우 표가 공란이 되지 않도록 ad_name으로 자동 폴백 처리
+        if "ad_title" in df_ad.columns:
+            df_ad["final_ad_name"] = df_ad["ad_title"].fillna("").astype(str).str.strip()
+            # 빈 문자열, nan, None 인 경우 원본 ad_name으로 교체
+            mask_empty = df_ad["final_ad_name"].isin(["", "nan", "None"])
+            df_ad.loc[mask_empty, "final_ad_name"] = df_ad.loc[mask_empty, "ad_name"].astype(str)
+        else:
+            df_ad["final_ad_name"] = df_ad["ad_name"].astype(str)
+
         view_ad = df_ad.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
-            "campaign_name": "캠페인", "adgroup_name": "광고그룹", ad_key_col: "노출용 상품명",
+            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "final_ad_name": "노출용 상품명",
             "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
         })
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
@@ -219,8 +226,14 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
     base_kw = base_kw_bundle.rename(columns={"keyword": "노출용 상품명"}) if not base_kw_bundle.empty else pd.DataFrame()
     
     if not base_ad_bundle.empty:
-        ad_key_col_base = "ad_title" if "ad_title" in base_ad_bundle.columns else "ad_name"
-        base_ad = base_ad_bundle.rename(columns={ad_key_col_base: "노출용 상품명"})
+        if "ad_title" in base_ad_bundle.columns:
+            base_ad_bundle["final_ad_name"] = base_ad_bundle["ad_title"].fillna("").astype(str).str.strip()
+            mask_empty = base_ad_bundle["final_ad_name"].isin(["", "nan", "None"])
+            base_ad_bundle.loc[mask_empty, "final_ad_name"] = base_ad_bundle.loc[mask_empty, "ad_name"].astype(str)
+        else:
+            base_ad_bundle["final_ad_name"] = base_ad_bundle["ad_name"].astype(str)
+            
+        base_ad = base_ad_bundle.rename(columns={"final_ad_name": "노출용 상품명"})
     else:
         base_ad = pd.DataFrame()
         
@@ -283,7 +296,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
     st.markdown("<div class='nv-sec-title'>키워드/소재(쇼핑) 상세 분석</div>", unsafe_allow_html=True)
-    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재(노출용 상품명) 단위 성과를 보여줍니다.")
+    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
 
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
