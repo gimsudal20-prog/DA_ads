@@ -752,5 +752,3 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             top_keywords=top_keywords_text,
         )
         st.code(report_text, language="text")
-
-}
