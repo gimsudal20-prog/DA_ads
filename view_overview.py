@@ -569,36 +569,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ==========================================
     st.markdown("<div style='margin-top:40px; margin-bottom:10px;'></div>", unsafe_allow_html=True)
     
-    excel_buffer = io.BytesIO()
-    has_data_to_export = False
-    
-    with pd.ExcelWriter(excel_buffer) as writer:
-        if not df_display.empty:
-            format_for_csv(df_display).to_excel(writer, sheet_name='업체별_전체요약', index=False)
-            has_data_to_export = True
-        if not df_type_display.empty:
-            format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
-            has_data_to_export = True
-        if not weekly_disp.empty:
-            format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_전체합산', index=False)
-            has_data_to_export = True
-        if not weekly_tp_disp.empty:
-            format_for_csv(weekly_tp_disp).to_excel(writer, sheet_name='주간_유형별상세', index=False)
-            has_data_to_export = True
-        if not dow_disp.empty:
-            format_for_csv(dow_disp).to_excel(writer, sheet_name='요일별_요약', index=False)
-            has_data_to_export = True
-        if not camp_disp.empty:
-            format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_상세', index=False)
-            has_data_to_export = True
-        if not daily_disp.empty:
-            format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_상세', index=False)
-            has_data_to_export = True
-        if not export_df_8.empty:
-            format_for_csv(export_df_8.drop(columns=['customer_id'])).to_excel(writer, sheet_name='업체별_캠페인상세', index=False)
-            has_data_to_export = True
+    # 데이터가 하나라도 존재하는지 확인 (빈 엑셀 파일 생성으로 인한 IndexError 방지)
+    has_data_to_export = any([
+        not df_display.empty,
+        not df_type_display.empty,
+        not weekly_disp.empty,
+        not weekly_tp_disp.empty,
+        not dow_disp.empty,
+        not camp_disp.empty,
+        not daily_disp.empty,
+        not export_df_8.empty
+    ])
     
     if has_data_to_export:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer) as writer:
+            if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='업체별_전체요약', index=False)
+            if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
+            if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_전체합산', index=False)
+            if not weekly_tp_disp.empty: format_for_csv(weekly_tp_disp).to_excel(writer, sheet_name='주간_유형별상세', index=False)
+            if not dow_disp.empty: format_for_csv(dow_disp).to_excel(writer, sheet_name='요일별_요약', index=False)
+            if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_상세', index=False)
+            if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_상세', index=False)
+            if not export_df_8.empty: format_for_csv(export_df_8.drop(columns=['customer_id'])).to_excel(writer, sheet_name='업체별_캠페인상세', index=False)
+        
         st.download_button(
             label="📥 통합 데이터 다운로드 (엑셀 시트 분리)",
             data=excel_buffer.getvalue(),
@@ -606,6 +600,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+    else:
+        st.info("해당 기간에 엑셀로 다운로드할 성과 데이터가 없습니다.")
 
 
     # ==========================================
