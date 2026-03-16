@@ -30,7 +30,7 @@ def get_engine():
         pool_size=20, 
         max_overflow=40, 
         pool_pre_ping=True, 
-        pool_recycle=60,
+        pool_recycle=1800,  # 60초에서 1800초(30분)로 늘려 커넥션 풀을 안정화 (방화벽 끊김 방지)
         connect_args=connect_args,
         future=True
     )
@@ -59,12 +59,14 @@ def get_table_columns(_engine, table_name: str) -> list:
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
             if attempt == 2: 
-                # ✨ 자가 치유: 완전히 끊겼다고 판단되면 캐시를 통째로 날려서 다음번에 새 연결을 유도
+                # 빈 리스트 반환 방지 (캐시 오염 방지)
                 st.cache_resource.clear()
-                return []
+                st.error("⚠️ 데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
+                st.stop()
             _engine.dispose()
-            time.sleep(0.5)
-        except Exception: return []
+            time.sleep(1.0)
+        except Exception: 
+            return []
 
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
@@ -74,13 +76,15 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
                 return pd.read_sql(text(query), conn, params=params)
         except (OperationalError, StatementError, InterfaceError) as e:
             if attempt == 2:
-                # ✨ 화면 상단에 빨간 에러창을 띄우는 대신 조용히 엔진 캐시를 날리고 빈 데이터 반환 (화면 깨짐 방지)
+                # 빈 데이터프레임 반환을 막아, st.cache_data가 에러 상태를 캐싱하는 것을 원천 차단
                 st.cache_resource.clear()
-                return pd.DataFrame()
+                st.error("⚠️ 밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
+                st.stop()
             _engine.dispose()
-            time.sleep(0.5) 
+            time.sleep(1.0) 
         except Exception as e:
-            return pd.DataFrame()
+            st.error(f"⚠️ 데이터 로드 오류 발생: {e}")
+            st.stop()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     for attempt in range(3):
@@ -93,7 +97,7 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
                 st.cache_resource.clear()
                 raise e
             _engine.dispose()
-            time.sleep(0.5)
+            time.sleep(1.0)
         except Exception as e:
             raise e
 
