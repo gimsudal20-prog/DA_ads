@@ -214,7 +214,7 @@ def format_number_commas(val) -> str:
 # ==========================================
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
+def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
     if meta.empty: return pd.DataFrame()
     
@@ -226,6 +226,9 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     
     sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
     df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2)})
+
+    sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
+    df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2)})
     
     if table_exists(_engine, "fact_bizmoney_daily"):
         latest_dt_df = sql_read(_engine, "SELECT MAX(dt) as latest_dt FROM fact_bizmoney_daily")
@@ -245,13 +248,15 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_m.empty: df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_prev_m.empty: df_prev_m["customer_id"] = pd.to_numeric(df_prev_m["customer_id"], errors="coerce").fillna(0).astype(int)
     if not df_b.empty: df_b["customer_id"] = pd.to_numeric(df_b["customer_id"], errors="coerce").fillna(0).astype(int)
     
     if not df_avg.empty: df = df.merge(df_avg, on="customer_id", how="left")
     if not df_m.empty: df = df.merge(df_m, on="customer_id", how="left")
+    if not df_prev_m.empty: df = df.merge(df_prev_m, on="customer_id", how="left")
     if not df_b.empty: df = df.merge(df_b, on="customer_id", how="left")
     
-    for c in ["avg_cost", "current_month_cost", "current_month_sales", "bizmoney_balance", "monthly_budget"]:
+    for c in ["avg_cost", "current_month_cost", "current_month_sales", "prev_month_cost", "bizmoney_balance", "monthly_budget"]:
         if c not in df.columns: df[c] = 0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
         
@@ -501,7 +506,27 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    df = sql_read(_engine, f"SELECT dt, SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, SUM(conv) as conv, SUM(sales) as sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY dt ORDER BY dt", {"d1": str(d1), "d2": str(d2)})
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    
+    type_join_sql = ""
+    type_where_sql = ""
+    if type_sel and table_exists(_engine, "dim_campaign"):
+        cols = get_table_columns(_engine, "dim_campaign")
+        cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        db_types = [rev_map.get(t, t) for t in type_sel]
+        type_list_str = ",".join([f"'{x}'" for x in db_types])
+        type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+        type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+
+    sql = f"""
+        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales 
+        FROM fact_campaign_daily f
+        {type_join_sql}
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql} 
+        GROUP BY f.dt ORDER BY f.dt
+    """
+    
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
     return df
