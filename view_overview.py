@@ -313,6 +313,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     df_type_display = pd.DataFrame()
     weekly_disp = pd.DataFrame()
     weekly_tp_disp = pd.DataFrame()
+    dow_disp = pd.DataFrame()
     camp_disp = pd.DataFrame()
     daily_disp = pd.DataFrame()
     export_df_8 = pd.DataFrame()
@@ -490,6 +491,22 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_disp.columns = ['일자', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
         daily_disp = daily_disp.sort_values('일자', ascending=False)
 
+    # 요일별 성과 데이터 연산
+    if daily_ts is not None and not daily_ts.empty:
+        dow_ts = daily_ts.copy()
+        dow_ts['dt'] = pd.to_datetime(dow_ts['dt'])
+        dow_ts['day_of_week_num'] = dow_ts['dt'].dt.dayofweek
+        dow_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
+        dow_ts['요일'] = dow_ts['day_of_week_num'].map(dow_map)
+        
+        dow_grp = dow_ts.groupby(['day_of_week_num', '요일'])[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+        dow_grp['roas'] = np.where(dow_grp['cost'] > 0, dow_grp['sales'] / dow_grp['cost'] * 100, 0)
+        dow_grp['ctr'] = np.where(dow_grp['imp'] > 0, dow_grp['clk'] / dow_grp['imp'] * 100, 0)
+        dow_grp['cpc'] = np.where(dow_grp['clk'] > 0, dow_grp['cost'] / dow_grp['clk'], 0)
+        
+        dow_disp = dow_grp.sort_values('day_of_week_num')[['요일', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']]
+        dow_disp.columns = ['요일', '노출수', '클릭수', '클릭률(%)', '광고비', 'CPC', '전환수', '전환매출', 'ROAS(%)']
+
     # 업체별 캠페인 상세 분석 데이터 연산 (For Export & UI)
     if not cur_camp.empty or not base_camp.empty:
         has_rank_cur = 'avg_rank' in cur_camp.columns
@@ -567,6 +584,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             has_data_to_export = True
         if not weekly_tp_disp.empty:
             format_for_csv(weekly_tp_disp).to_excel(writer, sheet_name='주간_유형별상세', index=False)
+            has_data_to_export = True
+        if not dow_disp.empty:
+            format_for_csv(dow_disp).to_excel(writer, sheet_name='요일별_요약', index=False)
             has_data_to_export = True
         if not camp_disp.empty:
             format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_상세', index=False)
@@ -646,6 +666,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 주간 트렌드 데이터가 없습니다.")
 
 
+    with st.expander("📆 요일별 성과 요약", expanded=False):
+        if not dow_disp.empty:
+            styled_dow = dow_disp.style.format({
+                '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원', '전환수': '{:,.0f}',
+                '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+            })
+            st.dataframe(styled_dow, use_container_width=True, hide_index=True)
+        else:
+            st.info("해당 기간의 요일별 성과 데이터가 없습니다.")
+
+
     with st.expander("📋 상세 성과 데이터 (캠페인별 / 일자별)", expanded=False):
         tab_det_camp, tab_det_daily = st.tabs(["캠페인별 상세", "일자별 상세"])
         
@@ -721,3 +753,4 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         )
         st.code(report_text, language="text")
 
+}
