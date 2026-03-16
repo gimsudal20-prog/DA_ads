@@ -48,6 +48,14 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try:
+        return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=0)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
         ts = query_campaign_timeseries(_engine, trend_d1, end_dt, cids, type_sel)
@@ -109,7 +117,7 @@ def format_for_csv(df):
             elif col in ["광고비", "전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
             elif "차이" in col:
-                if "광고비" in col or "매출" in col:
+                if "광고비" in col or "매출" in col or "CPC" in col:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
                 else:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
@@ -185,6 +193,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+        kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
         daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
         type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
 
@@ -206,13 +215,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.0f}%", "광고비 차이": "{:+,.0f}원",
+        "CPC": "{:,.0f}원", "CPC 증감": "{:+.0f}%", "CPC 차이": "{:+,.0f}원",
         "전환수": "{:,.0f}", "전환 증감": "{:+.0f}%", "전환 차이": "{:+,.0f}",
         "전환매출": "{:,.0f}원", "매출 증감": "{:+.0f}%", "매출 차이": "{:+,.0f}원",
         "ROAS": "{:,.0f}%", "ROAS 증감": "{:+.0f}%"
     }
     
     positive_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
-    negative_cols = ['광고비 증감', '광고비 차이']
+    negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
 
     type_kor_map = {
         "WEB_SITE": "파워링크", 
@@ -345,12 +355,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
             b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
             
+            c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
+            b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
             c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
             b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
             
             pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
             pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
             pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+            pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
             pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
             pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
             
@@ -359,6 +372,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
                 "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
                 "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+                "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
                 "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
                 "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
@@ -384,12 +398,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
             b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
             
+            c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
+            b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
             c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
             b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
             
             pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
             pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
             pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+            pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
             pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
             pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
             
@@ -401,6 +418,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
                 "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
                 "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+                "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
                 "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
                 "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "ROAS": c_roas, "ROAS 증감": c_roas - b_roas
@@ -529,6 +547,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         c_imp, c_clk, c_cost, c_conv, c_sales = sub_merged['imp_cur'], sub_merged['clk_cur'], sub_merged['cost_cur'], sub_merged['conv_cur'], sub_merged['sales_cur']
         b_imp, b_clk, b_cost, b_conv, b_sales = sub_merged['imp_base'], sub_merged['clk_base'], sub_merged['cost_base'], sub_merged['conv_base'], sub_merged['sales_base']
         
+        cpc_cur = np.where(c_clk > 0, c_cost / c_clk, 0)
+        cpc_base = np.where(b_clk > 0, b_cost / b_clk, 0)
         roas_cur = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
         roas_base = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
         
@@ -540,6 +560,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         pct_imp, diff_imp = calc_pct_diff_vec(c_imp, b_imp)
         pct_clk, diff_clk = calc_pct_diff_vec(c_clk, b_clk)
         pct_cost, diff_cost = calc_pct_diff_vec(c_cost, b_cost)
+        pct_cpc, diff_cpc = calc_pct_diff_vec(cpc_cur, cpc_base)
         pct_conv, diff_conv = calc_pct_diff_vec(c_conv, b_conv)
         pct_sales, diff_sales = calc_pct_diff_vec(c_sales, b_sales)
         
@@ -550,6 +571,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
             "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
             "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+            "CPC": cpc_cur, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
             "전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
             "전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
             "ROAS": roas_cur, "ROAS 증감": roas_cur - roas_base
@@ -704,6 +726,46 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.info("일자별 상세 데이터가 없습니다.")
 
 
+    with st.expander("🔑 주요 키워드 TOP 10 성과", expanded=False):
+        if not kw_bundle.empty:
+            kw_types = ["전체"] + [str(x) for x in kw_bundle["campaign_type_label"].dropna().unique() if str(x).strip()]
+            
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                sel_kw_type = st.selectbox("캠페인 유형 필터", options=kw_types, key="kw_type_sel", index=0)
+            with c2:
+                sort_by = st.radio("순위 정렬 기준", options=["노출수", "클릭수", "전환수", "광고비"], horizontal=True)
+                
+            tmp_kw = kw_bundle.copy()
+            if sel_kw_type != "전체":
+                tmp_kw = tmp_kw[tmp_kw["campaign_type_label"] == sel_kw_type]
+            
+            if not tmp_kw.empty:
+                kw_grp = tmp_kw.groupby("keyword")[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index()
+                kw_grp['ctr'] = np.where(kw_grp['imp'] > 0, kw_grp['clk'] / kw_grp['imp'] * 100, 0)
+                kw_grp['cpc'] = np.where(kw_grp['clk'] > 0, kw_grp['cost'] / kw_grp['clk'], 0)
+                kw_grp['roas'] = np.where(kw_grp['cost'] > 0, kw_grp['sales'] / kw_grp['cost'] * 100, 0)
+                
+                sort_col_map = {"노출수": "imp", "클릭수": "clk", "전환수": "conv", "광고비": "cost"}
+                kw_top10 = kw_grp.sort_values(sort_col_map[sort_by], ascending=False).head(10)
+                
+                kw_top10.columns = ["키워드", "노출수", "클릭수", "광고비", "전환수", "전환매출", "클릭률(%)", "CPC", "ROAS(%)"]
+                kw_top10 = kw_top10[["키워드", "노출수", "클릭수", "클릭률(%)", "광고비", "CPC", "전환수", "전환매출", "ROAS(%)"]]
+                
+                st.dataframe(
+                    kw_top10.style.format({
+                        '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
+                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
+                        '전환수': '{:,.0f}', '전환매출': '{:,.0f}원', 'ROAS(%)': '{:,.0f}%'
+                    }),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.info("해당 필터 조건에 일치하는 키워드 데이터가 없습니다.")
+        else:
+            st.info("해당 기간의 키워드 데이터가 없습니다.")
+
+
     with st.expander("🔍 업체별 캠페인 상세 분석", expanded=False):
         render_account_campaign_detail(export_df_8, fmt_dict_standard, positive_cols, negative_cols)
 
@@ -725,16 +787,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         sort_col = "conv" if is_shopping else "clk"
         top_keywords_label = "전환이 많았던 키워드" if is_shopping else "클릭이 많았던 키워드"
 
-        if st.session_state.get(report_loaded_key, False):
-            with st.spinner("키워드 요약 중..."):
-                kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=100)
-                
-            if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
-                kw_top = kw_bundle.copy()
-                kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
-                kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
-                if not kw_top.empty:
-                    top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
+        if not kw_bundle.empty and {"keyword", sort_col}.issubset(kw_bundle.columns):
+            kw_top = kw_bundle.copy()
+            kw_top[sort_col] = pd.to_numeric(kw_top[sort_col], errors="coerce").fillna(0)
+            kw_top = kw_top.groupby("keyword", as_index=False)[sort_col].sum().sort_values(sort_col, ascending=False).head(3)
+            if not kw_top.empty:
+                top_keywords_text = ", ".join([str(x).strip() for x in kw_top["keyword"].tolist() if str(x).strip()]) or "-"
         
         report_text = _build_periodic_report_text(
             campaign_type=report_campaign_type,
