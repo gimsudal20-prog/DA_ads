@@ -197,7 +197,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
         # ---------------------------------------------------------
-        # 종합 성과 테이블 (체크박스로 하위 상세내역 확인)
+        # 종합 성과 테이블
         # ---------------------------------------------------------
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
@@ -249,44 +249,52 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
                     grp_kw = _add_perf_metrics(grp_kw)
                     
-                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>세부 예산 및 효율 트리맵 (상위 20개 핵심 항목)</div>", unsafe_allow_html=True)
-                    st.caption("가독성을 위해 비용 소진이 가장 많은 상위 20개 항목만 차트에 큼직하게 표시됩니다. (붉은색일수록 적자, 푸른색일수록 흑자)")
+                    # ✨ 트리맵 지우고 직관적인 분산형 차트(Scatter Plot) 적용
+                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>🎯 세부 효율 분석 (분산형 4사분면 차트 / 상위 30개)</div>", unsafe_allow_html=True)
+                    st.caption("가로축은 '광고비', 세로축은 'ROAS'입니다. 원의 크기는 '클릭수'를 나타냅니다.<br><b>우측 상단</b>(돈을 많이 쓰고 효율도 좋은 항목)과 <b>우측 하단</b>(돈은 많이 쓰는데 적자인 항목)을 중점적으로 확인하세요.")
                     
-                    # ✨ 글자 겹침 방지: 100개 대신 상위 20개만 큼직하게 렌더링
-                    tree_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(20).copy()
+                    scatter_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(30).copy()
                     
-                    if not tree_df.empty:
+                    if not scatter_df.empty:
                         def _shorten(name):
                             name_str = str(name)
                             return name_str[:12] + "..." if len(name_str) > 12 else name_str
                             
-                        # 계층 간 이름 충돌 버그 방지 & 너무 긴 글자 축약 적용
-                        tree_df['캠페인_노드'] = '🎯 ' + str(selected_campaign)
-                        tree_df['광고그룹_노드'] = '📁 ' + tree_df['광고그룹'].apply(_shorten)
-                        tree_df['키워드_노드'] = '🔑 ' + tree_df['키워드/상품명'].apply(_shorten)
+                        scatter_df['짧은이름'] = scatter_df['키워드/상품명'].apply(_shorten)
+                        scatter_df['클릭_size'] = scatter_df['클릭'].apply(lambda x: max(x, 1)) # 원 크기 에러 방지
+
+                        fig_scatter = px.scatter(
+                            scatter_df, 
+                            x='광고비',
+                            y='ROAS(%)',
+                            color='광고그룹',
+                            size='클릭_size',
+                            text='짧은이름',
+                            hover_data={'키워드/상품명': True, '광고비': ':,.0f', 'ROAS(%)': ':.0f', '클릭': ':,.0f', '광고그룹': True, '짧은이름': False, '클릭_size': False}
+                        )
                         
-                        fig_tree = px.treemap(
-                            tree_df, 
-                            path=['캠페인_노드', '광고그룹_노드', '키워드_노드'],
-                            values='광고비',
-                            color='ROAS(%)',
-                            color_continuous_scale='RdBu',
-                            color_continuous_midpoint=100,
-                            custom_data=['광고그룹', '키워드/상품명', '광고비', 'ROAS(%)']
+                        fig_scatter.update_traces(
+                            textposition='top center', 
+                            textfont_size=11, 
+                            marker=dict(line=dict(width=1, color='white'))
                         )
-                        # 박스 위에는 이름표만 깔끔하게 보이고, 마우스를 올렸을 때만 모든 정보가 나오도록 수정
-                        fig_tree.update_traces(
-                            textinfo="label",
-                            hovertemplate='<b>%{customdata[0]}</b><br>항목명: %{customdata[1]}<br>광고비: %{customdata[2]:,.0f}원<br>ROAS: %{customdata[3]:,.0f}%<extra></extra>'
+                        
+                        # ROAS 100% (적자 기준선) 추가
+                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444", annotation_text="ROAS 100%", annotation_position="bottom right")
+                        
+                        fig_scatter.update_layout(
+                            margin=dict(t=20, l=10, r=20, b=10), 
+                            height=450,
+                            xaxis_title="광고 소진액 (원)",
+                            yaxis_title="ROAS (%)",
+                            legend_title="광고그룹"
                         )
-                        fig_tree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=380)
-                        st.plotly_chart(fig_tree, use_container_width=True, config={'displayModeBar': False})
+                        st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
                     else:
-                        st.info("광고비(소진액)가 0원인 항목은 트리맵 차트에 표시되지 않습니다.")
+                        st.info("광고비(소진액)가 0원인 항목은 차트에 표시되지 않습니다.")
                     
                     st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
-                    # 아래 표에서는 잘림 없이 전체 하위 항목 100개를 보여줌
                     kw_disp = grp_kw[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
