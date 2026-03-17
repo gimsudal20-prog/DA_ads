@@ -420,22 +420,18 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-# ✨ 헤더(제목) 없는 네이버 TSV 리포트 구조를 완벽하게 파악하여 추출하는 로직
 def extract_detailed_conversions(conv_df: pd.DataFrame, pk_idx: int) -> dict:
     if conv_df is None or conv_df.empty: return {}
     
     start_idx = 0
     if len(conv_df) > 0:
         first_val = str(conv_df.iloc[0, 0]).lower()
-        # 혹시라도 헤더가 들어왔을 경우 방어
         if "date" in first_val or "날짜" in first_val or "id" in first_val:
             start_idx = 1
             
     res = {}
     for i in range(start_idx, len(conv_df)):
         r = conv_df.iloc[i]
-        
-        # 컬럼 수가 부족한 행은 무시
         if len(r) < max(pk_idx + 1, 4): continue
         
         try:
@@ -448,12 +444,12 @@ def extract_detailed_conversions(conv_df: pd.DataFrame, pk_idx: int) -> dict:
             if obj_id not in res: 
                 res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
             
-            # ✨ 1: 구매완료
+            # ✨ 구매완료 
             if "구매" in conv_type or conv_type == "1": 
                 res[obj_id]["conv"] += safe_float(r.iloc[-2])
                 res[obj_id]["sales"] += int(safe_float(r.iloc[-1]))
             
-            # ✨ 3: 장바구니 (네이버 API 명세상 장바구니 코드는 3 입니다)
+            # ✨ 장바구니
             elif "장바구니" in conv_type or conv_type == "3" or conv_type == "2":
                 res[obj_id]["cart_conv"] += safe_float(r.iloc[-2])
                 res[obj_id]["cart_sales"] += int(safe_float(r.iloc[-1]))
@@ -471,7 +467,6 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
         if "date" in first_val or "날짜" in first_val or "id" in first_val:
             start_idx = 1
             
-    # 네이버 기본 리포트 컬럼 위치 하드코딩
     if "CAMPAIGN" in report_tp: pk_idx = 2
     elif "KEYWORD" in report_tp: pk_idx = 5
     elif "AD" in report_tp: pk_idx = 5
@@ -499,7 +494,6 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
             if len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
             if len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             
-            # ✨ 분리된 상세 전환 데이터 매핑
             if has_conv_report:
                 conv_data = detailed_conv_map.get(obj_id, {}) if detailed_conv_map else {}
                 res[obj_id]["conv"] = conv_data.get("conv", 0.0)
@@ -606,7 +600,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         else:
             log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
             
-            # ✨ AD_CONVERSION (다차원 보고서) 명시
             report_types = ["CAMPAIGN", "KEYWORD", "AD", "AD_CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 및 병합 시작...")
@@ -614,12 +607,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
             conv_df = dfs.get("AD_CONVERSION")
-            has_conv_report = conv_df is not None and not conv_df.empty
             
-            # ✨ 헤더 없이도 정해진 인덱스로 정확히 매핑 (캠페인: 2, 키워드: 4, 소재: 5)
-            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2) if has_conv_report else None
-            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4) if has_conv_report else None
-            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5) if has_conv_report else None
+            # 🔥 무조건 엄격하게 검증 (실패 시 즉각 에러 뿜고 종료)
+            if conv_df is None or conv_df.empty:
+                raise ValueError("네이버 API에서 [AD_CONVERSION (전환 상세 리포트)] 데이터를 받아오지 못했습니다! (API 권한 확인 필요 또는 네이버 서버 지연)")
+                
+            has_conv_report = True
+            
+            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2)
+            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4)
+            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5)
             
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
