@@ -29,7 +29,7 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
     def _is_general_ad(row):
         ctype = str(row.get("캠페인유형", "")).strip().upper()
         
-        # ✨ 개선 포인트: 파워링크(WEB_SITE)의 소재는 무조건 차단! (파워링크는 키워드 탭에서 '키워드'로만 봐야 함)
+        # 파워링크 소재 차단
         if "파워링크" in ctype or "WEB_SITE" in ctype:
             return False
             
@@ -55,14 +55,15 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
 
 
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
-    for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
+    # ✨ 지표명 변경 적용: 전환 -> 구매 전환수, 전환매출 -> 구매 전환매출
+    for c in ["광고비", "구매 전환매출", "노출", "클릭", "구매 전환수"]:
         if c in view.columns:
             view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
-    view["CPA(원)"] = np.where(view["전환"] > 0, view["광고비"] / view["전환"], 0.0)
-    view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
+    view["CPA(원)"] = np.where(view["구매 전환수"] > 0, view["광고비"] / view["구매 전환수"], 0.0)
+    view["진성 ROAS(%)"] = np.where(view["광고비"] > 0, (view["구매 전환매출"] / view["광고비"]) * 100, 0.0)
     return view
 
 
@@ -113,12 +114,13 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     merged['CPC 증감'] = merged['CPC(원)'] - merged['이전 CPC(원)']
     merged['CPC 증감(%)'] = np.where(merged['이전 CPC(원)'] > 0, (merged['CPC 증감'] / merged['이전 CPC(원)']) * 100, np.where(merged['CPC(원)'] > 0, 100.0, 0.0))
 
+    # ✨ 지표명 변경 적용
     merged['이전 전환'] = merged['b_conv']
-    merged['전환 증감'] = merged['전환'] - merged['이전 전환']
+    merged['전환 증감'] = merged['구매 전환수'] - merged['이전 전환']
     
     merged['이전 전환매출'] = merged['b_sales']
     merged['이전 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 전환매출'] / merged['이전 광고비']) * 100, 0.0)
-    merged['ROAS 증감(%)'] = merged['ROAS(%)'] - merged['이전 ROAS(%)']
+    merged['ROAS 증감(%)'] = merged['진성 ROAS(%)'] - merged['이전 ROAS(%)']
 
     if "avg_rank" in merged.columns:
         if "평균순위" not in merged.columns:
@@ -141,10 +143,11 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     view_ad = pd.DataFrame()
     
     if not df_kw.empty:
+        # ✨ 지표명 변경: conv -> 구매 전환수, sales -> 구매 전환매출
         view_kw = df_kw.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
             "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드/상품명",
-            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "구매 전환수", "sales": "구매 전환매출"
         })
     
     if not df_ad.empty:
@@ -158,9 +161,8 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         view_ad = df_ad.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형",
             "campaign_name": "캠페인", "adgroup_name": "광고그룹", "final_ad_name": "키워드/상품명",
-            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
+            "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "구매 전환수", "sales": "구매 전환매출"
         })
-        # ad_bundle(소재) 데이터에 필터링 적용 (파워링크 소재 완벽 차단)
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
         
     if view_kw.empty and view_ad.empty:
@@ -203,7 +205,8 @@ def render_keyword_main(view, top_n, fmt):
     base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드/상품명"]
     if "평균순위" in disp.columns:
         base_cols.append("평균순위")
-    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+    # ✨ 지표명 변경
+    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)"]
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
 
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
@@ -215,6 +218,19 @@ def render_keyword_main(view, top_n, fmt):
         height=550, 
         hide_index=True 
     )
+
+
+def style_delta_str(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #0528F2; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #F04438; font-weight: 600;'
+    return ''
+
+def style_delta_str_neg(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #F04438; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #0528F2; font-weight: 600;'
+    return ''
 
 
 @st.fragment
@@ -244,8 +260,6 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
             base_ad_bundle["final_ad_name"] = base_ad_bundle["ad_name"].astype(str)
             
         base_ad = base_ad_bundle.rename(columns={"final_ad_name": "키워드/상품명"})
-        
-        # 비교군(이전 기간) 데이터에도 동일하게 파워링크 소재 차단 필터 적용
         base_ad = _filter_shopping_general_ads(base_ad, allow_unknown_type=True)
     else:
         base_ad = pd.DataFrame()
@@ -261,15 +275,6 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
             view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
     else:
         view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
-
-    metrics_cols_cmp = [
-        "노출", "이전 노출", "노출 증감", "노출 증감(%)",
-        "클릭", "이전 클릭", "클릭 증감", "클릭 증감(%)",
-        "광고비", "이전 광고비", "광고비 증감", "광고비 증감(%)",
-        "CPC(원)", "이전 CPC(원)", "CPC 증감", "CPC 증감(%)",
-        "전환", "이전 전환", "전환 증감", 
-        "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
-    ]
 
     base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드/상품명"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
@@ -292,16 +297,58 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
     if sel_grp_cmp != "전체":
         disp = disp[disp["광고그룹"] == sel_grp_cmp]
 
+    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
+    
+    # ✨ 토글 스위치 생성 (뎁스 조절 기능 적용)
+    depth_toggle_kw = st.toggle("📊 세부 수치 모두 펼쳐보기 (이전 원본 데이터 및 분리된 증감률 포함)", value=False, key="kw_depth_toggle")
+
+    if not depth_toggle_kw:
+        # 💡 1단계 (압축 모드): 가로 스크롤 해결을 위해 수치와 퍼센트를 한 칸에 합침
+        def _combine(r, c_val, c_pct):
+            v = r.get(c_val)
+            p = r.get(c_pct)
+            if pd.isna(v) or v == 0: return "-"
+            return f"{v:+,.0f} ({p:+.1f}%)"
+            
+        disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
+        disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
+        disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
+        disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
+        
+        disp["전환 증감 "] = disp["전환 증감"].apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
+        disp["ROAS 증감 "] = disp["ROAS 증감(%)"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+
+        metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "구매 전환수", "전환 증감 ", "진성 ROAS(%)", "ROAS 증감 "]
+        delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "전환 증감 ", "ROAS 증감 "]
+    else:
+        # 💡 2단계 (상세 모드): 기존처럼 길게 모두 나열
+        metrics_cols_cmp = [
+            "이전 노출", "노출", "노출 증감", "노출 증감(%)",
+            "이전 클릭", "클릭", "클릭 증감", "클릭 증감(%)",
+            "이전 광고비", "광고비", "광고비 증감", "광고비 증감(%)",
+            "이전 CPC(원)", "CPC(원)", "CPC 증감", "CPC 증감(%)",
+            "이전 전환", "구매 전환수", "전환 증감", 
+            "이전 ROAS(%)", "진성 ROAS(%)", "ROAS 증감(%)"
+        ]
+        delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"]
+
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
     disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
     styled_cmp = disp.style.format(fmt_cmp)
-    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
     if delta_cols:
-        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+        target_delta_cols = [c for c in delta_cols if c in disp.columns]
+        if not depth_toggle_kw:
+            try:
+                styled_cmp = styled_cmp.map(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
+                styled_cmp = styled_cmp.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+            except AttributeError:
+                styled_cmp = styled_cmp.applymap(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
+                styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+        else:
+            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
+            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
 
-    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
     st.dataframe(
         styled_cmp, 
         use_container_width=True, 
@@ -327,9 +374,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
     
+    # ✨ 지표명 변경에 따른 포맷팅 딕셔너리 업데이트
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
+        "CPA(원)": "{:,.0f}", "구매 전환매출": "{:,.0f}", "구매 전환수": "{:,.1f}", "CTR(%)": "{:,.2f}%", "진성 ROAS(%)": "{:,.2f}%"
     }
 
     with tab_main:
