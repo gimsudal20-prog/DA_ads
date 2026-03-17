@@ -82,9 +82,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         loading_placeholder.empty()
         return
 
-    # ✨ 버그 픽스: 키워드뿐만 아니라 광고소재(쇼핑/GFA) 데이터도 함께 수집하여 병합
-    kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
-    ad_bundle_cur = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
+    # topn_cost 제한을 풀어서 소액 캠페인의 하위 키워드도 누락 없이 완벽히 가져옴
+    kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
+    ad_bundle_cur = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
 
     if not kw_bundle_cur.empty:
         kw_tmp = kw_bundle_cur.rename(columns={"keyword": "item_name"})
@@ -144,9 +144,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
-        # ---------------------------------------------------------
-        # 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
-        # ---------------------------------------------------------
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
         
         col_type, col_device = st.columns([1.5, 1])
@@ -197,11 +194,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-        # ---------------------------------------------------------
-        # 종합 성과 테이블 (체크박스로 하위 상세내역 확인)
-        # ---------------------------------------------------------
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
-        disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
+        disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:4px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
         st.caption("표에서 상세 분석을 원하는 캠페인의 가장 앞(체크박스)을 선택해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
@@ -218,7 +212,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "캠페인": st.column_config.TextColumn(width="medium")
         }
 
-        # ✨ 체크박스 기능 정상 복구 (표 깨짐 원인인 set_index 제거)
+        # 선택 시 하위 차트 표시 로직 정상 작동
         event = st.dataframe(
             styled_main,
             use_container_width=True,
@@ -244,19 +238,29 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "adgroup_name": "광고그룹", "item_name": "키워드/상품명",
                         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                     })
-                    kw_view = _add_perf_metrics(kw_view)
+                    
+                    # 중복 발생 방지를 위한 명확한 그룹핑
+                    kw_view['광고그룹'] = kw_view['광고그룹'].fillna('미분류').replace('', '미분류')
+                    kw_view['키워드/상품명'] = kw_view['키워드/상품명'].fillna('미분류').replace('', '미분류')
+                    
+                    grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
+                    grp_kw = _add_perf_metrics(grp_kw)
                     
                     st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>세부 예산 및 효율 트리맵 (크기: 광고비, 색상: ROAS)</div>", unsafe_allow_html=True)
-                    st.caption("박스 크기가 클수록 광고비를 많이 소진한 항목이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
                     
-                    tree_df = kw_view[kw_view['광고비'] > 0].sort_values('광고비', ascending=False).head(100).copy()
+                    tree_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(100).copy()
+                    
                     if not tree_df.empty:
-                        tree_df['키워드/상품명'] = tree_df['키워드/상품명'].fillna('기타')
-                        tree_df['광고그룹'] = tree_df['광고그룹'].fillna('기타')
+                        st.caption("박스 크기가 클수록 광고비를 많이 소진한 항목이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
+                        
+                        # ✨ 핵심 버그 픽스: Plotly 이름 충돌 에러 방지를 위해 계층별 아이콘 부착 (절대 깨지지 않음)
+                        tree_df['캠페인_노드'] = '🎯 ' + str(selected_campaign)
+                        tree_df['광고그룹_노드'] = '📁 ' + tree_df['광고그룹'].astype(str)
+                        tree_df['키워드_노드'] = '🔑 ' + tree_df['키워드/상품명'].astype(str)
                         
                         fig_tree = px.treemap(
                             tree_df, 
-                            path=[px.Constant(selected_campaign), '광고그룹', '키워드/상품명'],
+                            path=['캠페인_노드', '광고그룹_노드', '키워드_노드'],
                             values='광고비',
                             color='ROAS(%)',
                             color_continuous_scale='RdBu',
@@ -268,18 +272,19 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         )
                         fig_tree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=350)
                         st.plotly_chart(fig_tree, use_container_width=True, config={'displayModeBar': False})
-                    
+                    else:
+                        # 데이터는 있으나 클릭/노출만 있고 광고비가 0원일 경우의 안내문
+                        st.info("광고비(소진액)가 0원인 항목은 트리맵 차트에 표시되지 않습니다.")
                     
                     st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
-                    kw_disp = kw_view[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
+                    kw_disp = grp_kw[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
                         styled_kw = kw_disp.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
                     except AttributeError:
                         styled_kw = kw_disp.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
 
-                    # 하위 표에는 체크박스가 뜨지 않도록 깔끔하게 출력
                     st.dataframe(
                         styled_kw,
                         use_container_width=True,
@@ -352,10 +357,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
-        base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
-        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
+        base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=0)
+        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=0, top_k=50)
 
-        # 비교용 기본 데이터 병합
         if not base_kw_bundle.empty:
             b_kw_tmp = base_kw_bundle.rename(columns={"keyword": "item_name"})
         else:
@@ -410,7 +414,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
 
-    # 꺼짐 기록 탭 로직
     with tab_history:
         try:
             days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
