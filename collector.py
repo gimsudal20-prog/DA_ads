@@ -126,8 +126,7 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
     try:
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}"))
-    except Exception:
-        pass
+    except Exception: pass
 
 def ensure_tables(engine: Engine):
     for attempt in range(3):
@@ -157,7 +156,7 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_dt_cid ON fact_keyword_daily(dt, customer_id);"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_dt_cid ON fact_ad_daily(dt, customer_id);"))
 
-            # 🔥 오류의 원인이었던 DB 컬럼 확정 생성
+            # 🔥 DB 컬럼 강제 생성
             ensure_column(engine, "dim_ad", "ad_title", "TEXT")
             ensure_column(engine, "dim_ad", "ad_desc", "TEXT")
             ensure_column(engine, "dim_ad", "pc_landing_url", "TEXT")
@@ -294,48 +293,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     
     return {"ad_title": str(title)[:200], "ad_desc": str(desc)[:200], "pc_landing_url": str(pc_url)[:500], "mobile_landing_url": str(m_url)[:500], "creative_text": str(creative_text)[:500], "image_url": str(image_url)[:1000]}
 
-def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
-    if not ids: return []
-    out = []
-    d_str = d1.strftime("%Y-%m-%d")
-    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(',', ':'))
-    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(',', ':'))
-    chunks = [ids[i:i+50] for i in range(0, len(ids), 50)]
-    
-    def fetch_chunk(chunk):
-        params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
-        status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data: return data["data"]
-        return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        results = executor.map(fetch_chunk, chunks)
-        for res in results: out.extend(res)
-    return out
-
-def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
-    if not ids: return 0
-    raw_stats = get_stats_range(customer_id, ids, target_date)
-    if not raw_stats: return 0
-    
-    rows = []
-    for r in raw_stats:
-        imp = int(r.get("impCnt", 0) or 0)
-        cost = int(float(r.get("salesAmt", 0) or 0))
-        if imp == 0 and cost == 0: continue 
-        
-        sales = int(float(r.get("convAmt", 0) or 0))
-        clk = int(r.get("clkCnt", 0) or 0)
-        conv = float(r.get("ccnt", 0) or 0)
-        roas = (sales / cost * 100) if cost > 0 else 0.0
-        
-        row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas, "cart_conv": 0.0, "cart_sales": 0}
-        if id_key in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
-        rows.append(row)
-        
-    if rows: replace_fact_range(engine, table_name, rows, customer_id, target_date)
-    return len(rows)
-
 def cleanup_ghost_reports(customer_id: str):
     status, data = request_json("GET", "/stat-reports", customer_id, raise_error=False)
     if status == 200 and isinstance(data, list):
@@ -357,7 +314,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             if status == 200 and data and "reportJobId" in data:
                 jobs[tp] = data["reportJobId"]
             else:
-                log(f"⚠️ [{tp}] API 대용량 리포트 요청 실패: HTTP {status} - {data}")
+                log(f"⚠️ [{tp}] API 요청 실패: HTTP {status} - {data}")
             
         max_wait = 80
         while jobs and max_wait > 0:
@@ -379,12 +336,11 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                     else:
                                         results[tp] = pd.DataFrame()
                             except Exception as e:
-                                log(f"⚠️ [{tp}] 파일 다운로드 중 에러: {e}")
+                                log(f"⚠️ [{tp}] 다운로드 에러: {e}")
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
                     elif stt in ["NONE", "ERROR"]:
-                        if stt == "ERROR":
-                            log(f"⚠️ [{tp}] 리포트 생성 실패 (네이버 내부 에러 발생)")
+                        if stt == "ERROR": log(f"⚠️ [{tp}] 리포트 생성 실패 (네이버 내부 에러)")
                         results[tp] = pd.DataFrame() if stt == "NONE" else None
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
@@ -396,6 +352,23 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             
     return results
 
+def normalize_header(v: str) -> str:
+    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
+
+def get_col_idx(headers: List[str], candidates: List[str]) -> int:
+    norm_headers = [normalize_header(h) for h in headers]
+    norm_candidates = [normalize_header(c) for c in candidates]
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c == h: return i
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c in h and "그룹" not in h: return i
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if h in c and h and "그룹" not in h: return i
+    return -1
+
 def safe_float(v) -> float:
     if pd.isna(v): return 0.0
     s = str(v).replace(",", "").strip()
@@ -403,68 +376,95 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-def extract_detailed_conversions(conv_df: pd.DataFrame, pk_idx: int) -> dict:
+# 🔥 네이버 공지사항(1=Purchasing, 3=Cart) 기반 완벽 추출 함수
+def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> dict:
     if conv_df is None or conv_df.empty: return {}
     
-    start_idx = 0
-    if len(conv_df) > 0:
-        first_val = str(conv_df.iloc[0, 0]).lower()
-        if "date" in first_val or "날짜" in first_val or "id" in first_val:
-            start_idx = 1
+    header_idx = -1
+    scan_limit = min(20, len(conv_df))
+    norm_pk_cands = [normalize_header(c) for c in pk_cands]
+    
+    for i in range(scan_limit):
+        row_vals = [normalize_header(str(x)) for x in conv_df.iloc[i].fillna("")]
+        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
+            header_idx = i
+            break
             
+    if header_idx == -1: return {}
+    
+    headers = [normalize_header(str(x)) for x in conv_df.iloc[header_idx].fillna("")]
+    df = conv_df.iloc[header_idx+1:].reset_index(drop=True)
+    
+    pk_idx = get_col_idx(headers, pk_cands)
+    conv_type_idx = get_col_idx(headers, ["전환유형", "conversiontype", "convtp"])
+    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
+    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
+    
+    if pk_idx == -1 or conv_type_idx == -1: return {}
+    
     res = {}
-    for i in range(start_idx, len(conv_df)):
-        r = conv_df.iloc[i]
-        if len(r) < max(pk_idx + 1, 4): continue
-        
+    for _, r in df.iterrows():
         try:
+            if len(r) <= pk_idx or len(r) <= conv_type_idx: continue
+            
             obj_id = str(r.iloc[pk_idx]).strip()
-            if not obj_id or obj_id == '-' or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]: continue
+            if not obj_id or obj_id == '-': continue
             
-            # 네이버 API 명세: 우측 끝에서부터 매출액(-1), 전환수(-2), 전환유형(-3)
-            conv_type = str(r.iloc[-3]).strip()
+            conv_type = str(r.iloc[conv_type_idx]).strip()
+            if obj_id not in res: res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
             
-            if obj_id not in res: 
-                res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
-            
-            # 구매완료
+            # 🔥 구매완료 (1=Purchasing)
             if "구매" in conv_type or conv_type == "1": 
-                res[obj_id]["conv"] += safe_float(r.iloc[-2])
-                res[obj_id]["sales"] += int(safe_float(r.iloc[-1]))
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
             
-            # 장바구니 담기
-            elif "장바구니" in conv_type or conv_type == "3" or conv_type == "2":
-                res[obj_id]["cart_conv"] += safe_float(r.iloc[-2])
-                res[obj_id]["cart_sales"] += int(safe_float(r.iloc[-1]))
+            # 🔥 장바구니 (3=Cart)
+            elif "장바구니" in conv_type or conv_type == "3":
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["cart_conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["cart_sales"] += int(safe_float(r.iloc[sales_idx]))
                 
         except Exception: pass
         
     return res
 
-def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, detailed_conv_map: dict = None, has_conv_report: bool = False) -> dict:
+def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False, detailed_conv_map: dict = None, has_conv_report: bool = False) -> dict:
     if df is None or df.empty: return {}
     
-    start_idx = 0
-    if len(df) > 0:
-        first_val = str(df.iloc[0, 0]).lower()
-        if "date" in first_val or "날짜" in first_val or "id" in first_val:
-            start_idx = 1
+    header_idx = -1
+    scan_limit = min(20, len(df))
+    norm_pk_cands = [normalize_header(c) for c in pk_cands]
+    for i in range(scan_limit):
+        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
+        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
+            header_idx = i
+            break
             
-    if "CAMPAIGN" in report_tp: pk_idx = 2
-    elif "KEYWORD" in report_tp: pk_idx = 5
-    elif "AD" in report_tp: pk_idx = 5
-    else: return {}
-    
-    imp_idx = 5 if "CAMPAIGN" in report_tp else 8
-    clk_idx = 6 if "CAMPAIGN" in report_tp else 9
-    cost_idx = 7 if "CAMPAIGN" in report_tp else 10
-    conv_idx = 8 if "CAMPAIGN" in report_tp else 11
-    sales_idx = 9 if "CAMPAIGN" in report_tp else 12
-    rank_idx = 11 if "CAMPAIGN" in report_tp else 14
+    if header_idx != -1:
+        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
+        df = df.iloc[header_idx+1:].reset_index(drop=True)
+        pk_idx = get_col_idx(headers, pk_cands)
+        conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
+        sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
+        imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
+        clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
+        cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
+        rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
+    else:
+        if "CAMPAIGN" in report_tp: pk_idx = 2
+        elif "KEYWORD" in report_tp: pk_idx = 5
+        elif "AD" in report_tp: pk_idx = 5
+        else: return {}
+        imp_idx = 5 if "CAMPAIGN" in report_tp else 8
+        clk_idx = 6 if "CAMPAIGN" in report_tp else 9
+        cost_idx = 7 if "CAMPAIGN" in report_tp else 10
+        conv_idx = -1
+        sales_idx = -1
+        rank_idx = 11
 
+    if pk_idx == -1: return {}
+    
     res = {}
-    for i in range(start_idx, len(df)):
-        r = df.iloc[i]
+    for _, r in df.iterrows():
         try:
             if len(r) <= pk_idx: continue
             obj_id = str(r.iloc[pk_idx]).strip()
@@ -473,11 +473,11 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
             if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             imp = 0
-            if len(r) > imp_idx:
+            if imp_idx != -1 and len(r) > imp_idx:
                 imp = int(safe_float(r.iloc[imp_idx]))
                 res[obj_id]["imp"] += imp
-            if len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
-            if len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
+            if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
+            if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             
             if has_conv_report:
                 conv_data = detailed_conv_map.get(obj_id, {}) if detailed_conv_map else {}
@@ -486,12 +486,12 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
                 res[obj_id]["cart_conv"] = conv_data.get("cart_conv", 0.0)
                 res[obj_id]["cart_sales"] = conv_data.get("cart_sales", 0)
             else:
-                if len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-                if len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
                 res[obj_id]["cart_conv"] = 0.0
                 res[obj_id]["cart_sales"] = 0
             
-            if has_rank and len(r) > rank_idx:
+            if has_rank and rank_idx != -1 and len(r) > rank_idx:
                 rnk = safe_float(r.iloc[rank_idx])
                 if rnk > 0 and imp > 0:
                     res[obj_id]["rank_sum"] += (rnk * imp)
@@ -519,6 +519,10 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
+def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
+    # 뼈대 리포트조차 없을 때 우회(Fallback)용: 이 경우는 공지사항 이전의 아주 오래된 API이므로 분리 불가
+    return 0
+
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...") 
     
@@ -526,7 +530,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         
         if not skip_dim:
-            log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
+            log(f"   📥 [ {account_name} ] 구조 데이터(캠페인/그룹/키워드/소재 및 이미지) 동기화 시작...")
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
             
             camps = list_campaigns(customer_id)
@@ -574,7 +578,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
             if not SKIP_KEYWORD_DIM: upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
             if not SKIP_AD_DIM: upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
-            log(f"   ✅ [ {account_name} ] 구조 적재 완료")
+            log(f"   ✅ [ {account_name} ] 구조 적재 완료! (소재 이미지 및 상품명 업데이트 됨)")
             
         else:
             with engine.connect() as conn:
@@ -582,45 +586,55 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
 
-        if target_date == date.today(): pass
+        if target_date == date.today():
+            pass
         else:
-            log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
+            log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
             
-            report_types = ["CAMPAIGN", "KEYWORD", "AD", "AD_CONVERSION"]
+            # 🔥 대표님이 찾아주신 공식 공지사항(CONVERSION) 리포트 반영!
+            report_types = ["CAMPAIGN", "KEYWORD", "AD", "CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
+            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 및 병합 시작...")
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
-            conv_df = dfs.get("AD_CONVERSION")
             
-            has_conv_report = conv_df is not None and not conv_df.empty
+            conv_df = dfs.get("CONVERSION")
             
-            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2) if has_conv_report else {}
-            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4) if has_conv_report else {}
-            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5) if has_conv_report else {}
+            # 🔥 깐깐한 에러 처리 장착 (못 받으면 가차 없이 에러 뿜음)
+            if conv_df is None:
+                raise ValueError("네이버 API에서 [CONVERSION (전환 리포트)] 데이터를 받아오지 못했습니다! (권한 오류 또는 서버 지연)")
+                
+            has_conv_report = True
+            
+            detailed_conv_map_camp = extract_detailed_conversions(conv_df, ["캠페인id", "campaignid"])
+            detailed_conv_map_kw = extract_detailed_conversions(conv_df, ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"])
+            detailed_conv_map_ad = extract_detailed_conversions(conv_df, ["광고id", "소재id", "adid", "상품id", "productid", "itemid"])
             
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", has_rank=True, detailed_conv_map=detailed_conv_map_camp, has_conv_report=has_conv_report)
-            if camp_stat: c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
-            else:
-                if target_camp_ids: c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True, detailed_conv_map=detailed_conv_map_camp, has_conv_report=has_conv_report)
+                
+            if camp_stat:
+                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
 
             kw_stat = {}
             if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", has_rank=True, detailed_conv_map=detailed_conv_map_kw, has_conv_report=has_conv_report)
-            if kw_stat: k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
-            else:
-                if target_kw_ids and not SKIP_KEYWORD_STATS: k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily")
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True, detailed_conv_map=detailed_conv_map_kw, has_conv_report=has_conv_report)
+                
+            if kw_stat:
+                k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
 
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", has_rank=True, detailed_conv_map=detailed_conv_map_ad, has_conv_report=has_conv_report)
-            if ad_stat: a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
-            else:
-                if target_ad_ids and not SKIP_AD_STATS: a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily")
+                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True, detailed_conv_map=detailed_conv_map_ad, has_conv_report=has_conv_report)
             
-            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0: log(f"   💤 [ {account_name} ] 통계 없음")
-            else: log(f"   ✅ [ {account_name} ] 완벽 안정화 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            if ad_stat:
+                a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
+            
+            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+                log(f"   💤 [ {account_name} ] 통계 없음 (리포트는 성공적으로 가져왔으나 소진액/노출이 0인 날입니다)")
+            else:
+                log(f"   ✅ [ {account_name} ] 완벽 분리 적재 완료 (장바구니 쏙쏙 추출): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
@@ -642,13 +656,15 @@ def main():
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
-    if args.customer_id: accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
+    if args.customer_id:
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
         if os.path.exists("accounts.xlsx"):
+            df_acc = None
             try: df_acc = pd.read_excel("accounts.xlsx")
             except Exception:
                 try: df_acc = pd.read_csv("accounts.xlsx")
-                except Exception: df_acc = None
+                except Exception: pass
             
             if df_acc is not None:
                 id_col, name_col = None, None
