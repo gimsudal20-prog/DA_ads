@@ -8,7 +8,7 @@ import streamlit as st
 import plotly.express as px
 from typing import Dict
 
-from data import query_campaign_bundle, query_keyword_bundle, query_campaign_off_log, load_dim_campaign
+from data import query_campaign_bundle, query_keyword_bundle, query_ad_bundle, query_campaign_off_log, load_dim_campaign
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
@@ -40,10 +40,10 @@ def _normalize_merge_keys(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     return out
 
 
-def _keyword_rank_by_keys(kw_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    if kw_bundle is None or kw_bundle.empty or "avg_rank" not in kw_bundle.columns:
+def _keyword_rank_by_keys(detail_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if detail_bundle is None or detail_bundle.empty or "avg_rank" not in detail_bundle.columns:
         return pd.DataFrame(columns=keys + ["avg_rank"])
-    tmp = kw_bundle.copy()
+    tmp = detail_bundle.copy()
     tmp["imp"] = pd.to_numeric(tmp.get("imp", 0), errors="coerce").fillna(0.0)
     tmp["avg_rank"] = pd.to_numeric(tmp.get("avg_rank", np.nan), errors="coerce")
     tmp["_rank_imp"] = tmp["avg_rank"].fillna(0.0) * tmp["imp"]
@@ -82,7 +82,28 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         loading_placeholder.empty()
         return
 
+    # ✨ 버그 픽스: 키워드뿐만 아니라 광고소재(쇼핑/GFA) 데이터도 함께 수집하여 병합
     kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
+    ad_bundle_cur = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
+
+    if not kw_bundle_cur.empty:
+        kw_tmp = kw_bundle_cur.rename(columns={"keyword": "item_name"})
+    else:
+        kw_tmp = pd.DataFrame()
+        
+    if not ad_bundle_cur.empty:
+        ad_tmp = ad_bundle_cur.copy()
+        if "ad_title" in ad_tmp.columns:
+            ad_tmp["final_ad_name"] = ad_tmp["ad_title"].fillna("").astype(str).str.strip()
+            mask_empty = ad_tmp["final_ad_name"].isin(["", "nan", "None"])
+            ad_tmp.loc[mask_empty, "final_ad_name"] = ad_tmp.loc[mask_empty, "ad_name"].astype(str)
+        else:
+            ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
+        ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
+    else:
+        ad_tmp = pd.DataFrame()
+        
+    detail_bundle = pd.concat([kw_tmp, ad_tmp], ignore_index=True)
 
     df = _perf_common_merge_meta(bundle, meta)
     view = df.rename(columns={
@@ -92,8 +113,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     }).copy()
     view = _add_perf_metrics(view)
 
-    if not kw_bundle_cur.empty:
-        rank_map_camp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id"])
+    if not detail_bundle.empty:
+        rank_map_camp = _keyword_rank_by_keys(detail_bundle, ["customer_id", "campaign_id"])
         if not rank_map_camp.empty:
             key_cols = ["customer_id", "campaign_id"]
             view = _normalize_merge_keys(view, key_cols)
@@ -177,13 +198,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
         # ---------------------------------------------------------
-        # 종합 성과 테이블
+        # 종합 성과 테이블 (체크박스로 하위 상세내역 확인)
         # ---------------------------------------------------------
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:4px; margin-top:20px;'>캠페인 종합 성과 데이터</div>", unsafe_allow_html=True)
-        st.caption("표에서 상세 분석을 원하는 캠페인 행을 클릭해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
+        st.caption("표에서 상세 분석을 원하는 캠페인의 가장 앞(체크박스)을 선택해 보세요. (아래에 하위 키워드/소재 상세 데이터가 열립니다)")
 
         try:
             styled_main = disp_main.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
@@ -197,6 +218,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "캠페인": st.column_config.TextColumn(width="medium")
         }
 
+        # ✨ 체크박스 기능 정상 복구 (표 깨짐 원인인 set_index 제거)
         event = st.dataframe(
             styled_main,
             use_container_width=True,
@@ -211,30 +233,30 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             selected_idx = selected_rows[0]
             selected_campaign = disp_main.iloc[selected_idx]["캠페인"]
             
-            kw_detail = kw_bundle_cur[kw_bundle_cur["campaign_name"] == selected_campaign].copy()
+            kw_detail = detail_bundle[detail_bundle["campaign_name"] == selected_campaign].copy()
             
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             with st.container(border=True):
-                st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 8px;'>↳ [{selected_campaign}] 하위 그룹/키워드 상세</h5>", unsafe_allow_html=True)
+                st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 8px;'>↳ [{selected_campaign}] 하위 그룹/상세 성과</h5>", unsafe_allow_html=True)
                 
                 if not kw_detail.empty:
                     kw_view = kw_detail.rename(columns={
-                        "adgroup_name": "광고그룹", "keyword": "키워드",
+                        "adgroup_name": "광고그룹", "item_name": "키워드/상품명",
                         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                     })
                     kw_view = _add_perf_metrics(kw_view)
                     
-                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>키워드 예산 및 효율 트리맵 (크기: 광고비, 색상: ROAS)</div>", unsafe_allow_html=True)
-                    st.caption("박스 크기가 클수록 광고비를 많이 소진한 키워드이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
+                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>세부 예산 및 효율 트리맵 (크기: 광고비, 색상: ROAS)</div>", unsafe_allow_html=True)
+                    st.caption("박스 크기가 클수록 광고비를 많이 소진한 항목이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
                     
                     tree_df = kw_view[kw_view['광고비'] > 0].sort_values('광고비', ascending=False).head(100).copy()
                     if not tree_df.empty:
-                        tree_df['키워드'] = tree_df['키워드'].fillna('기타')
+                        tree_df['키워드/상품명'] = tree_df['키워드/상품명'].fillna('기타')
                         tree_df['광고그룹'] = tree_df['광고그룹'].fillna('기타')
                         
                         fig_tree = px.treemap(
                             tree_df, 
-                            path=[px.Constant(selected_campaign), '광고그룹', '키워드'],
+                            path=[px.Constant(selected_campaign), '광고그룹', '키워드/상품명'],
                             values='광고비',
                             color='ROAS(%)',
                             color_continuous_scale='RdBu',
@@ -250,42 +272,43 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     
                     st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
-                    kw_disp = kw_view[["광고그룹", "키워드", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
+                    kw_disp = kw_view[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
                         styled_kw = kw_disp.style.format(fmt).map(highlight_roas_text, subset=["ROAS(%)"])
                     except AttributeError:
                         styled_kw = kw_disp.style.format(fmt).applymap(highlight_roas_text, subset=["ROAS(%)"])
 
+                    # 하위 표에는 체크박스가 뜨지 않도록 깔끔하게 출력
                     st.dataframe(
                         styled_kw,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
                             "광고그룹": st.column_config.TextColumn(width="medium"),
-                            "키워드": st.column_config.TextColumn(width="medium")
+                            "키워드/상품명": st.column_config.TextColumn(width="medium")
                         }
                     )
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 조회 기간 내에 없습니다.")
 
     with tab_group:
-        if kw_bundle_cur is None or kw_bundle_cur.empty:
+        if detail_bundle is None or detail_bundle.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
-            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in kw_bundle_cur.columns]
-            val_cols = [c for c in ["imp", "clk", "cost", "conv", "sales"] if c in kw_bundle_cur.columns]
+            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in detail_bundle.columns]
+            val_cols = [c for c in ["imp", "clk", "cost", "conv", "sales"] if c in detail_bundle.columns]
             if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
             else:
-                grp = kw_bundle_cur.groupby(grp_cols, as_index=False)[val_cols].sum()
+                grp = detail_bundle.groupby(grp_cols, as_index=False)[val_cols].sum()
                 grp = _perf_common_merge_meta(grp, meta)
                 grouped = grp.rename(columns={
                     "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인",
                     "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                 }).copy()
 
-                rank_map_grp = _keyword_rank_by_keys(kw_bundle_cur, ["customer_id", "campaign_id", "adgroup_id"])
+                rank_map_grp = _keyword_rank_by_keys(detail_bundle, ["customer_id", "campaign_id", "adgroup_id"])
                 if not rank_map_grp.empty:
                     key_cols_grp = ["customer_id", "campaign_id", "adgroup_id"]
                     grouped = _normalize_merge_keys(grouped, key_cols_grp)
@@ -330,6 +353,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
         base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
         base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
+        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
+
+        # 비교용 기본 데이터 병합
+        if not base_kw_bundle.empty:
+            b_kw_tmp = base_kw_bundle.rename(columns={"keyword": "item_name"})
+        else:
+            b_kw_tmp = pd.DataFrame()
+            
+        if not base_ad_bundle.empty:
+            b_ad_tmp = base_ad_bundle.copy()
+            if "ad_title" in b_ad_tmp.columns:
+                b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_title"].fillna("").astype(str).str.strip()
+                mask_empty = b_ad_tmp["final_ad_name"].isin(["", "nan", "None"])
+                b_ad_tmp.loc[mask_empty, "final_ad_name"] = b_ad_tmp.loc[mask_empty, "ad_name"].astype(str)
+            else:
+                b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_name"].astype(str)
+            b_ad_tmp = b_ad_tmp.rename(columns={"final_ad_name": "item_name"})
+        else:
+            b_ad_tmp = pd.DataFrame()
+            
+        base_detail_bundle = pd.concat([b_kw_tmp, b_ad_tmp], ignore_index=True)
 
         view_cmp = view.copy()
         if not base_bundle.empty:
@@ -337,8 +381,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             if valid_keys:
                 view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
 
-        if not base_kw_bundle.empty:
-            base_rank_map = _keyword_rank_by_keys(base_kw_bundle, ["customer_id", "campaign_id"]).rename(columns={"avg_rank": "base_avg_rank"})
+        if not base_detail_bundle.empty:
+            base_rank_map = _keyword_rank_by_keys(base_detail_bundle, ["customer_id", "campaign_id"]).rename(columns={"avg_rank": "base_avg_rank"})
             if not base_rank_map.empty:
                 key_cols_cmp = ["customer_id", "campaign_id"]
                 view_cmp = _normalize_merge_keys(view_cmp, key_cols_cmp)
@@ -368,7 +412,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     # 꺼짐 기록 탭 로직
     with tab_history:
-        # ✨ 조회 기간 계산 및 예외 처리 (3일 미만일 경우 경고)
         try:
             days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
             if days_diff < 3:
