@@ -30,7 +30,7 @@ def get_engine():
         pool_size=20, 
         max_overflow=40, 
         pool_pre_ping=True, 
-        pool_recycle=1800,  # 60초에서 1800초(30분)로 늘려 커넥션 풀을 안정화 (방화벽 끊김 방지)
+        pool_recycle=1800,
         connect_args=connect_args,
         future=True
     )
@@ -59,7 +59,6 @@ def get_table_columns(_engine, table_name: str) -> list:
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
             if attempt == 2: 
-                # 빈 리스트 반환 방지 (캐시 오염 방지)
                 st.cache_resource.clear()
                 st.error("⚠️ 데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
                 st.stop()
@@ -76,7 +75,6 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
                 return pd.read_sql(text(query), conn, params=params)
         except (OperationalError, StatementError, InterfaceError) as e:
             if attempt == 2:
-                # 빈 데이터프레임 반환을 막아, st.cache_data가 에러 상태를 캐싱하는 것을 원천 차단
                 st.cache_resource.clear()
                 st.error("⚠️ 밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
                 st.stop()
@@ -317,9 +315,9 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
             
-    # ✨ cart_conv 합산 추가
+    # ✨ cart_conv, cart_sales 합산 추가
     fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
-    cart_select_sql = ", SUM(f.cart_conv) as cart_conv" if "cart_conv" in fact_cols else ", 0 as cart_conv"
+    cart_select_sql = ", SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales" if "cart_sales" in fact_cols else ", 0 as cart_conv, 0 as cart_sales"
 
     sql = f"""
         SELECT
@@ -339,6 +337,8 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
     row['cpc'] = (row['cost'] / row['clk']) if row.get('clk', 0) > 0 else 0
     row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
+    # ✨ 장바구니 ROAS 계산
+    row['cart_roas'] = (row['cart_sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
     return row
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
@@ -370,9 +370,9 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ cart_conv 추가
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in camp_fact_cols else ", 0 as cart_conv"
-    cart_select_sql = ", agg.cart_conv"
+    # ✨ cart_sales 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if "cart_sales" in camp_fact_cols else ", 0 as cart_conv, 0 as cart_sales"
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
 
     sql = f"""
         WITH agg AS (
@@ -427,9 +427,9 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ cart_conv 추가
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in kw_fact_cols else ", 0 as cart_conv"
-    cart_select_sql = ", agg.cart_conv"
+    # ✨ cart_sales 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if "cart_sales" in kw_fact_cols else ", 0 as cart_conv, 0 as cart_sales"
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
 
     sql = f"""
         WITH agg AS (
@@ -492,9 +492,9 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ cart_conv 추가
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in ad_fact_cols else ", 0 as cart_conv"
-    cart_select_sql = ", agg.cart_conv"
+    # ✨ cart_sales 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if "cart_sales" in ad_fact_cols else ", 0 as cart_conv, 0 as cart_sales"
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
 
     sql = f"""
         WITH agg AS (
@@ -540,9 +540,9 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
         type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
         type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
-    # ✨ cart_conv 추가
+    # ✨ cart_sales 추가
     fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-    cart_select_sql = ", SUM(f.cart_conv) as cart_conv" if "cart_conv" in fact_cols else ", 0 as cart_conv"
+    cart_select_sql = ", SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales" if "cart_sales" in fact_cols else ", 0 as cart_conv, 0 as cart_sales"
 
     sql = f"""
         SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales{cart_select_sql}
