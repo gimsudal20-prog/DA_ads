@@ -150,7 +150,6 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_dt_cid ON fact_keyword_daily(dt, customer_id);"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_dt_cid ON fact_ad_daily(dt, customer_id);"))
 
-            # ✨ 장바구니 컬럼 (cart_conv) 자동 생성 로직 추가
             try:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS ad_title TEXT;"))
@@ -160,9 +159,14 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS creative_text TEXT;"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS image_url TEXT;"))
                     
+                    # ✨ 장바구니 전환수 및 매출액 컬럼 추가
                     conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
+                    
+                    conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
+                    conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
+                    conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
             except Exception as e:
                 pass
             break
@@ -348,8 +352,8 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
         conv = float(r.get("ccnt", 0) or 0)
         roas = (sales / cost * 100) if cost > 0 else 0.0
         
-        # Fallback 시에는 장바구니/구매 분리가 불가능하므로 cart_conv는 0으로 처리
-        row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas, "cart_conv": 0.0}
+        # Fallback은 구분 불가하므로 cart_conv, cart_sales는 0
+        row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas, "cart_conv": 0.0, "cart_sales": 0}
         if id_key in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
         
@@ -435,7 +439,7 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-# ✨ 구매완료와 장바구니를 완벽하게 분리하는 핵심 함수
+# ✨ 구매완료와 장바구니를 완벽히 분리 (건수 + 금액 모두 수집)
 def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> dict:
     if conv_df is None or conv_df.empty: return {}
     
@@ -470,24 +474,25 @@ def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> 
             if not obj_id or obj_id == '-': continue
             
             conv_type = str(r.iloc[conv_type_idx]).strip()
-            if obj_id not in res: res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0}
+            if obj_id not in res: res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
             
-            # ✨ 1. 구매완료 (전환 및 매출에 합산)
+            # ✨ 1. 구매완료 (건수 + 금액)
             if "구매" in conv_type or conv_type == "1": 
                 if conv_idx != -1 and len(r) > conv_idx: 
                     res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
                 if sales_idx != -1 and len(r) > sales_idx: 
                     res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
             
-            # ✨ 2. 장바구니 (별도의 cart_conv 칸에 합산)
+            # ✨ 2. 장바구니 (건수 + 금액)
             elif "장바구니" in conv_type or conv_type == "2":
                 if conv_idx != -1 and len(r) > conv_idx: 
                     res[obj_id]["cart_conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: 
+                    res[obj_id]["cart_sales"] += int(safe_float(r.iloc[sales_idx]))
                 
         except Exception: pass
         
     return res
-
 
 def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False, detailed_conv_map: dict = None, has_conv_report: bool = False) -> dict:
     if df is None or df.empty: return {}
@@ -534,7 +539,7 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             obj_id_norm = normalize_header(obj_id)
             if obj_id_norm in ["id", "keywordid", "adid", "campaignid", "productid", "itemid", "키워드id", "광고id", "소재id", "캠페인id", "검색어id", "쇼핑검색어id"]: continue
 
-            if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "cart_conv": 0.0, "rank_sum": 0.0, "rank_cnt": 0}
+            if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             imp = 0
             if imp_idx != -1 and len(r) > imp_idx:
@@ -543,16 +548,18 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
             if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             
-            # ✨ 분리된 상세 전환 데이터 매핑
+            # ✨ 분리된 상세 전환 데이터(건수, 매출) 매핑
             if has_conv_report:
                 conv_data = detailed_conv_map.get(obj_id, {}) if detailed_conv_map else {}
                 res[obj_id]["conv"] = conv_data.get("conv", 0.0)
                 res[obj_id]["sales"] = conv_data.get("sales", 0)
                 res[obj_id]["cart_conv"] = conv_data.get("cart_conv", 0.0)
+                res[obj_id]["cart_sales"] = conv_data.get("cart_sales", 0)
             else:
                 if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
                 if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
                 res[obj_id]["cart_conv"] = 0.0
+                res[obj_id]["cart_sales"] = 0
             
             if has_rank and rank_idx != -1 and len(r) > rank_idx:
                 rnk = safe_float(r.iloc[rank_idx])
@@ -570,17 +577,18 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         sales = s["sales"]
         roas = (sales / cost * 100.0) if cost > 0 else 0.0
         avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
-        # ✨ DB에 저장할 때 cart_conv도 함께 전송
+        
+        # ✨ DB에 저장할 때 cart_conv와 cart_sales 함께 전송
         row = {
             "dt": target_date, "customer_id": str(customer_id), pk_name: k, 
             "imp": s["imp"], "clk": s["clk"], "cost": cost, 
-            "conv": s["conv"], "sales": sales, "roas": roas, "cart_conv": s.get("cart_conv", 0.0)
+            "conv": s["conv"], "sales": sales, "roas": roas, 
+            "cart_conv": s.get("cart_conv", 0.0), "cart_sales": s.get("cart_sales", 0)
         }
         if pk_name in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
-
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...") 
@@ -703,7 +711,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"   💤 [ {account_name} ] 통계 없음")
             else:
-                log(f"   ✅ [ {account_name} ] 상세 전환(장바구니 분리) 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                log(f"   ✅ [ {account_name} ] 상세 전환(장바구니 완벽 분리) 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
