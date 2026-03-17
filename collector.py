@@ -413,23 +413,6 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             
     return results
 
-def normalize_header(v: str) -> str:
-    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
-
-def get_col_idx(headers: List[str], candidates: List[str]) -> int:
-    norm_headers = [normalize_header(h) for h in headers]
-    norm_candidates = [normalize_header(c) for c in candidates]
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if c == h: return i
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if c in h and "그룹" not in h: return i
-    for c in norm_candidates:
-        for i, h in enumerate(norm_headers):
-            if h in c and h and "그룹" not in h: return i
-    return -1
-
 def safe_float(v) -> float:
     if pd.isna(v): return 0.0
     s = str(v).replace(",", "").strip()
@@ -437,109 +420,86 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> dict:
+# ✨ 헤더(제목) 없는 네이버 TSV 리포트 구조를 완벽하게 파악하여 추출하는 로직
+def extract_detailed_conversions(conv_df: pd.DataFrame, pk_idx: int) -> dict:
     if conv_df is None or conv_df.empty: return {}
     
-    header_idx = -1
-    scan_limit = min(20, len(conv_df))
-    norm_pk_cands = [normalize_header(c) for c in pk_cands]
-    
-    for i in range(scan_limit):
-        row_vals = [normalize_header(str(x)) for x in conv_df.iloc[i].fillna("")]
-        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
-            header_idx = i
-            break
+    start_idx = 0
+    if len(conv_df) > 0:
+        first_val = str(conv_df.iloc[0, 0]).lower()
+        # 혹시라도 헤더가 들어왔을 경우 방어
+        if "date" in first_val or "날짜" in first_val or "id" in first_val:
+            start_idx = 1
             
-    if header_idx == -1: return {}
-    
-    headers = [normalize_header(str(x)) for x in conv_df.iloc[header_idx].fillna("")]
-    df = conv_df.iloc[header_idx+1:].reset_index(drop=True)
-    
-    pk_idx = get_col_idx(headers, pk_cands)
-    conv_type_idx = get_col_idx(headers, ["전환유형", "conversiontype", "convtp"])
-    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
-    
-    if pk_idx == -1 or conv_type_idx == -1: return {}
-    
     res = {}
-    for _, r in df.iterrows():
+    for i in range(start_idx, len(conv_df)):
+        r = conv_df.iloc[i]
+        
+        # 컬럼 수가 부족한 행은 무시
+        if len(r) < max(pk_idx + 1, 4): continue
+        
         try:
-            if len(r) <= pk_idx or len(r) <= conv_type_idx: continue
-            
             obj_id = str(r.iloc[pk_idx]).strip()
-            if not obj_id or obj_id == '-': continue
+            if not obj_id or obj_id == '-' or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]: continue
             
-            conv_type = str(r.iloc[conv_type_idx]).strip()
-            if obj_id not in res: res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
+            # 네이버 전환 리포트는 항상 오른쪽 끝에서부터 전환매출, 전환수, 전환유형이 배열됨
+            conv_type = str(r.iloc[-3]).strip()
             
-            # ✨ 장바구니/구매 로직 매핑
+            if obj_id not in res: 
+                res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
+            
+            # ✨ 1: 구매완료
             if "구매" in conv_type or conv_type == "1": 
-                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
+                res[obj_id]["conv"] += safe_float(r.iloc[-2])
+                res[obj_id]["sales"] += int(safe_float(r.iloc[-1]))
             
-            elif "장바구니" in conv_type or conv_type == "2":
-                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["cart_conv"] += safe_float(r.iloc[conv_idx])
-                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["cart_sales"] += int(safe_float(r.iloc[sales_idx]))
+            # ✨ 3: 장바구니 (네이버 API 명세상 장바구니 코드는 3 입니다)
+            elif "장바구니" in conv_type or conv_type == "3" or conv_type == "2":
+                res[obj_id]["cart_conv"] += safe_float(r.iloc[-2])
+                res[obj_id]["cart_sales"] += int(safe_float(r.iloc[-1]))
                 
         except Exception: pass
         
     return res
 
-def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False, detailed_conv_map: dict = None, has_conv_report: bool = False) -> dict:
+def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, detailed_conv_map: dict = None, has_conv_report: bool = False) -> dict:
     if df is None or df.empty: return {}
-    header_idx = -1
-    scan_limit = min(20, len(df))
-    norm_pk_cands = [normalize_header(c) for c in pk_cands]
-    for i in range(scan_limit):
-        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
-            header_idx = i
-            break
-            
-    if header_idx != -1:
-        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        df = df.iloc[header_idx+1:].reset_index(drop=True)
-        pk_idx = get_col_idx(headers, pk_cands)
-        conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-        sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
-        imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
-        clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
-        cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
-        rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
-    else:
-        if "CAMPAIGN" in report_tp: pk_idx = 2
-        elif "KEYWORD" in report_tp: pk_idx = 5
-        elif "AD" in report_tp: pk_idx = 5
-        else: return {}
-        imp_idx = 5 if "CAMPAIGN" in report_tp else 8
-        clk_idx = 6 if "CAMPAIGN" in report_tp else 9
-        cost_idx = 7 if "CAMPAIGN" in report_tp else 10
-        conv_idx = -1
-        sales_idx = -1
-        rank_idx = 11
-
-    if pk_idx == -1: return {}
     
+    start_idx = 0
+    if len(df) > 0:
+        first_val = str(df.iloc[0, 0]).lower()
+        if "date" in first_val or "날짜" in first_val or "id" in first_val:
+            start_idx = 1
+            
+    # 네이버 기본 리포트 컬럼 위치 하드코딩
+    if "CAMPAIGN" in report_tp: pk_idx = 2
+    elif "KEYWORD" in report_tp: pk_idx = 5
+    elif "AD" in report_tp: pk_idx = 5
+    else: return {}
+    
+    imp_idx = 5 if "CAMPAIGN" in report_tp else 8
+    clk_idx = 6 if "CAMPAIGN" in report_tp else 9
+    cost_idx = 7 if "CAMPAIGN" in report_tp else 10
+    rank_idx = 11
+
     res = {}
-    for _, r in df.iterrows():
+    for i in range(start_idx, len(df)):
+        r = df.iloc[i]
         try:
             if len(r) <= pk_idx: continue
             obj_id = str(r.iloc[pk_idx]).strip()
-            if not obj_id or obj_id == '-': continue
-            
-            obj_id_norm = normalize_header(obj_id)
-            if obj_id_norm in ["id", "keywordid", "adid", "campaignid", "productid", "itemid", "키워드id", "광고id", "소재id", "캠페인id", "검색어id", "쇼핑검색어id"]: continue
+            if not obj_id or obj_id == '-' or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]: continue
 
             if obj_id not in res: res[obj_id] = {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0, "rank_sum": 0.0, "rank_cnt": 0}
             
             imp = 0
-            if imp_idx != -1 and len(r) > imp_idx:
+            if len(r) > imp_idx:
                 imp = int(safe_float(r.iloc[imp_idx]))
                 res[obj_id]["imp"] += imp
-            if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
-            if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
+            if len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
+            if len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             
+            # ✨ 분리된 상세 전환 데이터 매핑
             if has_conv_report:
                 conv_data = detailed_conv_map.get(obj_id, {}) if detailed_conv_map else {}
                 res[obj_id]["conv"] = conv_data.get("conv", 0.0)
@@ -547,12 +507,10 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
                 res[obj_id]["cart_conv"] = conv_data.get("cart_conv", 0.0)
                 res[obj_id]["cart_sales"] = conv_data.get("cart_sales", 0)
             else:
-                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
                 res[obj_id]["cart_conv"] = 0.0
                 res[obj_id]["cart_sales"] = 0
             
-            if has_rank and rank_idx != -1 and len(r) > rank_idx:
+            if has_rank and len(r) > rank_idx:
                 rnk = safe_float(r.iloc[rank_idx])
                 if rnk > 0 and imp > 0:
                     res[obj_id]["rank_sum"] += (rnk * imp)
@@ -656,15 +614,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
             conv_df = dfs.get("AD_CONVERSION")
-            has_conv_report = conv_df is not None 
+            has_conv_report = conv_df is not None and not conv_df.empty
             
-            detailed_conv_map_camp = extract_detailed_conversions(conv_df, ["캠페인id", "campaignid"]) if has_conv_report else None
-            detailed_conv_map_kw = extract_detailed_conversions(conv_df, ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"]) if has_conv_report else None
-            detailed_conv_map_ad = extract_detailed_conversions(conv_df, ["광고id", "소재id", "adid", "상품id", "productid", "itemid"]) if has_conv_report else None
+            # ✨ 헤더 없이도 정해진 인덱스로 정확히 매핑 (캠페인: 2, 키워드: 4, 소재: 5)
+            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2) if has_conv_report else None
+            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4) if has_conv_report else None
+            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5) if has_conv_report else None
             
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True, detailed_conv_map=detailed_conv_map_camp, has_conv_report=has_conv_report)
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", has_rank=True, detailed_conv_map=detailed_conv_map_camp, has_conv_report=has_conv_report)
                 
             if camp_stat:
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
@@ -676,7 +635,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             kw_stat = {}
             if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True, detailed_conv_map=detailed_conv_map_kw, has_conv_report=has_conv_report)
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", has_rank=True, detailed_conv_map=detailed_conv_map_kw, has_conv_report=has_conv_report)
                 
             if kw_stat:
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
@@ -688,7 +647,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True, detailed_conv_map=detailed_conv_map_ad, has_conv_report=has_conv_report)
+                ad_stat = parse_df_combined(dfs["AD"], "AD", has_rank=True, detailed_conv_map=detailed_conv_map_ad, has_conv_report=has_conv_report)
             
             if ad_stat:
                 a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
