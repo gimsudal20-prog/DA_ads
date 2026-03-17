@@ -37,7 +37,6 @@ def _selected_type_label(type_sel: tuple) -> str:
     if len(type_sel) == 1: return type_sel[0]
     return ", ".join(type_sel)
 
-# --- (캐싱 함수들은 이전과 동일하므로 생략 없이 그대로 유지) ---
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
@@ -175,7 +174,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     selected_type_label = _selected_type_label(type_sel)
 
-    # ✨ 포맷팅 딕셔너리에 통합 지표 추가
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
@@ -194,17 +192,24 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     positive_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '장바구니 증감', '장바구니 차이', '장바구니ROAS 증감', '구매 증감', '구매 차이', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감', '총 전환 증감', '총 전환 차이', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감']
     negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
 
+    # ✨ 에러의 원인이었던 type_kor_map을 함수 가장 바깥쪽으로 빼서 전역으로 설정했습니다.
+    type_kor_map = {
+        "WEB_SITE": "파워링크", 
+        "SHOPPING": "쇼핑검색", 
+        "POWER_CONTENTS": "파워컨텐츠", 
+        "BRAND_SEARCH": "브랜드검색", 
+        "PLACE": "플레이스"
+    }
+
     st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
     st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
-    # ✨ 토글 스위치 배치 (핵심)
     funnel_toggle = st.toggle("🔄 장바구니 / 구매완료 퍼널 분리해서 보기 (상세 모드)", value=False)
 
     cur = cur_summary
     base = base_summary
 
-    # 통합 지표 계산 (과거 데이터 호환용)
     cur['tot_conv'] = cur.get('conv', 0) + cur.get('cart_conv', 0)
     cur['tot_sales'] = cur.get('sales', 0) + cur.get('cart_sales', 0)
     cur['tot_roas'] = (cur['tot_sales'] / cur['cost'] * 100) if cur.get('cost', 0) > 0 else 0
@@ -282,8 +287,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
 
-
-    # 데이터 병합 및 연산
     df_display, df_type_display, weekly_disp, weekly_tp_disp, dow_disp, camp_disp, daily_disp, export_df_8 = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     if not cur_camp.empty or not base_camp.empty:
@@ -354,7 +357,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             })
         df_display = pd.DataFrame(table_data)
 
-    # (유형별, 주간, 요일별 연산도 위와 동일한 로직으로 장바구니/구매/통합 모두 연산해둠 - 생략 방지)
     type_col = None
     if not cur_camp.empty and 'campaign_tp' in cur_camp.columns: type_col = 'campaign_tp'
     elif not cur_camp.empty and 'campaign_type' in cur_camp.columns: type_col = 'campaign_type'
@@ -404,8 +406,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             })
         df_type_display = pd.DataFrame(type_table_data).sort_values("광고비", ascending=False)
 
-
-    # 다운로드용 엑셀 등 백그라운드 데이터 준비
     st.markdown("<div style='margin-top:40px; margin-bottom:10px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty])
     if has_data_to_export:
@@ -415,7 +415,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
         st.download_button(label="📥 통합 데이터 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ✨ 뎁스 조절 함수 업데이트 (토글 상태에 따라 컬럼 분기)
     def _apply_depth_toggle(df, base_cols, toggle_state):
         out = df.copy()
         def _combine(r, c_val, c_pct, is_currency=False):
@@ -425,7 +424,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             return f"{v_str} ({p:+.1f}%)"
             
         if not toggle_state:
-            # 기본 통합 모드 (과거 데이터 호환)
             metrics = [
                 ("노출수", "노출 차이", "노출 증감", False),
                 ("클릭수", "클릭 차이", "클릭 증감", False),
@@ -437,19 +435,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             for m in metrics: out[f"{m[0]} 증감/율"] = out.apply(lambda r: _combine(r, m[1], m[2], m[3]), axis=1)
             out["통합 ROAS 증감 "] = out["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
             
-            final_cols = base_cols + [m[0] for m in metrics] + [f"{m[0]} 증감/율" for m in metrics] + ["통합 ROAS(%)", "통합 ROAS 증감 "]
-            # 순서 정렬
             display_cols = base_cols + ["노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율", "총 전환수", "총 전환수 증감/율", "총 전환매출", "총 전환매출 증감/율", "통합 ROAS(%)", "통합 ROAS 증감 "]
             return out[[c for c in display_cols if c in out.columns]], [f"{m[0]} 증감/율" for m in metrics] + ["통합 ROAS 증감 "]
         else:
-            # 상세 분리 모드 (최신 데이터 전용)
             metrics = [
                 ("노출수", "노출 차이", "노출 증감", False),
                 ("클릭수", "클릭 차이", "클릭 증감", False),
                 ("광고비", "광고비 차이", "광고비 증감", True),
                 ("CPC", "CPC 차이", "CPC 증감", True),
                 ("장바구니 담기수", "장바구니 차이", "장바구니 증감", False),
-                ("장바구니 매출액", "장바구니 매출액", "장바구니ROAS 증감", True), # 편의상 병합
+                ("장바구니 매출액", "장바구니 매출액", "장바구니ROAS 증감", True), 
                 ("구매완료수", "구매 차이", "구매 증감", False),
                 ("구매완료 매출", "매출 차이", "매출 증감", True)
             ]
@@ -490,7 +485,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
         st.session_state[report_loaded_key] = True
         
-        # 텍스트 보고서에도 토글 상태 연동
         if not funnel_toggle:
             rep_conv = float(report_cur.get("conv", 0.0) or 0.0) + float(report_cur.get("cart_conv", 0.0) or 0.0)
             rep_sales = float(report_cur.get("sales", 0.0) or 0.0) + float(report_cur.get("cart_sales", 0.0) or 0.0)
