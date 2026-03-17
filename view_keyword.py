@@ -180,7 +180,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-# ✨ UI 속도 개선 1: 종합 성과 탭 렌더링 파편화
+# ✨ UI 속도 개선 1: 종합 성과 탭 렌더링 (틀 고정 기능 추가)
 @st.fragment
 def render_keyword_main(view, top_n, fmt):
     if view.empty:
@@ -210,11 +210,16 @@ def render_keyword_main(view, top_n, fmt):
 
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
+    # 📌 4번(열 고정) 적용: base_cols를 인덱스로 설정하여 우측 스크롤 시에도 이름표가 고정되도록 함
+    freeze_cols = [c for c in base_cols if c in disp.columns]
+    disp = disp.set_index(freeze_cols)
+
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
-    render_big_table(disp.style.format(fmt), "kw_grid_main", 550)
+    # render_big_table 대신 st.dataframe을 직접 호출 (hide_index=False 기본값 사용으로 인덱스 고정 유지)
+    st.dataframe(disp.style.format(fmt), use_container_width=True, height=550)
 
 
-# ✨ UI 속도 개선 2: 기간 비교 탭 렌더링 파편화
+# ✨ UI 속도 개선 2: 기간 비교 탭 렌더링 (틀 고정 기능 추가)
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, end_dt):
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -289,14 +294,19 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
     disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
+    # 📌 4번(열 고정) 적용
+    freeze_cols_cmp = [c for c in base_cols_cmp if c in disp.columns]
+    disp = disp.set_index(freeze_cols_cmp)
+
     styled_cmp = disp.style.format(fmt_cmp)
     delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
     if delta_cols:
         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
-    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    render_big_table(styled_cmp, "kw_cmp_grid", 550)
+    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
+    # render_big_table 대신 st.dataframe을 직접 호출
+    st.dataframe(styled_cmp, use_container_width=True, height=550)
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
