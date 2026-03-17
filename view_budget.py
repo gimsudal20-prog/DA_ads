@@ -22,14 +22,21 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
     editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
     
     editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
-    editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     
     editor_df = editor_df.rename(columns={
         "account_name": "업체명", 
         "manager": "담당자", 
         "usage_pct": "집행률(%)"
     })
+
+    # ✨ 화면에 보여질 컬럼의 순서를 '월 예산 -> 당월 사용액 -> 전월 사용액 -> 집행률' 순서로 고정
+    ordered_cols = [
+        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", # 숨김 처리용
+        "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
+    ]
+    editor_df = editor_df[ordered_cols]
 
     def update_budget_from_table():
         if "budget_table_editor" in st.session_state:
@@ -122,12 +129,12 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
                 help="더블클릭하여 예산을 바로 수정하세요.",
                 required=True
             ),
-            f"{prev_m_num}월 사용액": st.column_config.TextColumn(
-                f"{prev_m_num}월 사용액", 
-                disabled=True
-            ),
             f"{end_dt.month}월 사용액": st.column_config.TextColumn(
                 f"{end_dt.month}월 사용액", 
+                disabled=True
+            ),
+            f"{prev_m_num}월 사용액": st.column_config.TextColumn(
+                f"{prev_m_num}월 사용액", 
                 disabled=True
             ),
             "집행률(%)": st.column_config.ProgressColumn(
@@ -144,7 +151,6 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
 
 @st.fragment
 def render_alert_table(alert_view: pd.DataFrame):
-    # 예상 중단일(남은 일수) 기준으로 오름차순 정렬 (NaN 값은 맨 아래로)
     alert_view["_sort_days"] = pd.to_numeric(alert_view["days_cover"], errors="coerce").fillna(9999)
     alert_view = alert_view.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
 
@@ -215,11 +221,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     avg_d2 = end_dt - timedelta(days=1)
     avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
     
-    # 당월 1일 및 마지막 일 계산
     month_d1 = end_dt.replace(day=1)
     month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
     
-    # 전월 1일 및 마지막 일 계산
     prev_month_last_day = month_d1 - timedelta(days=1)
     prev_month_d1 = prev_month_last_day.replace(day=1)
     prev_month_d2 = prev_month_last_day
