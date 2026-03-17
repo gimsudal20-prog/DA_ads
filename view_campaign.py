@@ -82,7 +82,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         loading_placeholder.empty()
         return
 
-    # topn_cost 제한을 풀어서 소액 캠페인의 하위 키워드도 누락 없이 완벽히 가져옴
     kw_bundle_cur = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
     ad_bundle_cur = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
 
@@ -144,6 +143,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
+        # ---------------------------------------------------------
+        # 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
+        # ---------------------------------------------------------
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
         
         col_type, col_device = st.columns([1.5, 1])
@@ -194,6 +196,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
+        # ---------------------------------------------------------
+        # 종합 성과 테이블 (체크박스로 하위 상세내역 확인)
+        # ---------------------------------------------------------
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
 
@@ -212,7 +217,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             "캠페인": st.column_config.TextColumn(width="medium")
         }
 
-        # 선택 시 하위 차트 표시 로직 정상 작동
         event = st.dataframe(
             styled_main,
             use_container_width=True,
@@ -239,24 +243,27 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
                     })
                     
-                    # 중복 발생 방지를 위한 명확한 그룹핑
                     kw_view['광고그룹'] = kw_view['광고그룹'].fillna('미분류').replace('', '미분류')
                     kw_view['키워드/상품명'] = kw_view['키워드/상품명'].fillna('미분류').replace('', '미분류')
                     
                     grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[['노출', '클릭', '광고비', '전환', '전환매출']].sum()
                     grp_kw = _add_perf_metrics(grp_kw)
                     
-                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>세부 예산 및 효율 트리맵 (크기: 광고비, 색상: ROAS)</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>세부 예산 및 효율 트리맵 (상위 20개 핵심 항목)</div>", unsafe_allow_html=True)
+                    st.caption("가독성을 위해 비용 소진이 가장 많은 상위 20개 항목만 차트에 큼직하게 표시됩니다. (붉은색일수록 적자, 푸른색일수록 흑자)")
                     
-                    tree_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(100).copy()
+                    # ✨ 글자 겹침 방지: 100개 대신 상위 20개만 큼직하게 렌더링
+                    tree_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(20).copy()
                     
                     if not tree_df.empty:
-                        st.caption("박스 크기가 클수록 광고비를 많이 소진한 항목이며, 붉은색일수록 적자(ROAS 100% 미만), 푸른색일수록 흑자입니다.")
-                        
-                        # ✨ 핵심 버그 픽스: Plotly 이름 충돌 에러 방지를 위해 계층별 아이콘 부착 (절대 깨지지 않음)
+                        def _shorten(name):
+                            name_str = str(name)
+                            return name_str[:12] + "..." if len(name_str) > 12 else name_str
+                            
+                        # 계층 간 이름 충돌 버그 방지 & 너무 긴 글자 축약 적용
                         tree_df['캠페인_노드'] = '🎯 ' + str(selected_campaign)
-                        tree_df['광고그룹_노드'] = '📁 ' + tree_df['광고그룹'].astype(str)
-                        tree_df['키워드_노드'] = '🔑 ' + tree_df['키워드/상품명'].astype(str)
+                        tree_df['광고그룹_노드'] = '📁 ' + tree_df['광고그룹'].apply(_shorten)
+                        tree_df['키워드_노드'] = '🔑 ' + tree_df['키워드/상품명'].apply(_shorten)
                         
                         fig_tree = px.treemap(
                             tree_df, 
@@ -265,19 +272,21 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                             color='ROAS(%)',
                             color_continuous_scale='RdBu',
                             color_continuous_midpoint=100,
-                            hover_data={'광고비': ':,.0f', 'ROAS(%)': ':.0f'}
+                            custom_data=['광고그룹', '키워드/상품명', '광고비', 'ROAS(%)']
                         )
+                        # 박스 위에는 이름표만 깔끔하게 보이고, 마우스를 올렸을 때만 모든 정보가 나오도록 수정
                         fig_tree.update_traces(
-                            hovertemplate='<b>%{label}</b><br>광고비: %{value:,.0f}원<br>ROAS: %{color:,.0f}%<extra></extra>'
+                            textinfo="label",
+                            hovertemplate='<b>%{customdata[0]}</b><br>항목명: %{customdata[1]}<br>광고비: %{customdata[2]:,.0f}원<br>ROAS: %{customdata[3]:,.0f}%<extra></extra>'
                         )
-                        fig_tree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=350)
+                        fig_tree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=380)
                         st.plotly_chart(fig_tree, use_container_width=True, config={'displayModeBar': False})
                     else:
-                        # 데이터는 있으나 클릭/노출만 있고 광고비가 0원일 경우의 안내문
                         st.info("광고비(소진액)가 0원인 항목은 트리맵 차트에 표시되지 않습니다.")
                     
                     st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
+                    # 아래 표에서는 잘림 없이 전체 하위 항목 100개를 보여줌
                     kw_disp = grp_kw[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
@@ -360,6 +369,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=0)
         base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=0, top_k=50)
 
+        # 비교용 기본 데이터 병합
         if not base_kw_bundle.empty:
             b_kw_tmp = base_kw_bundle.rename(columns={"keyword": "item_name"})
         else:
