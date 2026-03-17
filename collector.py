@@ -145,7 +145,7 @@ def ensure_tables(engine: Engine):
                     )
                 """))
                 
-                # 2. ✨ DB 검색 속도를 미친듯이 높여줄 '인덱스(목차)' 생성 추가 (Timeout 방지)
+                # 2. DB 검색 속도를 미친듯이 높여줄 '인덱스(목차)' 생성 추가 (Timeout 방지)
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_keyword_cid ON dim_keyword(customer_id);"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_ad_cid ON dim_ad(customer_id);"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_dim_campaign_cid ON dim_campaign(customer_id);"))
@@ -264,7 +264,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     title = ""
     desc = ""
     
-    # 1. valData Parsing (네이버 API는 valData를 딕셔너리가 아닌 문자열(String)로 주는 경우가 많음)
     vd = ad_inner.get("valData")
     val_data = {}
     if isinstance(vd, str):
@@ -277,7 +276,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
         image_url = image_url or val_data.get("imageUrl") or val_data.get("image") or ""
         
-    # 2. shoppingProduct Parsing (쇼핑상품 구조 대응)
     sp = ad_inner.get("shoppingProduct")
     sp_data = {}
     if isinstance(sp, str):
@@ -290,7 +288,6 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
         title = title or sp_data.get("name") or sp_data.get("productName") or ""
         image_url = image_url or sp_data.get("imageUrl") or ""
 
-    # 3. 기타 이미지/텍스트 수집 최후 보루
     if not image_url:
         image_url = ad_inner.get("image", {}).get("imageUrl", "") if isinstance(ad_inner.get("image"), dict) else ""
     if not image_url:
@@ -434,7 +431,58 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False) -> dict:
+# ✨ 순수 구매완료 성과만 필터링/파싱하는 헬퍼 함수 추가
+def extract_pure_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> dict:
+    if conv_df is None or conv_df.empty: return {}
+    
+    header_idx = -1
+    scan_limit = min(20, len(conv_df))
+    norm_pk_cands = [normalize_header(c) for c in pk_cands]
+    
+    for i in range(scan_limit):
+        row_vals = [normalize_header(str(x)) for x in conv_df.iloc[i].fillna("")]
+        if any(any(c == v or (c and c in v) for v in row_vals) for c in norm_pk_cands):
+            header_idx = i
+            break
+            
+    if header_idx == -1: return {}
+    
+    headers = [normalize_header(str(x)) for x in conv_df.iloc[header_idx].fillna("")]
+    df = conv_df.iloc[header_idx+1:].reset_index(drop=True)
+    
+    pk_idx = get_col_idx(headers, pk_cands)
+    conv_type_idx = get_col_idx(headers, ["전환유형", "conversiontype", "convtp"])
+    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
+    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
+    
+    if pk_idx == -1 or conv_type_idx == -1: return {}
+    
+    res = {}
+    for _, r in df.iterrows():
+        try:
+            if len(r) <= pk_idx or len(r) <= conv_type_idx: continue
+            
+            obj_id = str(r.iloc[pk_idx]).strip()
+            if not obj_id or obj_id == '-': continue
+            
+            conv_type = str(r.iloc[conv_type_idx]).strip()
+            # 💡 네이버 리포트에서 전환유형이 '구매완료' 이거나 API 코드 '1'인 경우만 찐 전환으로 인정 (장바구니 배제)
+            if "구매" not in conv_type and conv_type != "1": 
+                continue
+                
+            if obj_id not in res: res[obj_id] = {"pure_conv": 0.0, "pure_sales": 0}
+            
+            if conv_idx != -1 and len(r) > conv_idx: 
+                res[obj_id]["pure_conv"] += safe_float(r.iloc[conv_idx])
+            if sales_idx != -1 and len(r) > sales_idx: 
+                res[obj_id]["pure_sales"] += int(safe_float(r.iloc[sales_idx]))
+                
+        except Exception: pass
+        
+    return res
+
+
+def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has_rank: bool = False, pure_conv_map: dict = None) -> dict:
     if df is None or df.empty: return {}
     header_idx = -1
     scan_limit = min(20, len(df))
@@ -487,8 +535,15 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
                 res[obj_id]["imp"] += imp
             if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
             if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
-            if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-            if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
+            
+            # ✨ 오염된 기본 리포트의 전환 데이터 무시하고, pure_conv_map(구매완료 전용 맵)에서 추출한 값으로 덮어치기!
+            if pure_conv_map and obj_id in pure_conv_map:
+                res[obj_id]["conv"] = pure_conv_map[obj_id]["pure_conv"]
+                res[obj_id]["sales"] = pure_conv_map[obj_id]["pure_sales"]
+            else:
+                # 만약 전환 리포트를 못 가져온 최악의 상황일 때만 기존 방식 fallback
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
             
             if has_rank and rank_idx != -1 and len(r) > rank_idx:
                 rnk = safe_float(r.iloc[rank_idx])
@@ -520,7 +575,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터(캠페인/그룹/키워드/소재 및 이미지) 동기화 시작...")
-            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+            camp_rows, ag_rows, kw_rows, ad_rows = [], [], []
             
             camps = list_campaigns(customer_id)
             for c in camps:
@@ -579,15 +634,23 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             pass
         else:
             log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
-            report_types = ["CAMPAIGN", "KEYWORD", "AD"]
+            
+            # ✨ 핵심 변경: 기본 리포트 3개 외에 다차원(CONVERSION) 리포트까지 동시에 요청
+            report_types = ["CAMPAIGN", "KEYWORD", "AD", "CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
-            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 시작...")
+            log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 및 병합 시작...")
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
+            # 1. 먼저 다운받은 전환(CONVERSION) 리포트에서 구매완료 건만 싹 다 뽑아서 준비해둡니다.
+            pure_conv_map_camp = extract_pure_conversions(dfs.get("CONVERSION"), ["캠페인id", "campaignid"])
+            pure_conv_map_kw = extract_pure_conversions(dfs.get("CONVERSION"), ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"])
+            pure_conv_map_ad = extract_pure_conversions(dfs.get("CONVERSION"), ["광고id", "소재id", "adid", "상품id", "productid", "itemid"])
+            
+            # 2. 기본 리포트 파싱 시, 아까 준비해둔 '순수 구매완료 맵'을 넘겨서 전환 액수를 덮어씌우게 합니다.
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
-                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True)
+                camp_stat = parse_df_combined(dfs["CAMPAIGN"], "CAMPAIGN", ["캠페인id", "campaignid"], has_rank=True, pure_conv_map=pure_conv_map_camp)
                 
             if camp_stat:
                 c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat)
@@ -600,7 +663,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             kw_stat = {}
             if dfs.get("KEYWORD") is not None and not dfs["KEYWORD"].empty:
-                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True)
+                kw_stat = parse_df_combined(dfs["KEYWORD"], "KEYWORD", ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"], has_rank=True, pure_conv_map=pure_conv_map_kw)
                 
             if kw_stat:
                 k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat)
@@ -613,7 +676,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             ad_stat = {}
             if dfs.get("AD") is not None and not dfs["AD"].empty:
-                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True)
+                ad_stat = parse_df_combined(dfs["AD"], "AD", ["광고id", "소재id", "adid", "상품id", "productid", "itemid"], has_rank=True, pure_conv_map=pure_conv_map_ad)
             
             if ad_stat:
                 a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat)
@@ -627,7 +690,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"   💤 [ {account_name} ] 통계 없음 (해당 날짜에 소진된 비용이 0원이거나 DB 뼈대가 없는 계정입니다)")
             else:
-                log(f"   ✅ [ {account_name} ] 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                log(f"   ✅ [ {account_name} ] 순수 구매완료 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
