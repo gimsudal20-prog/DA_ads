@@ -21,8 +21,8 @@ def _format_avg_rank(value):
 
 
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
-    # ✨ 지표명 변경: 전환 -> 구매 전환수, 전환매출 -> 구매 전환매출
-    for c in ["광고비", "구매 전환매출", "노출", "클릭", "구매 전환수"]:
+    # ✨ 장바구니수 추가
+    for c in ["광고비", "구매 전환매출", "노출", "클릭", "구매 전환수", "장바구니수"]:
         if c in view.columns:
             view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
 
@@ -104,11 +104,11 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         df = _perf_common_merge_meta(bundle, meta)
         
-        # ✨ 지표명 변경
+        # ✨ 장바구니수 매핑
         view = df.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
             "campaign_name": "캠페인", "imp": "노출", "clk": "클릭",
-            "cost": "광고비", "conv": "구매 전환수", "sales": "구매 전환매출"
+            "cost": "광고비", "cart_conv": "장바구니수", "conv": "구매 전환수", "sales": "구매 전환매출"
         }).copy()
         view = _add_perf_metrics(view)
 
@@ -124,9 +124,11 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     
+    # ✨ 장바구니수 포맷 추가
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "CPA(원)": "{:,.0f}", "구매 전환매출": "{:,.0f}", "구매 전환수": "{:,.1f}", "CTR(%)": "{:,.2f}%", "진성 ROAS(%)": "{:,.2f}%"
+        "장바구니수": "{:,.0f}", "CPA(원)": "{:,.0f}", "구매 전환매출": "{:,.0f}", "구매 전환수": "{:,.1f}", 
+        "CTR(%)": "{:,.2f}%", "진성 ROAS(%)": "{:,.2f}%"
     }
 
     with tab_main:
@@ -141,12 +143,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in disp_main.columns:
             base_cols.append("평균순위")
         
-        # ✨ 지표명 변경
-        all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)"]
+        # ✨ 장바구니수 추가
+        all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)"]
 
-        # ---------------------------------------------------------
-        # 1단: 유형별 지출 테이블 & 2단: PC/모바일 기기 비중 도넛 차트
-        # ---------------------------------------------------------
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:12px;'>캠페인 성과 요약 대시보드</div>", unsafe_allow_html=True)
         
         col_type, col_device = st.columns([1.5, 1])
@@ -194,12 +193,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=0.85)
             )
             fig.update_traces(textposition='inside', textinfo='percent')
-            
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-        # ---------------------------------------------------------
-        # 종합 성과 테이블
-        # ---------------------------------------------------------
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
 
@@ -239,15 +234,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 8px;'>↳ [{selected_campaign}] 하위 그룹/상세 성과</h5>", unsafe_allow_html=True)
                 
                 if not kw_detail.empty:
+                    # ✨ 하위 상세표 장바구니수 매핑
                     kw_view = kw_detail.rename(columns={
                         "adgroup_name": "광고그룹", "item_name": "키워드/상품명",
-                        "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "구매 전환수", "sales": "구매 전환매출"
+                        "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "conv": "구매 전환수", "sales": "구매 전환매출"
                     })
                     
                     kw_view['광고그룹'] = kw_view['광고그룹'].fillna('미분류').replace('', '미분류')
                     kw_view['키워드/상품명'] = kw_view['키워드/상품명'].fillna('미분류').replace('', '미분류')
                     
-                    grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[['노출', '클릭', '광고비', '구매 전환수', '구매 전환매출']].sum()
+                    # ✨ 장바구니수 합산
+                    grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[['노출', '클릭', '광고비', '장바구니수', '구매 전환수', '구매 전환매출']].sum()
                     grp_kw = _add_perf_metrics(grp_kw)
                     
                     st.markdown("<div style='font-size:13px; font-weight:700; margin-top:16px; margin-bottom:8px;'>🎯 세부 효율 분석 (분산형 4사분면 차트 / 상위 30개)</div>", unsafe_allow_html=True)
@@ -272,44 +269,24 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                             text='짧은이름',
                             hover_data={'키워드/상품명': True, '광고비': ':,.0f', '진성 ROAS(%)': ':.0f', '클릭': ':,.0f', '광고그룹': True, '짧은이름': False, '클릭_size': False}
                         )
-                        
-                        fig_scatter.update_traces(
-                            textposition='top center', 
-                            textfont_size=11, 
-                            marker=dict(line=dict(width=1, color='white'))
-                        )
-                        
+                        fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
                         fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444", annotation_text="ROAS 100%", annotation_position="bottom right")
-                        
-                        fig_scatter.update_layout(
-                            margin=dict(t=20, l=10, r=20, b=10), 
-                            height=450,
-                            xaxis_title="광고 소진액 (원)",
-                            yaxis_title="진성 ROAS (%)",
-                            legend_title="광고그룹"
-                        )
+                        fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title="진성 ROAS (%)", legend_title="광고그룹")
                         st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
                     else:
                         st.info("광고비(소진액)가 0원인 항목은 차트에 표시되지 않습니다.")
                     
                     st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
                     
-                    kw_disp = grp_kw[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "구매 전환수", "구매 전환매출", "진성 ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
+                    # ✨ 하위 표에도 장바구니수 추가
+                    kw_disp = grp_kw[["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "장바구니수", "구매 전환수", "구매 전환매출", "진성 ROAS(%)"]].sort_values("광고비", ascending=False).head(100)
                     
                     try:
                         styled_kw = kw_disp.style.format(fmt).map(highlight_roas_text, subset=["진성 ROAS(%)"])
                     except AttributeError:
                         styled_kw = kw_disp.style.format(fmt).applymap(highlight_roas_text, subset=["진성 ROAS(%)"])
 
-                    st.dataframe(
-                        styled_kw,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "광고그룹": st.column_config.TextColumn(width="medium"),
-                            "키워드/상품명": st.column_config.TextColumn(width="medium")
-                        }
-                    )
+                    st.dataframe(styled_kw, use_container_width=True, hide_index=True, column_config={"광고그룹": st.column_config.TextColumn(width="medium"), "키워드/상품명": st.column_config.TextColumn(width="medium")})
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 조회 기간 내에 없습니다.")
 
@@ -318,17 +295,16 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
             grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in detail_bundle.columns]
-            val_cols = [c for c in ["imp", "clk", "cost", "conv", "sales"] if c in detail_bundle.columns]
+            val_cols = [c for c in ["imp", "clk", "cost", "cart_conv", "conv", "sales"] if c in detail_bundle.columns]
             if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
             else:
                 grp = detail_bundle.groupby(grp_cols, as_index=False)[val_cols].sum()
                 grp = _perf_common_merge_meta(grp, meta)
                 
-                # ✨ 지표명 변경
                 grouped = grp.rename(columns={
                     "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인",
-                    "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "구매 전환수", "sales": "구매 전환매출"
+                    "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "conv": "구매 전환수", "sales": "구매 전환매출"
                 }).copy()
 
                 rank_map_grp = _keyword_rank_by_keys(detail_bundle, ["customer_id", "campaign_id", "adgroup_id"])
@@ -349,24 +325,14 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if "평균순위" in grouped.columns:
                     base_cols_grp.append("평균순위")
                 
-                # ✨ 지표명 변경
-                metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)"]
+                metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)"]
                 cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
                 
-                try:
-                    styled_grp = disp_grp.style.format(fmt).map(highlight_roas_text, subset=["진성 ROAS(%)"])
-                except AttributeError:
-                    styled_grp = disp_grp.style.format(fmt).applymap(highlight_roas_text, subset=["진성 ROAS(%)"])
+                try: styled_grp = disp_grp.style.format(fmt).map(highlight_roas_text, subset=["진성 ROAS(%)"])
+                except AttributeError: styled_grp = disp_grp.style.format(fmt).applymap(highlight_roas_text, subset=["진성 ROAS(%)"])
 
-                grp_col_config = {
-                    "업체명": st.column_config.TextColumn(width="small"),
-                    "담당자": st.column_config.TextColumn(width="small"),
-                    "캠페인유형": st.column_config.TextColumn(width="small"),
-                    "캠페인": st.column_config.TextColumn(width="medium"),
-                    "광고그룹": st.column_config.TextColumn(width="medium")
-                }
-
+                grp_col_config = {"업체명": st.column_config.TextColumn(width="small"), "담당자": st.column_config.TextColumn(width="small"), "캠페인유형": st.column_config.TextColumn(width="small"), "캠페인": st.column_config.TextColumn(width="medium"), "광고그룹": st.column_config.TextColumn(width="medium")}
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>광고그룹별 성과 데이터</div>", unsafe_allow_html=True)
                 st.dataframe(styled_grp, use_container_width=True, hide_index=True, column_config=grp_col_config)
 
@@ -406,7 +372,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
             if valid_keys:
                 view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
-                # ✨ append_comparison_data 내부적으로 생성하는 컬럼명(이전 전환 등)이 아직 과거 이름일 수 있으므로 여기서 변경
+                
+                # ✨ 장바구니 증감 로직 수동 연결 (append_comparison_data에 없을 수 있으므로 대비)
+                if "이전 장바구니수" not in view_cmp.columns:
+                    if "cart_conv_base" in view_cmp.columns:
+                        view_cmp = view_cmp.rename(columns={"cart_conv_base": "이전 장바구니수"})
+                    else:
+                        view_cmp["이전 장바구니수"] = 0
+                view_cmp["장바구니 증감"] = view_cmp["장바구니수"] - view_cmp["이전 장바구니수"].fillna(0)
+
                 if "이전 전환" in view_cmp.columns:
                     view_cmp = view_cmp.rename(columns={"이전 전환": "이전 구매 전환수", "이전 전환매출": "이전 구매 전환매출"})
                 if "전환 증감" in view_cmp.columns:
@@ -429,18 +403,16 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in view_cmp.columns:
             base_cols_cmp.append("평균순위")
         
-        # ✨ 기간 비교 탭 지표명 변경
-        metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
+        # ✨ 비교 탭 장바구니 증감 컬럼 추가
+        metrics_cols_cmp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 증감", "구매 전환수", "CPA(원)", "구매 전환매출", "진성 ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
         final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
 
         styled_cmp = disp_cmp.style.format(fmt)
-        delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp_cmp.columns]
+        delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감", "장바구니 증감"] if c in disp_cmp.columns]
         if delta_cols:
-            try:
-                styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-            except AttributeError:
-                styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
+            try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
+            except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
@@ -450,8 +422,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
             if days_diff < 3:
                 st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다. 상단 필터에서 기간을 '최근 7일' 이상으로 설정하여 평균 ROAS가 안정적인지 먼저 확인해 주세요.")
-        except Exception:
-            pass
+        except Exception: pass
 
         off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
         if off_log.empty:
@@ -475,35 +446,23 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
             
-            pivot_df = off_log.pivot_table(
-                index=["account_name", "campaign_name"], 
-                columns="dt_str", 
-                values="off_time", 
-                aggfunc='first'
-            ).reset_index()
-            
+            pivot_df = off_log.pivot_table(index=["account_name", "campaign_name"], columns="dt_str", values="off_time", aggfunc='first').reset_index()
             pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인"}).fillna("-")
             
             if not view.empty and "진성 ROAS(%)" in view.columns:
                 roas_df = view[["업체명", "캠페인", "진성 ROAS(%)"]].drop_duplicates()
                 pivot_df = pivot_df.merge(roas_df, on=["업체명", "캠페인"], how="left")
-                
                 cols = pivot_df.columns.tolist()
                 cols.insert(2, cols.pop(cols.index('진성 ROAS(%)')))
                 pivot_df = pivot_df[cols]
-                
-                pivot_df['진성 ROAS(%)'] = pivot_df['진성 ROAS(%)'].apply(
-                    lambda x: f"{float(x):,.0f}%" if pd.notnull(x) and str(x) != '-' else "-"
-                )
+                pivot_df['진성 ROAS(%)'] = pivot_df['진성 ROAS(%)'].apply(lambda x: f"{float(x):,.0f}%" if pd.notnull(x) and str(x) != '-' else "-")
 
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록 및 ROAS 효율 분석</div>", unsafe_allow_html=True)
             st.caption("표에 파란색(ROAS 300% 이상)으로 표시된 캠페인 중, 예산 부족으로 자주 꺼진 기록이 확인된다면 최우선적으로 예산을 증액하세요.")
             
             if "진성 ROAS(%)" in pivot_df.columns:
-                try:
-                    styled_pivot = pivot_df.style.map(highlight_roas_text, subset=["진성 ROAS(%)"])
-                except AttributeError:
-                    styled_pivot = pivot_df.style.applymap(highlight_roas_text, subset=["진성 ROAS(%)"])
+                try: styled_pivot = pivot_df.style.map(highlight_roas_text, subset=["진성 ROAS(%)"])
+                except AttributeError: styled_pivot = pivot_df.style.applymap(highlight_roas_text, subset=["진성 ROAS(%)"])
                 st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
             else:
                 st.dataframe(pivot_df, use_container_width=True, hide_index=True)
