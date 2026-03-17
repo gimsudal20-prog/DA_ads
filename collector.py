@@ -575,7 +575,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터(캠페인/그룹/키워드/소재 및 이미지) 동기화 시작...")
-            camp_rows, ag_rows, kw_rows, ad_rows = [], [], []
+            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
             
             camps = list_campaigns(customer_id)
             for c in camps:
