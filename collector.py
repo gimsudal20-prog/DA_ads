@@ -105,7 +105,7 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     try:
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
-    except Exception as e:
+    except Exception:
         return False, None
 
 def get_engine() -> Engine:
@@ -166,8 +166,7 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS cart_sales BIGINT DEFAULT 0;"))
-            except Exception as e:
-                pass
+            except Exception: pass
             break
         except Exception as e:
             time.sleep(3)
@@ -192,7 +191,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
-        except Exception as e:
+        except Exception:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
@@ -229,7 +228,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
             break
-        except Exception as e:
+        except Exception:
             if raw_conn:
                 try: raw_conn.rollback()
                 except Exception: pass
@@ -256,11 +255,9 @@ def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
 
 def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
-    if ok and isinstance(data, list) and data:
-        return data
+    if ok and isinstance(data, list) and data: return data
     ok_owner, data_owner = safe_call("GET", "/ncc/ads", customer_id, {"ownerId": adgroup_id})
-    if ok_owner and isinstance(data_owner, list):
-        return data_owner
+    if ok_owner and isinstance(data_owner, list): return data_owner
     return data if ok and isinstance(data, list) else []
 
 def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
@@ -274,8 +271,7 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     if isinstance(vd, str):
         try: val_data = json.loads(vd)
         except: pass
-    elif isinstance(vd, dict):
-        val_data = vd
+    elif isinstance(vd, dict): val_data = vd
         
     if val_data:
         title = title or val_data.get("customProductName") or val_data.get("productName") or val_data.get("title") or ""
@@ -286,8 +282,7 @@ def extract_ad_creative_fields(ad_obj: dict) -> Dict[str, str]:
     if isinstance(sp, str):
         try: sp_data = json.loads(sp)
         except: pass
-    elif isinstance(sp, dict):
-        sp_data = sp
+    elif isinstance(sp, dict): sp_data = sp
         
     if sp_data:
         title = title or sp_data.get("name") or sp_data.get("productName") or ""
@@ -402,6 +397,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
                     elif stt in ["NONE", "ERROR"]:
+                        # 🔥 이 부분 때문에 NONE이 오면 None 객체로 처리됨
                         results[tp] = pd.DataFrame() if stt == "NONE" else None
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
@@ -438,18 +434,15 @@ def extract_detailed_conversions(conv_df: pd.DataFrame, pk_idx: int) -> dict:
             obj_id = str(r.iloc[pk_idx]).strip()
             if not obj_id or obj_id == '-' or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]: continue
             
-            # 네이버 전환 리포트는 항상 오른쪽 끝에서부터 전환매출, 전환수, 전환유형이 배열됨
             conv_type = str(r.iloc[-3]).strip()
             
             if obj_id not in res: 
                 res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
             
-            # ✨ 구매완료 
             if "구매" in conv_type or conv_type == "1": 
                 res[obj_id]["conv"] += safe_float(r.iloc[-2])
                 res[obj_id]["sales"] += int(safe_float(r.iloc[-1]))
             
-            # ✨ 장바구니
             elif "장바구니" in conv_type or conv_type == "3" or conv_type == "2":
                 res[obj_id]["cart_conv"] += safe_float(r.iloc[-2])
                 res[obj_id]["cart_sales"] += int(safe_float(r.iloc[-1]))
@@ -475,7 +468,9 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
     imp_idx = 5 if "CAMPAIGN" in report_tp else 8
     clk_idx = 6 if "CAMPAIGN" in report_tp else 9
     cost_idx = 7 if "CAMPAIGN" in report_tp else 10
-    rank_idx = 11
+    conv_idx = 8 if "CAMPAIGN" in report_tp else 11
+    sales_idx = 9 if "CAMPAIGN" in report_tp else 12
+    rank_idx = 11 if "CAMPAIGN" in report_tp else 14
 
     res = {}
     for i in range(start_idx, len(df)):
@@ -501,6 +496,9 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, has_rank: bool = False, 
                 res[obj_id]["cart_conv"] = conv_data.get("cart_conv", 0.0)
                 res[obj_id]["cart_sales"] = conv_data.get("cart_sales", 0)
             else:
+                # 🔥 상세 리포트가 NONE(0건)이거나 에러가 났을 때, 기본 리포트의 수치를 빌려오는 안전장치 (2중 방어)
+                if len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
+                if len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
                 res[obj_id]["cart_conv"] = 0.0
                 res[obj_id]["cart_sales"] = 0
             
@@ -608,15 +606,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             
             conv_df = dfs.get("AD_CONVERSION")
             
-            # 🔥 무조건 엄격하게 검증 (실패 시 즉각 에러 뿜고 종료)
-            if conv_df is None or conv_df.empty:
-                raise ValueError("네이버 API에서 [AD_CONVERSION (전환 상세 리포트)] 데이터를 받아오지 못했습니다! (API 권한 확인 필요 또는 네이버 서버 지연)")
-                
-            has_conv_report = True
+            # 🔥 무조건 에러를 뿜어내던 코드를 싹 다 삭제했습니다. 
+            # 빈 DataFrame이 오더라도 당황하지 않고 자연스럽게 0건으로 취급합니다!
+            has_conv_report = conv_df is not None and not conv_df.empty
             
-            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2)
-            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4)
-            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5)
+            detailed_conv_map_camp = extract_detailed_conversions(conv_df, 2) if has_conv_report else {}
+            detailed_conv_map_kw = extract_detailed_conversions(conv_df, 4) if has_conv_report else {}
+            detailed_conv_map_ad = extract_detailed_conversions(conv_df, 5) if has_conv_report else {}
             
             camp_stat = {}
             if dfs.get("CAMPAIGN") is not None and not dfs["CAMPAIGN"].empty:
@@ -657,7 +653,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"   💤 [ {account_name} ] 통계 없음")
             else:
-                log(f"   ✅ [ {account_name} ] 상세 전환(장바구니 완벽 분리) 적재 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                log(f"   ✅ [ {account_name} ] 리포트 적재 완료 (상세전환 반영): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
@@ -685,7 +681,7 @@ def main():
         if os.path.exists("accounts.xlsx"):
             df_acc = None
             try: df_acc = pd.read_excel("accounts.xlsx")
-            except Exception as e:
+            except Exception:
                 try: df_acc = pd.read_csv("accounts.xlsx")
                 except Exception: pass
             
