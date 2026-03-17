@@ -79,8 +79,9 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
 
+        # ✨ sql에 cart_conv 추가!
         sql = f"""
-            SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+            SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales, SUM(f.cart_conv) as cart_conv
             FROM fact_campaign_daily f
             {type_join_sql}
             WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
@@ -93,7 +94,7 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
     except Exception:
         try:
             sql = f"""
-                SELECT f.dt, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales
+                SELECT f.dt, c.campaign_type as campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales, SUM(f.cart_conv) as cart_conv
                 FROM fact_campaign_daily f
                 {type_join_sql}
                 WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
@@ -112,7 +113,7 @@ def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
         if out_df[col].dtype in ['float64', 'int64']:
-            if col in ["노출수", "클릭수", "구매 전환수", "평균순위", "순위"]:
+            if col in ["노출수", "클릭수", "구매 전환수", "장바구니수", "평균순위", "순위"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
             elif col in ["광고비", "구매 전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
@@ -220,18 +221,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     selected_type_label = _selected_type_label(type_sel)
 
-    # ✨ 네이버 업데이트 대응: 라벨을 '구매 전환수', '진성 ROAS' 등으로 명확히 변경
+    # ✨ 장바구니수 추가
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.0f}%", "광고비 차이": "{:+,.0f}원",
         "CPC": "{:,.0f}원", "CPC 증감": "{:+.0f}%", "CPC 차이": "{:+,.0f}원",
+        "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.0f}%", "장바구니 차이": "{:+,.0f}",
         "구매 전환수": "{:,.0f}", "전환 증감": "{:+.0f}%", "전환 차이": "{:+,.0f}",
         "구매 전환매출": "{:,.0f}원", "매출 증감": "{:+.0f}%", "매출 차이": "{:+,.0f}원",
         "진성 ROAS": "{:,.0f}%", "ROAS 증감": "{:+.0f}%"
     }
     
-    positive_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
+    positive_cols = ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '장바구니 증감', '장바구니 차이', '전환 증감', '전환 차이', '매출 증감', '매출 차이', 'ROAS 증감']
     negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
 
     type_kor_map = {
@@ -241,7 +243,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "BRAND_SEARCH": "브랜드검색", 
         "PLACE": "플레이스"
     }
-
 
     # ==========================================
     # 1. 종합 성과 요약 (전체 유형)
@@ -296,11 +297,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             </div>
         </div>
         <div class='kpi-group'>
-            <div class='kpi-group-title'>진성 전환 성과 (장바구니 제외)</div>
+            <div class='kpi-group-title'>진성 전환 성과 (장바구니 분리)</div>
             <div class='kpi-row'>
                 {_kpi_html("진성 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                {_kpi_html("장바구니 담기", format_number_commas(cur.get("cart_conv", 0.0)), f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
                 {_kpi_html("구매 전환수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
-                {_kpi_html("구매 전환매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
             </div>
         </div>
     </div>
@@ -341,9 +342,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     # 업체별 요약 데이터 연산
     if not cur_camp.empty or not base_camp.empty:
-        base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales']
-        cur_grp = cur_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
-        base_grp = base_camp.groupby('customer_id')[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=base_cols)
+        base_cols = ['customer_id', 'imp', 'clk', 'cost', 'conv', 'sales', 'cart_conv']
+        # ✨ cart_conv가 없을 경우(SQL 업데이트 전) 에러 방지
+        for c in base_cols:
+            if c not in cur_camp.columns: cur_camp[c] = 0.0
+            if c not in base_camp.columns: base_camp[c] = 0.0
+
+        cur_grp = cur_camp.groupby('customer_id')[base_cols[1:]].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=base_cols)
+        base_grp = base_camp.groupby('customer_id')[base_cols[1:]].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=base_cols)
         
         cur_grp['customer_id'] = cur_grp['customer_id'].astype(str)
         base_grp['customer_id'] = base_grp['customer_id'].astype(str)
@@ -362,8 +368,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         table_data = []
         for _, row in merged.iterrows():
-            c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
-            b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
+            c_imp, c_clk, c_cost, c_conv, c_sales, c_cart = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur'], row['cart_conv_cur']
+            b_imp, b_clk, b_cost, b_conv, b_sales, b_cart = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0), row.get('cart_conv_base', 0)
             
             c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
             b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
@@ -374,6 +380,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
             pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
             pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
+            pct_cart, diff_cart = calc_pct_diff(c_cart, b_cart)
             pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
             pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
             
@@ -383,6 +390,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
                 "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
                 "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
+                "장바구니수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
                 "구매 전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
                 "구매 전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "진성 ROAS": c_roas, "ROAS 증감": c_roas - b_roas
@@ -397,16 +405,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     elif not base_camp.empty and 'campaign_type' in base_camp.columns: type_col = 'campaign_type'
 
     if type_col and (not cur_camp.empty or not base_camp.empty):
-        cur_type_grp = cur_camp.groupby(type_col)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=[type_col, 'imp', 'clk', 'cost', 'conv', 'sales'])
-        base_type_grp = base_camp.groupby(type_col)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=[type_col, 'imp', 'clk', 'cost', 'conv', 'sales'])
+        cur_type_grp = cur_camp.groupby(type_col)[base_cols[1:]].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=[type_col]+base_cols[1:])
+        base_type_grp = base_camp.groupby(type_col)[base_cols[1:]].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=[type_col]+base_cols[1:])
         
         type_merged = pd.merge(cur_type_grp, base_type_grp, on=type_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
         type_merged = type_merged.sort_values('cost_cur', ascending=False)
         
         type_table_data = []
         for _, row in type_merged.iterrows():
-            c_imp, c_clk, c_cost, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur']
-            b_imp, b_clk, b_cost, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
+            c_imp, c_clk, c_cost, c_conv, c_sales, c_cart = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['conv_cur'], row['sales_cur'], row['cart_conv_cur']
+            b_imp, b_clk, b_cost, b_conv, b_sales, b_cart = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('conv_base', 0), row.get('sales_base', 0), row.get('cart_conv_base', 0)
             
             c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
             b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
@@ -417,6 +425,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
             pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
             pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
+            pct_cart, diff_cart = calc_pct_diff(c_cart, b_cart)
             pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
             pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
             
@@ -429,6 +438,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
                 "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
                 "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
+                "장바구니수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
                 "구매 전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
                 "구매 전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
                 "진성 ROAS": c_roas, "ROAS 증감": c_roas - b_roas
@@ -487,7 +497,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         elif 'campaign_tp' in camp_disp.columns:
             camp_disp['campaign_type'] = camp_disp['campaign_tp'].apply(lambda x: type_kor_map.get(str(x).upper(), x))
         
-        cols = ['campaign_name', 'campaign_type', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'conv', 'sales', 'roas']
+        # ✨ 상세 성과 데이터에 cart_conv 추가
+        cols = ['campaign_name', 'campaign_type', 'imp', 'clk', 'ctr', 'cost', 'cpc', 'cart_conv', 'conv', 'sales', 'roas']
         avail_cols = [c for c in cols if c in camp_disp.columns]
         camp_disp = camp_disp[avail_cols]
         
@@ -500,6 +511,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             elif c == 'ctr': kor_cols.append('클릭률(%)')
             elif c == 'cost': kor_cols.append('광고비')
             elif c == 'cpc': kor_cols.append('CPC')
+            elif c == 'cart_conv': kor_cols.append('장바구니수')
             elif c == 'conv': kor_cols.append('구매 전환수')
             elif c == 'sales': kor_cols.append('구매 전환매출')
             elif c == 'roas': kor_cols.append('진성 ROAS(%)')
@@ -542,11 +554,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         grp_cols_cur = ['customer_id', 'campaign_name']
         if has_rank_cur: grp_cols_cur.append('avg_rank')
-        cur_sub_grp = cur_camp.groupby(grp_cols_cur)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=grp_cols_cur+['imp', 'clk', 'cost', 'conv', 'sales'])
+        cur_sub_grp = cur_camp.groupby(grp_cols_cur)[base_cols[1:]].sum().reset_index() if not cur_camp.empty else pd.DataFrame(columns=grp_cols_cur+base_cols[1:])
         
         grp_cols_base = ['customer_id', 'campaign_name']
         if has_rank_base: grp_cols_base.append('avg_rank')
-        base_sub_grp = base_camp.groupby(grp_cols_base)[['imp', 'clk', 'cost', 'conv', 'sales']].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=grp_cols_base+['imp', 'clk', 'cost', 'conv', 'sales'])
+        base_sub_grp = base_camp.groupby(grp_cols_base)[base_cols[1:]].sum().reset_index() if not base_camp.empty else pd.DataFrame(columns=grp_cols_base+base_cols[1:])
         
         sub_merged = pd.merge(cur_sub_grp, base_sub_grp, on=['customer_id', 'campaign_name'], how='outer', suffixes=('_cur', '_base')).fillna(0)
         
@@ -554,8 +566,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         sub_merged = sub_merged.merge(meta_mapping, on='customer_id', how='left')
         sub_merged['account_name'] = sub_merged['account_name'].fillna(sub_merged['customer_id'])
         
-        c_imp, c_clk, c_cost, c_conv, c_sales = sub_merged['imp_cur'], sub_merged['clk_cur'], sub_merged['cost_cur'], sub_merged['conv_cur'], sub_merged['sales_cur']
-        b_imp, b_clk, b_cost, b_conv, b_sales = sub_merged['imp_base'], sub_merged['clk_base'], sub_merged['cost_base'], sub_merged['conv_base'], sub_merged['sales_base']
+        c_imp, c_clk, c_cost, c_conv, c_sales, c_cart = sub_merged['imp_cur'], sub_merged['clk_cur'], sub_merged['cost_cur'], sub_merged['conv_cur'], sub_merged['sales_cur'], sub_merged.get('cart_conv_cur', 0)
+        b_imp, b_clk, b_cost, b_conv, b_sales, b_cart = sub_merged['imp_base'], sub_merged['clk_base'], sub_merged['cost_base'], sub_merged['conv_base'], sub_merged['sales_base'], sub_merged.get('cart_conv_base', 0)
         
         cpc_cur = np.where(c_clk > 0, c_cost / c_clk, 0)
         cpc_base = np.where(b_clk > 0, b_cost / b_clk, 0)
@@ -571,6 +583,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         pct_clk, diff_clk = calc_pct_diff_vec(c_clk, b_clk)
         pct_cost, diff_cost = calc_pct_diff_vec(c_cost, b_cost)
         pct_cpc, diff_cpc = calc_pct_diff_vec(cpc_cur, cpc_base)
+        pct_cart, diff_cart = calc_pct_diff_vec(c_cart, b_cart)
         pct_conv, diff_conv = calc_pct_diff_vec(c_conv, b_conv)
         pct_sales, diff_sales = calc_pct_diff_vec(c_sales, b_sales)
         
@@ -582,6 +595,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
             "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
             "CPC": cpc_cur, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
+            "장바구니수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
             "구매 전환수": c_conv, "전환 증감": pct_conv, "전환 차이": diff_conv,
             "구매 전환매출": c_sales, "매출 증감": pct_sales, "매출 차이": diff_sales,
             "진성 ROAS": roas_cur, "ROAS 증감": roas_cur - roas_base
@@ -677,6 +691,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ("클릭수", "클릭 차이", "클릭 증감", False),
                 ("광고비", "광고비 차이", "광고비 증감", True),
                 ("CPC", "CPC 차이", "CPC 증감", True),
+                ("장바구니수", "장바구니 차이", "장바구니 증감", False),
                 ("구매 전환수", "전환 차이", "전환 증감", False),
                 ("구매 전환매출", "매출 차이", "매출 증감", True)
             ]
@@ -779,7 +794,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 st.dataframe(
                     camp_disp.style.format({
                         '노출수': '{:,.0f}', '클릭수': '{:,.0f}', '클릭률(%)': '{:,.2f}%',
-                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원',
+                        '광고비': '{:,.0f}원', 'CPC': '{:,.0f}원', '장바구니수': '{:,.0f}',
                         '구매 전환수': '{:,.0f}', '구매 전환매출': '{:,.0f}원', '진성 ROAS(%)': '{:,.0f}%'
                     }),
                     use_container_width=True, hide_index=True
