@@ -72,20 +72,27 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         if k in base_df.columns:
             base_df[k] = base_df[k].astype(str)
             
+    # 숫자형으로 명시적 강제 변환 (CPC 계산 오류 방지)
+    for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
+        if c in base_df.columns:
+            base_df[c] = pd.to_numeric(base_df[c], errors='coerce').fillna(0)
+            
     agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
     if 'avg_rank' in base_df.columns:
         agg_dict['avg_rank'] = 'mean'
+        base_df['avg_rank'] = pd.to_numeric(base_df['avg_rank'], errors='coerce')
         
     if not base_df.empty:
-        base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+        base_agg = base_df.groupby(merge_keys).agg({k:v for k,v in agg_dict.items() if k in base_df.columns}).reset_index()
         base_agg = base_agg.rename(columns={'imp': 'b_imp', 'clk': 'b_clk', 'cost': 'b_cost', 'conv': 'b_conv', 'sales': 'b_sales', 'avg_rank': 'b_avg_rank'})
         merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
     else:
         merged = view_df.copy()
         
+    # 병합된 데이터도 확실히 숫자형으로 포맷팅
     for c in ['b_imp', 'b_clk', 'b_cost', 'b_conv', 'b_sales']:
         if c not in merged.columns: merged[c] = 0
-        merged[c] = merged[c].fillna(0)
+        merged[c] = pd.to_numeric(merged[c], errors='coerce').fillna(0)
         
     if 'b_avg_rank' not in merged.columns: merged['b_avg_rank'] = np.nan
 
@@ -288,7 +295,7 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
-    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
     render_big_table(styled_cmp, "kw_cmp_grid", 550)
 
 
@@ -296,7 +303,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
     st.markdown("<div class='nv-sec-title'>키워드/소재(쇼핑) 상세 분석</div>", unsafe_allow_html=True)
-    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재(상품명) 단위 성과를 보여줍니다.")
+    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
 
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
