@@ -25,10 +25,14 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
         return pd.DataFrame() if df is None else df
 
     work = df.copy()
-    campaign_type = work.get("캠페인유형", pd.Series("", index=work.index)).astype(str).str.strip()
     
     def _is_general_ad(row):
-        ctype = str(row.get("캠페인유형", "")).strip()
+        ctype = str(row.get("캠페인유형", "")).strip().upper()
+        
+        # ✨ 개선 포인트: 파워링크(WEB_SITE)의 소재는 무조건 차단! (파워링크는 키워드 탭에서 '키워드'로만 봐야 함)
+        if "파워링크" in ctype or "WEB_SITE" in ctype:
+            return False
+            
         if "쇼핑" in ctype or "SHOPPING" in ctype:
             ad_name = str(row.get("키워드/상품명", "")).strip()
             
@@ -40,6 +44,7 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
                 return False
                 
             return True
+            
         return allow_unknown_type
 
     if "키워드/상품명" in work.columns:
@@ -155,6 +160,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
             "campaign_name": "캠페인", "adgroup_name": "광고그룹", "final_ad_name": "키워드/상품명",
             "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
         })
+        # ad_bundle(소재) 데이터에 필터링 적용 (파워링크 소재 완벽 차단)
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
         
     if view_kw.empty and view_ad.empty:
@@ -219,7 +225,6 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
     
-    # ✨ 동그라미 로딩(spinner) 추가 (비교 기간)
     with st.spinner("🔄 비교 기간의 데이터를 불러오는 중입니다..."):
         base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
         base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
@@ -239,6 +244,9 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
             base_ad_bundle["final_ad_name"] = base_ad_bundle["ad_name"].astype(str)
             
         base_ad = base_ad_bundle.rename(columns={"final_ad_name": "키워드/상품명"})
+        
+        # 비교군(이전 기간) 데이터에도 동일하게 파워링크 소재 차단 필터 적용
+        base_ad = _filter_shopping_general_ads(base_ad, allow_unknown_type=True)
     else:
         base_ad = pd.DataFrame()
         
@@ -305,14 +313,13 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
-    st.markdown("<div class='nv-sec-title'>키워드/소재(쇼핑) 상세 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title'>키워드/소재 상세 분석</div>", unsafe_allow_html=True)
     st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
 
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    # ✨ 동그라미 로딩(spinner) 추가
     with st.spinner("🔄 키워드 및 소재 데이터를 집계하고 있습니다... 잠시만 기다려주세요."):
         kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
         ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
