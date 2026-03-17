@@ -317,6 +317,10 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
             
+    # ✨ cart_conv 합산 추가
+    fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
+    cart_select_sql = ", SUM(f.cart_conv) as cart_conv" if "cart_conv" in fact_cols else ", 0 as cart_conv"
+
     sql = f"""
         SELECT
             SUM(f.imp) as imp,
@@ -324,6 +328,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             SUM(f.cost) as cost,
             SUM(f.conv) as conv,
             SUM(f.sales) as sales
+            {cart_select_sql}
         FROM fact_{entity}_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
@@ -365,11 +370,15 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    # ✨ cart_conv 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in camp_fact_cols else ", 0 as cart_conv"
+    cart_select_sql = ", agg.cart_conv"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, campaign_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}{cart_agg_sql}
             FROM fact_campaign_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, campaign_id
@@ -377,7 +386,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         SELECT 
             agg.customer_id, agg.campaign_id, 
             c.campaign_name, c.{cp_col} as campaign_type,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{cart_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
@@ -418,11 +427,15 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    # ✨ cart_conv 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in kw_fact_cols else ", 0 as cart_conv"
+    cart_select_sql = ", agg.cart_conv"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, keyword_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}{cart_agg_sql}
             FROM fact_keyword_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, keyword_id
@@ -431,7 +444,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, k.keyword,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{cart_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
         JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
@@ -479,11 +492,15 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    # ✨ cart_conv 추가
+    cart_agg_sql = ", SUM(cart_conv) as cart_conv" if "cart_conv" in ad_fact_cols else ", 0 as cart_conv"
+    cart_select_sql = ", agg.cart_conv"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, ad_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}{cart_agg_sql}
             FROM fact_ad_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, ad_id
@@ -492,7 +509,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{cart_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
@@ -523,8 +540,12 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
         type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
         type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
+    # ✨ cart_conv 추가
+    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
+    cart_select_sql = ", SUM(f.cart_conv) as cart_conv" if "cart_conv" in fact_cols else ", 0 as cart_conv"
+
     sql = f"""
-        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales 
+        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, SUM(f.conv) as conv, SUM(f.sales) as sales{cart_select_sql}
         FROM fact_campaign_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql} 
