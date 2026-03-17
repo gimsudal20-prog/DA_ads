@@ -32,11 +32,9 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
         if "쇼핑" in ctype or "SHOPPING" in ctype:
             ad_name = str(row.get("키워드/상품명", "")).strip()
             
-            # 1. URL이나 이미지 파일명 형태는 즉시 제외 (GFA 이미지 등)
             if ad_name.startswith("http") or ad_name.endswith((".jpg", ".png", ".jpeg", ".gif")):
                 return False
                 
-            # 2. 네이버 검색광고 확장소재 고유 명칭이 포함된 경우 철저히 제외
             ext_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "파워링크이미지", "추가제목", "플레이스정보"]
             if any(ext in ad_name for ext in ext_keywords):
                 return False
@@ -72,7 +70,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         if k in base_df.columns:
             base_df[k] = base_df[k].astype(str)
             
-    # 숫자형으로 명시적 강제 변환 (CPC 계산 오류 방지)
     for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
         if c in base_df.columns:
             base_df[c] = pd.to_numeric(base_df[c], errors='coerce').fillna(0)
@@ -89,7 +86,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     else:
         merged = view_df.copy()
         
-    # 병합된 데이터도 확실히 숫자형으로 포맷팅
     for c in ['b_imp', 'b_clk', 'b_cost', 'b_conv', 'b_sales']:
         if c not in merged.columns: merged[c] = 0
         merged[c] = pd.to_numeric(merged[c], errors='coerce').fillna(0)
@@ -128,7 +124,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     return merged
 
 
-# ✨ 최고속도 최적화: 가장 무거운 연산(병합 및 지표 계산)을 캐싱하여 메모리에서 즉시 반환
 @st.cache_data(show_spinner=False, max_entries=20, ttl=300)
 def compute_keyword_view(kw_bundle, ad_bundle, meta):
     if (kw_bundle is None or kw_bundle.empty) and (ad_bundle is None or ad_bundle.empty):
@@ -148,10 +143,8 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         })
     
     if not df_ad.empty:
-        # DB에서 ad_title이 비어있는(NULL) 경우 표가 공란이 되지 않도록 ad_name으로 자동 폴백 처리
         if "ad_title" in df_ad.columns:
             df_ad["final_ad_name"] = df_ad["ad_title"].fillna("").astype(str).str.strip()
-            # 빈 문자열, nan, None 인 경우 원본 ad_name으로 교체
             mask_empty = df_ad["final_ad_name"].isin(["", "nan", "None"])
             df_ad.loc[mask_empty, "final_ad_name"] = df_ad.loc[mask_empty, "ad_name"].astype(str)
         else:
@@ -180,7 +173,6 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-# ✨ UI 속도 개선 1: 종합 성과 탭 렌더링 파편화
 @st.fragment
 def render_keyword_main(view, top_n, fmt):
     if view.empty:
@@ -211,10 +203,14 @@ def render_keyword_main(view, top_n, fmt):
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
-    render_big_table(disp.style.format(fmt), "kw_grid_main", 550)
+    st.dataframe(
+        disp.style.format(fmt), 
+        use_container_width=True, 
+        height=550, 
+        hide_index=True 
+    )
 
 
-# ✨ UI 속도 개선 2: 기간 비교 탭 렌더링 파편화
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, end_dt):
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -223,8 +219,10 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
     
-    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
+    # ✨ 동그라미 로딩(spinner) 추가 (비교 기간)
+    with st.spinner("🔄 비교 기간의 데이터를 불러오는 중입니다..."):
+        base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
+        base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
 
     if view.empty:
         st.info("현재 기간의 키워드/소재 데이터가 없습니다.")
@@ -295,8 +293,13 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
-    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    render_big_table(styled_cmp, "kw_cmp_grid", 550)
+    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
+    st.dataframe(
+        styled_cmp, 
+        use_container_width=True, 
+        height=550, 
+        hide_index=True
+    )
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -309,12 +312,11 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    # 기본 번들 로드
-    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
-    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
-    
-    # 캐싱된 함수 호출로 체감 속도 0.1초 달성
-    view = compute_keyword_view(kw_bundle, ad_bundle, meta)
+    # ✨ 동그라미 로딩(spinner) 추가
+    with st.spinner("🔄 키워드 및 소재 데이터를 집계하고 있습니다... 잠시만 기다려주세요."):
+        kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
+        ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
+        view = compute_keyword_view(kw_bundle, ad_bundle, meta)
 
     tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
     
