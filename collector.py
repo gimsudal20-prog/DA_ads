@@ -159,7 +159,6 @@ def ensure_tables(engine: Engine):
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS creative_text TEXT;"))
                     conn.execute(text("ALTER TABLE dim_ad ADD COLUMN IF NOT EXISTS image_url TEXT;"))
                     
-                    # ✨ 장바구니 전환수 및 매출액 컬럼 추가
                     conn.execute(text("ALTER TABLE fact_campaign_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_keyword_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
                     conn.execute(text("ALTER TABLE fact_ad_daily ADD COLUMN IF NOT EXISTS cart_conv DOUBLE PRECISION DEFAULT 0;"))
@@ -352,7 +351,6 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
         conv = float(r.get("ccnt", 0) or 0)
         roas = (sales / cost * 100) if cost > 0 else 0.0
         
-        # Fallback은 구분 불가하므로 cart_conv, cart_sales는 0
         row = {"dt": target_date, "customer_id": str(customer_id), id_key: str(r.get("id")), "imp": imp, "clk": clk, "cost": cost, "conv": conv, "sales": sales, "roas": roas, "cart_conv": 0.0, "cart_sales": 0}
         if id_key in ["campaign_id", "keyword_id", "ad_id"]: row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
@@ -439,7 +437,6 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-# ✨ 구매완료와 장바구니를 완벽히 분리 (건수 + 금액 모두 수집)
 def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> dict:
     if conv_df is None or conv_df.empty: return {}
     
@@ -476,19 +473,14 @@ def extract_detailed_conversions(conv_df: pd.DataFrame, pk_cands: List[str]) -> 
             conv_type = str(r.iloc[conv_type_idx]).strip()
             if obj_id not in res: res[obj_id] = {"conv": 0.0, "sales": 0, "cart_conv": 0.0, "cart_sales": 0}
             
-            # ✨ 1. 구매완료 (건수 + 금액)
+            # ✨ 장바구니/구매 로직 매핑
             if "구매" in conv_type or conv_type == "1": 
-                if conv_idx != -1 and len(r) > conv_idx: 
-                    res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
-                if sales_idx != -1 and len(r) > sales_idx: 
-                    res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
             
-            # ✨ 2. 장바구니 (건수 + 금액)
             elif "장바구니" in conv_type or conv_type == "2":
-                if conv_idx != -1 and len(r) > conv_idx: 
-                    res[obj_id]["cart_conv"] += safe_float(r.iloc[conv_idx])
-                if sales_idx != -1 and len(r) > sales_idx: 
-                    res[obj_id]["cart_sales"] += int(safe_float(r.iloc[sales_idx]))
+                if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["cart_conv"] += safe_float(r.iloc[conv_idx])
+                if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["cart_sales"] += int(safe_float(r.iloc[sales_idx]))
                 
         except Exception: pass
         
@@ -548,7 +540,6 @@ def parse_df_combined(df: pd.DataFrame, report_tp: str, pk_cands: List[str], has
             if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
             if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
             
-            # ✨ 분리된 상세 전환 데이터(건수, 매출) 매핑
             if has_conv_report:
                 conv_data = detailed_conv_map.get(obj_id, {}) if detailed_conv_map else {}
                 res[obj_id]["conv"] = conv_data.get("conv", 0.0)
@@ -578,7 +569,6 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         roas = (sales / cost * 100.0) if cost > 0 else 0.0
         avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
         
-        # ✨ DB에 저장할 때 cart_conv와 cart_sales 함께 전송
         row = {
             "dt": target_date, "customer_id": str(customer_id), pk_name: k, 
             "imp": s["imp"], "clk": s["clk"], "cost": cost, 
@@ -658,16 +648,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         else:
             log(f"   ⏳ [ {account_name} ] 네이버 대용량 통계 리포트 생성 대기 중...")
             
-            report_types = ["CAMPAIGN", "KEYWORD", "AD", "CONVERSION"]
+            # ✨ AD_CONVERSION (다차원 보고서) 명시
+            report_types = ["CAMPAIGN", "KEYWORD", "AD", "AD_CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             log(f"   📥 [ {account_name} ] 대용량 리포트 다운로드 완료! 데이터 검증 및 병합 시작...")
             
             c_cnt, k_cnt, a_cnt = 0, 0, 0
             
-            conv_df = dfs.get("CONVERSION")
+            conv_df = dfs.get("AD_CONVERSION")
             has_conv_report = conv_df is not None 
             
-            # ✨ 장바구니와 구매완료를 완벽히 분리해서 가져옵니다.
             detailed_conv_map_camp = extract_detailed_conversions(conv_df, ["캠페인id", "campaignid"]) if has_conv_report else None
             detailed_conv_map_kw = extract_detailed_conversions(conv_df, ["키워드id", "keywordid", "검색어id", "searchtermid", "쇼핑검색어id", "queryid", "ncckeywordid", "nccqueryid"]) if has_conv_report else None
             detailed_conv_map_ad = extract_detailed_conversions(conv_df, ["광고id", "소재id", "adid", "상품id", "productid", "itemid"]) if has_conv_report else None
