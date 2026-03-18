@@ -186,10 +186,15 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
         if c in out.columns: out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0)
         else: out[c] = 0
         
-    cur_cost = pd.to_numeric(out.get("광고비", 0), errors='coerce').fillna(0)
-    cur_sales = pd.to_numeric(out.get("전환매출", 0), errors='coerce').fillna(0)
-    cur_conv = pd.to_numeric(out.get("전환", 0), errors='coerce').fillna(0)
-    cur_roas = pd.to_numeric(out.get("ROAS(%)", 0), errors='coerce').fillna(0)
+    # 🔥 에러 수정 로직 적용
+    for col in ["광고비", "전환매출", "전환", "ROAS(%)"]:
+        if col not in out.columns:
+            out[col] = 0
+            
+    cur_cost = pd.to_numeric(out["광고비"], errors='coerce').fillna(0)
+    cur_sales = pd.to_numeric(out["전환매출"], errors='coerce').fillna(0)
+    cur_conv = pd.to_numeric(out["전환"], errors='coerce').fillna(0)
+    cur_roas = pd.to_numeric(out["ROAS(%)"], errors='coerce').fillna(0)
     
     out["광고비 증감(%)"] = np.where(out["p_cost"] > 0, (cur_cost - out["p_cost"]) / out["p_cost"] * 100, np.where(cur_cost > 0, 100.0, 0.0))
     p_roas = np.where(out["p_cost"] > 0, (out["p_sales"] / out["p_cost"]) * 100, 0.0)
@@ -217,8 +222,6 @@ def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_key
     
     return out
 
-
-# ✨ 에러의 원인이었던 함수 복구 (캠페인 탭 등에서 뻗지 않도록 방어)
 def style_table_deltas(val):
     """ 수익, 클릭 등 오르면 좋은 지표용 기본 포맷터 (증가=파랑, 감소=빨강) """
     return style_table_deltas_positive(val)
@@ -267,7 +270,6 @@ def style_table_deltas_negative(val):
         if val > 0: return color_up
         elif val < 0: return color_down
     return ""
-
 
 def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
     st.markdown("<div class='nv-sec-title'>소재 A/B 비교 (상위 2개)</div>", unsafe_allow_html=True)
@@ -323,13 +325,9 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
     items_base = set(df_base[name_col].dropna().astype(str).unique()) if not df_base.empty and name_col in df_base.columns else set()
     all_items = sorted([x for x in list(items_cur | items_base) if str(x).strip() != ""])
 
-    if not all_items:
-        return
+    if not all_items: return
 
-    st.markdown(
-        f"<div class='nv-sec-title'>개별 상세 비교 ({entity_label})</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='nv-sec-title'>개별 상세 비교 ({entity_label})</div>", unsafe_allow_html=True)
 
     query = st.text_input("항목 검색", key=f"search_detail_query_{entity_label}_{name_col}", placeholder="이름을 입력해 빠르게 찾기")
     filtered_items = [item for item in all_items if query.lower() in item.lower()] if query else all_items
@@ -341,8 +339,7 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
     selected = st.selectbox("분석 항목 선택", options, key=f"search_detail_{entity_label}_{name_col}")
 
-    if selected == "선택 안 함":
-        return
+    if selected == "선택 안 함": return
 
     c_df = df_cur[df_cur[name_col] == selected] if not df_cur.empty else pd.DataFrame()
     b_df = df_base[df_base[name_col] == selected] if not df_base.empty else pd.DataFrame()
