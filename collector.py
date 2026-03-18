@@ -815,12 +815,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
             conv_df = dfs.get("AD_CONVERSION")
-            split_report_ok = conv_df is not None
+            split_report_ok = (conv_df is not None) and (not conv_df.empty)
 
             if conv_df is None:
                 log(f"   ⚠️ [ {account_name} ] AD_CONVERSION 리포트 실패 → 총 전환/총 ROAS만 저장합니다. (purchase/cart 미분리)")
             elif conv_df.empty:
-                log(f"   ℹ️ [ {account_name} ] AD_CONVERSION 리포트가 비어 있습니다. purchase/cart 는 0으로 저장합니다.")
+                log(f"   ℹ️ [ {account_name} ] AD_CONVERSION 리포트가 비어 있습니다. purchase/cart 는 미확정(NULL)로 저장합니다.")
 
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
 
@@ -841,7 +841,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if split_report_ok:
                     log(f"   ✅ [ {account_name} ] 리포트 수집 완료 (총합 + purchase/cart 분리): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
                 else:
-                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 (총합만 저장): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 (총합만 저장 / purchase.cart 미분리): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
