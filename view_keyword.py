@@ -211,6 +211,18 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.2f}%",
         "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.2f}%", "CTR(%)": "{:,.2f}%"
     }
+    
+    # ✨ 에러 수정: 비교 탭용 형식 포맷터 명시적 선언
+    fmt_cmp = {
+        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
+        "장바구니수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.2f}%",
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.2f}%",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.2f}%", "CTR(%)": "{:,.2f}%",
+        "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
+        "이전 장바구니수": "{:,.0f}", "이전 장바구니 매출액": "{:,.0f}원", "이전 장바구니 ROAS(%)": "{:,.2f}%",
+        "이전 구매완료수": "{:,.1f}", "이전 구매완료 매출": "{:,.0f}원", "이전 구매 ROAS(%)": "{:,.2f}%",
+        "이전 총 전환수": "{:,.1f}", "이전 총 전환매출": "{:,.0f}원", "이전 통합 ROAS(%)": "{:,.2f}%"
+    }
 
     with tab_main:
         if view.empty:
@@ -292,7 +304,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
             
-            # 비교 탭도 스위치에 맞춰 렌더링
             if not funnel_toggle:
                 def _combine(r, c_val, c_pct):
                     v = r.get(c_val); p = r.get(c_pct)
@@ -332,7 +343,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                         styled_cmp = styled_cmp.map(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
                         styled_cmp = styled_cmp.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
                     except AttributeError:
-                        pass
+                        styled_cmp = styled_cmp.applymap(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
+                        styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
                 else:
                     try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
                     except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
