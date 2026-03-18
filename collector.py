@@ -569,9 +569,10 @@ def merge_split_maps(*maps: dict) -> dict:
     return out
 
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "") -> Tuple[dict, dict, dict]:
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None) -> Tuple[dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
+    keyword_lookup = keyword_lookup or {}
     if df is None or df.empty:
         return camp_map, kw_map, ad_map
 
@@ -702,8 +703,24 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         return best_idx if best_score > 0 else -1
 
     cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
-    kid_idx = best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=cid_idx)
-    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, kid_idx))
+    gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
+    kid_idx = best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=max(cid_idx, gid_idx))
+    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx, kid_idx))
+
+    kw_text_idx = -1
+    if report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
+        candidate = gid_idx + 1 if gid_idx != -1 else -1
+        max_cols = max((len(r) for r in sample_rows), default=0)
+        if 0 <= candidate < max_cols:
+            text_score = 0
+            for r in sample_rows:
+                if len(r) <= candidate:
+                    continue
+                v = str(r.iloc[candidate]).strip()
+                if v and v != '-' and not looks_like_id(v) and maybe_numeric(v) is None:
+                    text_score += 1
+            if text_score > 0:
+                kw_text_idx = candidate
 
     for _, r in df.iterrows():
         vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
@@ -782,8 +799,17 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         is_purchase, is_cart, c_val, s_val = picked
         if cid_idx != -1 and cid_idx < n:
             apply_row(camp_map, vals[cid_idx], is_purchase, is_cart, c_val, s_val)
-        if kid_idx != -1 and kid_idx < n:
-            apply_row(kw_map, vals[kid_idx], is_purchase, is_cart, c_val, s_val)
+
+        kw_obj_id = ""
+        if kid_idx != -1 and kid_idx < n and vals[kid_idx] not in {"", "-"} and str(vals[kid_idx]).startswith("nkw-"):
+            kw_obj_id = vals[kid_idx]
+        elif kw_text_idx != -1 and kw_text_idx < n and gid_idx != -1 and gid_idx < n:
+            gid_val = str(vals[gid_idx]).strip()
+            kw_text = str(vals[kw_text_idx]).strip()
+            kw_obj_id = keyword_lookup.get((gid_val, kw_text), "") or keyword_lookup.get((gid_val, kw_text.lower()), "")
+        if kw_obj_id:
+            apply_row(kw_map, kw_obj_id, is_purchase, is_cart, c_val, s_val)
+
         if adid_idx != -1 and adid_idx < n:
             apply_row(ad_map, vals[adid_idx], is_purchase, is_cart, c_val, s_val)
 
@@ -1015,6 +1041,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
                 shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
 
+        keyword_lookup = {}
+        try:
+            with engine.connect() as conn:
+                for kid, gid, kw in conn.execute(text("SELECT keyword_id, adgroup_id, keyword FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id}):
+                    if kid and gid and kw:
+                        keyword_lookup[(str(gid), str(kw).strip())] = str(kid)
+                        keyword_lookup[(str(gid), str(kw).strip().lower())] = str(kid)
+        except Exception:
+            keyword_lookup = {}
+
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
         dfs: Dict[str, pd.DataFrame | None] = {}
@@ -1050,7 +1086,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             elif not shopping_campaign_ids:
                 log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart 분리 수집을 건너뜁니다.")
             else:
-                for tp in ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]:
+                # 쇼핑검색 전환 상세는 SHOPPINGKEYWORD_CONVERSION_DETAIL을 우선 사용하고,
+                # 비어 있을 때만 AD_CONVERSION을 fallback으로 사용한다.
+                report_candidates = ["SHOPPINGKEYWORD_CONVERSION_DETAIL", "AD_CONVERSION"]
+                for tp in report_candidates:
                     conv_df = dfs.get(tp)
                     if conv_df is None:
                         log(f"   ⚠️ [ {account_name} ] {tp} 리포트 실패 → 다음 전환 리포트로 진행합니다.")
@@ -1060,11 +1099,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
-                    one_camp_map, one_kw_map, one_ad_map = process_conversion_report(conv_df, allowed_campaign_ids=shopping_campaign_ids, report_hint=tp)
-                    camp_map = merge_split_maps(camp_map, one_camp_map)
-                    kw_map = merge_split_maps(kw_map, one_kw_map)
-                    ad_map = merge_split_maps(ad_map, one_ad_map)
-                    split_report_ok = split_report_ok or bool(one_camp_map or one_kw_map or one_ad_map)
+                    one_camp_map, one_kw_map, one_ad_map = process_conversion_report(
+                        conv_df,
+                        allowed_campaign_ids=shopping_campaign_ids,
+                        report_hint=tp,
+                        keyword_lookup=keyword_lookup,
+                    )
                     log(f"   🔎 [ {account_name} ] {tp} raw rows={len(conv_df)} / parsed split: campaign({len(one_camp_map)}) keyword({len(one_kw_map)}) ad({len(one_ad_map)})")
                     sample_vals = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()
                     head = sample_vals[:8]
@@ -1072,8 +1112,15 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     sample_row = head + (["..."] if tail else []) + tail
                     preview = " | ".join([str(x) for x in sample_row])
                     log(f"   🔎 [ {account_name} ] {tp} sample: {preview}")
+
                     if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
+                        continue
+
+                    camp_map, kw_map, ad_map = one_camp_map, one_kw_map, one_ad_map
+                    split_report_ok = True
+                    log(f"   ✅ [ {account_name} ] shopping split 원천으로 {tp} 리포트를 사용합니다.")
+                    break
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
