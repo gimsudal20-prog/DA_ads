@@ -11,6 +11,22 @@ on:
         description: '수집 종료일 (YYYY-MM-DD)'
         required: true
         default: '2026-03-10'
+      account_name:
+        description: '단일 업체명 (예: 휴앤고)'
+        required: false
+        default: ''
+      account_names:
+        description: '여러 업체명 콤마구분 (예: 휴앤고,대성소파,로베라)'
+        required: false
+        default: ''
+      workers:
+        description: '동시 작업 수'
+        required: false
+        default: '1'
+      sa_only:
+        description: '검색광고만 실행 (true/false)'
+        required: false
+        default: 'true'
 
 jobs:
   run-backfill:
@@ -18,7 +34,6 @@ jobs:
     env:
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # ✨ 핵심: 변수명을 올려주신 yml과 완벽하게 동일하게 맞췄습니다!
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
 
@@ -37,6 +52,30 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
 
+      - name: Show selected inputs
+        run: |
+          echo "start_date=${{ github.event.inputs.start_date }}"
+          echo "end_date=${{ github.event.inputs.end_date }}"
+          echo "account_name=${{ github.event.inputs.account_name }}"
+          echo "account_names=${{ github.event.inputs.account_names }}"
+          echo "workers=${{ github.event.inputs.workers }}"
+          echo "sa_only=${{ github.event.inputs.sa_only }}"
+
       - name: Run fast backfill
         run: |
-          python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}"
+          CMD="python fast_backfill.py --start '${{ github.event.inputs.start_date }}' --end '${{ github.event.inputs.end_date }}' --workers '${{ github.event.inputs.workers }}'"
+
+          if [ -n "${{ github.event.inputs.account_name }}" ]; then
+            CMD="$CMD --account_name '${{ github.event.inputs.account_name }}'"
+          fi
+
+          if [ -n "${{ github.event.inputs.account_names }}" ]; then
+            CMD="$CMD --account_names '${{ github.event.inputs.account_names }}'"
+          fi
+
+          if [ "${{ github.event.inputs.sa_only }}" = "true" ]; then
+            CMD="$CMD --sa_only"
+          fi
+
+          echo "실행 명령어: $CMD"
+          eval "$CMD"
