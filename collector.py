@@ -182,6 +182,9 @@ def ensure_tables(engine: Engine):
                 ensure_column(engine, table, "cart_conv", "DOUBLE PRECISION")
                 ensure_column(engine, table, "cart_sales", "BIGINT")
                 ensure_column(engine, table, "cart_roas", "DOUBLE PRECISION")
+                ensure_column(engine, table, "wishlist_conv", "DOUBLE PRECISION")
+                ensure_column(engine, table, "wishlist_sales", "BIGINT")
+                ensure_column(engine, table, "wishlist_roas", "DOUBLE PRECISION")
                 ensure_column(engine, table, "split_available", "BOOLEAN")
                 ensure_column(engine, table, "data_source", "TEXT")
             break
@@ -370,10 +373,13 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
         purchase_sales = split.get("purchase_sales", 0) if split else None
         cart_conv = split.get("cart_conv", 0.0) if split else None
         cart_sales = split.get("cart_sales", 0) if split else None
+        wishlist_conv = split.get("wishlist_conv", 0.0) if split else None
+        wishlist_sales = split.get("wishlist_sales", 0) if split else None
 
         total_roas = (total_sales / cost * 100.0) if cost > 0 else 0.0
         purchase_roas = None if purchase_sales is None or cost <= 0 else (purchase_sales / cost * 100.0)
         cart_roas = None if cart_sales is None or cost <= 0 else (cart_sales / cost * 100.0)
+        wishlist_roas = None if wishlist_sales is None or cost <= 0 else (wishlist_sales / cost * 100.0)
 
         row = {
             "dt": target_date,
@@ -391,6 +397,9 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             "cart_conv": cart_conv,
             "cart_sales": cart_sales,
             "cart_roas": cart_roas,
+            "wishlist_conv": wishlist_conv,
+            "wishlist_sales": wishlist_sales,
+            "wishlist_roas": wishlist_roas,
             "split_available": bool(split),
             "data_source": "stats_total_plus_split" if split else "stats_total_only",
         }
@@ -561,11 +570,15 @@ def merge_split_maps(*maps: dict) -> dict:
                 "purchase_sales": 0,
                 "cart_conv": 0.0,
                 "cart_sales": 0,
+                "wishlist_conv": 0.0,
+                "wishlist_sales": 0,
             })
             b["purchase_conv"] += float(v.get("purchase_conv", 0.0) or 0.0)
             b["purchase_sales"] += int(float(v.get("purchase_sales", 0) or 0))
             b["cart_conv"] += float(v.get("cart_conv", 0.0) or 0.0)
             b["cart_sales"] += int(float(v.get("cart_sales", 0) or 0))
+            b["wishlist_conv"] += float(v.get("wishlist_conv", 0.0) or 0.0)
+            b["wishlist_sales"] += int(float(v.get("wishlist_sales", 0) or 0))
     return out
 
 
@@ -583,9 +596,11 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 "purchase_sales": 0,
                 "cart_conv": 0.0,
                 "cart_sales": 0,
+                "wishlist_conv": 0.0,
+                "wishlist_sales": 0,
             }
 
-    def apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, c_val: float, s_val: int):
+    def apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
         obj_id = str(obj_id).strip()
         if not obj_id or obj_id == "-":
             return
@@ -596,8 +611,11 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         elif is_cart:
             m_dict[obj_id]["cart_conv"] += c_val
             m_dict[obj_id]["cart_sales"] += s_val
+        elif is_wishlist:
+            m_dict[obj_id]["wishlist_conv"] += c_val
+            m_dict[obj_id]["wishlist_sales"] += s_val
 
-    def is_purchase_cart_value(v) -> tuple[bool, bool]:
+    def classify_conversion_value(v) -> tuple[bool, bool, bool]:
         ctype = str(v).strip().lower()
         ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
         is_purchase = (
@@ -606,7 +624,10 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         is_cart = (
             '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
         )
-        return is_purchase, is_cart
+        is_wishlist = (
+            '위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'}
+        )
+        return is_purchase, is_cart, is_wishlist
 
     def maybe_numeric(v: str) -> float | None:
         s = str(v).strip().replace(',', '')
@@ -664,17 +685,17 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 row_campaign_id = r.iloc[cid_idx] if cid_idx != -1 and len(r) > cid_idx else ''
                 if not row_allowed(row_campaign_id):
                     continue
-                is_purchase, is_cart = is_purchase_cart_value(r.iloc[type_idx])
-                if not (is_purchase or is_cart):
+                is_purchase, is_cart, is_wishlist = classify_conversion_value(r.iloc[type_idx])
+                if not (is_purchase or is_cart or is_wishlist):
                     continue
                 c_val = safe_float(r.iloc[cnt_idx])
                 s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
                 if cid_idx != -1 and len(r) > cid_idx:
-                    apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, c_val, s_val)
+                    apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
                 if kid_idx != -1 and len(r) > kid_idx:
-                    apply_row(kw_map, r.iloc[kid_idx], is_purchase, is_cart, c_val, s_val)
+                    apply_row(kw_map, r.iloc[kid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
                 if adid_idx != -1 and len(r) > adid_idx:
-                    apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, c_val, s_val)
+                    apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
 
             if camp_map or kw_map or ad_map:
                 return camp_map, kw_map, ad_map
@@ -738,16 +759,16 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         for idx, v in enumerate(vals):
             s_raw = str(v).strip()
             s = s_raw.lower()
-            is_purchase, is_cart = is_purchase_cart_value(v)
-            if not (is_purchase or is_cart):
+            is_purchase, is_cart, is_wishlist = classify_conversion_value(v)
+            if not (is_purchase or is_cart or is_wishlist):
                 continue
             if s_raw in {'1', '3'}:
                 # 숫자 코드 1/3은 오탐이 많아서 뒤쪽 6칸 안에서만 인정하고,
                 # 텍스트형 전환유형이 하나도 없을 때만 후보로 사용한다.
                 if idx >= max(0, n - 6):
-                    numeric_type_hits.append((idx, is_purchase, is_cart))
+                    numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
             else:
-                text_type_hits.append((idx, is_purchase, is_cart))
+                text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
 
         type_hits = text_type_hits if text_type_hits else numeric_type_hits
 
@@ -763,7 +784,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             continue
 
         picked = None
-        for type_idx, is_purchase, is_cart in type_hits:
+        for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
             numeric_right = []
             for j in range(type_idx + 1, n):
                 vv = vals[j]
@@ -790,15 +811,15 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             elif len(first_nums) >= 2:
                 s_val = int(first_nums[1])
 
-            picked = (is_purchase, is_cart, c_val, s_val)
+            picked = (is_purchase, is_cart, is_wishlist, c_val, s_val)
             break
 
         if not picked:
             continue
 
-        is_purchase, is_cart, c_val, s_val = picked
+        is_purchase, is_cart, is_wishlist, c_val, s_val = picked
         if cid_idx != -1 and cid_idx < n:
-            apply_row(camp_map, vals[cid_idx], is_purchase, is_cart, c_val, s_val)
+            apply_row(camp_map, vals[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
 
         kw_obj_id = ""
         if kid_idx != -1 and kid_idx < n and vals[kid_idx] not in {"", "-"} and str(vals[kid_idx]).startswith("nkw-"):
@@ -808,10 +829,10 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             kw_text = str(vals[kw_text_idx]).strip()
             kw_obj_id = keyword_lookup.get((gid_val, kw_text), "") or keyword_lookup.get((gid_val, kw_text.lower()), "")
         if kw_obj_id:
-            apply_row(kw_map, kw_obj_id, is_purchase, is_cart, c_val, s_val)
+            apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
         if adid_idx != -1 and adid_idx < n:
-            apply_row(ad_map, vals[adid_idx], is_purchase, is_cart, c_val, s_val)
+            apply_row(ad_map, vals[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
 
     return camp_map, kw_map, ad_map
 
@@ -876,6 +897,8 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
                 "purchase_sales": 0 if has_conv_report else None,
                 "cart_conv": 0.0 if has_conv_report else None,
                 "cart_sales": 0 if has_conv_report else None,
+                "wishlist_conv": 0.0 if has_conv_report else None,
+                "wishlist_sales": 0 if has_conv_report else None,
                 "split_available": bool(has_conv_report),
                 "rank_sum": 0.0,
                 "rank_cnt": 0,
@@ -907,6 +930,8 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
                 bucket["purchase_sales"] = split.get("purchase_sales", 0)
                 bucket["cart_conv"] = split.get("cart_conv", 0.0)
                 bucket["cart_sales"] = split.get("cart_sales", 0)
+                bucket["wishlist_conv"] = split.get("wishlist_conv", 0.0)
+                bucket["wishlist_sales"] = split.get("wishlist_sales", 0)
 
     return res
 
@@ -927,6 +952,8 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
 
         cart_sales = s.get("cart_sales")
         cart_roas = None if cart_sales is None or cost <= 0 else (cart_sales / cost * 100.0)
+        wishlist_sales = s.get("wishlist_sales")
+        wishlist_roas = None if wishlist_sales is None or cost <= 0 else (wishlist_sales / cost * 100.0)
 
         row = {
             "dt": target_date,
@@ -944,6 +971,9 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             "cart_conv": s.get("cart_conv"),
             "cart_sales": cart_sales,
             "cart_roas": cart_roas,
+            "wishlist_conv": s.get("wishlist_conv"),
+            "wishlist_sales": wishlist_sales,
+            "wishlist_roas": wishlist_roas,
             "split_available": s.get("split_available", False),
             "data_source": data_source,
         }
@@ -1082,9 +1112,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             ad_report_df = dfs.get("AD")
 
             if not split_enabled_for_date(target_date):
-                log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart 분리 수집을 시도하지 않습니다.")
+                log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart/wishlist 분리 수집을 시도하지 않습니다.")
             elif not shopping_campaign_ids:
-                log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart 분리 수집을 건너뜁니다.")
+                log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
             else:
                 # 쇼핑검색 전환 상세는 SHOPPINGKEYWORD_CONVERSION_DETAIL을 우선 사용하고,
                 # 비어 있을 때만 AD_CONVERSION을 fallback으로 사용한다.
@@ -1095,7 +1125,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ⚠️ [ {account_name} ] {tp} 리포트 실패 → 다음 전환 리포트로 진행합니다.")
                         continue
                     if conv_df.empty:
-                        log(f"   ℹ️ [ {account_name} ] {tp} 리포트가 비어 있습니다. purchase/cart 는 미확정(NULL)로 유지합니다.")
+                        log(f"   ℹ️ [ {account_name} ] {tp} 리포트가 비어 있습니다. purchase/cart/wishlist 는 미확정(NULL)로 유지합니다.")
                         log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
@@ -1114,7 +1144,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     log(f"   🔎 [ {account_name} ] {tp} sample: {preview}")
 
                     if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
-                        log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
+                        log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
                         continue
 
                     camp_map, kw_map, ad_map = one_camp_map, one_kw_map, one_ad_map
@@ -1141,7 +1171,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else:
-                mode_msg = "총합 + purchase/cart 분리" if split_report_ok else "총합만 저장 / purchase.cart 미분리"
+                mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
                 log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
