@@ -185,6 +185,9 @@ def ensure_tables(engine: Engine):
                 ensure_column(engine, table, "wishlist_conv", "DOUBLE PRECISION")
                 ensure_column(engine, table, "wishlist_sales", "BIGINT")
                 ensure_column(engine, table, "wishlist_roas", "DOUBLE PRECISION")
+                ensure_column(engine, table, "primary_conv", "DOUBLE PRECISION")
+                ensure_column(engine, table, "primary_sales", "BIGINT")
+                ensure_column(engine, table, "primary_roas", "DOUBLE PRECISION")
                 ensure_column(engine, table, "split_available", "BOOLEAN")
                 ensure_column(engine, table, "data_source", "TEXT")
             break
@@ -523,6 +526,18 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
 
 def normalize_header(v: str) -> str:
     return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
+
+def normalize_keyword_text(v: str) -> str:
+    s = str(v or "").strip().lower()
+    if not s or s == "-":
+        return ""
+    # 공백/특수문자 차이를 최대한 줄여 키워드 텍스트 매핑 안정화
+    out = []
+    for ch in s:
+        if ch.isalnum() or ('가' <= ch <= '힣'):
+            out.append(ch)
+    return "".join(out)
+
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [normalize_header(h) for h in headers]
@@ -988,6 +1003,12 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         wishlist_sales = s.get("wishlist_sales")
         wishlist_roas = None if wishlist_sales is None or cost <= 0 else (wishlist_sales / cost * 100.0)
 
+        # conv/sales/roas 는 네이버 총합(구매+장바구니+위시리스트+기타)을 그대로 유지한다.
+        # 구매완료 중심 운영을 위해 primary_* 는 purchase 가 있으면 purchase 기준, 없으면 총합 기준으로 저장한다.
+        primary_conv = s.get("purchase_conv") if s.get("purchase_conv") is not None else s["conv"]
+        primary_sales = purchase_sales if purchase_sales is not None else total_sales
+        primary_roas = None if primary_sales is None or cost <= 0 else (primary_sales / cost * 100.0)
+
         row = {
             "dt": target_date,
             "customer_id": str(customer_id),
@@ -1007,6 +1028,9 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             "wishlist_conv": s.get("wishlist_conv"),
             "wishlist_sales": wishlist_sales,
             "wishlist_roas": wishlist_roas,
+            "primary_conv": primary_conv,
+            "primary_sales": primary_sales,
+            "primary_roas": primary_roas,
             "split_available": s.get("split_available", False),
             "data_source": data_source,
         }
