@@ -1333,6 +1333,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         keyword_unique_lookup=keyword_unique_lookup,
                     )
                     log(f"   🔎 [ {account_name} ] {tp} raw rows={len(conv_df)} / parsed split: campaign({len(one_camp_map)}) keyword({len(one_kw_map)}) ad({len(one_ad_map)})")
+                    if split_summary_has_values(one_summary):
+                        log(f"   🔎 [ {account_name} ] {tp} raw summary: {format_split_summary(one_summary)}")
                     sample_vals = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()
                     head = sample_vals[:8]
                     tail = sample_vals[-4:] if len(sample_vals) > 8 else []
@@ -1362,7 +1364,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
-                final_split_summary = shop_summary if split_summary_has_values(shop_summary) else ad_summary
+                final_split_summary = merge_split_summaries(ad_summary, shop_summary)
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
