@@ -801,11 +801,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["AD", "AD_CONVERSION"]
+            report_types = ["CAMPAIGN", "KEYWORD", "AD", "AD_CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
 
-            if dfs.get("AD") is None:
-                log(f"   ⚠️ [ {account_name} ] AD 대용량 리포트 실패 → 실시간 stats 총합으로 대체합니다. (구매/장바구니 분리 불가)")
+            if dfs.get("CAMPAIGN") is None and dfs.get("KEYWORD") is None and dfs.get("AD") is None:
+                log(f"   ⚠️ [ {account_name} ] 기본 대용량 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (구매/장바구니 분리 불가)")
                 use_realtime_fallback = True
 
         if use_realtime_fallback:
@@ -824,24 +824,47 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
 
+            campaign_report_df = dfs.get("CAMPAIGN")
+            keyword_report_df = dfs.get("KEYWORD")
             ad_report_df = dfs.get("AD")
-            camp_stat = parse_base_report(ad_report_df, "CAMPAIGN", camp_map, has_conv_report=split_report_ok)
-            kw_stat = parse_base_report(ad_report_df, "KEYWORD", kw_map, has_conv_report=split_report_ok)
-            ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
 
             data_source = "report_split" if split_report_ok else "report_total_only"
 
-            c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, data_source=data_source) if camp_stat else 0
-            k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, data_source=data_source) if kw_stat else 0
-            a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=data_source) if ad_stat else 0
+            # 같은 AD 리포트로 캠페인/키워드/소재를 모두 만들면
+            # 키워드 비용/클릭이 소재 기준으로 중복 집계될 수 있으므로
+            # 각 레벨은 반드시 해당 레벨 리포트로만 적재한다.
+            if campaign_report_df is not None and not campaign_report_df.empty:
+                camp_stat = parse_base_report(campaign_report_df, "CAMPAIGN", camp_map, has_conv_report=split_report_ok)
+                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, data_source=data_source) if camp_stat else 0
+            else:
+                log(f"   ⚠️ [ {account_name} ] CAMPAIGN 리포트 없음 → 캠페인만 실시간 stats 총합으로 대체합니다.")
+                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily") if target_camp_ids else 0
+
+            if not SKIP_KEYWORD_STATS:
+                if keyword_report_df is not None and not keyword_report_df.empty:
+                    kw_stat = parse_base_report(keyword_report_df, "KEYWORD", kw_map, has_conv_report=split_report_ok)
+                    k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, data_source=data_source) if kw_stat else 0
+                else:
+                    log(f"   ⚠️ [ {account_name} ] KEYWORD 리포트 없음 → 키워드만 실시간 stats 총합으로 대체합니다. (AD 리포트로 키워드 집계하지 않음)")
+                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if target_kw_ids else 0
+            else:
+                k_cnt = 0
+
+            if not SKIP_AD_STATS:
+                if ad_report_df is not None and not ad_report_df.empty:
+                    ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
+                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=data_source) if ad_stat else 0
+                else:
+                    log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
+                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if target_ad_ids else 0
+            else:
+                a_cnt = 0
 
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else:
-                if split_report_ok:
-                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 (총합 + purchase/cart 분리): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-                else:
-                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 (총합만 저장 / purchase.cart 미분리): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                mode_msg = "총합 + purchase/cart 분리" if split_report_ok else "총합만 저장 / purchase.cart 미분리"
+                log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
