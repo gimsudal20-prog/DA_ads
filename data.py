@@ -315,9 +315,21 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
             
-    # ✨ cart_conv, cart_sales 합산 추가
+    # ✨ 퍼널(장바구니, 위시리스트) 전체 합산 추가
     fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
-    cart_select_sql = ", SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales" if "cart_sales" in fact_cols else ", 0 as cart_conv, 0 as cart_sales"
+    
+    funnel_select = []
+    if "cart_sales" in fact_cols:
+        funnel_select.append("SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales")
+    else:
+        funnel_select.append("0 as cart_conv, 0 as cart_sales")
+        
+    if "wishlist_sales" in fact_cols:
+        funnel_select.append("SUM(f.wishlist_conv) as wishlist_conv, SUM(f.wishlist_sales) as wishlist_sales")
+    else:
+        funnel_select.append("0 as wishlist_conv, 0 as wishlist_sales")
+        
+    funnel_select_sql = ", " + ", ".join(funnel_select)
 
     sql = f"""
         SELECT
@@ -326,7 +338,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             SUM(f.cost) as cost,
             SUM(f.conv) as conv,
             SUM(f.sales) as sales
-            {cart_select_sql}
+            {funnel_select_sql}
         FROM fact_{entity}_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
@@ -337,8 +349,9 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
     row['cpc'] = (row['cost'] / row['clk']) if row.get('clk', 0) > 0 else 0
     row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
-    # ✨ 장바구니 ROAS 계산
+    # ✨ 장바구니 및 위시리스트 ROAS 계산
     row['cart_roas'] = (row['cart_sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
+    row['wishlist_roas'] = (row['wishlist_sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
     return row
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
