@@ -558,26 +558,49 @@ def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
 
     def is_purchase_cart_value(v) -> tuple[bool, bool]:
         ctype = str(v).strip().lower()
-        is_purchase = ("구매" in ctype or ctype in {"1", "purchase", "purchasing"})
-        is_cart = ("장바구니" in ctype or ctype in {"3", "cart", "add_to_cart", "addtocart"})
+        ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
+        is_purchase = (
+            '구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'}
+        )
+        is_cart = (
+            '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
+        )
         return is_purchase, is_cart
+
+    def maybe_numeric(v: str) -> float | None:
+        s = str(v).strip().replace(',', '')
+        if not s or s == '-':
+            return None
+        if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+            try:
+                return float(s)
+            except Exception:
+                return None
+        return None
+
+    def looks_like_id(v: str) -> bool:
+        s = str(v).strip().lower()
+        return s.startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-'))
 
     # 1) 헤더가 있는 형식 우선 처리
     header_idx = -1
     for i in range(min(20, len(df))):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        if "conversiontype" in row_vals or "전환유형" in row_vals or "convtp" in row_vals:
+        if (
+            'conversiontype' in row_vals or '전환유형' in row_vals or 'convtp' in row_vals or
+            '총전환수' in row_vals or 'conversioncount' in row_vals
+        ):
             header_idx = i
             break
 
     if header_idx != -1:
         headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        cid_idx = get_col_idx(headers, ["캠페인id", "campaignid", "ncccampaignid"])
-        kid_idx = get_col_idx(headers, ["키워드id", "keywordid", "ncckeywordid"])
-        adid_idx = get_col_idx(headers, ["광고id", "소재id", "adid", "nccadid"])
-        type_idx = get_col_idx(headers, ["전환유형", "conversiontype", "convtp"])
-        cnt_idx = get_col_idx(headers, ["전환수", "conversions", "conversioncount", "ccnt"])
-        sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "salesbyconversion", "convamt"])
+        cid_idx = get_col_idx(headers, ['캠페인id', 'campaignid', 'ncccampaignid'])
+        kid_idx = get_col_idx(headers, ['키워드id', 'keywordid', 'ncckeywordid'])
+        adid_idx = get_col_idx(headers, ['광고id', '소재id', 'adid', 'nccadid'])
+        type_idx = get_col_idx(headers, ['전환유형', 'conversiontype', 'convtp'])
+        cnt_idx = get_col_idx(headers, ['총전환수', '전환수', 'conversions', 'conversioncount', 'ccnt'])
+        sales_idx = get_col_idx(headers, ['총전환매출액(원)', '전환매출액', 'conversionvalue', 'sales', 'salesbyconversion', 'convamt'])
 
         if type_idx != -1 and cnt_idx != -1:
             data_df = df.iloc[header_idx + 1:]
@@ -600,51 +623,79 @@ def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
                 return camp_map, kw_map, ad_map
 
     # 2) 헤더 없는 TSV 형식 처리
-    # 네이버 대용량 다운로드 보고서는 열 이름이 없이 TSV로 제공될 수 있으며,
-    # 전환 보고서는 행의 끝부분에 Conversion Method / Type / Count / Sales가 위치한다.
-    # 공식 도움말도 헤더 없는 TSV라고 안내한다.
-    # 샘플: 20260311 | 1325932 | cmp-... | grp-... | nkw-.../- | nad-... | bsn-... | 623353 | ...
-    def find_prefixed_idx(sample_rows, prefixes: tuple[str, ...], allow_dash: bool = False) -> int:
+    # 샘플: 20260311 | accountId | cmp-... | grp-... | nkw-.../- | nad-... | bsn-... | ...
+    sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
+
+    def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
         max_cols = max((len(r) for r in sample_rows), default=0)
+        best_idx, best_score = -1, -1
         for i in range(max_cols):
+            score = 0
             for r in sample_rows:
                 if len(r) <= i:
                     continue
-                v = str(r.iloc[i]).strip()
-                vl = v.lower()
-                if allow_dash and v == "-":
-                    return i
-                if any(vl.startswith(p) for p in prefixes):
-                    return i
-        return -1
+                v = str(r.iloc[i]).strip().lower()
+                if v.startswith(target_prefix):
+                    score += 3
+                elif allow_dash and v == '-':
+                    score += 1
+            if preferred_after >= 0 and i <= preferred_after:
+                score -= 2
+            if score > best_score:
+                best_idx, best_score = i, score
+        return best_idx if best_score > 0 else -1
 
-    sample_rows = [df.iloc[i].fillna("") for i in range(min(10, len(df)))]
-    cid_idx = find_prefixed_idx(sample_rows, ("cmp-",))
-    kid_idx = find_prefixed_idx(sample_rows, ("nkw-",), allow_dash=True)
-    adid_idx = find_prefixed_idx(sample_rows, ("nad-",))
+    cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
+    kid_idx = best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=cid_idx)
+    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, kid_idx))
 
-    # report spec 상 conversion 관련 컬럼은 보통 뒤쪽 끝 4개(method/type/count/sales)로 배치됨.
     for _, r in df.iterrows():
         vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
         n = len(vals)
-        if n < 4:
+        if n < 2:
             continue
 
-        type_candidates = []
-        if n >= 4:
-            type_candidates.append((n - 3, n - 2, n - 1))  # [..., method, type, count, sales]
-        if n >= 5:
-            type_candidates.append((n - 3, n - 2, n - 1))  # [..., pcmobile, method, type, count, sales]
+        # 행 내에서 구매/장바구니 텍스트 또는 코드(1/3)를 찾는다.
+        # 숫자 코드 1/3은 오탐이 많아서 뒤쪽 6칸 안에서만 인정한다.
+        type_hits = []
+        for idx, v in enumerate(vals):
+            is_purchase, is_cart = is_purchase_cart_value(v)
+            if is_purchase or is_cart:
+                if str(v).strip() in {'1', '3'} and idx < max(0, n - 6):
+                    continue
+                type_hits.append((idx, is_purchase, is_cart))
+
+        if not type_hits:
+            continue
 
         picked = None
-        for type_idx, cnt_idx, sales_idx in type_candidates:
-            if min(type_idx, cnt_idx, sales_idx) < 0 or max(type_idx, cnt_idx, sales_idx) >= n:
+        for type_idx, is_purchase, is_cart in type_hits:
+            numeric_right = []
+            for j in range(type_idx + 1, n):
+                vv = vals[j]
+                if looks_like_id(vv):
+                    continue
+                num = maybe_numeric(vv)
+                if num is not None:
+                    numeric_right.append((j, num))
+            if not numeric_right:
                 continue
-            is_purchase, is_cart = is_purchase_cart_value(vals[type_idx])
-            if not (is_purchase or is_cart):
-                continue
-            c_val = safe_float(vals[cnt_idx])
-            s_val = int(safe_float(vals[sales_idx]))
+
+            # 기본값: 타입 오른쪽 첫 숫자를 count, 다음 숫자를 sales로 본다.
+            c_val = float(numeric_right[0][1])
+            s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
+
+            # 여러 숫자가 있으면 작은 수를 전환수, 큰 수를 매출로 우선 해석
+            first_nums = [x[1] for x in numeric_right[:5]]
+            smalls = [x for x in first_nums if x <= 1000000]
+            bigs = [x for x in first_nums if x > 1000000]
+            if smalls:
+                c_val = float(smalls[0])
+            if bigs:
+                s_val = int(bigs[0])
+            elif len(first_nums) >= 2:
+                s_val = int(first_nums[1])
+
             picked = (is_purchase, is_cart, c_val, s_val)
             break
 
@@ -660,6 +711,7 @@ def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
             apply_row(ad_map, vals[adid_idx], is_purchase, is_cart, c_val, s_val)
 
     return camp_map, kw_map, ad_map
+
 
 
 def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = None, has_conv_report: bool = False) -> dict:
@@ -917,7 +969,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if conv_df is not None:
                 log(f"   🔎 [ {account_name} ] AD_CONVERSION raw rows={len(conv_df)} / parsed split: campaign({len(camp_map)}) keyword({len(kw_map)}) ad({len(ad_map)})")
                 if not conv_df.empty:
-                    sample_row = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()[:8]
+                    sample_vals = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()
+                    head = sample_vals[:8]
+                    tail = sample_vals[-4:] if len(sample_vals) > 8 else []
+                    sample_row = head + (["..."] if tail else []) + tail
                     preview = " | ".join([str(x) for x in sample_row])
                     log(f"   🔎 [ {account_name} ] AD_CONVERSION sample: {preview}")
                     if len(camp_map) == 0 and len(kw_map) == 0 and len(ad_map) == 0:
