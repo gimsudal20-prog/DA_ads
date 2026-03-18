@@ -321,12 +321,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True, improve_when_up=False)}
             </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>🛒 장바구니 전환 성과</div><div class='kpi-row'>
-                {_kpi_html("장바구니 ROAS", f"{float(cur.get('cart_roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('cart_roas'))}", _delta_pct("cart_roas"), highlight=True)}
-                {_kpi_html("장바구니수", format_number_commas(cur.get("cart_conv", 0.0)), f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
-                {_kpi_html("장바구니 매출액", format_currency(cur.get("cart_sales", 0.0)), f"{pct_to_arrow(_delta_pct('cart_sales'))}", _delta_pct("cart_sales"))}
+            <div class='kpi-group'><div class='kpi-group-title'>💖 위시리스트 성과</div><div class='kpi-row'>
+                {_kpi_html("위시리스트수", format_number_commas(cur.get("wishlist_conv", 0.0)), f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"), highlight=True)}
             </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>💰 순수 구매완료 성과</div><div class='kpi-row'>
+            <div class='kpi-group'><div class='kpi-group-title'>🛒 장바구니 성과</div><div class='kpi-row'>
+                {_kpi_html("장바구니수", format_number_commas(cur.get("cart_conv", 0.0)), f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"), highlight=True)}
+            </div></div>
+            <div class='kpi-group'><div class='kpi-group-title'>💰 구매완료 성과</div><div class='kpi-row'>
                 {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                 {_kpi_html("구매완료수", format_number_commas(cur.get("conv", 0.0)), f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                 {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
@@ -533,6 +534,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
                 _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
                 _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
+                _format_report_line("위시리스트수", f"{int(float(report_cur.get('wishlist_conv', 0))):,}"),
                 _format_report_line("장바구니 담기수", f"{int(float(report_cur.get('cart_conv', 0))):,}"),
                 _format_report_line("구매완료수", f"{int(float(report_cur.get('conv', 0))):,}"),
                 _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
