@@ -15,7 +15,6 @@ import threading
 import concurrent.futures
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
-from urllib.parse import urlparse
 
 import requests
 import pandas as pd
@@ -24,7 +23,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool  # 🔥 추가: DB 커넥션 풀링 방지 (Supabase 끊김 해결)
+from sqlalchemy.pool import NullPool
 
 load_dotenv(override=False)
 
@@ -114,8 +113,6 @@ def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
-    
-    # 🔥 수정: pool_size 제한을 없애고 쿼리마다 직접 연결을 열고 닫는 NullPool 사용
     return create_engine(
         db_url, 
         poolclass=NullPool, 
@@ -375,11 +372,8 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         if dl_url:
                             for retry in range(3):
                                 try:
-                                    parsed = urlparse(dl_url)
-                                    dl_path = parsed.path + ("?" + parsed.query if parsed.query else "")
-                                    dl_headers = make_headers("GET", dl_path, customer_id)
-                                    
-                                    r = requests.get(dl_url, headers=dl_headers, timeout=60)
+                                    # 🔥 403 에러 해결: 다운로드 링크는 자체 인증이 포함된 S3 링크이므로 헤더 없이 요청해야 함!
+                                    r = requests.get(dl_url, timeout=60)
                                     if r.status_code == 200:
                                         r.encoding = 'utf-8'
                                         txt = r.text.strip()
