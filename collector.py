@@ -12,6 +12,7 @@ import sys
 import io
 import random
 import re
+import csv
 import threading
 import concurrent.futures
 from urllib.parse import urlparse
@@ -685,9 +686,10 @@ def format_split_summary(summary: dict) -> str:
         f"위시리스트 {fmt(summary.get('wishlist_conv', 0))}건"
     )
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None) -> Tuple[dict, dict, dict, dict]:
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     summary = empty_split_summary()
+    debug_rows = []
     allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
     keyword_lookup = keyword_lookup or {}
     keyword_unique_lookup = keyword_unique_lookup or {}
@@ -755,6 +757,41 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         row_campaign_id = str(row_campaign_id or "").strip()
         return bool(row_campaign_id) and row_campaign_id in allowed_campaign_ids
 
+    def add_debug_row(vals, parsed_type, c_val, s_val, kept, reason, row_cid="", row_gid="", row_kid="", row_adid="", kw_text="", kw_obj_id=""):
+        debug_rows.append({
+            "report_tp": report_hint,
+            "date": str(debug_target_date or ""),
+            "account_name": str(debug_account_name or ""),
+            "campaign_id": str(row_cid or ""),
+            "adgroup_id": str(row_gid or ""),
+            "keyword_id": str(row_kid or ""),
+            "keyword_text": str(kw_text or ""),
+            "keyword_mapped_id": str(kw_obj_id or ""),
+            "ad_id": str(row_adid or ""),
+            "parsed_type": str(parsed_type or ""),
+            "parsed_count": c_val,
+            "parsed_sales": s_val,
+            "kept": 1 if kept else 0,
+            "reason": reason,
+            "row": " | ".join([str(x) for x in vals]),
+        })
+
+    def flush_debug_rows():
+        if not debug_rows or not debug_account_name or not debug_target_date:
+            return
+        dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
+        os.makedirs(dbg_dir, exist_ok=True)
+        safe_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(debug_account_name))
+        out_path = os.path.join(dbg_dir, f"{debug_target_date}_{safe_name}_{report_hint}.csv")
+        fields = [
+            "report_tp","date","account_name","campaign_id","adgroup_id","keyword_id","keyword_text","keyword_mapped_id","ad_id",
+            "parsed_type","parsed_count","parsed_sales","kept","reason","row"
+        ]
+        with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(debug_rows)
+
     def guess_campaign_id_from_row(vals: list[str]) -> str:
         for v in vals:
             s = str(v).strip().lower()
@@ -805,6 +842,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                     continue
                 row_campaign_id = r.iloc[cid_idx] if cid_idx != -1 and len(r) > cid_idx else ''
                 if not row_allowed(row_campaign_id):
+                    add_debug_row([str(x) for x in r.tolist()], "", 0, 0, False, "campaign_filtered_header")
                     continue
                 is_purchase, is_cart, is_wishlist = classify_conversion_value(r.iloc[type_idx])
                 if not (is_purchase or is_cart or is_wishlist):
@@ -812,6 +850,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 c_val = safe_float(r.iloc[cnt_idx])
                 s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
                 add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
+                add_debug_row([str(x) for x in r.tolist()], "purchase" if is_purchase else ("cart" if is_cart else "wishlist"), c_val, s_val, True, "header_keep")
                 if cid_idx != -1 and len(r) > cid_idx:
                     apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
                 if kid_idx != -1 and len(r) > kid_idx:
@@ -820,6 +859,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                     apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
 
             if camp_map or kw_map or ad_map:
+                flush_debug_rows()
                 return camp_map, kw_map, ad_map, summary
 
     # 2) 헤더 없는 TSV 형식 처리
@@ -905,10 +945,12 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             # 이 경우 안전하게 스킵하고 총합만 유지한다.
             pass
         if not type_hits:
+            add_debug_row(vals, "", 0, 0, False, "no_type_hit")
             continue
 
         row_campaign_id = guess_campaign_id_from_row(vals)
         if not row_allowed(row_campaign_id):
+            add_debug_row(vals, "", 0, 0, False, "campaign_filtered")
             continue
 
         picked = None
@@ -947,6 +989,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             break
 
         if not picked:
+            add_debug_row(vals, "", 0, 0, False, "no_numeric_right")
             continue
 
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
@@ -991,6 +1034,22 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         if row_adid:
             apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
+        add_debug_row(
+            vals,
+            "purchase" if is_purchase else ("cart" if is_cart else "wishlist"),
+            c_val,
+            s_val,
+            True,
+            "keep",
+            row_cid=row_cid,
+            row_gid=row_gid,
+            row_kid=row_kid_s,
+            row_adid=row_adid,
+            kw_text=(str(vals[kw_text_idx]).strip() if kw_text_idx != -1 and kw_text_idx < n else ""),
+            kw_obj_id=kw_obj_id,
+        )
+
+    flush_debug_rows()
     return camp_map, kw_map, ad_map, summary
 
 
@@ -1331,6 +1390,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         report_hint=tp,
                         keyword_lookup=keyword_lookup,
                         keyword_unique_lookup=keyword_unique_lookup,
+                        debug_account_name=account_name,
+                        debug_target_date=str(target_date),
                     )
                     log(f"   🔎 [ {account_name} ] {tp} raw rows={len(conv_df)} / parsed split: campaign({len(one_camp_map)}) keyword({len(one_kw_map)}) ad({len(one_ad_map)})")
                     if split_summary_has_values(one_summary):
@@ -1341,6 +1402,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     sample_row = head + (["..."] if tail else []) + tail
                     preview = " | ".join([str(x) for x in sample_row])
                     log(f"   🔎 [ {account_name} ] {tp} sample: {preview}")
+                    log(f"   🧪 [ {account_name} ] {tp} debug rows 저장: debug_split_rows/{target_date}_{re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", str(account_name))}_{tp}.csv")
 
                     if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
