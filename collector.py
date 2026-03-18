@@ -14,6 +14,7 @@ import random
 import threading
 import concurrent.futures
 from urllib.parse import urlparse
+from pathlib import Path
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
 
@@ -43,6 +44,19 @@ SKIP_AD_STATS = False
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+DEBUG_DIR = Path(os.getenv("DEBUG_REPORT_DIR", "debug_reports"))
+
+def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
+    try:
+        if not os.getenv("DEBUG_REPORTS", "1") in ["1", "true", "TRUE", "yes", "YES"]:
+            return
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = DEBUG_DIR / f"{ts}_{customer_id}_{tp}_{job_id}.txt"
+        fname.write_text(content or "", encoding="utf-8")
+    except Exception:
+        pass
 
 def die(msg: str):
     log(f"❌ FATAL: {msg}")
@@ -418,6 +432,7 @@ def download_report_dataframe(customer_id: str, tp: str, job_id: str, initial_ur
             r = session.get(url, timeout=60, allow_redirects=True)
             if r.status_code == 200:
                 r.encoding = "utf-8"
+                save_debug_report(tp, customer_id, job_id, r.text)
                 return parse_report_text_to_df(r.text)
 
             last_error = f"plain HTTP {r.status_code}"
@@ -428,6 +443,7 @@ def download_report_dataframe(customer_id: str, tp: str, job_id: str, initial_ur
                 r2 = session.get(url, headers=auth_headers, timeout=60, allow_redirects=True)
                 if r2.status_code == 200:
                     r2.encoding = "utf-8"
+                    save_debug_report(tp, customer_id, job_id, r2.text)
                     return parse_report_text_to_df(r2.text)
                 last_error = f"plain HTTP {r.status_code} / auth HTTP {r2.status_code}"
 
@@ -530,12 +546,12 @@ def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
         return camp_map, kw_map, ad_map
 
     headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-    cid_idx = get_col_idx(headers, ["캠페인id", "campaignid"])
+    cid_idx = get_col_idx(headers, ["캠페인id", "campaignid", "ncccampaignid"])
     kid_idx = get_col_idx(headers, ["키워드id", "keywordid", "ncckeywordid"])
-    adid_idx = get_col_idx(headers, ["광고id", "소재id", "adid"])
+    adid_idx = get_col_idx(headers, ["광고id", "소재id", "adid", "nccadid"])
     type_idx = get_col_idx(headers, ["전환유형", "conversiontype", "convtp"])
-    cnt_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
+    cnt_idx = get_col_idx(headers, ["전환수", "conversions", "conversioncount", "ccnt"])
+    sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "salesbyconversion", "convamt"])
 
     if type_idx == -1 or cnt_idx == -1:
         return camp_map, kw_map, ad_map
@@ -837,6 +853,15 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   ℹ️ [ {account_name} ] AD_CONVERSION 리포트가 비어 있습니다. purchase/cart 는 미확정(NULL)로 저장합니다.")
 
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
+            split_report_ok = split_report_ok and (len(camp_map) > 0 or len(kw_map) > 0 or len(ad_map) > 0)
+            if conv_df is not None:
+                log(f"   🔎 [ {account_name} ] AD_CONVERSION raw rows={len(conv_df)} / parsed split: campaign({len(camp_map)}) keyword({len(kw_map)}) ad({len(ad_map)})")
+                if not conv_df.empty:
+                    sample_row = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()[:8]
+                    preview = " | ".join([str(x) for x in sample_row])
+                    log(f"   🔎 [ {account_name} ] AD_CONVERSION sample: {preview}")
+                    if len(camp_map) == 0 and len(kw_map) == 0 and len(ad_map) == 0:
+                        log(f"   ⚠️ [ {account_name} ] AD_CONVERSION 데이터는 있으나 전환유형/ID 컬럼 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
             ad_report_df = dfs.get("AD")
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
