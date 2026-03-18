@@ -608,7 +608,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
 
-        # 🔥 시간대 방어 로직: 오전 9~10시 이전에 어제 데이터를 요청하면 실시간 API로 즉시 우회!
         kst_now = datetime.utcnow() + timedelta(hours=9)
         
         use_realtime_fallback = False
@@ -616,11 +615,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             use_realtime_fallback = True
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["CAMPAIGN", "KEYWORD", "AD", "CONVERSION"]
+            
+            # 🔥 API 스펙에 맞게 수정: AD, AD_CONVERSION 리포트만 요청
+            report_types = ["AD", "AD_CONVERSION"] 
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             
-            # 대용량 리포트 11001 에러로 전부 실패했을 경우 실시간 API로 우회
-            if dfs.get("CAMPAIGN") is None and dfs.get("KEYWORD") is None:
+            # 🔥 수정: AD 리포트조차 발급되지 않았을 때만 실시간 우회
+            if dfs.get("AD") is None:
                 log(f"   ⚠️ [ {account_name} ] 대용량 리포트 미생성 시간대입니다. 실시간 API로 대체합니다 (장바구니 분리 불가)")
                 use_realtime_fallback = True
 
@@ -630,20 +631,22 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if target_ad_ids and not SKIP_AD_STATS else 0
             log(f"   ✅ [ {account_name} ] 실시간 통합수집 완료 (장바구니 합산): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
-            conv_df = dfs.get("CONVERSION")
+            # 🔥 올바른 리포트명으로 매핑 (AD_CONVERSION)
+            conv_df = dfs.get("AD_CONVERSION")
             has_conv_report = conv_df is not None and not conv_df.empty
             
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
             
-            camp_stat = parse_base_report(dfs.get("CAMPAIGN"), "CAMPAIGN", camp_map, has_conv_report)
-            kw_stat = parse_base_report(dfs.get("KEYWORD"), "KEYWORD", kw_map, has_conv_report)
-            ad_stat = parse_base_report(dfs.get("AD"), "AD", ad_map, has_conv_report)
+            # 🔥 AD 리포트 하나로 캠페인/키워드/소재 통계 각각 파싱
+            ad_report_df = dfs.get("AD")
+            camp_stat = parse_base_report(ad_report_df, "CAMPAIGN", camp_map, has_conv_report)
+            kw_stat = parse_base_report(ad_report_df, "KEYWORD", kw_map, has_conv_report)
+            ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report)
             
             c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat) if camp_stat else 0
             k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat) if kw_stat else 0
             a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat) if ad_stat else 0
             
-            # 🔥 무조건 에러 뿜기
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0: 
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (실제 비용 0원이거나 API 권한/서버 오류)")
             else: 
