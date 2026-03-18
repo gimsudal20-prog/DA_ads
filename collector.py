@@ -913,8 +913,22 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
         picked = None
         for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
+            # 원시 TSV는 `... | 2 | purchase | 1 | 64400` 또는
+            # `... | 1 | add_to_cart | 30 | 0` 형태가 많다.
+            # 여기서 앞의 1/2는 전환방식(직접/간접)일 가능성이 크므로,
+            # 전환유형 문자열(purchase/add_to_cart/wishlist) 바로 오른쪽 숫자를
+            # 전환수로, 그 다음 숫자를 전환매출액으로 본다.
+            anchor_idx = type_idx
+            anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
+            raw_tok = str(vals[type_idx]).strip().lower()
+            if raw_tok in {'1', '2', '3'} and type_idx + 1 < n:
+                n_is_purchase, n_is_cart, n_is_wishlist = classify_conversion_value(vals[type_idx + 1])
+                if n_is_purchase or n_is_cart or n_is_wishlist:
+                    anchor_idx = type_idx + 1
+                    anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = n_is_purchase, n_is_cart, n_is_wishlist
+
             numeric_right = []
-            for j in range(type_idx + 1, n):
+            for j in range(anchor_idx + 1, n):
                 vv = vals[j]
                 if looks_like_id(vv):
                     continue
@@ -924,22 +938,12 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             if not numeric_right:
                 continue
 
-            # 기본값: 타입 오른쪽 첫 숫자를 count, 다음 숫자를 sales로 본다.
+            # 전환유형 문자열 바로 오른쪽 첫 숫자 = 전환수
+            # 다음 숫자 = 전환매출액
             c_val = float(numeric_right[0][1])
             s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
 
-            # 여러 숫자가 있으면 작은 수를 전환수, 큰 수를 매출로 우선 해석
-            first_nums = [x[1] for x in numeric_right[:5]]
-            smalls = [x for x in first_nums if x <= 1000000]
-            bigs = [x for x in first_nums if x > 1000000]
-            if smalls:
-                c_val = float(smalls[0])
-            if bigs:
-                s_val = int(bigs[0])
-            elif len(first_nums) >= 2:
-                s_val = int(first_nums[1])
-
-            picked = (is_purchase, is_cart, is_wishlist, c_val, s_val)
+            picked = (anchor_is_purchase, anchor_is_cart, anchor_is_wishlist, c_val, s_val)
             break
 
         if not picked:
