@@ -1116,9 +1116,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             elif not shopping_campaign_ids:
                 log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
             else:
-                # 쇼핑검색 전환 상세는 SHOPPINGKEYWORD_CONVERSION_DETAIL을 우선 사용하고,
-                # 비어 있을 때만 AD_CONVERSION을 fallback으로 사용한다.
-                report_candidates = ["SHOPPINGKEYWORD_CONVERSION_DETAIL", "AD_CONVERSION"]
+                # 핵심:
+                # - 캠페인/소재 분리값은 AD_CONVERSION을 우선 사용
+                # - 키워드 분리값은 SHOPPINGKEYWORD_CONVERSION_DETAIL을 우선 사용
+                #   (이 리포트는 키워드 텍스트 기반으로 내려오는 경우가 많아 keyword_lookup 매핑 필요)
+                # - 두 리포트를 "하나만 선택"하면 3skbox처럼 크게 누락될 수 있으므로
+                #   서로 다른 용도로 나눠 사용한다.
+                source_maps = {}
+                report_candidates = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
                 for tp in report_candidates:
                     conv_df = dfs.get(tp)
                     if conv_df is None:
@@ -1147,10 +1152,30 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
                         continue
 
-                    camp_map, kw_map, ad_map = one_camp_map, one_kw_map, one_ad_map
-                    split_report_ok = True
-                    log(f"   ✅ [ {account_name} ] shopping split 원천으로 {tp} 리포트를 사용합니다.")
-                    break
+                    source_maps[tp] = (one_camp_map, one_kw_map, one_ad_map)
+
+                ad_conv_maps = source_maps.get("AD_CONVERSION", ({}, {}, {}))
+                shop_kw_maps = source_maps.get("SHOPPINGKEYWORD_CONVERSION_DETAIL", ({}, {}, {}))
+
+                ad_camp_map, ad_kw_map, ad_ad_map = ad_conv_maps
+                shop_camp_map, shop_kw_map, shop_ad_map = shop_kw_maps
+
+                # 캠페인/소재는 AD_CONVERSION 우선, 없으면 쇼핑 키워드 상세를 fallback으로 사용
+                camp_map = ad_camp_map if ad_camp_map else shop_camp_map
+                ad_map = ad_ad_map if ad_ad_map else shop_ad_map
+
+                # 키워드는 SHOPPINGKEYWORD_CONVERSION_DETAIL 우선.
+                # 이 리포트가 비거나 keyword 매핑이 0건이면 AD_CONVERSION keyword split을 fallback으로 사용한다.
+                kw_map = shop_kw_map if shop_kw_map else ad_kw_map
+
+                split_report_ok = bool(camp_map or kw_map or ad_map)
+
+                if split_report_ok:
+                    log(
+                        f"   ✅ [ {account_name} ] shopping split 원천 사용: "
+                        f"campaign/ad={'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')}, "
+                        f"keyword={'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else ('AD_CONVERSION' if ad_kw_map else 'none')}"
+                    )
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
