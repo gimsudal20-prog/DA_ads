@@ -15,6 +15,7 @@ import threading
 import concurrent.futures
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 import requests
 import pandas as pd
@@ -372,8 +373,20 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         if dl_url:
                             for retry in range(3):
                                 try:
-                                    # 🔥 403 에러 해결: 다운로드 링크는 자체 인증이 포함된 S3 링크이므로 헤더 없이 요청해야 함!
-                                    r = requests.get(dl_url, timeout=60)
+                                    # 🔥 핵심 해결: 네이버 API인지 확인하고, ? 파라미터 제외한 순수 경로만 서명에 사용!
+                                    parsed = urlparse(dl_url)
+                                    if "searchad.naver.com" in parsed.netloc:
+                                        dl_headers = make_headers("GET", parsed.path, customer_id)
+                                    else:
+                                        dl_headers = {}
+                                        
+                                    # 🚨 S3로 리다이렉트 될 때 커스텀 헤더가 넘어가서 400 에러나는 것을 방지!
+                                    r = requests.get(dl_url, headers=dl_headers, allow_redirects=False, timeout=60)
+                                    
+                                    if r.status_code in [301, 302, 303, 307, 308]:
+                                        redirect_url = r.headers.get('Location')
+                                        r = requests.get(redirect_url, timeout=60) # S3 링크는 헤더 없이 순수 요청
+
                                     if r.status_code == 200:
                                         r.encoding = 'utf-8'
                                         txt = r.text.strip()
