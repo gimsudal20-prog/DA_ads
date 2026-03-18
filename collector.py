@@ -1402,7 +1402,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     sample_row = head + (["..."] if tail else []) + tail
                     preview = " | ".join([str(x) for x in sample_row])
                     log(f"   🔎 [ {account_name} ] {tp} sample: {preview}")
-                    log(f"   🧪 [ {account_name} ] {tp} debug rows 저장: debug_split_rows/{target_date}_{re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", str(account_name))}_{tp}.csv")
+                    safe_account_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(account_name))
+                    log(f"   🧪 [ {account_name} ] {tp} debug rows 저장: debug_split_rows/{target_date}_{safe_account_name}_{tp}.csv")
 
                     if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
