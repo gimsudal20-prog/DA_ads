@@ -24,6 +24,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool  # 🔥 추가: DB 커넥션 풀링 방지 (Supabase 끊김 해결)
 
 load_dotenv(override=False)
 
@@ -113,12 +114,11 @@ def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
+    
+    # 🔥 수정: pool_size 제한을 없애고 쿼리마다 직접 연결을 열고 닫는 NullPool 사용
     return create_engine(
         db_url, 
-        pool_size=30,      
-        max_overflow=60,   
-        pool_pre_ping=True,
-        pool_recycle=1800, 
+        poolclass=NullPool, 
         connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, 
         future=True
     )
@@ -130,7 +130,6 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
     except Exception: pass
 
 def ensure_tables(engine: Engine):
-    # 🔥 10분 DB 멈춤(Lock)의 주범이었던 CREATE INDEX 로직 완전 삭제 (초기 1회만 DB에서 직접 생성 권장)
     for attempt in range(3):
         try:
             with engine.begin() as conn:
@@ -487,7 +486,6 @@ def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
         
     return camp_map, kw_map, ad_map
 
-# 🔥 쇼핑검색(shopping_camps) 여부를 인자로 받아 분기 처리하는 기능 추가
 def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, has_conv_report: bool = False, shopping_camps: set = None) -> dict:
     if shopping_camps is None: shopping_camps = set()
     if df is None or df.empty: return {}
@@ -508,7 +506,7 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
         headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
         data_df = df.iloc[header_idx+1:]
         pk_idx = get_col_idx(headers, pk_cands)
-        cid_idx = get_col_idx(headers, ["캠페인id", "campaignid"]) # 캠페인 ID 컬럼 확보
+        cid_idx = get_col_idx(headers, ["캠페인id", "campaignid"])
         imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
         clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
         cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
@@ -518,7 +516,7 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
     else:
         data_df = df.iloc[1:] if ("date" in str(df.iloc[0,0]).lower() or "id" in str(df.iloc[0,0]).lower()) else df
         pk_idx = 2 if "CAMPAIGN" in report_tp else 5
-        cid_idx = 2 # fallback 기본값
+        cid_idx = 2
         imp_idx = 5 if "CAMPAIGN" in report_tp else 8
         clk_idx = 6 if "CAMPAIGN" in report_tp else 9
         cost_idx = 7 if "CAMPAIGN" in report_tp else 10
@@ -532,7 +530,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
         obj_id = str(r.iloc[pk_idx]).strip()
         if not obj_id or obj_id == '-' or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]: continue
 
-        # 현재 행이 속한 캠페인ID 추출하여 쇼핑검색 캠페인인지 확인
         curr_camp_id = obj_id if report_tp == "CAMPAIGN" else (str(r.iloc[cid_idx]).strip() if cid_idx != -1 else "")
         is_shopping = (curr_camp_id in shopping_camps)
 
@@ -544,7 +541,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
         if clk_idx != -1 and len(r) > clk_idx: res[obj_id]["clk"] += int(safe_float(r.iloc[clk_idx]))
         if cost_idx != -1 and len(r) > cost_idx: res[obj_id]["cost"] += int(safe_float(r.iloc[cost_idx]))
         
-        # 🔥 쇼핑검색인 경우에만 구매/장바구니 상세 전환 로직 적용!
         if is_shopping and has_conv_report and conv_map is not None:
             if obj_id in conv_map:
                 res[obj_id]["conv"] = conv_map[obj_id]["conv"]
@@ -557,7 +553,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
                 res[obj_id]["cart_conv"] = 0.0
                 res[obj_id]["cart_sales"] = 0
         else:
-            # 🔥 타 캠페인(파워링크 등)은 기본 제공되는 전환수(ccnt)를 그대로 합산 (회원가입 등 유실 방지)
             if conv_idx != -1 and len(r) > conv_idx: res[obj_id]["conv"] += safe_float(r.iloc[conv_idx])
             if sales_idx != -1 and len(r) > sales_idx: res[obj_id]["sales"] += int(safe_float(r.iloc[sales_idx]))
             res[obj_id]["cart_conv"] = 0.0
@@ -595,7 +590,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
-        shopping_camps = set() # 🔥 현재 업체의 쇼핑검색 캠페인 ID를 담을 바구니
+        shopping_camps = set()
         
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
@@ -607,7 +602,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 camp_tp = str(c.get("campaignTp", ""))
                 
                 target_camp_ids.append(cid)
-                if camp_tp == "SHOPPING": shopping_camps.add(cid) # 쇼핑 캠페인 분류 수집
+                if camp_tp == "SHOPPING": shopping_camps.add(cid)
                 
                 camp_rows.append({"customer_id": str(customer_id), "campaign_id": cid, "campaign_name": str(c.get("name", "")), "campaign_tp": camp_tp, "status": str(c.get("status", ""))})
                 
@@ -642,7 +637,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-                # 스킵 모드일 경우 DB에서 쇼핑 캠페인 리스트 조회
                 shopping_camps = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND campaign_tp = 'SHOPPING'"), {"cid": customer_id})}
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
@@ -672,8 +666,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
             
             ad_report_df = dfs.get("AD")
-            
-            # 🔥 통계 파싱 시 shopping_camps 리스트를 넘겨서 알맞게 처리하도록 지시
             camp_stat = parse_base_report(ad_report_df, "CAMPAIGN", camp_map, has_conv_report, shopping_camps)
             kw_stat = parse_base_report(ad_report_df, "KEYWORD", kw_map, has_conv_report, shopping_camps)
             ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report, shopping_camps)
