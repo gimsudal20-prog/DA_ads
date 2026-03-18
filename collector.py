@@ -916,6 +916,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             continue
 
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
+        add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
         row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-')
         row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-')
         row_kid = value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
