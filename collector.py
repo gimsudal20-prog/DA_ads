@@ -156,7 +156,6 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_keyword_daily_dt_cid ON fact_keyword_daily(dt, customer_id);"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fact_ad_daily_dt_cid ON fact_ad_daily(dt, customer_id);"))
 
-            # 🔥 DB 컬럼 강제 생성 보장
             ensure_column(engine, "dim_ad", "ad_title", "TEXT")
             ensure_column(engine, "dim_ad", "ad_desc", "TEXT")
             ensure_column(engine, "dim_ad", "pc_landing_url", "TEXT")
@@ -356,7 +355,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             else:
                 log(f"⚠️ [{tp}] 대용량 리포트 요청 실패: HTTP {status} - {data}")
             
-        max_wait = 80
+        max_wait = 120 # 대기 시간을 120초로 늘림 (대량 병렬 수집 대비)
         while jobs and max_wait > 0:
             for tp, job_id in list(jobs.items()):
                 s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
@@ -365,20 +364,30 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                     if stt == "BUILT":
                         dl_url = s_data.get("downloadUrl")
                         if dl_url:
-                            try:
-                                r = requests.get(dl_url, timeout=60)
-                                if r.status_code == 200:
-                                    r.encoding = 'utf-8'
-                                    txt = r.text.strip()
-                                    if txt:
-                                        sep = '\t' if '\t' in txt else ','
-                                        results[tp] = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str)
+                            # 🔥 다운로드 및 파싱 에러 방어 로직 (최대 3회 재시도 및 로그 출력)
+                            for retry in range(3):
+                                try:
+                                    r = requests.get(dl_url, timeout=60)
+                                    if r.status_code == 200:
+                                        r.encoding = 'utf-8'
+                                        txt = r.text.strip()
+                                        if txt:
+                                            sep = '\t' if '\t' in txt else ','
+                                            results[tp] = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str, on_bad_lines='skip')
+                                        else:
+                                            results[tp] = pd.DataFrame()
+                                        break # 성공 시 루프 탈출
                                     else:
-                                        results[tp] = pd.DataFrame()
-                            except Exception: pass
+                                        log(f"⚠️ [{tp}] 대용량 리포트 다운로드 실패 HTTP {r.status_code} (재시도 {retry+1}/3)")
+                                        time.sleep(2)
+                                except Exception as e:
+                                    log(f"⚠️ [{tp}] 대용량 리포트 처리 중 에러: {e} (재시도 {retry+1}/3)")
+                                    time.sleep(2)
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
                     elif stt in ["NONE", "ERROR"]:
+                        if stt == "ERROR":
+                            log(f"⚠️ [{tp}] 네이버 API 내부 리포트 생성 ERROR 발생")
                         results[tp] = pd.DataFrame() if stt == "NONE" else None
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
@@ -411,7 +420,6 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-# 🔥 네이버 공지사항 기준 구매(1) 장바구니(3) 추출 함수
 def process_conversion_report(df: pd.DataFrame) -> Tuple[dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     if df is None or df.empty: return camp_map, kw_map, ad_map
@@ -492,7 +500,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict = None, h
         sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
         rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
     else:
-        # Fallback 
         data_df = df.iloc[1:] if ("date" in str(df.iloc[0,0]).lower() or "id" in str(df.iloc[0,0]).lower()) else df
         pk_idx = 2 if "CAMPAIGN" in report_tp else 5
         imp_idx = 5 if "CAMPAIGN" in report_tp else 8
@@ -616,13 +623,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
             
-            # 🔥 API 스펙에 맞게 수정: AD, AD_CONVERSION 리포트만 요청
             report_types = ["AD", "AD_CONVERSION"] 
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             
-            # 🔥 수정: AD 리포트조차 발급되지 않았을 때만 실시간 우회
+            # 🔥 로그 문구도 원인에 맞춰서 수정했습니다.
             if dfs.get("AD") is None:
-                log(f"   ⚠️ [ {account_name} ] 대용량 리포트 미생성 시간대입니다. 실시간 API로 대체합니다 (장바구니 분리 불가)")
+                log(f"   ⚠️ [ {account_name} ] 대용량 리포트 조회 실패(네이버 오류 또는 다운로드 지연). 실시간 API로 안전하게 대체합니다.")
                 use_realtime_fallback = True
 
         if use_realtime_fallback:
@@ -631,13 +637,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if target_ad_ids and not SKIP_AD_STATS else 0
             log(f"   ✅ [ {account_name} ] 실시간 통합수집 완료 (장바구니 합산): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
-            # 🔥 올바른 리포트명으로 매핑 (AD_CONVERSION)
             conv_df = dfs.get("AD_CONVERSION")
             has_conv_report = conv_df is not None and not conv_df.empty
             
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
             
-            # 🔥 AD 리포트 하나로 캠페인/키워드/소재 통계 각각 파싱
             ad_report_df = dfs.get("AD")
             camp_stat = parse_base_report(ad_report_df, "CAMPAIGN", camp_map, has_conv_report)
             kw_stat = parse_base_report(ad_report_df, "KEYWORD", kw_map, has_conv_report)
@@ -648,7 +652,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat) if ad_stat else 0
             
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0: 
-                log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (실제 비용 0원이거나 API 권한/서버 오류)")
+                log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else: 
                 log(f"   ✅ [ {account_name} ] 장바구니 완벽 분리 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             
