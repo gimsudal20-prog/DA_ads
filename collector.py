@@ -205,22 +205,27 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
                 try: raw_conn.close()
                 except Exception: pass
 
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    if not rows: return
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
-    
+def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
     for attempt in range(3):
         try:
             with engine.begin() as conn:
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
-            break
+            return
         except Exception:
             time.sleep(3)
-            
+
+
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    clear_fact_range(engine, table, customer_id, d1)
+    if not rows:
+        return
+
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
-    
+
     for attempt in range(3):
         raw_conn, cur = None, None
         try:
@@ -321,53 +326,62 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
     return out
 
 
-def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str) -> int:
+def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str, split_map: dict | None = None) -> int:
     if not ids:
+        clear_fact_range(engine, table_name, customer_id, target_date)
         return 0
 
     raw_stats = get_stats_range(customer_id, ids, target_date)
-    if not raw_stats:
-        return 0
-
     rows = []
-    for r in raw_stats:
-        imp = int(r.get("impCnt", 0) or 0)
-        cost = int(float(r.get("salesAmt", 0) or 0))
-        if imp == 0 and cost == 0:
+    for r in raw_stats or []:
+        obj_id = str(r.get("id") or "").strip()
+        if not obj_id:
             continue
 
-        total_sales = int(float(r.get("convAmt", 0) or 0))
+        imp = int(r.get("impCnt", 0) or 0)
         clk = int(r.get("clkCnt", 0) or 0)
+        cost = int(float(r.get("salesAmt", 0) or 0))
         total_conv = float(r.get("ccnt", 0) or 0)
-        total_roas = (total_sales / cost * 100) if cost > 0 else 0.0
+        total_sales = int(float(r.get("convAmt", 0) or 0))
+
+        if imp == 0 and clk == 0 and cost == 0 and total_conv == 0 and total_sales == 0:
+            continue
+
+        split = split_map.get(obj_id) if split_map else None
+        purchase_conv = split.get("purchase_conv", 0.0) if split else None
+        purchase_sales = split.get("purchase_sales", 0) if split else None
+        cart_conv = split.get("cart_conv", 0.0) if split else None
+        cart_sales = split.get("cart_sales", 0) if split else None
+
+        total_roas = (total_sales / cost * 100.0) if cost > 0 else 0.0
+        purchase_roas = None if purchase_sales is None or cost <= 0 else (purchase_sales / cost * 100.0)
+        cart_roas = None if cart_sales is None or cost <= 0 else (cart_sales / cost * 100.0)
 
         row = {
             "dt": target_date,
             "customer_id": str(customer_id),
-            id_key: str(r.get("id")),
+            id_key: obj_id,
             "imp": imp,
             "clk": clk,
             "cost": cost,
             "conv": total_conv,
             "sales": total_sales,
             "roas": total_roas,
-            "purchase_conv": None,
-            "purchase_sales": None,
-            "purchase_roas": None,
-            "cart_conv": None,
-            "cart_sales": None,
-            "cart_roas": None,
-            "split_available": False,
-            "data_source": "stats_total_only",
+            "purchase_conv": purchase_conv,
+            "purchase_sales": purchase_sales,
+            "purchase_roas": purchase_roas,
+            "cart_conv": cart_conv,
+            "cart_sales": cart_sales,
+            "cart_roas": cart_roas,
+            "split_available": bool(split),
+            "data_source": "stats_total_plus_split" if split else "stats_total_only",
         }
         if id_key in ["campaign_id", "keyword_id", "ad_id"]:
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
 
-    if rows:
-        replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
-
 
 def cleanup_ghost_reports(customer_id: str):
     status, data = request_json("GET", "/stat-reports", customer_id, raise_error=False)
@@ -801,17 +815,17 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["CAMPAIGN", "KEYWORD", "AD", "AD_CONVERSION"]
+            report_types = ["AD", "AD_CONVERSION"]
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
 
-            if dfs.get("CAMPAIGN") is None and dfs.get("KEYWORD") is None and dfs.get("AD") is None:
-                log(f"   ⚠️ [ {account_name} ] 기본 대용량 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (구매/장바구니 분리 불가)")
+            if dfs.get("AD") is None and dfs.get("AD_CONVERSION") is None:
+                log(f"   ⚠️ [ {account_name} ] AD / AD_CONVERSION 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (purchase/cart 미분리)")
                 use_realtime_fallback = True
 
         if use_realtime_fallback:
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily") if target_camp_ids else 0
-            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if target_kw_ids and not SKIP_KEYWORD_STATS else 0
-            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if target_ad_ids and not SKIP_AD_STATS else 0
+            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
+            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
             log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
             conv_df = dfs.get("AD_CONVERSION")
@@ -823,40 +837,21 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   ℹ️ [ {account_name} ] AD_CONVERSION 리포트가 비어 있습니다. purchase/cart 는 미확정(NULL)로 저장합니다.")
 
             camp_map, kw_map, ad_map = process_conversion_report(conv_df)
-
-            campaign_report_df = dfs.get("CAMPAIGN")
-            keyword_report_df = dfs.get("KEYWORD")
             ad_report_df = dfs.get("AD")
 
-            data_source = "report_split" if split_report_ok else "report_total_only"
-
-            # 같은 AD 리포트로 캠페인/키워드/소재를 모두 만들면
-            # 키워드 비용/클릭이 소재 기준으로 중복 집계될 수 있으므로
-            # 각 레벨은 반드시 해당 레벨 리포트로만 적재한다.
-            if campaign_report_df is not None and not campaign_report_df.empty:
-                camp_stat = parse_base_report(campaign_report_df, "CAMPAIGN", camp_map, has_conv_report=split_report_ok)
-                c_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_campaign_daily", "campaign_id", camp_stat, data_source=data_source) if camp_stat else 0
-            else:
-                log(f"   ⚠️ [ {account_name} ] CAMPAIGN 리포트 없음 → 캠페인만 실시간 stats 총합으로 대체합니다.")
-                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily") if target_camp_ids else 0
-
-            if not SKIP_KEYWORD_STATS:
-                if keyword_report_df is not None and not keyword_report_df.empty:
-                    kw_stat = parse_base_report(keyword_report_df, "KEYWORD", kw_map, has_conv_report=split_report_ok)
-                    k_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_keyword_daily", "keyword_id", kw_stat, data_source=data_source) if kw_stat else 0
-                else:
-                    log(f"   ⚠️ [ {account_name} ] KEYWORD 리포트 없음 → 키워드만 실시간 stats 총합으로 대체합니다. (AD 리포트로 키워드 집계하지 않음)")
-                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if target_kw_ids else 0
-            else:
-                k_cnt = 0
+            # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
+            # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
+            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map)
+            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if not SKIP_KEYWORD_STATS else 0
 
             if not SKIP_AD_STATS:
                 if ad_report_df is not None and not ad_report_df.empty:
+                    ad_data_source = "report_split" if split_report_ok else "report_total_only"
                     ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
-                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=data_source) if ad_stat else 0
+                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
                 else:
                     log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
-                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if target_ad_ids else 0
+                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
             else:
                 a_cnt = 0
 
