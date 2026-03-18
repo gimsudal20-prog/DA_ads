@@ -582,10 +582,11 @@ def merge_split_maps(*maps: dict) -> dict:
     return out
 
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None) -> Tuple[dict, dict, dict]:
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None) -> Tuple[dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
     keyword_lookup = keyword_lookup or {}
+    keyword_unique_lookup = keyword_unique_lookup or {}
     if df is None or df.empty:
         return camp_map, kw_map, ad_map
 
@@ -657,6 +658,22 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 return str(v).strip()
         return ""
 
+    def first_value_with_prefix(vals: list[str], prefix: str) -> str:
+        for v in vals:
+            s = str(v).strip()
+            if s.lower().startswith(prefix):
+                return s
+        return ""
+
+    def value_from_idx_or_scan(vals: list[str], idx: int, prefix: str, allow_dash: bool = False) -> str:
+        if 0 <= idx < len(vals):
+            v = str(vals[idx]).strip()
+            if v.lower().startswith(prefix):
+                return v
+            if allow_dash and v == '-':
+                return v
+        return first_value_with_prefix(vals, prefix)
+
     # 1) 헤더가 있는 형식 우선 처리
     header_idx = -1
     for i in range(min(20, len(df))):
@@ -706,22 +723,28 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
     def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
         max_cols = max((len(r) for r in sample_rows), default=0)
-        best_idx, best_score = -1, -1
+        best_idx, best_score, best_prefix_hits = -1, -1, 0
         for i in range(max_cols):
             score = 0
+            prefix_hits = 0
+            dash_hits = 0
             for r in sample_rows:
                 if len(r) <= i:
                     continue
                 v = str(r.iloc[i]).strip().lower()
                 if v.startswith(target_prefix):
-                    score += 3
+                    score += 5
+                    prefix_hits += 1
                 elif allow_dash and v == '-':
-                    score += 1
+                    dash_hits += 1
+            # '-' 는 보조 힌트로만 사용하고, 실제 prefix hit 가 한 번도 없는 컬럼은 선택하지 않는다.
+            if prefix_hits > 0:
+                score += min(dash_hits, prefix_hits)
             if preferred_after >= 0 and i <= preferred_after:
                 score -= 2
-            if score > best_score:
-                best_idx, best_score = i, score
-        return best_idx if best_score > 0 else -1
+            if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
+                best_idx, best_score, best_prefix_hits = i, score, prefix_hits
+        return best_idx if best_prefix_hits > 0 else -1
 
     cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
     gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
@@ -818,21 +841,31 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             continue
 
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
-        if cid_idx != -1 and cid_idx < n:
-            apply_row(camp_map, vals[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-')
+        row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-')
+        row_kid = value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
+        row_adid = value_from_idx_or_scan(vals, adid_idx, 'nad-')
+
+        if row_cid:
+            apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
         kw_obj_id = ""
-        if kid_idx != -1 and kid_idx < n and vals[kid_idx] not in {"", "-"} and str(vals[kid_idx]).startswith("nkw-"):
-            kw_obj_id = vals[kid_idx]
-        elif kw_text_idx != -1 and kw_text_idx < n and gid_idx != -1 and gid_idx < n:
-            gid_val = str(vals[gid_idx]).strip()
+        if row_kid not in {"", "-"} and str(row_kid).startswith("nkw-"):
+            kw_obj_id = row_kid
+        elif kw_text_idx != -1 and kw_text_idx < n and row_gid:
             kw_text = str(vals[kw_text_idx]).strip()
-            kw_obj_id = keyword_lookup.get((gid_val, kw_text), "") or keyword_lookup.get((gid_val, kw_text.lower()), "")
+            kw_norm = normalize_keyword_text(kw_text)
+            kw_obj_id = (
+                keyword_lookup.get((row_gid, kw_text), "")
+                or keyword_lookup.get((row_gid, kw_text.lower()), "")
+                or keyword_lookup.get((row_gid, kw_norm), "")
+                or keyword_unique_lookup.get(kw_norm, "")
+            )
         if kw_obj_id:
             apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
-        if adid_idx != -1 and adid_idx < n:
-            apply_row(ad_map, vals[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        if row_adid:
+            apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
     return camp_map, kw_map, ad_map
 
@@ -1072,14 +1105,29 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
 
         keyword_lookup = {}
+        keyword_unique_lookup = {}
         try:
+            text_freq = {}
+            temp_rows = []
             with engine.connect() as conn:
                 for kid, gid, kw in conn.execute(text("SELECT keyword_id, adgroup_id, keyword FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id}):
                     if kid and gid and kw:
-                        keyword_lookup[(str(gid), str(kw).strip())] = str(kid)
-                        keyword_lookup[(str(gid), str(kw).strip().lower())] = str(kid)
+                        gid_s = str(gid)
+                        kw_s = str(kw).strip()
+                        kw_l = kw_s.lower()
+                        kw_n = normalize_keyword_text(kw_s)
+                        kid_s = str(kid)
+                        keyword_lookup[(gid_s, kw_s)] = kid_s
+                        keyword_lookup[(gid_s, kw_l)] = kid_s
+                        keyword_lookup[(gid_s, kw_n)] = kid_s
+                        text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
+                        temp_rows.append((kw_n, kid_s))
+            for kw_n, kid_s in temp_rows:
+                if kw_n and text_freq.get(kw_n) == 1:
+                    keyword_unique_lookup[kw_n] = kid_s
         except Exception:
             keyword_lookup = {}
+            keyword_unique_lookup = {}
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
@@ -1139,6 +1187,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         allowed_campaign_ids=shopping_campaign_ids,
                         report_hint=tp,
                         keyword_lookup=keyword_lookup,
+                        keyword_unique_lookup=keyword_unique_lookup,
                     )
                     log(f"   🔎 [ {account_name} ] {tp} raw rows={len(conv_df)} / parsed split: campaign({len(one_camp_map)}) keyword({len(one_kw_map)}) ad({len(one_ad_map)})")
                     sample_vals = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()
