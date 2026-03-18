@@ -539,6 +539,36 @@ def normalize_keyword_text(v: str) -> str:
     return "".join(out)
 
 
+def extract_prefixed_token(vals, prefix: str) -> str:
+    prefix_l = str(prefix).lower()
+    p = re.compile(rf"\b{re.escape(prefix_l)}[a-z0-9-]+", re.I)
+    for v in vals:
+        s = str(v).strip()
+        if s.lower().startswith(prefix_l):
+            return s
+        m = p.search(s)
+        if m:
+            return m.group(0)
+    return ""
+
+
+def keyword_text_candidates(kw_norm: str, rows: list[tuple[str, str]]) -> list[str]:
+    if not kw_norm:
+        return []
+    hits = []
+    for db_norm, kid in rows:
+        if not db_norm or not kid:
+            continue
+        if db_norm == kw_norm or kw_norm in db_norm or db_norm in kw_norm:
+            hits.append(kid)
+    seen, out = set(), []
+    for kid in hits:
+        if kid not in seen:
+            seen.add(kid)
+            out.append(kid)
+    return out
+
+
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [normalize_header(h) for h in headers]
     norm_candidates = [normalize_header(c) for c in candidates]
@@ -917,17 +947,20 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
         add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
-        row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-')
-        row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-')
+        row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-') or extract_prefixed_token(vals, 'cmp-')
+        row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-') or extract_prefixed_token(vals, 'grp-')
         row_kid = value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
-        row_adid = value_from_idx_or_scan(vals, adid_idx, 'nad-')
+        if row_kid in {'', '-'}:
+            row_kid = extract_prefixed_token(vals, 'nkw-')
+        row_adid = value_from_idx_or_scan(vals, adid_idx, 'nad-') or extract_prefixed_token(vals, 'nad-')
 
         if row_cid:
             apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
         kw_obj_id = ""
-        if row_kid not in {"", "-"} and str(row_kid).startswith("nkw-"):
-            kw_obj_id = row_kid
+        row_kid_s = str(row_kid).strip()
+        if row_kid_s not in {"", "-"} and row_kid_s.lower().startswith("nkw-"):
+            kw_obj_id = row_kid_s
         elif kw_text_idx != -1 and kw_text_idx < n and row_gid:
             kw_text = str(vals[kw_text_idx]).strip()
             kw_norm = normalize_keyword_text(kw_text)
@@ -935,8 +968,19 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 keyword_lookup.get((row_gid, kw_text), "")
                 or keyword_lookup.get((row_gid, kw_text.lower()), "")
                 or keyword_lookup.get((row_gid, kw_norm), "")
-                or keyword_unique_lookup.get(kw_norm, "")
             )
+            if not kw_obj_id:
+                group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
+                cands = keyword_text_candidates(kw_norm, group_rows)
+                if len(cands) == 1:
+                    kw_obj_id = cands[0]
+            if not kw_obj_id:
+                uniq_cands = keyword_unique_lookup.get(kw_norm, [])
+                if isinstance(uniq_cands, list):
+                    if len(uniq_cands) == 1:
+                        kw_obj_id = uniq_cands[0]
+                elif uniq_cands:
+                    kw_obj_id = uniq_cands
         if kw_obj_id:
             apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
@@ -1194,6 +1238,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         try:
             text_freq = {}
             temp_rows = []
+            group_rows = {}
             with engine.connect() as conn:
                 for kid, gid, kw in conn.execute(text("SELECT keyword_id, adgroup_id, keyword FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id}):
                     if kid and gid and kw:
@@ -1205,11 +1250,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         keyword_lookup[(gid_s, kw_s)] = kid_s
                         keyword_lookup[(gid_s, kw_l)] = kid_s
                         keyword_lookup[(gid_s, kw_n)] = kid_s
+                        group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
                         text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
                         temp_rows.append((kw_n, kid_s))
+            for gid_s, rows in group_rows.items():
+                keyword_lookup[(gid_s, '__rows__')] = rows
+            unique_map = {}
             for kw_n, kid_s in temp_rows:
                 if kw_n and text_freq.get(kw_n) == 1:
-                    keyword_unique_lookup[kw_n] = kid_s
+                    unique_map.setdefault(kw_n, []).append(kid_s)
+            keyword_unique_lookup = unique_map
         except Exception:
             keyword_lookup = {}
             keyword_unique_lookup = {}
