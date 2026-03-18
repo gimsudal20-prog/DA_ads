@@ -1365,13 +1365,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 final_split_summary = shop_summary if split_summary_has_values(shop_summary) else ad_summary
 
                 if split_report_ok:
+                    camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
+                    kw_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else ('AD_CONVERSION' if ad_kw_map else 'none')
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
-                        f"campaign/ad={'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')}, "
-                        f"keyword={'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else ('AD_CONVERSION' if ad_kw_map else 'none')}"
+                        f"campaign/ad={camp_ad_src}, keyword={kw_src}"
                     )
                     if split_summary_has_values(final_split_summary):
-                        log(f"   ✅ [ {account_name} ] 전환 분리 수집 완료: {format_split_summary(final_split_summary)}")
+                        log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
+                        if kw_src == 'none':
+                            log(f"   ⚠️ [ {account_name} ] keyword split은 아직 미매핑 상태입니다. detail split 합계는 keyword별 적재값과 다를 수 있습니다.")
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
