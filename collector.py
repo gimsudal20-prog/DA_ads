@@ -15,6 +15,7 @@ import threading
 import concurrent.futures
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse # 🔥 추가된 임포트
 
 import requests
 import pandas as pd
@@ -200,6 +201,14 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
                 except Exception: pass
             time.sleep(3)
             if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
+        finally:
+            # 🔥 DB 커넥션 누수 방지를 위한 강제 자원 해제 로직
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     if not rows: return
@@ -231,6 +240,14 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 except Exception: pass
             time.sleep(3)
             if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
+        finally:
+            # 🔥 DB 커넥션 누수 방지를 위한 강제 자원 해제 로직
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -355,7 +372,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
             else:
                 log(f"⚠️ [{tp}] 대용량 리포트 요청 실패: HTTP {status} - {data}")
             
-        max_wait = 120 # 대기 시간을 120초로 늘림 (대량 병렬 수집 대비)
+        max_wait = 120
         while jobs and max_wait > 0:
             for tp, job_id in list(jobs.items()):
                 s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id, raise_error=False)
@@ -364,10 +381,14 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                     if stt == "BUILT":
                         dl_url = s_data.get("downloadUrl")
                         if dl_url:
-                            # 🔥 다운로드 및 파싱 에러 방어 로직 (최대 3회 재시도 및 로그 출력)
                             for retry in range(3):
                                 try:
-                                    r = requests.get(dl_url, timeout=60)
+                                    # 🔥 다운로드 시에도 네이버 API 인증 헤더를 붙여서 요청하도록 수정
+                                    parsed = urlparse(dl_url)
+                                    dl_path = parsed.path + ("?" + parsed.query if parsed.query else "")
+                                    dl_headers = make_headers("GET", dl_path, customer_id)
+                                    
+                                    r = requests.get(dl_url, headers=dl_headers, timeout=60)
                                     if r.status_code == 200:
                                         r.encoding = 'utf-8'
                                         txt = r.text.strip()
@@ -376,7 +397,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                                             results[tp] = pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str, on_bad_lines='skip')
                                         else:
                                             results[tp] = pd.DataFrame()
-                                        break # 성공 시 루프 탈출
+                                        break
                                     else:
                                         log(f"⚠️ [{tp}] 대용량 리포트 다운로드 실패 HTTP {r.status_code} (재시도 {retry+1}/3)")
                                         time.sleep(2)
@@ -626,7 +647,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             report_types = ["AD", "AD_CONVERSION"] 
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
             
-            # 🔥 로그 문구도 원인에 맞춰서 수정했습니다.
             if dfs.get("AD") is None:
                 log(f"   ⚠️ [ {account_name} ] 대용량 리포트 조회 실패(네이버 오류 또는 다운로드 지연). 실시간 API로 안전하게 대체합니다.")
                 use_realtime_fallback = True
