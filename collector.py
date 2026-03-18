@@ -1317,9 +1317,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
+                    # SHOPPINGKEYWORD_CONVERSION_DETAIL 는 이미 쇼핑 전용 리포트라
+                    # 추가 campaign 필터를 걸면 누락될 수 있다. (실제 현업 로그에서 과소집계 발생)
+                    report_allowed_campaign_ids = None if tp == "SHOPPINGKEYWORD_CONVERSION_DETAIL" else shopping_campaign_ids
+
                     one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
                         conv_df,
-                        allowed_campaign_ids=shopping_campaign_ids,
+                        allowed_campaign_ids=report_allowed_campaign_ids,
                         report_hint=tp,
                         keyword_lookup=keyword_lookup,
                         keyword_unique_lookup=keyword_unique_lookup,
