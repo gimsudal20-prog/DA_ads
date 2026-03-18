@@ -597,13 +597,71 @@ def merge_split_maps(*maps: dict) -> dict:
     return out
 
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None) -> Tuple[dict, dict, dict]:
+
+
+def empty_split_summary() -> dict:
+    return {
+        "purchase_conv": 0.0,
+        "purchase_sales": 0,
+        "cart_conv": 0.0,
+        "cart_sales": 0,
+        "wishlist_conv": 0.0,
+        "wishlist_sales": 0,
+    }
+
+
+def add_split_summary(summary: dict, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
+    if is_purchase:
+        summary["purchase_conv"] += float(c_val or 0.0)
+        summary["purchase_sales"] += int(s_val or 0)
+    elif is_cart:
+        summary["cart_conv"] += float(c_val or 0.0)
+        summary["cart_sales"] += int(s_val or 0)
+    elif is_wishlist:
+        summary["wishlist_conv"] += float(c_val or 0.0)
+        summary["wishlist_sales"] += int(s_val or 0)
+
+
+def merge_split_summaries(*summaries: dict) -> dict:
+    out = empty_split_summary()
+    for s in summaries:
+        if not s:
+            continue
+        out["purchase_conv"] += float(s.get("purchase_conv", 0.0) or 0.0)
+        out["purchase_sales"] += int(float(s.get("purchase_sales", 0) or 0))
+        out["cart_conv"] += float(s.get("cart_conv", 0.0) or 0.0)
+        out["cart_sales"] += int(float(s.get("cart_sales", 0) or 0))
+        out["wishlist_conv"] += float(s.get("wishlist_conv", 0.0) or 0.0)
+        out["wishlist_sales"] += int(float(s.get("wishlist_sales", 0) or 0))
+    return out
+
+
+def split_summary_has_values(summary: dict) -> bool:
+    if not summary:
+        return False
+    return any(float(summary.get(k, 0) or 0) > 0 for k in ["purchase_conv", "cart_conv", "wishlist_conv"])
+
+
+def format_split_summary(summary: dict) -> str:
+    def fmt(v):
+        try:
+            fv = float(v or 0)
+            return str(int(fv)) if fv.is_integer() else f"{fv:.2f}".rstrip('0').rstrip('.')
+        except Exception:
+            return str(v)
+    return (
+        f"구매완료 {fmt(summary.get('purchase_conv', 0))}건 | "
+        f"장바구니 {fmt(summary.get('cart_conv', 0))}건 | "
+        f"위시리스트 {fmt(summary.get('wishlist_conv', 0))}건"
+    )
+
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None) -> Tuple[dict, dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
     keyword_lookup = keyword_lookup or {}
     keyword_unique_lookup = keyword_unique_lookup or {}
     if df is None or df.empty:
-        return camp_map, kw_map, ad_map
+        return camp_map, kw_map, ad_map, empty_split_summary()
 
     def ensure_split_bucket(m_dict: dict, obj_id: str):
         if obj_id not in m_dict:
@@ -722,6 +780,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                     continue
                 c_val = safe_float(r.iloc[cnt_idx])
                 s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
+                add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
                 if cid_idx != -1 and len(r) > cid_idx:
                     apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
                 if kid_idx != -1 and len(r) > kid_idx:
@@ -730,7 +789,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                     apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
 
             if camp_map or kw_map or ad_map:
-                return camp_map, kw_map, ad_map
+                return camp_map, kw_map, ad_map, summary
 
     # 2) 헤더 없는 TSV 형식 처리
     # 샘플: 20260311 | accountId | cmp-... | grp-... | nkw-.../- | nad-... | bsn-... | ...
@@ -1206,7 +1265,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
-                    one_camp_map, one_kw_map, one_ad_map = process_conversion_report(
+                    one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
                         conv_df,
                         allowed_campaign_ids=shopping_campaign_ids,
                         report_hint=tp,
@@ -1225,13 +1284,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
                         continue
 
-                    source_maps[tp] = (one_camp_map, one_kw_map, one_ad_map)
+                    source_maps[tp] = (one_camp_map, one_kw_map, one_ad_map, one_summary)
 
-                ad_conv_maps = source_maps.get("AD_CONVERSION", ({}, {}, {}))
-                shop_kw_maps = source_maps.get("SHOPPINGKEYWORD_CONVERSION_DETAIL", ({}, {}, {}))
+                ad_conv_maps = source_maps.get("AD_CONVERSION", ({}, {}, {}, empty_split_summary()))
+                shop_kw_maps = source_maps.get("SHOPPINGKEYWORD_CONVERSION_DETAIL", ({}, {}, {}, empty_split_summary()))
 
-                ad_camp_map, ad_kw_map, ad_ad_map = ad_conv_maps
-                shop_camp_map, shop_kw_map, shop_ad_map = shop_kw_maps
+                ad_camp_map, ad_kw_map, ad_ad_map, ad_summary = ad_conv_maps
+                shop_camp_map, shop_kw_map, shop_ad_map, shop_summary = shop_kw_maps
 
                 # 캠페인/소재는 AD_CONVERSION 우선, 없으면 쇼핑 키워드 상세를 fallback으로 사용
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
@@ -1243,12 +1302,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
+                final_split_summary = shop_summary if split_summary_has_values(shop_summary) else ad_summary
+
                 if split_report_ok:
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
                         f"campaign/ad={'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')}, "
                         f"keyword={'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else ('AD_CONVERSION' if ad_kw_map else 'none')}"
                     )
+                    if split_summary_has_values(final_split_summary):
+                        log(f"   ✅ [ {account_name} ] 전환 분리 수집 완료: {format_split_summary(final_split_summary)}")
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
