@@ -11,6 +11,7 @@ import argparse
 import sys
 import io
 import random
+import re
 import threading
 import concurrent.futures
 from urllib.parse import urlparse
@@ -1010,6 +1011,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
+    parser.add_argument("--account_name", type=str, default="", help="단일 업체명 또는 일부 문자열")
+    parser.add_argument("--account_names", type=str, default="", help="쉼표(,)로 구분한 여러 업체명")
     parser.add_argument("--skip_dim", action="store_true")
     parser.add_argument("--workers", type=int, default=20)
     args = parser.parse_args()
@@ -1049,6 +1052,26 @@ def main():
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
             except Exception: pass
+
+    # 업체명 필터 적용 (정확 일치 우선, 없으면 부분일치)
+    target_name_tokens = []
+    if args.account_name and str(args.account_name).strip():
+        target_name_tokens.append(str(args.account_name).strip())
+    if args.account_names and str(args.account_names).strip():
+        target_name_tokens.extend([x.strip() for x in str(args.account_names).split(",") if x.strip()])
+
+    if target_name_tokens:
+        exact_set = {x for x in target_name_tokens}
+        filtered_exact = [acc for acc in accounts_info if str(acc.get("name", "")).strip() in exact_set]
+        if filtered_exact:
+            accounts_info = filtered_exact
+        else:
+            lowered = [x.lower() for x in target_name_tokens]
+            accounts_info = [
+                acc for acc in accounts_info
+                if any(tok in str(acc.get("name", "")).lower() for tok in lowered)
+            ]
+        log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(accounts_info)}개")
 
     if not accounts_info: 
         log("⚠️ 수집할 계정이 없습니다.")
