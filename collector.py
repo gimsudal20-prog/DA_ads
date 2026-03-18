@@ -657,11 +657,12 @@ def format_split_summary(summary: dict) -> str:
 
 def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None) -> Tuple[dict, dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
+    summary = empty_split_summary()
     allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
     keyword_lookup = keyword_lookup or {}
     keyword_unique_lookup = keyword_unique_lookup or {}
     if df is None or df.empty:
-        return camp_map, kw_map, ad_map, empty_split_summary()
+        return camp_map, kw_map, ad_map, summary
 
     def ensure_split_bucket(m_dict: dict, obj_id: str):
         if obj_id not in m_dict:
@@ -941,7 +942,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         if row_adid:
             apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
-    return camp_map, kw_map, ad_map
+    return camp_map, kw_map, ad_map, summary
 
 
 
