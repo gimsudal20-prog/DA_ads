@@ -351,11 +351,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
 
 
-    # 🔥 삭제되었던 데이터 표 변수들을 일괄 생성 및 통합
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # 1. 업체별, 유형별, 캠페인별 (비교 증감 포함)
     if not cur_camp.empty or not base_camp.empty:
         if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
             mapping = dict(zip(meta['customer_id'].astype(str), meta['account_name']))
@@ -375,7 +373,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if camp_col:
             camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
 
-    # 2. 일자별, 요일별, 주간별 (시계열)
     if daily_ts is not None and not daily_ts.empty:
         daily_copy = daily_ts.copy()
         daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
@@ -389,8 +386,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
         weekly_disp = _build_ts_df(daily_copy, '주차', '주차').sort_values('주차', ascending=False)
 
-
-    # 🚀 엑셀 다운로드 (삭제되었던 모든 테이블 포함)
     st.markdown("<div style='margin-top:40px; margin-bottom:10px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
     if has_data_to_export:
@@ -457,7 +452,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.dataframe(df[cols].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
 
 
-    # 👇 화면 하단 테이블(Expander) 구성 영역
     with st.expander("🏢 업체별 전체 성과 요약", expanded=False):
         if not df_display.empty:
             disp_df, delta_cols_to_style = _apply_depth_toggle(df_display, ["업체명"], funnel_toggle)
@@ -505,12 +499,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     with st.expander("주간 성과 요약", expanded=False):
         _display_ts_table(weekly_disp, "주차", funnel_toggle)
 
-
     with st.expander("📝 보고서 내보내기", expanded=False):
         report_campaign_type = selected_type_label
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
         st.session_state[report_loaded_key] = True
         
+        # 🔥 클릭이 많았던 주요 유입 키워드 추출 로직
+        top_kw_str = "없음"
+        if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
+            kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
+            top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
+            if not top_kws.empty:
+                top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
+
         if not funnel_toggle:
             rep_conv = float(report_cur.get("conv", 0.0) or 0.0) + float(report_cur.get("cart_conv", 0.0) or 0.0)
             rep_sales = float(report_cur.get("sales", 0.0) or 0.0) + float(report_cur.get("cart_sales", 0.0) or 0.0)
@@ -523,7 +524,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
                 _format_report_line("총 전환수", f"{int(rep_conv):,}"),
                 _format_report_line("총 전환매출", f"{int(rep_sales):,}원"),
-                _format_report_line("통합 ROAS", f"{float(rep_roas):.2f}%")
+                _format_report_line("통합 ROAS", f"{float(rep_roas):.2f}%"),
+                _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         else:
             report_text = "\n".join([
@@ -534,6 +536,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("장바구니 담기수", f"{int(float(report_cur.get('cart_conv', 0))):,}"),
                 _format_report_line("구매완료수", f"{int(float(report_cur.get('conv', 0))):,}"),
                 _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
-                _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.2f}%")
+                _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.2f}%"),
+                _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         st.code(report_text, language="text")
