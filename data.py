@@ -215,6 +215,28 @@ def format_number_commas(val) -> str:
 # 4. Data Aggregation Queries
 # ==========================================
 
+def _build_split_metric_sql(prefix: str, cols: set[str]) -> tuple[str, str, str, str, str, str]:
+    """Return strict purchase/total/cart/wishlist SQL expressions.
+
+    Purchase metrics must come only from purchase_* columns when available.
+    They must never fall back to total conv/sales or primary_* fallback values.
+    """
+    has_cart = "cart_conv" in cols
+    has_wish = "wishlist_conv" in cols
+    has_purchase = "purchase_conv" in cols and "purchase_sales" in cols
+
+    cart_c_expr = f"COALESCE({prefix}cart_conv, 0)" if has_cart else "0"
+    cart_s_expr = f"COALESCE({prefix}cart_sales, 0)" if has_cart else "0"
+    wish_c_expr = f"COALESCE({prefix}wishlist_conv, 0)" if has_wish else "0"
+    wish_s_expr = f"COALESCE({prefix}wishlist_sales, 0)" if has_wish else "0"
+
+    purchase_c_expr = f"COALESCE({prefix}purchase_conv, 0)" if has_purchase else "0"
+    purchase_s_expr = f"COALESCE({prefix}purchase_sales, 0)" if has_purchase else "0"
+    total_c_expr = f"COALESCE({prefix}conv, 0)"
+    total_s_expr = f"COALESCE({prefix}sales, 0)"
+    return purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr
+
+
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
@@ -314,25 +336,10 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
-            
-    fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
-    has_primary = "primary_conv" in fact_cols
-    has_cart = "cart_conv" in fact_cols
-    has_wish = "wishlist_conv" in fact_cols
-    
-    # ✨ COALESCE 처리로 NULL 연산 증발 원천 차단
-    cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
-    wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
-    cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
-    wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
-    conv_c_expr = "COALESCE(f.conv, 0)"
-    conv_s_expr = "COALESCE(f.sales, 0)"
+    fact_cols = set(get_table_columns(_engine, f"fact_{entity}_daily"))
+    purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr = _build_split_metric_sql("f.", fact_cols)
 
-    if has_primary:
-        conv_sql = f"SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-    else:
-        conv_sql = f"SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-
+    conv_sql = f"SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
     cart_sql = f"SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
     wish_sql = f"SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
 
@@ -348,11 +355,11 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     if df.empty: return {}
-    
+
     row = df.iloc[0].fillna(0).to_dict()
-    row['tot_conv'] = row.get('tot_conv', row.get('conv', 0))
-    row['tot_sales'] = row.get('tot_sales', row.get('sales', 0))
-    
+    row['tot_conv'] = row.get('tot_conv', 0)
+    row['tot_sales'] = row.get('tot_sales', 0)
+
     row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
     row['cpc'] = (row['cost'] / row['clk']) if row.get('clk', 0) > 0 else 0
     row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
@@ -389,26 +396,13 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    has_primary = "primary_conv" in camp_fact_cols
-    has_cart = "cart_conv" in camp_fact_cols
-    has_wish = "wishlist_conv" in camp_fact_cols
-    
-    # ✨ COALESCE 및 누락된 위시리스트 추가
-    cart_c_expr = "COALESCE(cart_conv, 0)" if has_cart else "0"
-    wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
-    cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
-    wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
-    conv_c_expr = "COALESCE(conv, 0)"
-    conv_s_expr = "COALESCE(sales, 0)"
+    metric_cols = set(camp_fact_cols)
+    purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr = _build_split_metric_sql("", metric_cols)
 
-    if has_primary:
-        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-    else:
-        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-
+    conv_agg_sql = f", SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
     cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
     wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
-    
+
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
     wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
@@ -465,25 +459,13 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    has_primary = "primary_conv" in kw_fact_cols
-    has_cart = "cart_conv" in kw_fact_cols
-    has_wish = "wishlist_conv" in kw_fact_cols
-    
-    cart_c_expr = "COALESCE(cart_conv, 0)" if has_cart else "0"
-    wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
-    cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
-    wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
-    conv_c_expr = "COALESCE(conv, 0)"
-    conv_s_expr = "COALESCE(sales, 0)"
+    metric_cols = set(kw_fact_cols)
+    purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr = _build_split_metric_sql("", metric_cols)
 
-    if has_primary:
-        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-    else:
-        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-
+    conv_agg_sql = f", SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
     cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
     wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
-    
+
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
     wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
@@ -548,25 +530,13 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    has_primary = "primary_conv" in ad_fact_cols
-    has_cart = "cart_conv" in ad_fact_cols
-    has_wish = "wishlist_conv" in ad_fact_cols
-    
-    cart_c_expr = "COALESCE(cart_conv, 0)" if has_cart else "0"
-    wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
-    cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
-    wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
-    conv_c_expr = "COALESCE(conv, 0)"
-    conv_s_expr = "COALESCE(sales, 0)"
+    metric_cols = set(ad_fact_cols)
+    purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr = _build_split_metric_sql("", metric_cols)
 
-    if has_primary:
-        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-    else:
-        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-
+    conv_agg_sql = f", SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
     cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
     wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
-    
+
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
     wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
@@ -614,23 +584,10 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
         type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
         type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
 
-    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-    has_primary = "primary_conv" in fact_cols
-    has_cart = "cart_conv" in fact_cols
-    has_wish = "wishlist_conv" in fact_cols
-    
-    cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
-    wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
-    cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
-    wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
-    conv_c_expr = "COALESCE(f.conv, 0)"
-    conv_s_expr = "COALESCE(f.sales, 0)"
+    fact_cols = set(get_table_columns(_engine, "fact_campaign_daily"))
+    purchase_c_expr, purchase_s_expr, total_c_expr, total_s_expr, cart_c_expr, cart_s_expr, wish_c_expr, wish_s_expr = _build_split_metric_sql("f.", fact_cols)
 
-    if has_primary:
-        conv_select_sql = f", SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-    else:
-        conv_select_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-
+    conv_select_sql = f", SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
     cart_select_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
     wish_select_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
 

@@ -67,23 +67,21 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             db_types = [rev_map.get(t, t) for t in type_sel]
             type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
-
-        fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-        has_primary = "primary_conv" in fact_cols
+        fact_cols = set(get_table_columns(_engine, "fact_campaign_daily"))
         has_cart = "cart_conv" in fact_cols
         has_wish = "wishlist_conv" in fact_cols
-        
+        has_purchase = "purchase_conv" in fact_cols and "purchase_sales" in fact_cols
+
         cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
         wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
         cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
         wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
-        conv_c_expr = "COALESCE(f.conv, 0)"
-        conv_s_expr = "COALESCE(f.sales, 0)"
+        purchase_c_expr = "COALESCE(f.purchase_conv, 0)" if has_purchase else "0"
+        purchase_s_expr = "COALESCE(f.purchase_sales, 0)" if has_purchase else "0"
+        total_c_expr = "COALESCE(f.conv, 0)"
+        total_s_expr = "COALESCE(f.sales, 0)"
 
-        if has_primary:
-            conv_sql = f"SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-        else:
-            conv_sql = f"SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
+        conv_sql = f"SUM({purchase_c_expr}) as conv, SUM({purchase_s_expr}) as sales, SUM({total_c_expr}) as tot_conv, SUM({total_s_expr}) as tot_sales"
 
         sql = f"""
             SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
@@ -321,12 +319,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cur = cur_summary
     base = base_summary
 
-    cur['tot_conv'] = cur.get('tot_conv', cur.get('conv', 0))
-    cur['tot_sales'] = cur.get('tot_sales', cur.get('sales', 0))
+    cur['tot_conv'] = cur.get('tot_conv', 0)
+    cur['tot_sales'] = cur.get('tot_sales', 0)
     cur['tot_roas'] = (cur['tot_sales'] / cur['cost'] * 100) if cur.get('cost', 0) > 0 else 0
 
-    base['tot_conv'] = base.get('tot_conv', base.get('conv', 0))
-    base['tot_sales'] = base.get('tot_sales', base.get('sales', 0))
+    base['tot_conv'] = base.get('tot_conv', 0)
+    base['tot_sales'] = base.get('tot_sales', 0)
     base['tot_roas'] = (base['tot_sales'] / base['cost'] * 100) if base.get('cost', 0) > 0 else 0
 
     def _delta_pct(key):
