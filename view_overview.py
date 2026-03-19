@@ -447,10 +447,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    # 캠페인별 목표 ROAS 달성 현황 섹션 (단일 파란색 톤의 심플한 프로그레스 바 적용)
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>캠페인별 목표 ROAS 달성 현황</div>", unsafe_allow_html=True)
-    if not cur_camp.empty and "target_roas" in cur_camp.columns:
-        target_df = cur_camp[cur_camp["target_roas"] > 0].copy()
+    # 캠페인별 목표 ROAS 달성 현황 섹션 (최소/목표 달성 조건에 따른 색상 및 텍스트 반영)
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>캠페인별 ROAS 달성 현황</div>", unsafe_allow_html=True)
+    if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
+        target_df = cur_camp[(cur_camp["target_roas"] > 0) | (cur_camp["min_roas"] > 0)].copy()
         if not target_df.empty:
             if combined_toggle:
                 target_df["current_roas"] = target_df.apply(lambda r: (r.get("tot_sales", 0)/r["cost"]*100) if r["cost"] > 0 else 0, axis=1)
@@ -459,41 +459,58 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["current_roas"] = target_df.apply(lambda r: (r.get("sales", 0)/r["cost"]*100) if r["cost"] > 0 else 0, axis=1)
                 roas_label_text = "구매 ROAS"
 
-            target_df["achievement_rate"] = (target_df["current_roas"] / target_df["target_roas"]) * 100
             target_df = target_df.sort_values(by="cost", ascending=False)
             
-            html_tracker = "<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px; margin-bottom:24px;'>"
+            html_tracker = "<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;'>"
             for _, row in target_df.iterrows():
                 camp_name = row["campaign_name"]
                 t_roas = row["target_roas"]
+                m_roas = row["min_roas"]
                 c_roas = row["current_roas"]
-                achieve_raw = row["achievement_rate"]
+                
+                # 달성률은 목표값이 있을 경우 목표 기준, 없을 경우 최소 기준으로 계산
+                base_roas = t_roas if t_roas > 0 else m_roas
+                achieve_raw = (c_roas / base_roas * 100) if base_roas > 0 else 0
                 achieve = min(achieve_raw, 100)
                 
-                # 경고성 빨강/주황 색상을 없애고 깔끔한 메인 테마 블루 컬러로 통일
-                color = "var(--nv-primary)"
+                # 조건에 따른 색상 및 상태 텍스트
+                if t_roas > 0 and c_roas >= t_roas:
+                    color = "#0528F2"  # 파란색 (목표 달성)
+                    status = "목표 달성"
+                elif m_roas > 0 and c_roas >= m_roas:
+                    color = "#10B981"  # 초록색 (최소 달성)
+                    status = "최소 달성"
+                else:
+                    color = "#F79009"  # 주황색 (미달)
+                    status = "미달"
                 
                 html_tracker += f"""
                 <div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
                     <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
                         <div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
-                        <div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
+                        <div style='text-align:right;'>
+                            <div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
+                            <div style='font-size:11px; font-weight:600; color:{color}; margin-top:2px;'>{status}</div>
+                        </div>
                     </div>
-                    <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px;'>
+                    <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px; position:relative;'>
                         <div style='width:{achieve}%; height:100%; background:{color}; transition:width 0.3s ease;'></div>
                     </div>
                     <div style='display:flex; justify-content:space-between; font-size:13px;'>
                         <div><span style='color:var(--nv-muted-light);'>현재 ({roas_label_text}):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas:,.1f}%</span></div>
-                        <div><span style='color:var(--nv-muted-light);'>목표:</span> <span style='font-weight:600; color:var(--nv-text);'>{t_roas:,.1f}%</span></div>
+                        <div style='text-align:right;'>
+                            <span style='color:var(--nv-muted-light); margin-right:4px;'>최소:</span><span style='font-weight:600; color:var(--nv-text); margin-right:8px;'>{m_roas:,.0f}%</span>
+                            <span style='color:var(--nv-muted-light); margin-right:4px;'>목표:</span><span style='font-weight:600; color:var(--nv-text);'>{t_roas:,.0f}%</span>
+                        </div>
                     </div>
                 </div>
                 """
             html_tracker += "</div>"
             st.markdown(html_tracker, unsafe_allow_html=True)
         else:
-            st.info("안내: 목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+            st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
     else:
-        st.info("안내: 목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+        st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
 
 
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
