@@ -1073,22 +1073,12 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 keyword_lookup.get((row_gid, kw_text), "")
                 or keyword_lookup.get((row_gid, kw_text.lower()), "")
                 or keyword_lookup.get((row_gid, kw_norm), "")
-                or keyword_lookup.get(('__cid__', kw_text), "")
-                or keyword_lookup.get(('__cid__', kw_text.lower()), "")
-                or keyword_lookup.get(('__cid__', kw_norm), "")
             )
             if not kw_obj_id:
                 group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
                 cands = keyword_text_candidates(kw_norm, group_rows)
                 if len(cands) == 1:
                     kw_obj_id = cands[0]
-            if not kw_obj_id:
-                uniq_cands = keyword_unique_lookup.get(kw_norm, [])
-                if isinstance(uniq_cands, list):
-                    if len(uniq_cands) == 1:
-                        kw_obj_id = uniq_cands[0]
-                elif uniq_cands:
-                    kw_obj_id = uniq_cands
             if not kw_obj_id and live_keyword_resolver:
                 try:
                     kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
@@ -1440,9 +1430,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         keyword_lookup[(gid_s, kw_s)] = kid_s
                         keyword_lookup[(gid_s, kw_l)] = kid_s
                         keyword_lookup[(gid_s, kw_n)] = kid_s
-                        keyword_lookup[('__cid__', kw_s)] = keyword_lookup.get(('__cid__', kw_s)) or kid_s
-                        keyword_lookup[('__cid__', kw_l)] = keyword_lookup.get(('__cid__', kw_l)) or kid_s
-                        keyword_lookup[('__cid__', kw_n)] = keyword_lookup.get(('__cid__', kw_n)) or kid_s
                         group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
                         text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
                         temp_rows.append((kw_n, kid_s))
@@ -1457,29 +1444,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
-        # KEYWORD 리포트가 내려오면, 그 안의 (adgroup_id, keyword_text, keyword_id) 조합으로
-        # shopping keyword text -> keyword_id 매핑을 추가 보강한다.
-        kw_report_lookup, kw_report_unique_lookup = build_keyword_lookup_from_keyword_report(dfs.get("KEYWORD")) if 'dfs' in locals() else ({}, {})
-        if kw_report_lookup:
-            for k, v in kw_report_lookup.items():
-                if k == ('', '__rows__'):
-                    continue
-                if isinstance(v, list):
-                    # __rows__ 는 누적 merge
-                    existing = keyword_lookup.get(k, [])
-                    if not isinstance(existing, list):
-                        existing = []
-                    keyword_lookup[k] = existing + [x for x in v if x not in existing]
-                else:
-                    keyword_lookup[k] = keyword_lookup.get(k) or v
-        if kw_report_unique_lookup:
-            for k, v in kw_report_unique_lookup.items():
-                existing = keyword_unique_lookup.get(k, [])
-                if not isinstance(existing, list):
-                    existing = [existing] if existing else []
-                merged = list(dict.fromkeys(existing + list(v)))
-                keyword_unique_lookup[k] = merged
-
         live_keyword_resolver = make_live_keyword_resolver(customer_id)
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
@@ -1491,7 +1455,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["AD", "KEYWORD"]
+            report_types = ["AD"]
             split_candidate_reports = []
             if split_enabled_for_date(target_date) and shopping_campaign_ids:
                 split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
