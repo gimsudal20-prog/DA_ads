@@ -447,7 +447,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    # [신규] 캠페인별 목표 ROAS 달성 현황 섹션
+    # 캠페인별 목표 ROAS 달성 현황 섹션 (단일 파란색 톤의 심플한 프로그레스 바 적용)
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>캠페인별 목표 ROAS 달성 현황</div>", unsafe_allow_html=True)
     if not cur_camp.empty and "target_roas" in cur_camp.columns:
         target_df = cur_camp[cur_camp["target_roas"] > 0].copy()
@@ -470,14 +470,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 achieve_raw = row["achievement_rate"]
                 achieve = min(achieve_raw, 100)
                 
-                # 달성률에 따른 색상 변경
-                color = "#0528F2" if achieve_raw >= 100 else ("#F79009" if achieve_raw >= 80 else "#F04438")
+                # 경고성 빨강/주황 색상을 없애고 깔끔한 메인 테마 블루 컬러로 통일
+                color = "var(--nv-primary)"
                 
                 html_tracker += f"""
                 <div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
                     <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
                         <div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
-                        <div style='font-size:13px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:.1f}%</div>
+                        <div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
                     </div>
                     <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px;'>
                         <div style='width:{achieve}%; height:100%; background:{color}; transition:width 0.3s ease;'></div>
