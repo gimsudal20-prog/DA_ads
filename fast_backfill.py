@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """fast_backfill.py - 날짜 범위 백필 및 선택 계정 대상 수집 실행 스크립트
 
-변경 사항
-- SA 전용 테스트 모드(--sa_only) 제거: 검색광고(SA)는 항상 수집
+운영 기준
+- 검색광고(SA)는 항상 수집
 - GFA는 기본 스킵, 필요 시 --with_gfa 로만 실행
-- 빠른 수집 모드(--fast) 추가: 모든 날짜에서 구조 수집(skip_dim) 스킵
+- --fast 시 collector.py 에도 --fast 를 전달하여 실제 빠른 수집 모드 적용
 - 입력값 공백 자동 제거(strip)
 
 지원 기능
@@ -13,7 +13,7 @@
 - --workers 동시 작업 수 전달
 - --skip_ext 쇼핑 확장소재 수집 스킵
 - --with_gfa GFA 수집 포함 (기본값: 미수집)
-- --fast 모든 날짜에서 구조 수집 스킵(통계 위주 빠른 백필)
+- --fast 모든 날짜에서 구조 수집 스킵 + collector fast mode 적용
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fast",
         action="store_true",
-        help="빠른 백필 모드: 모든 날짜에서 구조 수집(skip_dim) 스킵",
+        help="빠른 백필 모드: 모든 날짜에서 구조 수집(skip_dim) 스킵 + collector fast mode 적용",
     )
     args = parser.parse_args()
 
@@ -92,11 +92,15 @@ def main() -> None:
         print(f"🎯 다중 업체 필터: {args.account_names}", flush=True)
 
     print("📌 실행 설정", flush=True)
-    print(f"   - 검색광고(SA): 수집", flush=True)
+    print("   - 검색광고(SA): 수집", flush=True)
     print(f"   - 확장소재: {'스킵' if args.skip_ext else '수집'}", flush=True)
     print(f"   - GFA: {'수집' if args.with_gfa else '스킵(기본)'}", flush=True)
     print(
-        f"   - 구조 수집: {'전체 날짜 스킵 (빠른 백필)' if args.fast else '첫 날짜만 수행, 이후 skip_dim'}",
+        f"   - collector 모드: {'FAST (skip_dim + debug 최소화)' if args.fast else 'NORMAL'}",
+        flush=True,
+    )
+    print(
+        f"   - 구조 수집 정책: {'전체 날짜 스킵' if args.fast else '첫 날짜만 수행, 이후 skip_dim'}",
         flush=True,
     )
 
@@ -118,13 +122,12 @@ def main() -> None:
             str(args.workers),
         ]
 
-        skip_dim_this_run = args.fast or (not is_first_run)
-        if skip_dim_this_run:
+        if args.fast:
+            cmd_sa.append("--fast")
+            print("   ▶ [검색광고] 빠른 백필 모드: collector --fast 실행", flush=True)
+        elif not is_first_run:
             cmd_sa.append("--skip_dim")
-            if args.fast:
-                print("   ▶ [검색광고] 빠른 백필 모드: 구조 수집 스킵, 통계 데이터 업데이트 중...", flush=True)
-            else:
-                print("   ▶ [검색광고] 통계 데이터 업데이트 중 (구조 수집 스킵)...", flush=True)
+            print("   ▶ [검색광고] 통계 데이터 업데이트 중 (구조 수집 스킵)...", flush=True)
         else:
             print("   ▶ [검색광고] 최신 구조 및 통계 데이터 동기화 중...", flush=True)
 
