@@ -69,10 +69,19 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
 
         fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-        if "primary_conv" in fact_cols:
+        has_primary = "primary_conv" in fact_cols
+        has_cart = "cart_conv" in fact_cols
+        has_wish = "wishlist_conv" in fact_cols
+        
+        cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
+        wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
+        cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
+        wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
+
+        if has_primary:
             conv_sql = "SUM(COALESCE(f.primary_conv, f.conv)) as conv, SUM(COALESCE(f.primary_sales, f.sales)) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
         else:
-            conv_sql = "SUM(f.conv) as conv, SUM(f.sales) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
+            conv_sql = f"SUM(f.conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(f.sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
 
         sql = f"""
             SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
