@@ -88,7 +88,6 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
         where_cid = f"AND f.customer_id IN ({cid_str})" if cids else ""
         type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
         type_where_sql = ""
-        type_list_str = ""
         if type_sel:
             rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
             db_types = [rev_map.get(t, t) for t in type_sel]
@@ -96,36 +95,29 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
             type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
 
         fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-        has_primary = "primary_conv" in fact_cols
-        has_cart = "cart_conv" in fact_cols
-        has_wish = "wishlist_conv" in fact_cols
-        
-        cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
-        wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
-        cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
-        wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
-        conv_c_expr = "COALESCE(f.conv, 0)"
-        conv_s_expr = "COALESCE(f.sales, 0)"
-
-        if has_primary:
-            conv_sql = f"SUM(COALESCE(f.primary_conv, 0)) as conv, SUM(COALESCE(f.primary_sales, 0)) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
-        else:
-            conv_sql = f"SUM(GREATEST({conv_c_expr} - {cart_c_expr} - {wish_c_expr}, 0)) as conv, SUM(GREATEST({conv_s_expr} - {cart_s_expr} - {wish_s_expr}, 0)) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
+        expr = _strict_conv_selects(fact_cols, alias="f")
 
         sql = f"""
-            SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
-                   SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales, 
-                   SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales, 
-                   {conv_sql}
+            SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost,
+                   SUM({expr['purchase_conv_expr']}) as conv,
+                   SUM({expr['purchase_sales_expr']}) as sales,
+                   SUM({expr['cart_conv_expr']}) as cart_conv,
+                   SUM({expr['cart_sales_expr']}) as cart_sales,
+                   SUM({expr['wish_conv_expr']}) as wishlist_conv,
+                   SUM({expr['wish_sales_expr']}) as wishlist_sales,
+                   SUM({expr['total_conv_expr']}) as tot_conv,
+                   SUM({expr['total_sales_expr']}) as tot_sales
             FROM fact_campaign_daily f
             {type_join_sql}
             WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
             GROUP BY f.dt, c.campaign_tp
         """
         df = pd.read_sql(sql, _engine)
-        if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
+        if not df.empty:
+            df["dt"] = pd.to_datetime(df["dt"])
         return df
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def format_for_csv(df):
@@ -178,35 +170,50 @@ def style_delta_str_neg(val):
 
 # 🔥 중복 코드 제거를 위한 비교 데이터 생성 도우미 함수
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
-    if cur_df.empty and base_df.empty: return pd.DataFrame()
-    
-    base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_conv', 'tot_sales']
+    if cur_df.empty and base_df.empty:
+        return pd.DataFrame()
+
+    base_cols = [
+        group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales',
+        'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_conv', 'tot_sales'
+    ]
     for c in base_cols[1:]:
-        if not cur_df.empty and c not in cur_df.columns: cur_df[c] = 0.0
-        if not base_df.empty and c not in base_df.columns: base_df[c] = 0.0
+        if not cur_df.empty and c not in cur_df.columns:
+            cur_df[c] = 0.0
+        if not base_df.empty and c not in base_df.columns:
+            base_df[c] = 0.0
 
     cur_grp = cur_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not cur_df.empty else pd.DataFrame(columns=base_cols)
     base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
-    
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
-    
+
     table_data = []
     for _, row in merged.iterrows():
-        c_imp, c_clk, c_cost, c_wish, c_wsales, c_cart, c_csales, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['wishlist_conv_cur'], row['wishlist_sales_cur'], row['cart_conv_cur'], row['cart_sales_cur'], row['conv_cur'], row['sales_cur']
-        b_imp, b_clk, b_cost, b_wish, b_wsales, b_cart, b_csales, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('wishlist_conv_base', 0), row.get('wishlist_sales_base', 0), row.get('cart_conv_base', 0), row.get('cart_sales_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
-        
+        c_imp, c_clk, c_cost = row['imp_cur'], row['clk_cur'], row['cost_cur']
+        b_imp, b_clk, b_cost = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0)
+        c_wish, c_wsales = row['wishlist_conv_cur'], row['wishlist_sales_cur']
+        b_wish, b_wsales = row.get('wishlist_conv_base', 0), row.get('wishlist_sales_base', 0)
+        c_cart, c_csales = row['cart_conv_cur'], row['cart_sales_cur']
+        b_cart, b_csales = row.get('cart_conv_base', 0), row.get('cart_sales_base', 0)
+        c_conv, c_sales = row['conv_cur'], row['sales_cur']
+        b_conv, b_sales = row.get('conv_base', 0), row.get('sales_base', 0)
         c_tot_conv = row.get('tot_conv_cur', c_conv + c_cart + c_wish)
         c_tot_sales = row.get('tot_sales_cur', c_sales + c_csales + c_wsales)
         b_tot_conv = row.get('tot_conv_base', b_conv + b_cart + b_wish)
         b_tot_sales = row.get('tot_sales_base', b_sales + b_csales + b_wsales)
 
-        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0; b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
-        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0; b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
-        c_croas = (c_csales / c_cost * 100) if c_cost > 0 else 0; b_croas = (b_csales / b_cost * 100) if b_cost > 0 else 0
-        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0; b_troas = (b_tot_sales / b_cost * 100) if b_cost > 0 else 0
-        
+        c_ctr = (c_clk / c_imp * 100) if c_imp > 0 else 0
+        b_ctr = (b_clk / b_imp * 100) if b_imp > 0 else 0
+        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
+        b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
+        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+        b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
+        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0
+        b_troas = (b_tot_sales / b_cost * 100) if b_cost > 0 else 0
+
         pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
         pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
+        pct_ctr, diff_ctr = calc_pct_diff(c_ctr, b_ctr)
         pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
         pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
         pct_wish, diff_wish = calc_pct_diff(c_wish, b_wish)
@@ -215,19 +222,20 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
         pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
         pct_tot_conv, diff_tot_conv = calc_pct_diff(c_tot_conv, b_tot_conv)
         pct_tot_sales, diff_tot_sales = calc_pct_diff(c_tot_sales, b_tot_sales)
-        
+
         val = row[group_col]
-        if type_kor_map: val = type_kor_map.get(str(val).upper(), val)
-        
+        if type_kor_map:
+            val = type_kor_map.get(str(val).upper(), val)
+
         table_data.append({
             group_label: val,
             "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
             "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
+            "클릭률(%)": c_ctr, "클릭률 증감": pct_ctr, "클릭률 차이": diff_ctr,
             "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
             "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
             "위시리스트수": c_wish, "위시리스트 증감": pct_wish, "위시리스트 차이": diff_wish,
             "장바구니 담기수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
-            "장바구니 매출액": c_csales, "장바구니 ROAS(%)": c_croas, "장바구니ROAS 증감": c_croas - b_croas,
             "구매완료수": c_conv, "구매 증감": pct_conv, "구매 차이": diff_conv,
             "구매완료 매출": c_sales, "구매 매출 증감": pct_sales, "구매 매출 차이": diff_sales,
             "구매 ROAS(%)": c_roas, "구매 ROAS 증감": c_roas - b_roas,
@@ -239,11 +247,13 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
 # 🔥 시계열 데이터(일자/요일/주간) 생성 도우미 함수
 def _build_ts_df(df, group_col, group_label):
-    if df is None or df.empty: return pd.DataFrame()
-    
+    if df is None or df.empty:
+        return pd.DataFrame()
+
     grp_cols = ['imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
-    if 'tot_conv' in df.columns: grp_cols.extend(['tot_conv', 'tot_sales'])
-        
+    if 'tot_conv' in df.columns:
+        grp_cols.extend(['tot_conv', 'tot_sales'])
+
     grp = df.groupby(group_col)[[c for c in grp_cols if c in df.columns]].sum().reset_index()
     table_data = []
     for _, row in grp.iterrows():
@@ -251,22 +261,27 @@ def _build_ts_df(df, group_col, group_label):
         c_wish, c_wsales = row.get('wishlist_conv', 0), row.get('wishlist_sales', 0)
         c_cart, c_csales = row.get('cart_conv', 0), row.get('cart_sales', 0)
         c_conv, c_sales = row.get('conv', 0), row.get('sales', 0)
-        
         c_tot_conv = row.get('tot_conv', c_conv + c_cart + c_wish)
         c_tot_sales = row.get('tot_sales', c_sales + c_csales + c_wsales)
-        
+        c_ctr = (c_clk / c_imp * 100) if c_imp > 0 else 0
         c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
         c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
-        c_croas = (c_csales / c_cost * 100) if c_cost > 0 else 0
-        c_wroas = (c_wsales / c_cost * 100) if c_cost > 0 else 0
         c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0
         table_data.append({
             group_label: row[group_col],
-            "노출수": c_imp, "클릭수": c_clk, "광고비": c_cost, "CPC": c_cpc,
-            "위시리스트수": c_wish, "위시리스트 매출액": c_wsales, "위시리스트 ROAS(%)": c_wroas,
-            "장바구니 담기수": c_cart, "장바구니 매출액": c_csales, "장바구니 ROAS(%)": c_croas,
-            "구매완료수": c_conv, "구매완료 매출": c_sales, "구매 ROAS(%)": c_roas,
-            "총 전환수": c_tot_conv, "총 전환매출": c_tot_sales, "통합 ROAS(%)": c_troas
+            "노출수": c_imp,
+            "클릭수": c_clk,
+            "클릭률(%)": c_ctr,
+            "광고비": c_cost,
+            "CPC": c_cpc,
+            "위시리스트수": c_wish,
+            "장바구니 담기수": c_cart,
+            "구매완료수": c_conv,
+            "구매완료 매출": c_sales,
+            "구매 ROAS(%)": c_roas,
+            "총 전환수": c_tot_conv,
+            "총 전환매출": c_tot_sales,
+            "통합 ROAS(%)": c_troas,
         })
     return pd.DataFrame(table_data)
 
@@ -303,6 +318,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
+        "클릭률(%)": "{:,.1f}%", "클릭률 증감": "{:+.1f}%", "클릭률 차이": "{:+,.1f}%p",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
         "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
         "장바구니 담기수": "{:,.1f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.1f}",
@@ -317,7 +333,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
     
     fmt_dict_ts = {
-        "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
+        "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "클릭률(%)": "{:,.1f}%", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
         "위시리스트수": "{:,.1f}", "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.1f}%",
         "장바구니 담기수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
@@ -426,9 +442,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
 
-        tab_t1, tab_t2 = st.tabs(["비용 및 총전환매출 추이", "유입 지표 추이"])
+        tab_t1, tab_t2 = st.tabs(["비용 및 구매완료 매출 추이", "유입 지표 추이"])
         with tab_t1:
-            render_echarts_dual_axis("비용 및 총전환매출 추이", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "총 전환매출", height=320)
+            render_echarts_dual_axis("비용 및 구매완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", "sales", "구매완료 매출", height=320)
         with tab_t2:
             render_echarts_dual_axis("유입 지표 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else:
@@ -485,42 +501,61 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_요약', index=False)
         st.download_button(label="📥 통합 데이터 전체 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
+    show_extra_metrics = st.checkbox(
+        "장바구니 · 위시리스트 · 총전환 지표 보기",
+        value=False,
+        key=f"overview_show_extra_metrics_{state_hash}",
+        help="기본 표에는 핵심 구매 지표만 보이고, 체크 시 장바구니/위시리스트/총전환 지표가 추가로 표시됩니다.",
+    )
+
     def _apply_depth_toggle(df, base_cols, _unused=None):
         out = df.copy()
 
-        def _combine(r, c_val, c_pct, is_currency=False):
+        def _combine(r, c_val, c_pct, is_currency=False, is_count=False, is_rate=False):
             v = r.get(c_val)
             p = r.get(c_pct)
-            if pd.isna(v) or v == 0:
+            if pd.isna(v):
                 return "-"
-            v_str = f"{v:+,.0f}원" if is_currency else (f"{v:+,.0f}" if c_val in ["노출 차이", "클릭 차이"] else f"{v:+,.1f}")
+            if is_currency:
+                v_str = f"{v:+,.0f}원"
+            elif is_rate:
+                v_str = f"{v:+,.1f}%p"
+            elif is_count:
+                v_str = f"{v:+,.0f}"
+            else:
+                v_str = f"{v:+,.1f}"
             return f"{v_str} ({p:+.1f}%)"
 
         metrics = [
-            ("노출수", "노출 차이", "노출 증감", False),
-            ("클릭수", "클릭 차이", "클릭 증감", False),
-            ("광고비", "광고비 차이", "광고비 증감", True),
-            ("CPC", "CPC 차이", "CPC 증감", True),
-            ("위시리스트수", "위시리스트 차이", "위시리스트 증감", False),
-            ("장바구니 담기수", "장바구니 차이", "장바구니 증감", False),
-            ("구매완료수", "구매 차이", "구매 증감", False),
-            ("구매완료 매출", "매출 차이", "매출 증감", True),
-            ("총 전환수", "총 전환 차이", "총 전환 증감", False),
-            ("총 전환매출", "총 매출 차이", "총 매출 증감", True),
+            ("노출수", "노출 차이", "노출 증감", False, True, False),
+            ("클릭수", "클릭 차이", "클릭 증감", False, True, False),
+            ("클릭률(%)", "클릭률 차이", "클릭률 증감", False, False, True),
+            ("광고비", "광고비 차이", "광고비 증감", True, False, False),
+            ("CPC", "CPC 차이", "CPC 증감", True, False, False),
+            ("구매완료수", "구매 차이", "구매 증감", False, False, False),
+            ("구매완료 매출", "구매 매출 차이", "구매 매출 증감", True, False, False),
+            ("구매 ROAS(%)", "구매 ROAS 증감", None, False, False, True),
         ]
-        for m in metrics:
-            out[f"{m[0]} 증감/율"] = out.apply(lambda r: _combine(r, m[1], m[2], m[3]), axis=1)
+        if show_extra_metrics:
+            metrics.extend([
+                ("장바구니 담기수", "장바구니 차이", "장바구니 증감", False, False, False),
+                ("위시리스트수", "위시리스트 차이", "위시리스트 증감", False, False, False),
+                ("총 전환수", "총 전환 차이", "총 전환 증감", False, False, False),
+                ("총 전환매출", "총 매출 차이", "총 매출 증감", True, False, False),
+                ("통합 ROAS(%)", "통합 ROAS 증감", None, False, False, True),
+            ])
 
-        out["구매 ROAS 증감 "] = out["구매 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-") if "구매 ROAS 증감" in out.columns else "-"
-        out["통합 ROAS 증감 "] = out["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-") if "통합 ROAS 증감" in out.columns else "-"
+        display_cols = list(base_cols)
+        delta_cols = []
+        for label, diff_col, pct_col, is_currency, is_count, is_rate in metrics:
+            combined_col = f"{label} 증감/율"
+            if pct_col is None:
+                out[combined_col] = out[diff_col].apply(lambda x: f"{x:+.1f}%p" if pd.notna(x) and x != 0 else "-")
+            else:
+                out[combined_col] = out.apply(lambda r: _combine(r, diff_col, pct_col, is_currency, is_count, is_rate), axis=1)
+            display_cols.extend([label, combined_col])
+            delta_cols.append(combined_col)
 
-        display_cols = base_cols + [
-            "노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율",
-            "위시리스트수", "위시리스트수 증감/율", "장바구니 담기수", "장바구니 담기수 증감/율",
-            "구매완료수", "구매완료수 증감/율", "구매완료 매출", "구매완료 매출 증감/율", "구매 ROAS(%)", "구매 ROAS 증감 ",
-            "총 전환수", "총 전환수 증감/율", "총 전환매출", "총 전환매출 증감/율", "통합 ROAS(%)", "통합 ROAS 증감 "
-        ]
-        delta_cols = [f"{m[0]} 증감/율" for m in metrics] + ["구매 ROAS 증감 ", "통합 ROAS 증감 "]
         return out[[c for c in display_cols if c in out.columns]], delta_cols
 
     def _display_ts_table(df, col_name, _unused=None):
@@ -528,12 +563,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 데이터가 없습니다.")
             return
         cols = [
-            col_name, "노출수", "클릭수", "광고비", "CPC",
-            "위시리스트수", "장바구니 담기수", "장바구니 매출액", "장바구니 ROAS(%)",
-            "구매완료수", "구매완료 매출", "구매 ROAS(%)",
-            "총 전환수", "총 전환매출", "통합 ROAS(%)"
+            col_name, "노출수", "클릭수", "클릭률(%)", "광고비", "CPC",
+            "구매완료수", "구매완료 매출", "구매 ROAS(%)"
         ]
+        if show_extra_metrics:
+            cols.extend(["장바구니 담기수", "위시리스트수", "총 전환수", "총 전환매출", "통합 ROAS(%)"])
         st.dataframe(df[[c for c in cols if c in df.columns]].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
+
     with st.expander("🏢 업체별 전체 성과 요약", expanded=False):
         if not df_display.empty:
             disp_df, delta_cols_to_style = _apply_depth_toggle(df_display, ["업체명"])
