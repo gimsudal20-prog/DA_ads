@@ -200,15 +200,20 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     
-    # ✨ 실수형 및 퍼센트를 소수점 첫째자리로 강제
+    # ✨ 모든 지표에 대한 1자리 소수점 포맷 통합
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
         "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
+        "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
+        "이전 장바구니수": "{:,.1f}", "이전 장바구니 매출액": "{:,.0f}원", "이전 장바구니 ROAS(%)": "{:,.1f}%",
+        "이전 구매완료수": "{:,.1f}", "이전 구매완료 매출": "{:,.0f}원", "이전 구매 ROAS(%)": "{:,.1f}%",
+        "이전 총 전환수": "{:,.1f}", "이전 총 전환매출": "{:,.0f}원", "이전 통합 ROAS(%)": "{:,.1f}%",
         "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
         "장바구니ROAS 증감": "{:+.1f}%", "구매 ROAS 증감": "{:+.1f}%", "통합 ROAS 증감": "{:+.1f}%",
-        "광고비 증감(%)": "{:+.1f}%", "노출 증감(%)": "{:+.1f}%", "클릭 증감(%)": "{:+.1f}%"
+        "광고비 증감(%)": "{:+.1f}%", "노출 증감(%)": "{:+.1f}%", "클릭 증감(%)": "{:+.1f}%",
+        "순위 변화": "{:+.1f}"
     }
 
     with tab_main:
@@ -239,10 +244,17 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
             type_grp = type_grp.sort_values("광고비", ascending=False)
             
+            # ✨ 요약 대시보드 매출 지표 포맷 누락 수정 완료
             st.dataframe(
-                type_grp.style.format({"광고비": "{:,.0f}", roas_col: "{:,.1f}%"}),
+                type_grp.style.format({"광고비": "{:,.0f}", sales_col: "{:,.0f}원", roas_col: "{:,.1f}%"}),
                 use_container_width=True, hide_index=True,
-                column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형"), "광고비": st.column_config.Column("총 광고비(원)"), "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100), roas_col: st.column_config.Column(f"평균 {roas_col}")}
+                column_config={
+                    "캠페인유형": st.column_config.TextColumn("캠페인 유형"), 
+                    "광고비": st.column_config.Column("총 광고비(원)"), 
+                    sales_col: st.column_config.Column(f"{sales_col}"),
+                    "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100), 
+                    roas_col: st.column_config.Column(f"평균 {roas_col}")
+                }
             )
 
         with col_device:
