@@ -305,192 +305,103 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "PLACE": "플레이스"
     }
 
+    st.markdown("""
+    <style>
+    .kpi-group-container {align-items:flex-start !important; gap:14px !important;}
+    .kpi-group {min-width:0 !important; height:auto !important;}
+    .kpi-group:last-child {flex:1.2 1 0 !important;}
+    .kpi-row {align-items:stretch !important;}
+    .kpi {min-width:0 !important; padding:14px 12px !important;}
+    .kpi .k {white-space:normal !important; line-height:1.25 !important;}
+    .kpi .v {font-size:clamp(17px, 1.45vw, 24px) !important; line-height:1.15 !important; white-space:normal !important; overflow-wrap:anywhere !important; word-break:keep-all !important;}
+    .kpi .d {margin-top:8px !important; display:inline-flex !important; width:auto !important; max-width:100% !important;}
+    </style>
+    """, unsafe_allow_html=True)
+
     st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
     cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
     st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
-    # overview 기본 표시는 strict purchase 기준, 총전환/보조전환은 보조 지표로 분리 표시
+    patch_date = date(2026, 3, 11)
+    has_pre_patch_cur = (f["start"] < patch_date)
+    if has_pre_patch_cur:
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 일부 구매완료/보조전환 지표는 총전환 기준과 차이가 있을 수 있습니다.")
     combined_toggle = False
 
     cur = cur_summary
     base = base_summary
 
-    cur["tot_conv"] = cur.get("tot_conv", cur.get("conv", 0))
-    cur["tot_sales"] = cur.get("tot_sales", cur.get("sales", 0))
-    cur["tot_roas"] = (cur["tot_sales"] / cur["cost"] * 100) if cur.get("cost", 0) > 0 else 0
+    cur['tot_conv'] = cur.get('tot_conv', cur.get('conv', 0))
+    cur['tot_sales'] = cur.get('tot_sales', cur.get('sales', 0))
+    cur['tot_roas'] = (cur['tot_sales'] / cur['cost'] * 100) if cur.get('cost', 0) > 0 else 0
 
-    base["tot_conv"] = base.get("tot_conv", base.get("conv", 0))
-    base["tot_sales"] = base.get("tot_sales", base.get("sales", 0))
-    base["tot_roas"] = (base["tot_sales"] / base["cost"] * 100) if base.get("cost", 0) > 0 else 0
+    base['tot_conv'] = base.get('tot_conv', base.get('conv', 0))
+    base['tot_sales'] = base.get('tot_sales', base.get('sales', 0))
+    base['tot_roas'] = (base['tot_sales'] / base['cost'] * 100) if base.get('cost', 0) > 0 else 0
 
     def _delta_pct(key):
-        try:
-            return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
-        except Exception:
-            return None
+        try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
+        except Exception: return None
 
-    def _kpi_html(label, value, delta_val, highlight=False, improve_when_up=True):
+    def _kpi_html(label, value, delta_text, delta_val, highlight=False, improve_when_up=True):
         delta_num = float(delta_val) if delta_val is not None else 0.0
         is_neutral = abs(delta_num) < 5
-        if is_neutral:
-            cls_delta = "neu"
-            delta_text = f"유지 {delta_num:+.1f}%"
+        if is_neutral: cls_delta = "neu"; delta_text = f"유지 ({delta_num:+.1f}%)"
         else:
             improved = delta_num > 0 if improve_when_up else delta_num < 0
             cls_delta = "pos" if improved else "neg"
-            delta_text = pct_to_arrow(delta_num)
+            delta_text = f"{pct_to_arrow(delta_num)}"
         cls_hl = " highlight-positive" if "ROAS" in label else (" highlight" if highlight else "")
-        return (
-            f"<div class='kpi{cls_hl}'>"
-            f"<div class='k'>{label}</div>"
-            f"<div class='v'>{value}</div>"
-            f"<div class='d {cls_delta}'>{delta_text}</div>"
-            f"</div>"
-        )
+        return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    st.markdown(
+    if not combined_toggle:
+        kpi_html = f"""
+        <div class='kpi-group-container'>
+            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+            </div></div>
+            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row' style='margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                    {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                    {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
+                </div>
+                <div class='kpi-row'>
+                    {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
+                    {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+                </div>
+            </div>
+        </div>
         """
-        <style>
-        .kpi-group-container {
-            display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:16px;
-            align-items:start;
-            margin-top:6px;
-        }
-        .kpi-group {
-            border:1px solid var(--nv-line);
-            border-radius:16px;
-            background:#fff;
-            padding:18px 20px 16px 20px;
-            box-sizing:border-box;
-        }
-        .kpi-group-title {
-            font-size:14px;
-            font-weight:800;
-            color:var(--nv-text);
-            margin-bottom:12px;
-        }
-        .kpi-section-title {
-            font-size:12px;
-            font-weight:800;
-            color:var(--nv-primary);
-            margin:2px 0 8px 0;
-            line-height:1.2;
-        }
-        .kpi-row {
-            display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:12px;
-        }
-        .kpi-row + .kpi-section-title {
-            margin-top:10px;
-        }
-        .kpi-divider {
-            border-top:1px dashed var(--nv-line);
-            margin:10px 0;
-        }
-        .kpi {
-            min-width:0;
-            padding:6px 2px 2px 2px;
-        }
-        .kpi .k {
-            font-size:12px;
-            font-weight:600;
-            color:var(--nv-muted);
-            margin-bottom:4px;
-            line-height:1.25;
-            word-break:keep-all;
-        }
-        .kpi .v {
-            font-size:18px;
-            font-weight:800;
-            color:var(--nv-text);
-            line-height:1.25;
-            letter-spacing:-0.2px;
-        }
-        .kpi.highlight .v, .kpi.highlight-positive .v {
-            color:var(--nv-primary);
-        }
-        .kpi .d {
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            width:auto;
-            max-width:100%;
-            margin-top:8px;
-            padding:4px 8px;
-            border-radius:999px;
-            font-size:11px;
-            font-weight:700;
-            line-height:1;
-            white-space:nowrap;
-        }
-        .kpi .d.pos {
-            color:#1D4ED8;
-            background:rgba(37, 99, 235, 0.12);
-        }
-        .kpi .d.neg {
-            color:#E11D48;
-            background:rgba(225, 29, 72, 0.12);
-        }
-        .kpi .d.neu {
-            color:#98A2B3;
-            background:#F2F4F7;
-        }
-        @media (max-width: 1100px) {
-            .kpi-group-container {
-                grid-template-columns:1fr;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    kpi_html = f"""
-    <div class='kpi-group-container'>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>유입 지표</div>
-            <div class='kpi-row'>
-                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), _delta_pct("imp"))}
-                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), _delta_pct("clk"))}
-                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", _delta_pct("ctr"))}
+    else:
+        kpi_html = f"""
+        <div class='kpi-group-container'>
+            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+            </div></div>
+            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row'>
+                    {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
             </div>
         </div>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>비용 지표</div>
-            <div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), _delta_pct("cost"), improve_when_up=False)}
-                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), _delta_pct("cpc"), improve_when_up=False)}
-                {_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), _delta_pct("cpm"), improve_when_up=False)}
-            </div>
-        </div>
-        <div class='kpi-group'>
-            <div class='kpi-group-title'>성과 지표</div>
-            <div class='kpi-section-title'>전체전환</div>
-            <div class='kpi-row'>
-                {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", _delta_pct("tot_roas"), highlight=True)}
-                {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", _delta_pct("tot_conv"))}
-                {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), _delta_pct("tot_sales"), highlight=True)}
-            </div>
-            <div class='kpi-divider'></div>
-            <div class='kpi-section-title'>구매완료</div>
-            <div class='kpi-row'>
-                {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", _delta_pct("roas"), highlight=True)}
-                {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", _delta_pct("conv"))}
-                {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), _delta_pct("sales"), highlight=True)}
-            </div>
-            <div class='kpi-divider'></div>
-            <div class='kpi-section-title'>보조전환</div>
-            <div class='kpi-row'>
-                {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", _delta_pct("cart_conv"))}
-                {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", _delta_pct("wishlist_conv"))}
-                {_kpi_html("장바구니 매출", format_currency(cur.get("cart_sales", 0.0)), _delta_pct("cart_sales"))}
-            </div>
-        </div>
-    </div>
-    """
+        """
     st.markdown(kpi_html, unsafe_allow_html=True)
 
 
@@ -503,11 +414,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
         daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
         
-        tab_t1, tab_t2 = st.tabs(["비용 및 구매완료 매출 추이", "유입 지표 추이"])
+        tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
         with tab_t1:
-            render_echarts_dual_axis("overview_cost_purchase_sales", daily_ts_chart, "dt", "cost", "광고비", "sales", "구매완료 매출", height=320)
+            y_col = "sales"
+            y_name = "구매완료 매출"
+            render_echarts_dual_axis("비용 및 구매완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
         with tab_t2:
-            render_echarts_dual_axis("overview_imp_clk", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+            render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
 
 
