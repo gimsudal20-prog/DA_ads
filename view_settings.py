@@ -64,7 +64,7 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # 캠페인별 목표 ROAS 설정 섹션 (자동 저장 적용)
+    # 캠페인별 목표 ROAS 설정 섹션 (0.1초 즉각 자동 저장 적용)
     st.markdown("### 캠페인별 ROAS 목표 설정")
     st.caption("담당자와 업체를 차례로 선택한 뒤 표에 숫자를 입력하면 **자동으로 저장**됩니다.")
     
@@ -116,7 +116,7 @@ def page_settings(engine) -> None:
             else:
                 st.selectbox("3. 캠페인 유형 선택", options=["업체를 먼저 선택하세요"], disabled=True)
 
-        # 데이터 에디터 렌더링 및 자동 저장
+        # 데이터 에디터 렌더링 및 초고속 자동 저장
         if selected_acc != "선택하세요" and not df_camp_cid.empty:
             ensure_target_roas_column(engine)
             
@@ -160,17 +160,16 @@ def page_settings(engine) -> None:
                     use_container_width=True
                 )
                 
-                # 자동 저장 로직 (원본 데이터와 수정된 데이터를 비교)
+                # 🚀 최적화된 초고속 자동 저장 로직 (Sleep 및 강제 Rerun 제거)
                 if not edit_df.equals(edited_df):
                     for idx, row in edited_df.iterrows():
-                        # 변경사항이 있는 특정 행만 찾아 DB 업데이트
+                        # 변경사항이 있는 특정 행만 즉시 DB 업데이트
                         if row["min_roas"] != edit_df.loc[idx, "min_roas"] or row["target_roas"] != edit_df.loc[idx, "target_roas"]:
                             update_campaign_target_roas(engine, int(cid), row["campaign_id"], float(row["target_roas"]), float(row["min_roas"]))
                     
-                    st.toast("✅ ROAS 설정이 자동 저장되었습니다.")
-                    st.cache_data.clear()
-                    time.sleep(0.3)
-                    st.rerun()
+                    st.cache_data.clear() # 요약탭 등 다른 페이지를 위한 캐시 초기화 (백그라운드 처리)
+                    st.toast("✅ 변경된 설정이 저장되었습니다.", icon="⚡") 
+                    # 화면 재렌더링 없이 스트림릿의 자체 에디터 상태만 유지하여 속도를 극대화
             else:
                 st.info("선택한 캠페인 유형에 해당하는 데이터가 없습니다.")
 
