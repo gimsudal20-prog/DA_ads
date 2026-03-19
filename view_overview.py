@@ -417,7 +417,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
         with tab_t1:
             y_col = "sales"
-            y_name = "구매완료 매출"
+            # 우측 y축 축제목이 잘려 보이는 문제를 피하기 위해 짧은 라벨 사용
+            # (범례/차트 제목으로 이미 구매완료 매출임을 충분히 안내)
+            y_name = "매출"
             render_echarts_dual_axis("비용 및 구매완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
         with tab_t2:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
