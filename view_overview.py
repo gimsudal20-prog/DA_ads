@@ -114,6 +114,22 @@ def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
 
+
+
+def _sticky_cfg(first_col: str):
+    return {
+        first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")
+    }
+
+
+def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 420, hide_index: bool = False):
+    st.dataframe(
+        styler_or_df,
+        use_container_width=True,
+        height=height,
+        hide_index=hide_index,
+        column_config=_sticky_cfg(first_col),
+    )
 def _selected_type_label(type_sel: tuple) -> str:
     if not type_sel:
         return "전체 유형"
@@ -585,26 +601,27 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
         else:
             cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
-        st.dataframe(df[cols].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
+        styled_ts = df[cols].style.format(fmt_dict_ts)
+        _render_overview_sticky_table(styled_ts, col_name, height=420, hide_index=True)
 
     with st.expander("계정별 성과 상세", expanded=False):
         if not df_display.empty:
             styled_df = df_display.style.format(fmt_dict_standard)
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
         else:
             st.info("조회된 데이터가 없습니다.")
 
     with st.expander("캠페인 유형별 성과 상세", expanded=False):
         if not df_type_display.empty:
             styled_type_df = df_type_display.style.format(fmt_dict_standard)
-            st.dataframe(styled_type_df, use_container_width=True, hide_index=True)
+            _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
         else:
             st.info("조회된 데이터가 없습니다.")
 
     with st.expander("캠페인별 성과 상세", expanded=False):
         if not camp_disp.empty:
             styled_camp_df = camp_disp.style.format(fmt_dict_standard)
-            st.dataframe(styled_camp_df, use_container_width=True, hide_index=True)
+            _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
         else:
             st.info("조회된 데이터가 없습니다.")
 
