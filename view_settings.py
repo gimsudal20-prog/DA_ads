@@ -64,9 +64,9 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # [수정됨] 캠페인별 목표 ROAS 설정 섹션 (담당자 -> 업체 -> 유형 필터링)
+    # 캠페인별 목표 ROAS 설정 섹션 (자동 저장 적용)
     st.markdown("### 캠페인별 ROAS 목표 설정")
-    st.caption("담당자와 업체를 차례로 선택한 뒤 캠페인의 최소 및 목표 ROAS를 설정하세요. 설정된 데이터는 요약 탭에 반영됩니다.")
+    st.caption("담당자와 업체를 차례로 선택한 뒤 표에 숫자를 입력하면 **자동으로 저장**됩니다.")
     
     meta = get_meta(engine)
     if not meta.empty and 'manager' in meta.columns:
@@ -116,18 +116,18 @@ def page_settings(engine) -> None:
             else:
                 st.selectbox("3. 캠페인 유형 선택", options=["업체를 먼저 선택하세요"], disabled=True)
 
-        # 데이터 에디터 렌더링
+        # 데이터 에디터 렌더링 및 자동 저장
         if selected_acc != "선택하세요" and not df_camp_cid.empty:
             ensure_target_roas_column(engine)
             
-            # 컬럼 생성 보장을 위한 재조회
+            # 최신 DB 반영을 위해 재조회
             df_camp_fresh = load_dim_campaign(engine) 
             df_camp_cid_fresh = df_camp_fresh[df_camp_fresh['customer_id'].astype(str) == str(cid)].copy()
             
             if "min_roas" not in df_camp_cid_fresh.columns: df_camp_cid_fresh["min_roas"] = 0.0
             if "target_roas" not in df_camp_cid_fresh.columns: df_camp_cid_fresh["target_roas"] = 0.0
             
-            # 유형 한글 매핑 재적용
+            # 한글 매핑
             cp_col = "campaign_tp" if "campaign_tp" in df_camp_cid_fresh.columns else ("campaign_type_label" if "campaign_type_label" in df_camp_cid_fresh.columns else "campaign_type")
             if cp_col in df_camp_cid_fresh.columns:
                 mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
@@ -135,7 +135,7 @@ def page_settings(engine) -> None:
             else:
                 df_camp_cid_fresh['type_kor'] = "기타"
                 
-            # 유형 필터링 적용
+            # 유형 필터링
             if selected_type != "전체":
                 edit_df = df_camp_cid_fresh[df_camp_cid_fresh['type_kor'] == selected_type].copy()
             else:
@@ -143,7 +143,9 @@ def page_settings(engine) -> None:
                 
             if not edit_df.empty:
                 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-                edit_df = edit_df[["campaign_id", "type_kor", "campaign_name", "min_roas", "target_roas"]].copy()
+                
+                # 안전한 비교를 위해 인덱스 초기화
+                edit_df = edit_df[["campaign_id", "type_kor", "campaign_name", "min_roas", "target_roas"]].copy().reset_index(drop=True)
                 
                 edited_df = st.data_editor(
                     edit_df,
@@ -158,13 +160,16 @@ def page_settings(engine) -> None:
                     use_container_width=True
                 )
                 
-                if st.button("ROAS 설정 일괄 저장", type="primary"):
-                    with st.spinner("저장 중..."):
-                        for _, row in edited_df.iterrows():
+                # 자동 저장 로직 (원본 데이터와 수정된 데이터를 비교)
+                if not edit_df.equals(edited_df):
+                    for idx, row in edited_df.iterrows():
+                        # 변경사항이 있는 특정 행만 찾아 DB 업데이트
+                        if row["min_roas"] != edit_df.loc[idx, "min_roas"] or row["target_roas"] != edit_df.loc[idx, "target_roas"]:
                             update_campaign_target_roas(engine, int(cid), row["campaign_id"], float(row["target_roas"]), float(row["min_roas"]))
-                    st.success("ROAS 설정이 안전하게 저장되었습니다.")
-                    time.sleep(1)
+                    
+                    st.toast("✅ ROAS 설정이 자동 저장되었습니다.")
                     st.cache_data.clear()
+                    time.sleep(0.3)
                     st.rerun()
             else:
                 st.info("선택한 캠페인 유형에 해당하는 데이터가 없습니다.")
