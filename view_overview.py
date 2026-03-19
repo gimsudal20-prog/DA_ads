@@ -310,6 +310,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     .kpi-group-container {align-items:flex-start !important; gap:12px !important;}
     .kpi-group {min-width:0 !important; height:auto !important;}
     .kpi-group:last-child {flex:1.35 1 0 !important;}
+    .kpi-legacy-equal {display:grid !important; grid-template-columns:repeat(3, minmax(0, 1fr)) !important; gap:12px !important; align-items:stretch !important;}
+    .kpi-legacy-equal .kpi-group {display:flex !important; flex-direction:column !important; justify-content:flex-start !important; height:100% !important;}
+    .kpi-legacy-equal .kpi-group:last-child {flex:unset !important;}
     .kpi-row {display:grid !important; grid-template-columns:repeat(3, minmax(0, 1fr)) !important; gap:10px !important; align-items:stretch !important;}
     .kpi {min-width:0 !important; padding:14px 12px !important; display:flex !important; flex-direction:column !important; justify-content:flex-start !important;}
     .kpi .k {white-space:normal !important; line-height:1.22 !important; font-size:13px !important;}
@@ -346,6 +349,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     base['tot_conv'] = base.get('tot_conv', base.get('conv', 0))
     base['tot_sales'] = base.get('tot_sales', base.get('sales', 0))
     base['tot_roas'] = (base['tot_sales'] / base['cost'] * 100) if base.get('cost', 0) > 0 else 0
+    cur['cpm'] = (cur.get('cost', 0) / cur.get('imp', 0) * 1000) if cur.get('imp', 0) > 0 else 0
+    base['cpm'] = (base.get('cost', 0) / base.get('imp', 0) * 1000) if base.get('imp', 0) > 0 else 0
 
     def _delta_pct(key):
         try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
@@ -374,6 +379,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+                {_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
             </div></div>
             <div class='kpi-group'>
                 <div class='kpi-group-title'>성과 지표</div>
@@ -397,7 +403,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         """
     else:
         kpi_html = f"""
-        <div class='kpi-group-container'>
+        <div class='kpi-group-container kpi-legacy-equal'>
             <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
@@ -406,6 +412,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
                 {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+                {_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
             </div></div>
             <div class='kpi-group'>
                 <div class='kpi-group-title'>성과 지표</div>
