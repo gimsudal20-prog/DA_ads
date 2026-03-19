@@ -216,18 +216,33 @@ def format_number_commas(val) -> str:
 # ==========================================
 
 def ensure_target_roas_column(_engine):
-    cols = get_table_columns(_engine, "dim_campaign")
-    if "target_roas" not in cols:
-        try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
-        except Exception: pass
-    if "min_roas" not in cols:
-        try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN min_roas NUMERIC DEFAULT 0")
-        except Exception: pass
+    # 캐시 문제로 인한 누락을 방지하기 위해 강제로 컬럼 생성을 시도합니다 (있으면 에러 무시)
+    try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
+    except Exception: pass
+    
+    try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN min_roas NUMERIC DEFAULT 0")
+    except Exception: pass
 
-def update_campaign_target_roas(_engine, cid: int, campaign_id: str, target_val: float, min_val: float):
+def update_campaign_target_roas(_engine, cid, campaign_id, target_val, min_val):
     ensure_target_roas_column(_engine)
-    sql_exec(_engine, "UPDATE dim_campaign SET target_roas = :t_val, min_roas = :m_val WHERE customer_id = :cid AND campaign_id = :camp_id", 
-             {"t_val": target_val, "m_val": min_val, "cid": cid, "camp_id": campaign_id})
+    
+    # Null(NaN) 값이나 빈 문자열이 들어올 경우 0.0으로 안전하게 변환
+    t_val = float(target_val) if pd.notna(target_val) and str(target_val).strip() != "" else 0.0
+    m_val = float(min_val) if pd.notna(min_val) and str(min_val).strip() != "" else 0.0
+    
+    # WHERE 조건에서 텍스트 기반 비교를 위해 CAST를 적용하여 ProgrammingError 원천 차단
+    query = """
+        UPDATE dim_campaign 
+        SET target_roas = :t_val, min_roas = :m_val 
+        WHERE CAST(customer_id AS TEXT) = :cid 
+          AND CAST(campaign_id AS TEXT) = :camp_id
+    """
+    sql_exec(_engine, query, {
+        "t_val": t_val, 
+        "m_val": m_val, 
+        "cid": str(cid), 
+        "camp_id": str(campaign_id)
+    })
 
 def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
     prefix = f"{alias}." if alias else ""
