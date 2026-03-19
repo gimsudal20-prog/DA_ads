@@ -64,9 +64,9 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # 캠페인별 목표 ROAS 설정 섹션 추가
-    st.markdown("### 캠페인별 목표 ROAS 설정")
-    st.caption("계정을 선택하고 각 캠페인의 목표 ROAS를 설정하세요. 설정된 캠페인은 요약 탭에 달성 진척도가 표시됩니다.")
+    # 캠페인별 목표 ROAS 설정 섹션 (최소/목표 모두 반영)
+    st.markdown("### 캠페인별 ROAS 목표 설정")
+    st.caption("계정을 선택하고 각 캠페인의 최소 및 목표 ROAS를 설정하세요. 설정된 데이터는 요약 탭에 반영됩니다.")
     
     meta = get_meta(engine)
     if not meta.empty:
@@ -81,30 +81,31 @@ def page_settings(engine) -> None:
             
             if not df_camp_cid.empty:
                 ensure_target_roas_column(engine)
-                df_camp = load_dim_campaign(engine) # 최신 스키마 반영 재조회
+                df_camp = load_dim_campaign(engine) 
                 df_camp_cid = df_camp[df_camp['customer_id'].astype(str) == str(cid)].copy()
                 
-                if "target_roas" not in df_camp_cid.columns:
-                    df_camp_cid["target_roas"] = 0.0
+                if "min_roas" not in df_camp_cid.columns: df_camp_cid["min_roas"] = 0.0
+                if "target_roas" not in df_camp_cid.columns: df_camp_cid["target_roas"] = 0.0
                     
-                edit_df = df_camp_cid[["campaign_id", "campaign_name", "target_roas"]].copy()
+                edit_df = df_camp_cid[["campaign_id", "campaign_name", "min_roas", "target_roas"]].copy()
                 
                 edited_df = st.data_editor(
                     edit_df,
                     column_config={
                         "campaign_id": st.column_config.TextColumn("캠페인 ID", disabled=True),
                         "campaign_name": st.column_config.TextColumn("캠페인명", disabled=True),
+                        "min_roas": st.column_config.NumberColumn("최소 ROAS (%)", min_value=0.0, step=10.0, format="%.1f"),
                         "target_roas": st.column_config.NumberColumn("목표 ROAS (%)", min_value=0.0, step=10.0, format="%.1f")
                     },
                     hide_index=True,
                     use_container_width=True
                 )
                 
-                if st.button("목표 ROAS 저장", type="primary"):
+                if st.button("ROAS 설정 저장", type="primary"):
                     with st.spinner("저장 중..."):
                         for _, row in edited_df.iterrows():
-                            update_campaign_target_roas(engine, int(cid), row["campaign_id"], float(row["target_roas"]))
-                    st.success("목표 ROAS가 저장되었습니다.")
+                            update_campaign_target_roas(engine, int(cid), row["campaign_id"], float(row["target_roas"]), float(row["min_roas"]))
+                    st.success("ROAS 설정이 저장되었습니다.")
                     time.sleep(1)
                     st.cache_data.clear()
                     st.rerun()
