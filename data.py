@@ -184,7 +184,7 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     dates = {}
-    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily"]:
+    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
         if table_exists(_engine, tbl):
             df = sql_read(_engine, f"SELECT MAX(dt) as dt FROM {tbl}")
             if not df.empty and pd.notna(df.iloc[0]['dt']): dates[tbl] = df.iloc[0]['dt']
@@ -315,7 +315,6 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
             
-    # ✨ 네이버 총 전환수에서 장바구니/위시리스트를 빼서 "순수 구매완료" 발라내기 
     fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
     has_primary = "primary_conv" in fact_cols
     has_cart = "cart_conv" in fact_cols
@@ -387,7 +386,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ 구매 분리
     has_primary = "primary_conv" in camp_fact_cols
     has_cart = "cart_conv" in camp_fact_cols
     has_wish = "wishlist_conv" in camp_fact_cols
@@ -458,7 +456,6 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ 구매 분리
     has_primary = "primary_conv" in kw_fact_cols
     has_cart = "cart_conv" in kw_fact_cols
     has_wish = "wishlist_conv" in kw_fact_cols
@@ -537,7 +534,6 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
-    # ✨ 구매 분리
     has_primary = "primary_conv" in ad_fact_cols
     has_cart = "cart_conv" in ad_fact_cols
     has_wish = "wishlist_conv" in ad_fact_cols
@@ -626,4 +622,31 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
     
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
+    return df
+
+# ✨ 추가된 쇼핑 검색어(query_text) 분석 전용 쿼리
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_shopping_query_daily"): return pd.DataFrame()
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+
+    sql = f"""
+        SELECT 
+            f.customer_id, c.campaign_name, a.adgroup_name, f.query_text,
+            SUM(f.total_conv) as total_conv, 
+            SUM(f.total_sales) as total_sales,
+            SUM(f.purchase_conv) as purchase_conv, 
+            SUM(f.purchase_sales) as purchase_sales,
+            SUM(f.cart_conv) as cart_conv, 
+            SUM(f.cart_sales) as cart_sales,
+            SUM(f.wishlist_conv) as wishlist_conv, 
+            SUM(f.wishlist_sales) as wishlist_sales
+        FROM fact_shopping_query_daily f
+        LEFT JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+        LEFT JOIN dim_adgroup a ON f.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY f.customer_id, c.campaign_name, a.adgroup_name, f.query_text
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     return df
