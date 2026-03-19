@@ -1,624 +1,629 @@
 # -*- coding: utf-8 -*-
-"""data.py - Database connection, caching, and common queries."""
-import os
-import time
+"""view_overview.py - Overview page view."""
+
+from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from datetime import date
+import io
+from typing import Dict
+from datetime import date, timedelta
 
-# ==========================================
-# 1. Database Connection
-# ==========================================
-@st.cache_resource
-def get_engine():
-    db_url = os.getenv("DATABASE_URL", "").strip()
-    if not db_url: return create_engine("sqlite:///:memory:", future=True)
-    if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
-    
-    connect_args = {
-        "keepalives": 1,
-        "keepalives_idle": 30,
-        "keepalives_interval": 10,
-        "keepalives_count": 5
-    }
-    
-    return create_engine(
-        db_url, 
-        pool_size=20, 
-        max_overflow=40, 
-        pool_pre_ping=True, 
-        pool_recycle=1800,
-        connect_args=connect_args,
-        future=True
-    )
+from data import *
+from ui import *
+from page_helpers import *
+from page_helpers import _perf_common_merge_meta
 
-def db_ping(engine) -> bool:
-    try:
-        with engine.connect() as conn: conn.execute(text("SELECT 1"))
-        return True
-    except Exception: return False
 
-def table_exists(engine, table_name: str) -> bool:
-    if "_table_names_cache" not in st.session_state:
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
-                st.session_state["_table_names_cache"] = [r[0] for r in res]
-        except Exception: return False
-    return table_name in st.session_state.get("_table_names_cache", [])
+def _format_report_line(label: str, value: str) -> str:
+    return f"{label} : {value}"
 
-@st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
-def get_table_columns(_engine, table_name: str) -> list:
-    for attempt in range(3):
-        try:
-            with _engine.connect() as conn:
-                res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
-                return [r[0] for r in res]
-        except (OperationalError, StatementError, InterfaceError):
-            if attempt == 2: 
-                st.cache_resource.clear()
-                st.error("⚠️ 데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
-                st.stop()
-            _engine.dispose()
-            time.sleep(1.0)
-        except Exception: 
-            return []
+def _build_periodic_report_text(campaign_type: str, imp: float, clk: float, ctr: float, cost: float, tot_conv: float, tot_roas: float, tot_sales: float, top_keywords_label: str, top_keywords: str) -> str:
+    return "\n".join([
+        f"[ {campaign_type} 성과 요약 ]",
+        _format_report_line("노출수", f"{int(imp):,}"),
+        _format_report_line("클릭수", f"{int(clk):,}"),
+        _format_report_line("클릭률", f"{float(ctr):.2f}%"),
+        _format_report_line("광고 소진비용", f"{int(cost):,}원"),
+        _format_report_line("총 전환수", f"{int(tot_conv):,}"),
+        _format_report_line("총 전환매출", f"{int(tot_sales):,}원"),
+        _format_report_line("통합 ROAS", f"{float(tot_roas):.2f}%"),
+        _format_report_line(top_keywords_label, top_keywords),
+    ])
 
-@st.cache_data(ttl=600, max_entries=30, show_spinner=False)
-def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
-    for attempt in range(3):
-        try:
-            with _engine.connect() as conn: 
-                return pd.read_sql(text(query), conn, params=params)
-        except (OperationalError, StatementError, InterfaceError) as e:
-            if attempt == 2:
-                st.cache_resource.clear()
-                st.error("⚠️ 밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
-                st.stop()
-            _engine.dispose()
-            time.sleep(1.0) 
-        except Exception as e:
-            st.error(f"⚠️ 데이터 로드 오류 발생: {e}")
-            st.stop()
 
-def sql_exec(_engine, query: str, params: dict = None) -> None:
-    for attempt in range(3):
-        try:
-            with _engine.begin() as conn: 
-                conn.execute(text(query), params or {})
-            break
-        except (OperationalError, StatementError, InterfaceError) as e:
-            if attempt == 2:
-                st.cache_resource.clear()
-                raise e
-            _engine.dispose()
-            time.sleep(1.0)
-        except Exception as e:
-            raise e
-
-def _sql_in_str_list(lst) -> str:
-    if not lst: return "''"
-    return ",".join(f"'{str(x)}'" for x in lst)
-
-# ==========================================
-# 2. Metadata & Dimensions & Seeding
-# ==========================================
-def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
-    try:
-        if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
-        if df is not None:
-            rename_map = {}
-            for c in df.columns:
-                c_clean = str(c).replace(" ", "").lower()
-                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
-                    rename_map[c] = "customer_id"
-                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
-                    rename_map[c] = "account_name"
-                elif c_clean in ["담당자", "manager"]:
-                    rename_map[c] = "manager"
-                    
-            df = df.rename(columns=rename_map)
-            
-            if table_exists(engine, "dim_customer"):
-                try:
-                    old_df = sql_read(engine, "SELECT * FROM dim_customer")
-                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "고객 ID", "고객 id", "고객ID", "커스텀ID", "커스텀id"]), None)
-                    if cid_col and "monthly_budget" in old_df.columns:
-                        budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
-                        df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
-                except Exception: pass
-            
-            if "monthly_budget" not in df.columns:
-                df["monthly_budget"] = 0
-                
-            df.to_sql("dim_customer", engine, if_exists="replace", index=False)
-            if "_table_names_cache" in st.session_state: del st.session_state["_table_names_cache"]
-            get_meta.clear()
-            return {"meta": len(df)}
-        return {"meta": 0}
-    except Exception as e:
-        st.error(f"업로드 실패: {e}")
-        return {"meta": 0}
-
-@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
-def get_meta(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
-    df = sql_read(_engine, "SELECT * FROM dim_customer")
-    if not df.empty:
-        rename_map = {}
-        for c in df.columns:
-            c_clean = str(c).replace(" ", "").lower()
-            if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
-                rename_map[c] = "customer_id"
-            elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
-                rename_map[c] = "account_name"
-            elif c_clean in ["담당자", "manager"]:
-                rename_map[c] = "manager"
-        df = df.rename(columns=rename_map)
-    return df
-
-@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
-def load_dim_campaign(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
-    return sql_read(_engine, "SELECT * FROM dim_campaign")
-
-def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
-    if dim_campaign is None or dim_campaign.empty: return ["파워링크", "쇼핑검색"]
-    col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
-    if col_name not in dim_campaign.columns: return ["파워링크", "쇼핑검색"]
-    
-    mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
-    raw_opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
-    opts = list(set([mapping.get(x.upper(), x) for x in raw_opts]))
-    return sorted(opts) if opts else ["파워링크", "쇼핑검색"]
-
-def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
-    if not df.empty and col_name in df.columns:
-        mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
-        df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
-    return df
+def _selected_type_label(type_sel: tuple) -> str:
+    if not type_sel: return "전체 유형"
+    if len(type_sel) == 1: return type_sel[0]
+    return ", ".join(type_sel)
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def get_latest_dates(_engine) -> dict:
-    dates = {}
-    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
-        if table_exists(_engine, tbl):
-            df = sql_read(_engine, f"SELECT MAX(dt) as dt FROM {tbl}")
-            if not df.empty and pd.notna(df.iloc[0]['dt']): dates[tbl] = df.iloc[0]['dt']
-    return dates
-
-# ==========================================
-# 3. Helper Functions (Math & Formatting)
-# ==========================================
-def pct_change(cur: float, base: float) -> float:
-    if not base or base == 0: return 100.0 if cur and cur > 0 else 0.0
-    return ((cur - base) / base) * 100.0
-
-def pct_to_arrow(val) -> str:
-    if val is None or pd.isna(val): return "-"
-    if val > 0: return f"▲ {val:.1f}%"
-    if val < 0: return f"▼ {abs(val):.1f}%"
-    return "-"
-
-def format_currency(val) -> str:
-    try: return f"{int(float(val)):,}원"
-    except (ValueError, TypeError): return "0원"
-
-def format_number_commas(val) -> str:
-    try: return f"{int(float(val)):,}"
-    except (ValueError, TypeError): return "0"
-
-# ==========================================
-# 4. Data Aggregation Queries
-# ==========================================
-
-
-def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
-    prefix = f"{alias}." if alias else ""
-    has_purchase = "purchase_conv" in fact_cols
-    has_cart = "cart_conv" in fact_cols
-    has_wish = "wishlist_conv" in fact_cols
-
-    return {
-        "purchase_conv_expr": f"COALESCE({prefix}purchase_conv, 0)" if has_purchase else "0",
-        "purchase_sales_expr": f"COALESCE({prefix}purchase_sales, 0)" if has_purchase else "0",
-        "cart_conv_expr": f"COALESCE({prefix}cart_conv, 0)" if has_cart else "0",
-        "cart_sales_expr": f"COALESCE({prefix}cart_sales, 0)" if has_cart else "0",
-        "wish_conv_expr": f"COALESCE({prefix}wishlist_conv, 0)" if has_wish else "0",
-        "wish_sales_expr": f"COALESCE({prefix}wishlist_sales, 0)" if has_wish else "0",
-        "total_conv_expr": f"COALESCE({prefix}conv, 0)",
-        "total_sales_expr": f"COALESCE({prefix}sales, 0)",
-    }
+def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
-    meta = get_meta(_engine)
-    if meta.empty: return pd.DataFrame()
-    
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
-    sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2)})
-    
-    sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2)})
+def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=0)
+    except Exception: return pd.DataFrame()
 
-    sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2)})
-    
-    if table_exists(_engine, "fact_bizmoney_daily"):
-        latest_dt_df = sql_read(_engine, "SELECT MAX(dt) as latest_dt FROM fact_bizmoney_daily")
-        latest_dt = None if latest_dt_df.empty else latest_dt_df.iloc[0].get("latest_dt")
-        bizmoney_dt = latest_dt if pd.notna(latest_dt) else yesterday
-        df_b = sql_read(
-            _engine,
-            f"SELECT customer_id, MAX(bizmoney_balance) as bizmoney_balance FROM fact_bizmoney_daily WHERE dt = :d1 {where_cid} GROUP BY customer_id",
-            {"d1": str(bizmoney_dt)},
-        )
-    else:
-        df_b = pd.DataFrame(columns=["customer_id", "bizmoney_balance"])
-        
-    df = meta.copy()
-    if cids_tuple: df = df[df["customer_id"].isin(cids_tuple)]
-    
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_m.empty: df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_prev_m.empty: df_prev_m["customer_id"] = pd.to_numeric(df_prev_m["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_b.empty: df_b["customer_id"] = pd.to_numeric(df_b["customer_id"], errors="coerce").fillna(0).astype(int)
-    
-    if not df_avg.empty: df = df.merge(df_avg, on="customer_id", how="left")
-    if not df_m.empty: df = df.merge(df_m, on="customer_id", how="left")
-    if not df_prev_m.empty: df = df.merge(df_prev_m, on="customer_id", how="left")
-    if not df_b.empty: df = df.merge(df_b, on="customer_id", how="left")
-    
-    for c in ["avg_cost", "current_month_cost", "current_month_sales", "prev_month_cost", "bizmoney_balance", "monthly_budget"]:
-        if c not in df.columns: df[c] = 0
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-        
-    if "manager" not in df.columns: df["manager"] = "미배정"
-    if "account_name" not in df.columns: df["account_name"] = df["customer_id"].astype(str)
-    return df
-
-def update_monthly_budget(_engine, cid: int, val: int):
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def _cached_campaign_timeseries(_engine, trend_d1, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try:
-        cols = get_table_columns(_engine, "dim_customer")
-        if "customer_id" not in cols:
-            df = sql_read(_engine, "SELECT * FROM dim_customer")
-            rename_map = {}
-            for c in df.columns:
-                c_clean = str(c).replace(" ", "").lower()
-                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
-                    rename_map[c] = "customer_id"
-                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
-                    rename_map[c] = "account_name"
-                elif c_clean in ["담당자", "manager"]:
-                    rename_map[c] = "manager"
-            df = df.rename(columns=rename_map)
-            if "monthly_budget" not in df.columns: df["monthly_budget"] = 0
-            df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
-        else:
-            if "monthly_budget" not in cols:
-                sql_exec(_engine, "ALTER TABLE dim_customer ADD COLUMN monthly_budget BIGINT DEFAULT 0")
-        sql_exec(_engine, "UPDATE dim_customer SET monthly_budget = :val WHERE customer_id = :cid", {"val": val, "cid": cid})
-    except Exception as e:
-        st.error(f"예산 업데이트 실패: {e}")
+        ts = query_campaign_timeseries(_engine, trend_d1, end_dt, cids, type_sel)
+        return ts if ts is not None else pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
-
-@st.cache_data(ttl=600, max_entries=20, show_spinner=False)
-def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
-    if not table_exists(_engine, f"fact_{entity}_daily"):
-        return {}
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    type_join_sql = ""
-    type_where_sql = ""
-    if type_sel and table_exists(_engine, "dim_campaign"):
-        dim_cols = get_table_columns(_engine, "dim_campaign")
-        cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
-        fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
-        if "campaign_id" in fact_cols and cp_col in dim_cols:
+def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try:
+        cid_str = ",".join([f"'{str(x)}'" for x in cids])
+        where_cid = f"AND f.customer_id IN ({cid_str})" if cids else ""
+        type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+        type_where_sql = ""
+        type_list_str = ""
+        if type_sel:
             rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
             db_types = [rev_map.get(t, t) for t in type_sel]
             type_list_str = ",".join([f"'{x}'" for x in db_types])
-            type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-            type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+            type_where_sql = f"AND c.campaign_tp IN ({type_list_str})"
 
-    fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
-    expr = _strict_conv_selects(fact_cols, alias="f")
-
-    sql = f"""
-        SELECT
-            SUM(f.imp) as imp,
-            SUM(f.clk) as clk,
-            SUM(f.cost) as cost,
-            SUM({expr['purchase_conv_expr']}) as conv,
-            SUM({expr['purchase_sales_expr']}) as sales,
-            SUM({expr['total_conv_expr']}) as tot_conv,
-            SUM({expr['total_sales_expr']}) as tot_sales,
-            SUM({expr['cart_conv_expr']}) as cart_conv,
-            SUM({expr['cart_sales_expr']}) as cart_sales,
-            SUM({expr['wish_conv_expr']}) as wishlist_conv,
-            SUM({expr['wish_sales_expr']}) as wishlist_sales
-        FROM fact_{entity}_daily f
-        {type_join_sql}
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if df.empty:
-        return {}
-
-    row = df.iloc[0].fillna(0).to_dict()
-    row['tot_conv'] = row.get('tot_conv', 0)
-    row['tot_sales'] = row.get('tot_sales', 0)
-    row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
-    row['cpc'] = (row['cost'] / row['clk']) if row.get('clk', 0) > 0 else 0
-    row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
-    row['cart_roas'] = (row['cart_sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
-    row['wishlist_roas'] = (row['wishlist_sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
-    return row
-
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
-    cols = get_table_columns(_engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
-
-    rank_col = None
-    camp_fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
-        if candidate in camp_fact_cols:
-            rank_col = candidate
-            break
-
-    rank_agg_sql = ""
-    rank_select_sql = ""
-    if rank_col:
-        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
-        rank_select_sql = ", agg.avg_rank"
-
-    expr = _strict_conv_selects(camp_fact_cols)
-    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
-    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
-    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
-    
-    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
-    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
-
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, campaign_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
-            FROM fact_campaign_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, campaign_id
-        )
-        SELECT 
-            agg.customer_id, agg.campaign_id, 
-            c.campaign_name, c.{cp_col} as campaign_type,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
-        FROM agg
-        JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
-    
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-    
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type')
-    return df
-
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
-    cols = get_table_columns(_engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
-
-    rank_col = None
-    kw_fact_cols = get_table_columns(_engine, "fact_keyword_daily")
-    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
-        if candidate in kw_fact_cols:
-            rank_col = candidate
-            break
-
-    rank_agg_sql = ""
-    rank_select_sql = ""
-    if rank_col:
-        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
-        rank_select_sql = ", agg.avg_rank"
-
-    expr = _strict_conv_selects(kw_fact_cols)
-    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
-    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
-    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
-    
-    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
-    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
-
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, keyword_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
-            FROM fact_keyword_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, keyword_id
-        )
-        SELECT 
-            agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
-            c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, k.keyword,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
-        FROM agg
-        JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
-        JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
-    
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+        fact_cols = get_table_columns(_engine, "fact_campaign_daily")
+        has_primary = "primary_conv" in fact_cols
+        has_cart = "cart_conv" in fact_cols
+        has_wish = "wishlist_conv" in fact_cols
         
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type_label')
-    return df
+        cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
+        wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
+        cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
+        wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
+        conv_c_expr = "COALESCE(f.conv, 0)"
+        conv_s_expr = "COALESCE(f.sales, 0)"
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
-    cols = get_table_columns(_engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
-    ad_cols = get_table_columns(_engine, "dim_ad")
-    url_select = "ad.pc_landing_url as landing_url" if "pc_landing_url" in ad_cols else "'' as landing_url"
-    title_select = "ad.ad_title" if "ad_title" in ad_cols else "ad.ad_name as ad_title"
-    image_select = "ad.image_url" if "image_url" in ad_cols else "'' as image_url"
-    
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
+        if has_primary:
+            conv_sql = f"SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
+        else:
+            conv_sql = f"SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    rank_col = None
-    ad_fact_cols = get_table_columns(_engine, "fact_ad_daily")
-    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
-        if candidate in ad_fact_cols:
-            rank_col = candidate
-            break
+        sql = f"""
+            SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
+                   SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales, 
+                   SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales, 
+                   {conv_sql}
+            FROM fact_campaign_daily f
+            {type_join_sql}
+            WHERE f.dt >= '{start_dt}' AND f.dt <= '{end_dt}' {where_cid} {type_where_sql}
+            GROUP BY f.dt, c.campaign_tp
+        """
+        df = pd.read_sql(sql, _engine)
+        if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
+        return df
+    except Exception: return pd.DataFrame()
 
-    rank_agg_sql = ""
-    rank_select_sql = ""
-    if rank_col:
-        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
-        rank_select_sql = ", agg.avg_rank"
 
-    expr = _strict_conv_selects(ad_fact_cols)
-    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
-    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
-    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+def format_for_csv(df):
+    out_df = df.copy()
+    for col in out_df.columns:
+        if out_df[col].dtype in ['float64', 'int64']:
+            if col in ["노출수", "클릭수", "평균순위", "순위"]:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
+            elif col in ["장바구니 담기수", "위시리스트수", "구매완료수", "총 전환수"]:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "0.0")
+            elif col in ["광고비", "구매완료 매출", "장바구니 매출액", "총 전환매출", "CPC"]:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
+            elif "차이" in col:
+                if "광고비" in col or "매출" in col or "CPC" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
+                elif "노출" in col or "클릭" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
+                else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
+            elif "증감" in col:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
+            elif "ROAS" in col:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
+            elif col == "클릭률(%)":
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
+    return out_df
+
+def calc_pct_diff(c, b):
+    diff = c - b
+    if b == 0: return (100.0 if c > 0 else 0.0), diff
+    return (diff / b * 100.0), diff
+
+
+def color_delta_positive(val):
+    if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
+    return 'color: #0528F2; font-weight: 600;' if val > 0 else 'color: #F04438; font-weight: 600;'
+
+def color_delta_negative(val):
+    if pd.isna(val) or val == 0: return 'color: #A8AFB7;'
+    return 'color: #F04438; font-weight: 600;' if val > 0 else 'color: #0528F2; font-weight: 600;'
+
+def style_delta_str(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #0528F2; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #F04438; font-weight: 600;'
+    return ''
+
+def style_delta_str_neg(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #F04438; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #0528F2; font-weight: 600;'
+    return ''
+
+# 🔥 중복 코드 제거를 위한 비교 데이터 생성 도우미 함수
+def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
+    if cur_df.empty and base_df.empty: return pd.DataFrame()
     
-    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
-    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
+    base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_conv', 'tot_sales']
+    for c in base_cols[1:]:
+        if not cur_df.empty and c not in cur_df.columns: cur_df[c] = 0.0
+        if not base_df.empty and c not in base_df.columns: base_df[c] = 0.0
 
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, ad_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
-            FROM fact_ad_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, ad_id
-        )
-        SELECT 
-            agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
-            c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
-        FROM agg
-        JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
-        JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
+    cur_grp = cur_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not cur_df.empty else pd.DataFrame(columns=base_cols)
+    base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
     
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+    merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
+    
+    table_data = []
+    for _, row in merged.iterrows():
+        c_imp, c_clk, c_cost, c_wish, c_wsales, c_cart, c_csales, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['wishlist_conv_cur'], row['wishlist_sales_cur'], row['cart_conv_cur'], row['cart_sales_cur'], row['conv_cur'], row['sales_cur']
+        b_imp, b_clk, b_cost, b_wish, b_wsales, b_cart, b_csales, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('wishlist_conv_base', 0), row.get('wishlist_sales_base', 0), row.get('cart_conv_base', 0), row.get('cart_sales_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
         
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type_label')
-    return df
+        c_tot_conv = row.get('tot_conv_cur', c_conv + c_cart + c_wish)
+        c_tot_sales = row.get('tot_sales_cur', c_sales + c_csales + c_wsales)
+        b_tot_conv = row.get('tot_conv_base', b_conv + b_cart + b_wish)
+        b_tot_sales = row.get('tot_sales_base', b_sales + b_csales + b_wsales)
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0; b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
+        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0; b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
+        c_croas = (c_csales / c_cost * 100) if c_cost > 0 else 0; b_croas = (b_csales / b_cost * 100) if b_cost > 0 else 0
+        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0; b_troas = (b_tot_sales / b_cost * 100) if b_cost > 0 else 0
+        
+        pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
+        pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
+        pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
+        pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
+        pct_wish, diff_wish = calc_pct_diff(c_wish, b_wish)
+        pct_cart, diff_cart = calc_pct_diff(c_cart, b_cart)
+        pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
+        pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
+        pct_tot_conv, diff_tot_conv = calc_pct_diff(c_tot_conv, b_tot_conv)
+        pct_tot_sales, diff_tot_sales = calc_pct_diff(c_tot_sales, b_tot_sales)
+        
+        val = row[group_col]
+        if type_kor_map: val = type_kor_map.get(str(val).upper(), val)
+        
+        table_data.append({
+            group_label: val,
+            "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
+            "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
+            "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
+            "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
+            "위시리스트수": c_wish, "위시리스트 증감": pct_wish, "위시리스트 차이": diff_wish,
+            "장바구니 담기수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
+            "장바구니 매출액": c_csales, "장바구니 ROAS(%)": c_croas, "장바구니ROAS 증감": c_croas - b_croas,
+            "구매완료수": c_conv, "구매 증감": pct_conv, "구매 차이": diff_conv,
+            "구매완료 매출": c_sales, "구매 매출 증감": pct_sales, "구매 매출 차이": diff_sales,
+            "구매 ROAS(%)": c_roas, "구매 ROAS 증감": c_roas - b_roas,
+            "총 전환수": c_tot_conv, "총 전환 증감": pct_tot_conv, "총 전환 차이": diff_tot_conv,
+            "총 전환매출": c_tot_sales, "총 매출 증감": pct_tot_sales, "총 매출 차이": diff_tot_sales,
+            "통합 ROAS(%)": c_troas, "통합 ROAS 증감": c_troas - b_troas
+        })
+    return pd.DataFrame(table_data).sort_values("광고비", ascending=False)
+
+# 🔥 시계열 데이터(일자/요일/주간) 생성 도우미 함수
+def _build_ts_df(df, group_col, group_label):
+    if df is None or df.empty: return pd.DataFrame()
     
-    type_join_sql = ""
-    type_where_sql = ""
-    if type_sel and table_exists(_engine, "dim_campaign"):
-        cols = get_table_columns(_engine, "dim_campaign")
-        cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-        type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+    grp_cols = ['imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
+    if 'tot_conv' in df.columns: grp_cols.extend(['tot_conv', 'tot_sales'])
+        
+    grp = df.groupby(group_col)[[c for c in grp_cols if c in df.columns]].sum().reset_index()
+    table_data = []
+    for _, row in grp.iterrows():
+        c_imp, c_clk, c_cost = row.get('imp', 0), row.get('clk', 0), row.get('cost', 0)
+        c_wish, c_wsales = row.get('wishlist_conv', 0), row.get('wishlist_sales', 0)
+        c_cart, c_csales = row.get('cart_conv', 0), row.get('cart_sales', 0)
+        c_conv, c_sales = row.get('conv', 0), row.get('sales', 0)
+        
+        c_tot_conv = row.get('tot_conv', c_conv + c_cart + c_wish)
+        c_tot_sales = row.get('tot_sales', c_sales + c_csales + c_wsales)
+        
+        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
+        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+        c_croas = (c_csales / c_cost * 100) if c_cost > 0 else 0
+        c_wroas = (c_wsales / c_cost * 100) if c_cost > 0 else 0
+        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0
+        table_data.append({
+            group_label: row[group_col],
+            "노출수": c_imp, "클릭수": c_clk, "광고비": c_cost, "CPC": c_cpc,
+            "위시리스트수": c_wish, "위시리스트 매출액": c_wsales, "위시리스트 ROAS(%)": c_wroas,
+            "장바구니 담기수": c_cart, "장바구니 매출액": c_csales, "장바구니 ROAS(%)": c_croas,
+            "구매완료수": c_conv, "구매완료 매출": c_sales, "구매 ROAS(%)": c_roas,
+            "총 전환수": c_tot_conv, "총 전환매출": c_tot_sales, "통합 ROAS(%)": c_troas
+        })
+    return pd.DataFrame(table_data)
 
-    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-    expr = _strict_conv_selects(fact_cols, alias="f")
-    conv_select_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
-    cart_select_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
-    wish_select_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
 
-    sql = f"""
-        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}{wish_select_sql}
-        FROM fact_campaign_daily f
-        {type_join_sql}
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql} 
-        GROUP BY f.dt ORDER BY f.dt
-    """
+def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
+    if not f: return
+
+    cids, type_sel = tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", []))
+    opts = get_dynamic_cmp_options(f["start"], f["end"])
+    cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
+    b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
+
+    with st.spinner("데이터를 집계 중입니다..."):
+        cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+        base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+        kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+        daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        type_weekly_ts = _cached_type_timeseries(engine, f["start"], f["end"], cids, type_sel)
+
+    state_sig = f"{f['start']}|{f['end']}|{','.join(map(str, cids))}|{','.join(type_sel)}"
+    state_hash = abs(hash(state_sig))
+    report_loaded_key = f"overview_report_loaded_{state_hash}"
+
+    account_name = "전체 계정"
+    if cids and not meta.empty:
+        acc_names = meta[meta['customer_id'].isin(cids)]['account_name'].dropna().unique()
+        if len(acc_names) == 1: account_name = f"{acc_names[0]}"
+        elif len(acc_names) > 1: account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
+
+    selected_type_label = _selected_type_label(type_sel)
+
+    fmt_dict_standard = {
+        "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
+        "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
+        "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
+        "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
+        "장바구니 담기수": "{:,.1f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.1f}",
+        "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%", "장바구니ROAS 증감": "{:+.1f}%",
+        "구매완료수": "{:,.1f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.1f}",
+        "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
+        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.1f}",
+        "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
+        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
+        "위시리스트수": "{:,.1f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.1f}"
+    }
     
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
-    return df
+    fmt_dict_ts = {
+        "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
+        "위시리스트수": "{:,.1f}", "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.1f}%",
+        "장바구니 담기수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%"
+    }
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_shopping_query_daily"): return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    type_kor_map = {
+        "WEB_SITE": "파워링크", 
+        "SHOPPING": "쇼핑검색", 
+        "POWER_CONTENTS": "파워컨텐츠", 
+        "BRAND_SEARCH": "브랜드검색", 
+        "PLACE": "플레이스"
+    }
 
-    sql = f"""
-        SELECT 
-            f.customer_id, c.campaign_name, a.adgroup_name, f.query_text,
-            SUM(f.total_conv) as total_conv, 
-            SUM(f.total_sales) as total_sales,
-            SUM(f.purchase_conv) as purchase_conv, 
-            SUM(f.purchase_sales) as purchase_sales,
-            SUM(f.cart_conv) as cart_conv, 
-            SUM(f.cart_sales) as cart_sales,
-            SUM(f.wishlist_conv) as wishlist_conv, 
-            SUM(f.wishlist_sales) as wishlist_sales
-        FROM fact_shopping_query_daily f
-        LEFT JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-        LEFT JOIN dim_adgroup a ON f.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
-        GROUP BY f.customer_id, c.campaign_name, a.adgroup_name, f.query_text
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    return df
+    st.markdown("""
+    <style>
+    .kpi-group-container {align-items:flex-start !important; gap:14px !important;}
+    .kpi-group {min-width:0 !important; height:auto !important;}
+    .kpi-group:last-child {flex:1.2 1 0 !important;}
+    .kpi-row {align-items:stretch !important;}
+    .kpi {min-width:0 !important; padding:14px 12px !important;}
+    .kpi .k {white-space:normal !important; line-height:1.25 !important;}
+    .kpi .v {font-size:clamp(17px, 1.45vw, 24px) !important; line-height:1.15 !important; white-space:normal !important; overflow-wrap:anywhere !important; word-break:keep-all !important;}
+    .kpi .d {margin-top:8px !important; display:inline-flex !important; width:auto !important; max-width:100% !important;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약 ({selected_type_label})</div>", unsafe_allow_html=True)
+    cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
+    st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
+
+    patch_date = date(2026, 3, 11)
+    if f["end"] < patch_date:
+        overview_mode = "legacy"
+        st.info("💡 3월 11일 이전 기간이라 요약지표는 총전환 기준으로 표시됩니다. 구매완료/보조전환 분리는 지원되지 않습니다.")
+    elif f["start"] >= patch_date:
+        overview_mode = "split"
+    else:
+        overview_mode = "mixed"
+        st.info("💡 3월 11일 이전 데이터가 함께 포함되어 있어 요약지표와 추이 그래프는 총전환 기준으로 표시됩니다.")
+    combined_toggle = overview_mode != "split"
+
+    cur = cur_summary
+    base = base_summary
+
+    cur['tot_conv'] = cur.get('tot_conv', cur.get('conv', 0))
+    cur['tot_sales'] = cur.get('tot_sales', cur.get('sales', 0))
+    cur['tot_roas'] = (cur['tot_sales'] / cur['cost'] * 100) if cur.get('cost', 0) > 0 else 0
+
+    base['tot_conv'] = base.get('tot_conv', base.get('conv', 0))
+    base['tot_sales'] = base.get('tot_sales', base.get('sales', 0))
+    base['tot_roas'] = (base['tot_sales'] / base['cost'] * 100) if base.get('cost', 0) > 0 else 0
+
+    def _delta_pct(key):
+        try: return pct_change(float(cur.get(key, 0.0) or 0.0), float(base.get(key, 0.0) or 0.0))
+        except Exception: return None
+
+    def _kpi_html(label, value, delta_text, delta_val, highlight=False, improve_when_up=True):
+        delta_num = float(delta_val) if delta_val is not None else 0.0
+        is_neutral = abs(delta_num) < 5
+        if is_neutral: cls_delta = "neu"; delta_text = f"유지 ({delta_num:+.1f}%)"
+        else:
+            improved = delta_num > 0 if improve_when_up else delta_num < 0
+            cls_delta = "pos" if improved else "neg"
+            delta_text = f"{pct_to_arrow(delta_num)}"
+        cls_hl = " highlight-positive" if "ROAS" in label else (" highlight" if highlight else "")
+        return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
+
+    if overview_mode == "split":
+        kpi_html = f"""
+        <div class='kpi-group-container'>
+            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+            </div></div>
+            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row' style='margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
+                <div class='kpi-row' style='margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                    {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                    {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
+                </div>
+                <div class='kpi-row'>
+                    {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
+                    {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+                </div>
+            </div>
+        </div>
+        """
+    else:
+        kpi_html = f"""
+        <div class='kpi-group-container'>
+            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+            </div></div>
+            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row'>
+                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
+            </div>
+        </div>
+        """
+    st.markdown(kpi_html, unsafe_allow_html=True)
+
+
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
+    if daily_ts is not None and not daily_ts.empty:
+        expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
+        for c in expected_cols:
+            if c not in daily_ts.columns:
+                daily_ts[c] = 0.0
+                
+        daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
+        
+        tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
+        with tab_t1:
+            if overview_mode == "split":
+                y_col = "sales"
+                chart_title = "비용 및 구매완료 매출 추이"
+            else:
+                y_col = "tot_sales"
+                chart_title = "비용 및 총전환 매출 추이"
+            y_name = "매출"
+            render_echarts_dual_axis(chart_title, daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
+        with tab_t2:
+            render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+    else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
+
+
+    df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    if not cur_camp.empty or not base_camp.empty:
+        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
+            mapping = dict(zip(meta['customer_id'].astype(str), meta['account_name']))
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str).map(mapping).fillna(cur_camp['customer_id'].astype(str))
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str).map(mapping).fillna(base_camp['customer_id'].astype(str))
+        else:
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str)
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str)
+            
+        df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '업체명')
+        
+        type_col = 'campaign_tp' if 'campaign_tp' in cur_camp.columns else ('campaign_type' if 'campaign_type' in cur_camp.columns else None)
+        if type_col:
+            df_type_display = _build_comparison_df(cur_camp, base_camp, type_col, '캠페인 유형', type_kor_map)
+            
+        camp_col = 'campaign_name' if 'campaign_name' in cur_camp.columns else None
+        if camp_col:
+            camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
+
+    if daily_ts is not None and not daily_ts.empty:
+        daily_copy = daily_ts.copy()
+        daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
+        daily_disp = _build_ts_df(daily_copy, '일자', '일자').sort_values('일자', ascending=False)
+        
+        daily_copy['요일'] = daily_copy['dt'].dt.dayofweek
+        dow_disp = _build_ts_df(daily_copy, '요일', '요일').sort_values('요일')
+        dow_map = {0:'월요일', 1:'화요일', 2:'수요일', 3:'목요일', 4:'금요일', 5:'토요일', 6:'일요일'}
+        dow_disp['요일명'] = dow_disp['요일'].map(dow_map)
+        
+        daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
+        weekly_disp = _build_ts_df(daily_copy, '주차', '주차').sort_values('주차', ascending=False)
+
+    st.markdown("<div style='margin-top:40px; margin-bottom:10px;'></div>", unsafe_allow_html=True)
+    has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
+    if has_data_to_export:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer) as writer:
+            if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='업체별_전체요약', index=False)
+            if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
+            if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과요약', index=False)
+            if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_요약', index=False)
+            if not dow_disp.empty: 
+                dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
+                format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_요약', index=False)
+            if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_요약', index=False)
+        st.download_button(label="📥 통합 데이터 전체 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+    def _apply_depth_toggle(df, base_cols, toggle_state):
+        out = df.copy()
+        def _combine(r, c_val, c_pct, is_currency=False):
+            v = r.get(c_val); p = r.get(c_pct)
+            if pd.isna(v) or v == 0: return "-"
+            v_str = f"{v:+,.0f}원" if is_currency else (f"{v:+,.0f}" if c_val in ["노출 차이", "클릭 차이"] else f"{v:+,.1f}")
+            return f"{v_str} ({p:+.1f}%)"
+            
+        if toggle_state:
+            metrics = [
+                ("노출수", "노출 차이", "노출 증감", False),
+                ("클릭수", "클릭 차이", "클릭 증감", False),
+                ("광고비", "광고비 차이", "광고비 증감", True),
+                ("CPC", "CPC 차이", "CPC 증감", True),
+                ("총 전환수", "총 전환 차이", "총 전환 증감", False),
+                ("총 전환매출", "총 매출 차이", "총 매출 증감", True)
+            ]
+            for m in metrics: out[f"{m[0]} 증감/율"] = out.apply(lambda r: _combine(r, m[1], m[2], m[3]), axis=1)
+            out["통합 ROAS 증감 "] = out["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+            
+            display_cols = base_cols + ["노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율", "총 전환수", "총 전환수 증감/율", "총 전환매출", "총 전환매출 증감/율", "통합 ROAS(%)", "통합 ROAS 증감 "]
+            return out[[c for c in display_cols if c in out.columns]], [f"{m[0]} 증감/율" for m in metrics] + ["통합 ROAS 증감 "]
+        else:
+            metrics = [
+                ("노출수", "노출 차이", "노출 증감", False),
+                ("클릭수", "클릭 차이", "클릭 증감", False),
+                ("광고비", "광고비 차이", "광고비 증감", True),
+                ("CPC", "CPC 차이", "CPC 증감", True),
+                ("장바구니 담기수", "장바구니 차이", "장바구니 증감", False),
+                ("위시리스트수", "위시리스트 차이", "위시리스트 증감", False),
+                ("장바구니 매출액", "장바구니 매출액", "장바구니ROAS 증감", True), 
+                ("구매완료수", "구매 차이", "구매 증감", False),
+                ("구매완료 매출", "매출 차이", "매출 증감", True)
+            ]
+            for m in metrics: out[f"{m[0]} 증감/율"] = out.apply(lambda r: _combine(r, m[1], m[2], m[3]), axis=1)
+            out["구매 ROAS 증감 "] = out["구매 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+            
+            display_cols = base_cols + ["노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율", "장바구니 담기수", "장바구니 담기수 증감/율", "위시리스트수", "위시리스트수 증감/율", "구매완료수", "구매완료수 증감/율", "구매완료 매출", "구매완료 매출 증감/율", "구매 ROAS(%)", "구매 ROAS 증감 "]
+            return out[[c for c in display_cols if c in out.columns]], [f"{m[0]} 증감/율" for m in metrics] + ["구매 ROAS 증감 "]
+
+    def _display_ts_table(df, col_name, toggle_state_val):
+        if df.empty:
+            st.info("해당 기간의 데이터가 없습니다.")
+            return
+        if toggle_state_val:
+            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+        else:
+            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
+        
+        st.dataframe(df[cols].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
+
+
+    with st.expander("🏢 업체별 전체 성과 요약", expanded=False):
+        if not df_display.empty:
+            disp_df, delta_cols_to_style = _apply_depth_toggle(df_display, ["업체명"], combined_toggle)
+            disp_df = disp_df.set_index(["업체명"])
+            styled_df = disp_df.style.format(fmt_dict_standard)
+            try:
+                styled_df = styled_df.map(style_delta_str, subset=[c for c in delta_cols_to_style if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_df.columns])
+                styled_df = styled_df.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in disp_df.columns])
+            except AttributeError:
+                styled_df = styled_df.applymap(style_delta_str, subset=[c for c in delta_cols_to_style if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_df.columns])
+                styled_df = styled_df.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in disp_df.columns])
+            st.dataframe(styled_df, use_container_width=True, hide_index=False)
+        else: st.info("해당 기간의 데이터가 없습니다.")
+
+    with st.expander("🏷️ 유형별 성과 요약", expanded=False):
+        if not df_type_display.empty:
+            disp_type_df, delta_cols_to_style_type = _apply_depth_toggle(df_type_display, ["캠페인 유형"], combined_toggle)
+            disp_type_df = disp_type_df.set_index(["캠페인 유형"])
+            styled_type_df = disp_type_df.style.format(fmt_dict_standard)
+            try:
+                styled_type_df = styled_type_df.map(style_delta_str, subset=[c for c in delta_cols_to_style_type if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_type_df.columns])
+                styled_type_df = styled_type_df.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in disp_type_df.columns])
+            except AttributeError:
+                pass
+            st.dataframe(styled_type_df, use_container_width=True, hide_index=False)
+
+    with st.expander("📢 캠페인별 성과 요약", expanded=False):
+        if not camp_disp.empty:
+            disp_camp_df, delta_cols_to_style_camp = _apply_depth_toggle(camp_disp, ["캠페인명"], combined_toggle)
+            disp_camp_df = disp_camp_df.set_index(["캠페인명"])
+            styled_camp_df = disp_camp_df.style.format(fmt_dict_standard)
+            try:
+                styled_camp_df = styled_camp_df.map(style_delta_str, subset=[c for c in delta_cols_to_style_camp if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_camp_df.columns])
+                styled_camp_df = styled_camp_df.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in disp_camp_df.columns])
+            except AttributeError:
+                pass
+            st.dataframe(styled_camp_df, use_container_width=True, hide_index=False)
+
+    with st.expander("📅 일자별 성과 요약", expanded=False):
+        _display_ts_table(daily_disp, "일자", combined_toggle)
+        
+    with st.expander("📆 요일별 성과 요약", expanded=False):
+        _display_ts_table(dow_disp, "요일명", combined_toggle)
+        
+    with st.expander("주간 성과 요약", expanded=False):
+        _display_ts_table(weekly_disp, "주차", combined_toggle)
+
+    with st.expander("📝 보고서 내보내기", expanded=False):
+        report_campaign_type = selected_type_label
+        report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+        st.session_state[report_loaded_key] = True
+        
+        top_kw_str = "없음"
+        if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
+            kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
+            top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
+            if not top_kws.empty:
+                top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
+
+        if combined_toggle:
+            report_text = "\n".join([
+                f"[ {report_campaign_type} 성과 요약 ]",
+                _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
+                _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
+                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.1f}%"),
+                _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
+                _format_report_line("총 전환수", f"{float(report_cur.get('tot_conv', 0.0)):.1f}"),
+                _format_report_line("총 전환매출", f"{int(float(report_cur.get('tot_sales', 0))):,}원"),
+                _format_report_line("통합 ROAS", f"{float(report_cur.get('tot_roas', 0)):.1f}%"),
+                _format_report_line("주요 유입 키워드", top_kw_str)
+            ])
+        else:
+            report_text = "\n".join([
+                f"[ {report_campaign_type} 성과 요약 (상세) ]",
+                _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
+                _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
+                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.1f}%"),
+                _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
+                _format_report_line("위시리스트수", f"{float(report_cur.get('wishlist_conv', 0)):.1f}"),
+                _format_report_line("장바구니 담기수", f"{float(report_cur.get('cart_conv', 0)):.1f}"),
+                _format_report_line("구매완료수", f"{float(report_cur.get('conv', 0.0)):.1f}"),
+                _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
+                _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.1f}%"),
+                _format_report_line("주요 유입 키워드", top_kw_str)
+            ])
+        st.code(report_text, language="text")
