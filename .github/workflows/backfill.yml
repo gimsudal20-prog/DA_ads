@@ -80,6 +80,24 @@ jobs:
           echo "실행 명령어: $CMD"
           eval "$CMD"
 
+      - name: Print split debug rows to log
+        if: always()
+        run: |
+          echo "===== AD_CONVERSION CSV ====="
+          if [ -f debug_split_rows/2026-03-13_3skbox_AD_CONVERSION.csv ]; then
+            sed -n '1,200p' debug_split_rows/2026-03-13_3skbox_AD_CONVERSION.csv
+          else
+            echo "AD_CONVERSION CSV not found"
+          fi
+
+          echo ""
+          echo "===== SHOPPINGKEYWORD_CONVERSION_DETAIL CSV ====="
+          if [ -f debug_split_rows/2026-03-13_3skbox_SHOPPINGKEYWORD_CONVERSION_DETAIL.csv ]; then
+            sed -n '1,200p' debug_split_rows/2026-03-13_3skbox_SHOPPINGKEYWORD_CONVERSION_DETAIL.csv
+          else
+            echo "SHOPPINGKEYWORD_CONVERSION_DETAIL CSV not found"
+          fi
+
       - name: Upload split debug rows
         if: always()
         uses: actions/upload-artifact@v4
