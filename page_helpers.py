@@ -161,75 +161,31 @@ def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFram
     return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
 def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_keys: list) -> pd.DataFrame:
-    if df_prev is None or df_prev.empty or df_cur is None or df_cur.empty:
-        return df_cur
-        
-    df_cur_copy = df_cur.copy()
-    valid_join_keys = [k for k in join_keys if k in df_cur_copy.columns and k in df_prev.columns]
-    if not valid_join_keys: return df_cur_copy
+    if df_prev is None or df_prev.empty or df_cur is None or df_cur.empty: return df_cur.copy()
+    valid_join_keys = [k for k in join_keys if k in df_cur.columns and k in df_prev.columns]
+    if not valid_join_keys: return df_cur.copy()
     
+    df_c = df_cur.copy()
     for k in valid_join_keys:
-        df_cur_copy[k] = df_cur_copy[k].astype(str)
+        df_c[k] = df_c[k].astype(str)
         df_prev[k] = df_prev[k].astype(str)
         
-    val_cols = [c for c in ['cost', 'sales', 'conv', 'clk', 'imp'] if c in df_prev.columns]
-    base_tmp = df_prev[valid_join_keys + val_cols].copy()
+    num_cols = df_prev.select_dtypes(include=[np.number]).columns.tolist()
+    agg_dict = {c: 'sum' for c in num_cols if c not in valid_join_keys}
+    if 'avg_rank' in agg_dict: agg_dict['avg_rank'] = 'mean'
     
-    for c in val_cols:
-        base_tmp[c] = pd.to_numeric(base_tmp[c], errors='coerce').fillna(0)
-        
-    base_tmp = base_tmp.groupby(valid_join_keys, as_index=False).sum()
-    base_tmp.rename(columns={'cost':'p_cost', 'sales':'p_sales', 'conv':'p_conv', 'clk':'p_clk', 'imp':'p_imp'}, inplace=True)
+    base_agg = df_prev.groupby(valid_join_keys, as_index=False).agg(agg_dict)
+    base_agg.rename(columns={c: f"{c}_base" for c in agg_dict.keys()}, inplace=True)
     
-    out = df_cur_copy.merge(base_tmp, on=valid_join_keys, how='left')
-    for c in ['p_cost', 'p_sales', 'p_conv', 'p_clk', 'p_imp']:
-        if c in out.columns: out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0)
-        else: out[c] = 0
-        
-    # 🔥 에러 수정 로직 적용
-    for col in ["광고비", "전환매출", "전환", "ROAS(%)"]:
-        if col not in out.columns:
-            out[col] = 0
-            
-    cur_cost = pd.to_numeric(out["광고비"], errors='coerce').fillna(0)
-    cur_sales = pd.to_numeric(out["전환매출"], errors='coerce').fillna(0)
-    cur_conv = pd.to_numeric(out["전환"], errors='coerce').fillna(0)
-    cur_roas = pd.to_numeric(out["ROAS(%)"], errors='coerce').fillna(0)
-    
-    out["광고비 증감(%)"] = np.where(out["p_cost"] > 0, (cur_cost - out["p_cost"]) / out["p_cost"] * 100, np.where(cur_cost > 0, 100.0, 0.0))
-    p_roas = np.where(out["p_cost"] > 0, (out["p_sales"] / out["p_cost"]) * 100, 0.0)
-    out["p_roas"] = p_roas  
-    
-    out["ROAS 증감(%)"] = cur_roas - p_roas
-    out["전환 증감"] = cur_conv - out["p_conv"]
-    
-    def fmt_pct(x):
-        if pd.isna(x) or x == 0: return "-"
-        return f"▲ {x:.2f}%" if x > 0 else (f"▼ {abs(x):.2f}%" if x < 0 else "-")
-    def fmt_diff(x):
-        if pd.isna(x) or x == 0: return "-"
-        return f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-")
-        
-    roas_delta_col = "ROAS 증감(%)"
-    if roas_delta_col not in out.columns and "ROAS 증(%)" in out.columns:
-        out[roas_delta_col] = out["ROAS 증(%)"]
-    if roas_delta_col not in out.columns:
-        out[roas_delta_col] = 0
-
-    out["광고비 증감(%)"] = out["광고비 증감(%)"].apply(fmt_pct)
-    out[roas_delta_col] = pd.to_numeric(out[roas_delta_col], errors='coerce').fillna(0).apply(fmt_pct)
-    out["전환 증감"] = out["전환 증감"].apply(fmt_diff)
-    
-    return out
+    return df_c.merge(base_agg, on=valid_join_keys, how='left').fillna(0)
 
 def style_table_deltas(val):
-    """ 수익, 클릭 등 오르면 좋은 지표용 기본 포맷터 (증가=파랑, 감소=빨강) """
     return style_table_deltas_positive(val)
 
 def style_table_deltas_positive(val):
     if pd.isna(val) or val == "-" or val == "": return ""
-    color_up = "color: #0528F2; font-weight: 600;"    # 파랑 (개선)
-    color_down = "color: #F04438; font-weight: 600;"  # 빨강 (악화)
+    color_up = "color: #0528F2; font-weight: 600;"    
+    color_down = "color: #F04438; font-weight: 600;"  
     
     if isinstance(val, str):
         if "▲" in val: return color_up
@@ -249,10 +205,9 @@ def style_table_deltas_positive(val):
     return ""
 
 def style_table_deltas_negative(val):
-    """ 비용, 단가 등 오르면 나쁜 지표용 (증가=빨강, 감소=파랑) """
     if pd.isna(val) or val == "-" or val == "": return ""
-    color_up = "color: #F04438; font-weight: 600;"    # 빨강 (악화)
-    color_down = "color: #0528F2; font-weight: 600;"  # 파랑 (개선)
+    color_up = "color: #F04438; font-weight: 600;"    
+    color_down = "color: #0528F2; font-weight: 600;"  
     
     if isinstance(val, str):
         if "▲" in val: return color_up
@@ -299,7 +254,7 @@ def _render_ab_test_sbs(df_grp: pd.DataFrame, d1: date, d2: date):
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--nv-line);'>
                 <span style='color:var(--nv-muted); font-weight:500; font-size:13px;'>ROAS</span>
-                <span style='font-weight:700; color:var(--nv-primary); font-size:16px;'>{row.get('ROAS(%)',0):.2f}%</span>
+                <span style='font-weight:700; color:var(--nv-primary); font-size:16px;'>{row.get('ROAS(%)',0):.1f}%</span>
             </div>
             <div style='display:flex; justify-content:space-between; margin-bottom:8px;'>
                 <span style='color:var(--nv-muted-light); font-size:12px;'>노출수</span>
@@ -358,18 +313,19 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         if val > 0: return val
         return _sum_col(c_df, prev_cols)
 
+    # ✨ 바뀐 퍼널 컬럼명에 맞게 매핑 수정
     c_cost = _cur_val(["광고비"], ["cost"])
-    c_sales = _cur_val(["전환매출"], ["sales"])
+    c_sales = _cur_val(["총 전환매출", "구매완료 매출", "전환매출"], ["tot_sales", "sales"])
     c_clk = _cur_val(["클릭", "클릭수"], ["clk"])
     c_imp = _cur_val(["노출", "노출수"], ["imp"])
-    c_conv = _cur_val(["전환", "전환수"], ["conv"])
+    c_conv = _cur_val(["총 전환수", "구매완료수", "전환", "전환수"], ["tot_conv", "conv"])
     c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
 
-    b_cost = _base_val(["광고비", "cost"], ["p_cost"])
-    b_sales = _base_val(["전환매출", "sales"], ["p_sales"])
-    b_clk = _base_val(["클릭", "클릭수", "clk"], ["p_clk"])
-    b_imp = _base_val(["노출", "노출수", "imp"], ["p_imp"])
-    b_conv = _base_val(["전환", "전환수", "conv"], ["p_conv"])
+    b_cost = _base_val(["광고비", "cost"], ["p_cost", "cost_base"])
+    b_sales = _base_val(["전환매출", "tot_sales", "sales"], ["p_sales", "tot_sales_base", "sales_base"])
+    b_clk = _base_val(["클릭", "클릭수", "clk"], ["p_clk", "clk_base"])
+    b_imp = _base_val(["노출", "노출수", "imp"], ["p_imp", "imp_base"])
+    b_conv = _base_val(["전환", "전환수", "tot_conv", "conv"], ["p_conv", "tot_conv_base", "conv_base"])
     b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
 
     def fmt_krw(v): return f"{int(v):,}원"
