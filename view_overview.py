@@ -358,7 +358,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
     if daily_ts is not None and not daily_ts.empty:
-        daily_ts_chart = daily_ts.groupby('dt')[['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_sales']].sum().reset_index()
+        # ✨ 캐시나 DB 구조 차이로 인해 컬럼이 누락되었을 경우를 대비한 방어 로직
+        expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
+        for c in expected_cols:
+            if c not in daily_ts.columns:
+                daily_ts[c] = 0.0
+                
+        # ✨ 안전하게 보장된 컬럼들로만 그룹화 수행
+        daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
         
         tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
         with tab_t1:
