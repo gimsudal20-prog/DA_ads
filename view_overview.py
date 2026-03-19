@@ -149,7 +149,6 @@ def style_delta_str_neg(val):
     elif val_str.startswith("-"): return 'color: #0528F2; font-weight: 600;'
     return ''
 
-# 🔥 중복 코드 제거를 위한 비교 데이터 생성 도우미 함수
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty: return pd.DataFrame()
     
@@ -210,7 +209,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
         })
     return pd.DataFrame(table_data).sort_values("광고비", ascending=False)
 
-# 🔥 시계열 데이터(일자/요일/주간) 생성 도우미 함수
 def _build_ts_df(df, group_col, group_label):
     if df is None or df.empty: return pd.DataFrame()
     
@@ -332,11 +330,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     is_mixed_period = (f["start"] < patch_date <= f["end"])
 
     if is_mixed_period:
-        st.info("💡 3월 11일 이전/이후 데이터가 함께 포함되어 있어 상단 성과지표와 추이 그래프는 총전환 기준으로 표시합니다.")
+        st.info("안내: 3월 11일 이전 및 이후 데이터가 혼재되어 있어, 상단 성과 지표와 추이 그래프는 '총 전환'을 기준으로 일괄 표시됩니다.")
     elif is_legacy_only:
-        st.info("💡 3월 11일 이전 데이터 구간이라 상단 성과지표와 추이 그래프는 총전환 기준으로 표시합니다.")
+        st.info("안내: 3월 11일 이전 데이터 조회 시, 상단 성과 지표와 추이 그래프는 '총 전환'을 기준으로 표시됩니다.")
 
-    # True = 총전환(legacy/mixed), False = 분리지표(split-only)
     combined_toggle = not is_split_only
 
     cur = cur_summary
@@ -427,7 +424,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(kpi_html, unsafe_allow_html=True)
 
 
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>일자별 성과 추이</div>", unsafe_allow_html=True)
     if daily_ts is not None and not daily_ts.empty:
         expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
         for c in expected_cols:
@@ -441,15 +438,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if combined_toggle:
                 y_col = "tot_sales"
                 y_name = "매출"
-                chart_title = "비용 및 총전환 매출 추이"
+                chart_title = "비용 및 총 전환 매출 추이"
             else:
                 y_col = "sales"
                 y_name = "매출"
-                chart_title = "비용 및 구매완료 매출 추이"
+                chart_title = "비용 및 구매 완료 매출 추이"
             render_echarts_dual_axis(chart_title, daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
         with tab_t2:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
-    else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
+    else: st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
 
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -464,7 +461,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str)
             if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str)
             
-        df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '업체명')
+        df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '계정명')
         
         type_col = 'campaign_tp' if 'campaign_tp' in cur_camp.columns else ('campaign_type' if 'campaign_type' in cur_camp.columns else None)
         if type_col:
@@ -492,15 +489,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if has_data_to_export:
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer) as writer:
-            if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='업체별_전체요약', index=False)
-            if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과요약', index=False)
-            if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과요약', index=False)
-            if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_요약', index=False)
+            if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
+            if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
+            if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
+            if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
             if not dow_disp.empty: 
                 dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
-                format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_요약', index=False)
-            if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_요약', index=False)
-        st.download_button(label="📥 통합 데이터 전체 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
+            if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
+        st.download_button(label="통합 데이터 전체 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     def _apply_depth_toggle(df, base_cols, toggle_state):
         out = df.copy()
@@ -544,7 +541,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     def _display_ts_table(df, col_name, toggle_state_val):
         if df.empty:
-            st.info("해당 기간의 데이터가 없습니다.")
+            st.info("조회된 데이터가 없습니다.")
             return
         if toggle_state_val:
             cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
@@ -554,10 +551,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.dataframe(df[cols].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
 
 
-    with st.expander("🏢 업체별 전체 성과 요약", expanded=False):
+    with st.expander("계정별 성과 상세", expanded=False):
         if not df_display.empty:
-            disp_df, delta_cols_to_style = _apply_depth_toggle(df_display, ["업체명"], combined_toggle)
-            disp_df = disp_df.set_index(["업체명"])
+            disp_df, delta_cols_to_style = _apply_depth_toggle(df_display, ["계정명"], combined_toggle)
+            disp_df = disp_df.set_index(["계정명"])
             styled_df = disp_df.style.format(fmt_dict_standard)
             try:
                 styled_df = styled_df.map(style_delta_str, subset=[c for c in delta_cols_to_style if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_df.columns])
@@ -566,9 +563,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 styled_df = styled_df.applymap(style_delta_str, subset=[c for c in delta_cols_to_style if c not in ["광고비 증감/율", "CPC 증감/율"] and c in disp_df.columns])
                 styled_df = styled_df.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in disp_df.columns])
             st.dataframe(styled_df, use_container_width=True, hide_index=False)
-        else: st.info("해당 기간의 데이터가 없습니다.")
+        else: st.info("조회된 데이터가 없습니다.")
 
-    with st.expander("🏷️ 유형별 성과 요약", expanded=False):
+    with st.expander("캠페인 유형별 성과 상세", expanded=False):
         if not df_type_display.empty:
             disp_type_df, delta_cols_to_style_type = _apply_depth_toggle(df_type_display, ["캠페인 유형"], combined_toggle)
             disp_type_df = disp_type_df.set_index(["캠페인 유형"])
@@ -580,7 +577,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 pass
             st.dataframe(styled_type_df, use_container_width=True, hide_index=False)
 
-    with st.expander("📢 캠페인별 성과 요약", expanded=False):
+    with st.expander("캠페인별 성과 상세", expanded=False):
         if not camp_disp.empty:
             disp_camp_df, delta_cols_to_style_camp = _apply_depth_toggle(camp_disp, ["캠페인명"], combined_toggle)
             disp_camp_df = disp_camp_df.set_index(["캠페인명"])
@@ -592,16 +589,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 pass
             st.dataframe(styled_camp_df, use_container_width=True, hide_index=False)
 
-    with st.expander("📅 일자별 성과 요약", expanded=False):
+    with st.expander("일자별 성과 상세", expanded=False):
         _display_ts_table(daily_disp, "일자", combined_toggle)
         
-    with st.expander("📆 요일별 성과 요약", expanded=False):
+    with st.expander("요일별 성과 상세", expanded=False):
         _display_ts_table(dow_disp, "요일명", combined_toggle)
         
-    with st.expander("주간 성과 요약", expanded=False):
+    with st.expander("주간 성과 상세", expanded=False):
         _display_ts_table(weekly_disp, "주차", combined_toggle)
 
-    with st.expander("📝 보고서 내보내기", expanded=False):
+    with st.expander("텍스트 보고서 내보내기", expanded=False):
         report_campaign_type = selected_type_label
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
         st.session_state[report_loaded_key] = True
