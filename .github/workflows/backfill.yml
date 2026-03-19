@@ -6,11 +6,11 @@ on:
       start_date:
         description: '수집 시작일 (YYYY-MM-DD)'
         required: true
-        default: '2026-01-01'
+        default: '2026-03-11'
       end_date:
         description: '수집 종료일 (YYYY-MM-DD)'
         required: true
-        default: '2026-03-10'
+        default: '2026-03-18'
       account_name:
         description: '단일 업체명 (예: 휴앤고)'
         required: false
@@ -20,13 +20,25 @@ on:
         required: false
         default: ''
       workers:
-        description: '동시 작업 수'
+        description: '동시 작업 수 (권장 3)'
         required: false
-        default: '1'
-      sa_only:
-        description: '검색광고만 실행 (true/false)'
+        default: '3'
+      fast:
+        description: '빠른 백필 모드: 전 날짜 skip_dim 사용 (true/false)'
         required: false
         default: 'true'
+      sync_dim_first_day:
+        description: '첫날만 구조수집 수행 (true/false)'
+        required: false
+        default: 'false'
+      with_gfa:
+        description: 'GFA 포함 실행 (true/false, 기본 false)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: fast-backfill-${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}-${{ github.event.inputs.start_date }}-${{ github.event.inputs.end_date }}
+  cancel-in-progress: false
 
 jobs:
   run-backfill:
@@ -44,7 +56,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -59,7 +72,9 @@ jobs:
           echo "account_name=${{ github.event.inputs.account_name }}"
           echo "account_names=${{ github.event.inputs.account_names }}"
           echo "workers=${{ github.event.inputs.workers }}"
-          echo "sa_only=${{ github.event.inputs.sa_only }}"
+          echo "fast=${{ github.event.inputs.fast }}"
+          echo "sync_dim_first_day=${{ github.event.inputs.sync_dim_first_day }}"
+          echo "with_gfa=${{ github.event.inputs.with_gfa }}"
 
       - name: Run fast backfill
         run: |
@@ -73,35 +88,25 @@ jobs:
             CMD="$CMD --account_names '${{ github.event.inputs.account_names }}'"
           fi
 
-          if [ "${{ github.event.inputs.sa_only }}" = "true" ]; then
-            CMD="$CMD --sa_only"
+          if [ "${{ github.event.inputs.fast }}" = "true" ]; then
+            CMD="$CMD --fast"
+          fi
+
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+            CMD="$CMD --sync_dim_first_day"
+          fi
+
+          if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
+            CMD="$CMD --with_gfa"
           fi
 
           echo "실행 명령어: $CMD"
           eval "$CMD"
 
-      - name: Print split debug rows to log
-        if: always()
-        run: |
-          echo "===== AD_CONVERSION CSV ====="
-          if [ -f debug_split_rows/2026-03-13_3skbox_AD_CONVERSION.csv ]; then
-            sed -n '1,200p' debug_split_rows/2026-03-13_3skbox_AD_CONVERSION.csv
-          else
-            echo "AD_CONVERSION CSV not found"
-          fi
-
-          echo ""
-          echo "===== SHOPPINGKEYWORD_CONVERSION_DETAIL CSV ====="
-          if [ -f debug_split_rows/2026-03-13_3skbox_SHOPPINGKEYWORD_CONVERSION_DETAIL.csv ]; then
-            sed -n '1,200p' debug_split_rows/2026-03-13_3skbox_SHOPPINGKEYWORD_CONVERSION_DETAIL.csv
-          else
-            echo "SHOPPINGKEYWORD_CONVERSION_DETAIL CSV not found"
-          fi
-
       - name: Upload split debug rows
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: split-debug-rows
+          name: split-debug-rows-${{ github.run_number }}
           path: debug_split_rows/*.csv
-          if-no-files-found: warn
+          if-no-files-found: ignore
