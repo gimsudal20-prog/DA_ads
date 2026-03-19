@@ -37,15 +37,21 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
 
-      - name: Run collector (Yesterday full / Today stats only)
+      - name: Run collector (Yesterday / Today optimized)
         run: |
           echo "⏰ 현재 한국 시간: $(date +%F' '%H:%M:%S)"
 
+          KST_HOUR=$(date +%H)
           YESTERDAY=$(date -d "yesterday" +%F)
           TODAY=$(date +%F)
 
-          echo "🚀 Collect date (Yesterday, full) = ${YESTERDAY}"
-          python collector.py --date "${YESTERDAY}"
+          if [ "$KST_HOUR" = "04" ]; then
+            echo "🚀 Collect date (Yesterday, full refresh) = ${YESTERDAY}"
+            python collector.py --date "${YESTERDAY}"
+          else
+            echo "🚀 Collect date (Yesterday, fast refresh) = ${YESTERDAY}"
+            python collector.py --date "${YESTERDAY}" --fast
+          fi
 
-          echo "🚀 Collect date (Today, stats only) = ${TODAY}"
-          python collector.py --date "${TODAY}" --skip_dim
+          echo "🚀 Collect date (Today, fast refresh) = ${TODAY}"
+          python collector.py --date "${TODAY}" --fast
