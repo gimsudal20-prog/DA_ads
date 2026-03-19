@@ -1,0 +1,108 @@
+name: Manual New Account Legacy Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_name:
+        description: "백필할 업체명 (collector account_name)"
+        required: true
+        type: string
+      start_date:
+        description: "시작일 (YYYY-MM-DD)"
+        required: true
+        default: "2026-02-01"
+        type: string
+      end_date:
+        description: "종료일 (YYYY-MM-DD)"
+        required: true
+        default: "2026-03-10"
+        type: string
+      workers:
+        description: "동시 작업 수 (단일 업체면 1 권장)"
+        required: true
+        default: "1"
+        type: string
+      sync_dim_first_day:
+        description: "첫날만 구조 동기화"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: manual-new-account-backfill-${{ github.event.inputs.account_name }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
+
+      - name: Validate inputs
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          import os
+
+          start_date = os.environ["INPUT_START_DATE"].strip()
+          end_date = os.environ["INPUT_END_DATE"].strip()
+          account_name = os.environ["INPUT_ACCOUNT_NAME"].strip()
+          workers = os.environ["INPUT_WORKERS"].strip()
+
+          if not account_name:
+              raise SystemExit("account_name 이 비어 있습니다.")
+          try:
+              s = datetime.strptime(start_date, "%Y-%m-%d")
+              e = datetime.strptime(end_date, "%Y-%m-%d")
+          except ValueError as exc:
+              raise SystemExit(f"날짜 형식 오류: {exc}")
+          if s > e:
+              raise SystemExit("start_date 가 end_date 보다 늦습니다.")
+          if int(workers) < 1:
+              raise SystemExit("workers 는 1 이상이어야 합니다.")
+          print("입력값 검증 완료")
+          PY
+        env:
+          INPUT_ACCOUNT_NAME: ${{ github.event.inputs.account_name }}
+          INPUT_START_DATE: ${{ github.event.inputs.start_date }}
+          INPUT_END_DATE: ${{ github.event.inputs.end_date }}
+          INPUT_WORKERS: ${{ github.event.inputs.workers }}
+
+      - name: Run legacy single-account backfill
+        run: |
+          echo "🚀 account_name=${{ github.event.inputs.account_name }}"
+          echo "📅 range=${{ github.event.inputs.start_date }} ~ ${{ github.event.inputs.end_date }}"
+          echo "👷 workers=${{ github.event.inputs.workers }}"
+          echo "🧱 sync_dim_first_day=${{ github.event.inputs.sync_dim_first_day }}"
+
+          CMD=(python backfill_single_legacy_sa.py \
+            --start "${{ github.event.inputs.start_date }}" \
+            --end "${{ github.event.inputs.end_date }}" \
+            --account_name "${{ github.event.inputs.account_name }}" \
+            --workers "${{ github.event.inputs.workers }}")
+
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+            CMD+=(--sync_dim_first_day)
+          fi
+
+          printf '실행 명령어: %q ' "${CMD[@]}"; echo
+          "${CMD[@]}"
