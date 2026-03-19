@@ -64,35 +64,92 @@ def page_settings(engine) -> None:
 
     st.divider()
 
-    # 캠페인별 목표 ROAS 설정 섹션 (최소/목표 모두 반영)
+    # [수정됨] 캠페인별 목표 ROAS 설정 섹션 (담당자 -> 업체 -> 유형 필터링)
     st.markdown("### 캠페인별 ROAS 목표 설정")
-    st.caption("계정을 선택하고 각 캠페인의 최소 및 목표 ROAS를 설정하세요. 설정된 데이터는 요약 탭에 반영됩니다.")
+    st.caption("담당자와 업체를 차례로 선택한 뒤 캠페인의 최소 및 목표 ROAS를 설정하세요. 설정된 데이터는 요약 탭에 반영됩니다.")
     
     meta = get_meta(engine)
-    if not meta.empty:
-        acc_list = meta[["customer_id", "account_name"]].drop_duplicates().to_dict('records')
-        acc_opts = {f"{r['account_name']} ({r['customer_id']})": r['customer_id'] for r in acc_list}
-        selected_acc = st.selectbox("계정 선택", options=["선택하세요"] + list(acc_opts.keys()))
+    if not meta.empty and 'manager' in meta.columns:
+        col1, col2, col3 = st.columns(3)
         
-        if selected_acc != "선택하세요":
-            cid = acc_opts[selected_acc]
-            df_camp = load_dim_campaign(engine)
-            df_camp_cid = df_camp[df_camp['customer_id'].astype(str) == str(cid)].copy()
+        # 1. 담당자 선택
+        with col1:
+            manager_list = [m for m in meta['manager'].dropna().unique() if str(m).strip()]
+            selected_manager = st.selectbox("1. 담당자 선택", options=["선택하세요"] + sorted(manager_list))
             
-            if not df_camp_cid.empty:
-                ensure_target_roas_column(engine)
-                df_camp = load_dim_campaign(engine) 
+        selected_acc = "선택하세요"
+        selected_type = "전체"
+        acc_opts = {}
+        df_camp_cid = pd.DataFrame()
+        cid = None
+        
+        # 2. 업체 선택
+        with col2:
+            if selected_manager != "선택하세요":
+                filtered_meta = meta[meta['manager'] == selected_manager]
+                acc_list = filtered_meta[["customer_id", "account_name"]].drop_duplicates().to_dict('records')
+                acc_opts = {f"{r['account_name']} ({r['customer_id']})": r['customer_id'] for r in acc_list}
+                selected_acc = st.selectbox("2. 업체 선택", options=["선택하세요"] + list(acc_opts.keys()))
+            else:
+                st.selectbox("2. 업체 선택", options=["담당자를 먼저 선택하세요"], disabled=True)
+                
+        # 3. 캠페인 유형 선택
+        with col3:
+            if selected_acc != "선택하세요":
+                cid = acc_opts[selected_acc]
+                df_camp = load_dim_campaign(engine)
                 df_camp_cid = df_camp[df_camp['customer_id'].astype(str) == str(cid)].copy()
                 
-                if "min_roas" not in df_camp_cid.columns: df_camp_cid["min_roas"] = 0.0
-                if "target_roas" not in df_camp_cid.columns: df_camp_cid["target_roas"] = 0.0
-                    
-                edit_df = df_camp_cid[["campaign_id", "campaign_name", "min_roas", "target_roas"]].copy()
+                if not df_camp_cid.empty:
+                    # 캠페인 유형 한글 매핑 로직
+                    cp_col = "campaign_tp" if "campaign_tp" in df_camp_cid.columns else ("campaign_type_label" if "campaign_type_label" in df_camp_cid.columns else "campaign_type")
+                    if cp_col in df_camp_cid.columns:
+                        mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+                        df_camp_cid['type_kor'] = df_camp_cid[cp_col].apply(lambda x: mapping.get(str(x).upper(), str(x)) if pd.notna(x) else "기타")
+                    else:
+                        df_camp_cid['type_kor'] = "기타"
+                        
+                    type_list = [t for t in df_camp_cid['type_kor'].dropna().unique() if str(t).strip()]
+                    selected_type = st.selectbox("3. 캠페인 유형 선택", options=["전체"] + sorted(type_list))
+                else:
+                    st.selectbox("3. 캠페인 유형 선택", options=["데이터 없음"], disabled=True)
+            else:
+                st.selectbox("3. 캠페인 유형 선택", options=["업체를 먼저 선택하세요"], disabled=True)
+
+        # 데이터 에디터 렌더링
+        if selected_acc != "선택하세요" and not df_camp_cid.empty:
+            ensure_target_roas_column(engine)
+            
+            # 컬럼 생성 보장을 위한 재조회
+            df_camp_fresh = load_dim_campaign(engine) 
+            df_camp_cid_fresh = df_camp_fresh[df_camp_fresh['customer_id'].astype(str) == str(cid)].copy()
+            
+            if "min_roas" not in df_camp_cid_fresh.columns: df_camp_cid_fresh["min_roas"] = 0.0
+            if "target_roas" not in df_camp_cid_fresh.columns: df_camp_cid_fresh["target_roas"] = 0.0
+            
+            # 유형 한글 매핑 재적용
+            cp_col = "campaign_tp" if "campaign_tp" in df_camp_cid_fresh.columns else ("campaign_type_label" if "campaign_type_label" in df_camp_cid_fresh.columns else "campaign_type")
+            if cp_col in df_camp_cid_fresh.columns:
+                mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+                df_camp_cid_fresh['type_kor'] = df_camp_cid_fresh[cp_col].apply(lambda x: mapping.get(str(x).upper(), str(x)) if pd.notna(x) else "기타")
+            else:
+                df_camp_cid_fresh['type_kor'] = "기타"
+                
+            # 유형 필터링 적용
+            if selected_type != "전체":
+                edit_df = df_camp_cid_fresh[df_camp_cid_fresh['type_kor'] == selected_type].copy()
+            else:
+                edit_df = df_camp_cid_fresh.copy()
+                
+            if not edit_df.empty:
+                st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+                edit_df = edit_df[["campaign_id", "type_kor", "campaign_name", "min_roas", "target_roas"]].copy()
                 
                 edited_df = st.data_editor(
                     edit_df,
                     column_config={
                         "campaign_id": st.column_config.TextColumn("캠페인 ID", disabled=True),
+                        "type_kor": st.column_config.TextColumn("캠페인 유형", disabled=True),
                         "campaign_name": st.column_config.TextColumn("캠페인명", disabled=True),
                         "min_roas": st.column_config.NumberColumn("최소 ROAS (%)", min_value=0.0, step=10.0, format="%.1f"),
                         "target_roas": st.column_config.NumberColumn("목표 ROAS (%)", min_value=0.0, step=10.0, format="%.1f")
@@ -101,16 +158,19 @@ def page_settings(engine) -> None:
                     use_container_width=True
                 )
                 
-                if st.button("ROAS 설정 저장", type="primary"):
+                if st.button("ROAS 설정 일괄 저장", type="primary"):
                     with st.spinner("저장 중..."):
                         for _, row in edited_df.iterrows():
                             update_campaign_target_roas(engine, int(cid), row["campaign_id"], float(row["target_roas"]), float(row["min_roas"]))
-                    st.success("ROAS 설정이 저장되었습니다.")
+                    st.success("ROAS 설정이 안전하게 저장되었습니다.")
                     time.sleep(1)
                     st.cache_data.clear()
                     st.rerun()
             else:
-                st.info("해당 계정의 캠페인 데이터가 없습니다.")
+                st.info("선택한 캠페인 유형에 해당하는 데이터가 없습니다.")
+
+    else:
+        st.info("업체 및 담당자 정보가 없습니다. accounts.xlsx를 먼저 동기화해주세요.")
 
     st.divider()
 
