@@ -475,7 +475,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 achieve_raw = (c_roas_purch / base_roas * 100) if base_roas > 0 else 0.0
                 achieve = min(achieve_raw, 100.0)
                 
-                # 목표값을 단순히 채우는 것을 넘어설 경우 "초과 달성"으로 표기
                 if t_roas > 0 and c_roas_purch > t_roas:
                     color = "#0528F2"  
                     status = "초과 달성"
@@ -489,8 +488,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     color = "#F79009"  
                     status = "미달"
                 
-                integ_html = f"<div style='margin-top:4px;'><span style='color:var(--nv-muted-light);'>현재 (통합 ROAS):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas_integ:,.1f}%</span></div>" if show_integ_roas else ""
+                # 완전히 독립된 줄(Row)로 토글 영역 렌더링
+                integ_html = f"<div style='display:flex; justify-content:space-between; align-items:center; margin-top:6px;'><div style='font-size:13px; display:flex; align-items:center;'><span style='color:var(--nv-muted); font-weight:500; margin-right:4px;'>현재 (통합):</span><span style='font-weight:700; font-size:14px; color:var(--nv-text);'>{c_roas_integ:,.1f}%</span></div></div>" if show_integ_roas else ""
                 
+                # 좌우 레이아웃 틀어짐을 완벽히 방지하는 HTML 구조
                 html_tracker += f"""<div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
 <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
 <div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
@@ -502,16 +503,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px; position:relative;'>
 <div style='width:{achieve}%; height:100%; background:{color}; transition:width 0.3s ease;'></div>
 </div>
-<div style='display:flex; justify-content:space-between; font-size:13px; align-items:flex-end;'>
-<div>
-<div><span style='color:var(--nv-primary); font-weight:700;'>현재 (구매 ROAS):</span> <span style='font-weight:700; color:var(--nv-primary);'>{c_roas_purch:,.1f}%</span></div>
+<div style='display:flex; justify-content:space-between; align-items:center;'>
+<div style='font-size:13px; display:flex; align-items:center;'>
+<span style='color:var(--nv-muted); font-weight:500; margin-right:4px;'>현재 (구매):</span> 
+<span style='font-weight:700; font-size:14px; color:var(--nv-primary);'>{c_roas_purch:,.1f}%</span>
+</div>
+<div style='text-align:right; font-size:12px; display:flex; align-items:center;'>
+<span style='color:var(--nv-muted); margin-right:4px;'>최소:</span><span style='font-weight:600; font-size:13px; color:var(--nv-text); margin-right:8px;'>{m_roas:,.0f}%</span>
+<span style='color:var(--nv-muted); margin-right:4px;'>목표:</span><span style='font-weight:600; font-size:13px; color:var(--nv-text);'>{t_roas:,.0f}%</span>
+</div>
+</div>
 {integ_html}
-</div>
-<div style='text-align:right;'>
-<span style='color:var(--nv-muted-light); margin-right:4px;'>최소:</span><span style='font-weight:600; color:var(--nv-text); margin-right:8px;'>{m_roas:,.0f}%</span>
-<span style='color:var(--nv-muted-light); margin-right:4px;'>목표:</span><span style='font-weight:600; color:var(--nv-text);'>{t_roas:,.0f}%</span>
-</div>
-</div>
 </div>\n"""
             html_tracker += "</div>"
             st.markdown(html_tracker, unsafe_allow_html=True)
