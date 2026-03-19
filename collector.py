@@ -285,6 +285,19 @@ def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/keywords", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+def extract_keyword_text_from_obj(k: dict) -> str:
+    return str(
+        k.get("keyword")
+        or k.get("relKeyword")
+        or k.get("keywordPlus")
+        or k.get("relKeywordPlus")
+        or k.get("keywordName")
+        or k.get("name")
+        or k.get("userKeyword")
+        or k.get("searchKeyword")
+        or ""
+    ).strip()
+
 def make_live_keyword_resolver(customer_id: str):
     cache: dict[str, dict] = {}
 
@@ -300,7 +313,7 @@ def make_live_keyword_resolver(customer_id: str):
             kws = list_keywords(customer_id, gid)
             for k in kws or []:
                 kid = str(k.get("nccKeywordId") or k.get("keywordId") or "").strip()
-                kw = str(k.get("keyword") or k.get("relKeyword") or k.get("keywordName") or k.get("name") or "").strip()
+                kw = extract_keyword_text_from_obj(k)
                 if not kid or not kw:
                     continue
                 kw_l = kw.lower()
@@ -1060,6 +1073,9 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 keyword_lookup.get((row_gid, kw_text), "")
                 or keyword_lookup.get((row_gid, kw_text.lower()), "")
                 or keyword_lookup.get((row_gid, kw_norm), "")
+                or keyword_lookup.get(('__cid__', kw_text), "")
+                or keyword_lookup.get(('__cid__', kw_text.lower()), "")
+                or keyword_lookup.get(('__cid__', kw_norm), "")
             )
             if not kw_obj_id:
                 group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
@@ -1366,7 +1382,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                                 "customer_id": str(customer_id),
                                 "keyword_id": kid,
                                 "adgroup_id": gid,
-                                "keyword": str(k.get("keyword", "")),
+                                "keyword": extract_keyword_text_from_obj(k),
                                 "status": str(k.get("status", "")),
                             })
 
@@ -1394,6 +1410,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
             if not SKIP_KEYWORD_DIM:
                 upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+                kw_text_filled = sum(1 for r in kw_rows if str(r.get("keyword") or "").strip())
+                log(f"   🔎 [ {account_name} ] 구조 키워드 텍스트 적재: {kw_text_filled}/{len(kw_rows)}")
             if not SKIP_AD_DIM:
                 upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
             log(f"   ✅ [ {account_name} ] 구조 적재 완료")
@@ -1422,6 +1440,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         keyword_lookup[(gid_s, kw_s)] = kid_s
                         keyword_lookup[(gid_s, kw_l)] = kid_s
                         keyword_lookup[(gid_s, kw_n)] = kid_s
+                        keyword_lookup[('__cid__', kw_s)] = keyword_lookup.get(('__cid__', kw_s)) or kid_s
+                        keyword_lookup[('__cid__', kw_l)] = keyword_lookup.get(('__cid__', kw_l)) or kid_s
+                        keyword_lookup[('__cid__', kw_n)] = keyword_lookup.get(('__cid__', kw_n)) or kid_s
                         group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
                         text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
                         temp_rows.append((kw_n, kid_s))
