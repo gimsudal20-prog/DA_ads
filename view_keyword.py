@@ -112,13 +112,13 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     merged['이전 구매완료 매출'] = merged['b_sales']
     merged['구매 증감'] = merged['구매완료수'] - merged['이전 구매완료수']
     merged['이전 구매 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 구매완료 매출'] / merged['이전 광고비']) * 100, 0.0)
-    merged['구매 ROAS 증감(%)'] = merged['구매 ROAS(%)'] - merged['이전 구매 ROAS(%)']
+    merged['구매 ROAS 증감'] = merged['구매 ROAS(%)'] - merged['이전 구매 ROAS(%)']
 
     merged['이전 총 전환수'] = merged.get('b_tot_conv', merged['b_conv'] + merged['b_cart_conv'])
     merged['이전 총 전환매출'] = merged.get('b_tot_sales', merged['b_sales'] + merged['b_cart_sales'])
     merged['총 전환 증감'] = merged['총 전환수'] - merged['이전 총 전환수']
     merged['이전 통합 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 총 전환매출'] / merged['이전 광고비']) * 100, 0.0)
-    merged['통합 ROAS 증감(%)'] = merged['통합 ROAS(%)'] - merged['이전 통합 ROAS(%)']
+    merged['통합 ROAS 증감'] = merged['통합 ROAS(%)'] - merged['이전 통합 ROAS(%)']
 
     if "avg_rank" in merged.columns:
         if "평균순위" not in merged.columns:
@@ -194,7 +194,15 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    funnel_toggle = st.toggle("🔄 장바구니 / 구매완료 퍼널 분리해서 보기 (상세 모드)", value=False, key="kw_funnel_toggle")
+    # ✨ 3월 11일 패치 전/후 구분
+    patch_date = date(2026, 3, 11)
+    has_pre_patch_cur = (f["start"] < patch_date)
+    
+    if has_pre_patch_cur:
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다. (네이버 장바구니 분리 업데이트 이전)")
+        funnel_toggle = False
+    else:
+        funnel_toggle = st.toggle("🔄 장바구니 / 구매완료 퍼널 분리해서 보기 (상세 모드)", value=False, key="kw_funnel_toggle")
 
     with st.spinner("🔄 키워드 및 소재 데이터를 집계하고 있습니다... 잠시만 기다려주세요."):
         kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
@@ -203,28 +211,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
     
-    # ✨ 에러 수정: 소수점 및 이전 데이터 표기 포맷 완벽 통일
+    # ✨ 실수형 및 퍼센트를 소수점 첫째자리로 강제 통일
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
-        "순위 변화": "{:+.1f}"
-    }
-    
-    fmt_cmp = {
-        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
-        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
-        "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
-        "이전 장바구니수": "{:,.1f}", "이전 장바구니 매출액": "{:,.0f}원", "이전 장바구니 ROAS(%)": "{:,.1f}%",
-        "이전 구매완료수": "{:,.1f}", "이전 구매완료 매출": "{:,.0f}원", "이전 구매 ROAS(%)": "{:,.1f}%",
-        "이전 총 전환수": "{:,.1f}", "이전 총 전환매출": "{:,.0f}원", "이전 통합 ROAS(%)": "{:,.1f}%",
-        "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}",
-        "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
-        "장바구니ROAS 증감": "{:+.1f}%", "구매 ROAS 증감(%)": "{:+.1f}%", "통합 ROAS 증감(%)": "{:+.1f}%",
-        "순위 변화": "{:+.1f}"
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%"
     }
 
     with tab_main:
@@ -244,10 +236,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드/상품명"]
             if "평균순위" in disp.columns: base_cols.append("평균순위")
 
-            if not funnel_toggle:
+            if has_pre_patch_cur:
                 metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
             else:
-                metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
+                if not funnel_toggle:
+                    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
+                else:
+                    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
 
             final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
             disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
@@ -307,43 +302,78 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px; margin-top:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
             
-            if not funnel_toggle:
-                def _combine(r, c_val, c_pct):
-                    v = r.get(c_val); p = r.get(c_pct)
-                    if pd.isna(v) or v == 0: return "-"
-                    v_str = f"{v:+,.0f}" if c_val in ["노출 증감", "클릭 증감", "광고비 증감", "CPC 증감"] else f"{v:+,.1f}"
-                    return f"{v_str} ({p:+.1f}%)"
-                    
+            has_pre_patch_base = (b1 < patch_date) if b1 else False
+            if has_pre_patch_base or has_pre_patch_cur:
+                st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 있습니다. 정확한 비교를 위해 '통합 전환' 기준으로 표시합니다.")
+                show_mode = "integrated_only"
+            else:
+                show_mode = "purchase_default"
+
+            def _combine(r, c_val, c_pct):
+                v = r.get(c_val); p = r.get(c_pct)
+                if pd.isna(v) or v == 0: return "-"
+                v_str = f"{v:+,.0f}" if c_val in ["노출 증감", "클릭 증감", "광고비 증감", "CPC 증감"] else f"{v:+,.1f}"
+                return f"{v_str} ({p:+.1f}%)"
+
+            if show_mode == "integrated_only":
                 disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
                 disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
                 disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
                 disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
-                
                 disp["총 전환 증감 "] = disp["총 전환 증감"].apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-                disp["통합 ROAS 증감 "] = disp["통합 ROAS 증감(%)"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+                disp["통합 ROAS 증감 "] = disp["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
 
-                metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "총 전환수", "총 전환 증감 ", "통합 ROAS(%)", "통합 ROAS 증감 "]
+                metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "총 전환수", "총 전환 증감 ", "총 전환매출", "통합 ROAS(%)", "통합 ROAS 증감 "]
                 delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "총 전환 증감 ", "통합 ROAS 증감 "]
             else:
-                metrics_cols_cmp = [
-                    "이전 노출", "노출", "노출 증감", "노출 증감(%)",
-                    "이전 클릭", "클릭", "클릭 증감", "클릭 증감(%)",
-                    "이전 광고비", "광고비", "광고비 증감", "광고비 증감(%)",
-                    "이전 장바구니수", "장바구니수", "장바구니 증감", "장바구니 증감(%)",
-                    "이전 장바구니 ROAS(%)", "장바구니 ROAS(%)", "장바구니ROAS 증감",
-                    "이전 구매완료수", "구매완료수", "구매 증감", 
-                    "이전 구매 ROAS(%)", "구매 ROAS(%)", "구매 ROAS 증감(%)",
-                    "순위 변화"
-                ]
-                delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "장바구니ROAS 증감", "구매 증감", "구매 ROAS 증감(%)", "순위 변화"]
+                if not funnel_toggle:
+                    disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
+                    disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
+                    disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
+                    disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
+                    disp["구매 증감 "] = disp["구매 증감"].apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
+                    disp["구매 ROAS 증감 "] = disp["구매 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+
+                    metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "구매완료수", "구매 증감 ", "구매완료 매출", "구매 ROAS(%)", "구매 ROAS 증감 "]
+                    delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "구매 증감 ", "구매 ROAS 증감 "]
+                else:
+                    metrics_cols_cmp = [
+                        "이전 노출", "노출", "노출 증감", "노출 증감(%)",
+                        "이전 클릭", "클릭", "클릭 증감", "클릭 증감(%)",
+                        "이전 광고비", "광고비", "광고비 증감", "광고비 증감(%)",
+                        "이전 장바구니수", "장바구니수", "장바구니 증감", "장바구니 증감(%)",
+                        "이전 구매완료수", "구매완료수", "구매 증감", 
+                        "이전 구매 ROAS(%)", "구매 ROAS(%)", "구매 ROAS 증감",
+                        "이전 총 전환수", "총 전환수", "총 전환 증감",
+                        "이전 통합 ROAS(%)", "통합 ROAS(%)", "통합 ROAS 증감"
+                    ]
+                    delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "구매 증감", "구매 ROAS 증감", "총 전환 증감", "통합 ROAS 증감"]
+
+            # 키워드 순위 변화 컬럼을 표시 컬럼에 동적 추가
+            if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
+                if "순위 변화" not in metrics_cols_cmp:
+                    metrics_cols_cmp.append("순위 변화")
+                    delta_cols.append("순위 변화")
 
             final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
             disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
+            fmt_cmp = {
+                "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
+                "장바구니수": "{:,.1f}", "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
+                "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%",
+                "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
+                "이전 장바구니수": "{:,.1f}", "이전 구매완료수": "{:,.1f}", "이전 총 전환수": "{:,.1f}",
+                "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}",
+                "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
+                "노출 증감(%)": "{:+.1f}%", "클릭 증감(%)": "{:+.1f}%", "광고비 증감(%)": "{:+.1f}%", "장바구니 증감(%)": "{:+.1f}%",
+                "순위 변화": "{:+.1f}"
+            }
+
             styled_cmp = disp.style.format(fmt_cmp)
             if delta_cols:
                 target_delta_cols = [c for c in delta_cols if c in disp.columns]
-                if not funnel_toggle:
+                if not funnel_toggle or show_mode == "integrated_only":
                     try:
                         styled_cmp = styled_cmp.map(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
                         styled_cmp = styled_cmp.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
