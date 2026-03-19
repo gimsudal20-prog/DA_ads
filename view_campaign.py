@@ -141,7 +141,6 @@ def highlight_roas_text(val):
     except: pass
     return ''
 
-# ✨ 누락되었던 텍스트 색상 서식 함수 추가
 def style_delta_str(val):
     val_str = str(val).strip()
     if val_str.startswith("+"): return 'color: #0528F2; font-weight: 600;'
@@ -165,7 +164,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_campaign", 200))
 
-    # ✨ 3월 11일 패치 전/후 구분
     patch_date = date(2026, 3, 11)
     has_pre_patch_cur = (f["start"] < patch_date)
     
@@ -222,7 +220,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     
-    # ✨ 실수형 및 퍼센트를 소수점 첫째자리로 강제 통일
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
@@ -239,7 +236,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
         if "평균순위" in disp_main.columns: base_cols.append("평균순위")
         
-        # ✨ 패치일에 따른 기본/통합 뷰 로직 적용
         if has_pre_patch_cur:
             all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
             roas_col = "통합 ROAS(%)"
@@ -376,7 +372,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
         
-        # ✨ 기간 비교시 패치일 믹스 감지
         has_pre_patch_base = (b1 < patch_date) if b1 else False
         if has_pre_patch_base or has_pre_patch_cur:
             st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 있습니다. 정확한 비교를 위해 '통합 전환' 기준으로 표시합니다.")
@@ -425,9 +420,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "구매 증감", "구매 ROAS 증감", "총 전환 증감", "통합 ROAS 증감"]
 
         final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
-        disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n)
+        disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-        # 콤바인 스트링을 제외한 숫자 포맷팅용 딕셔너리
         fmt_cmp = {
             "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
             "장바구니수": "{:,.1f}", "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
@@ -440,18 +434,23 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         }
 
         styled_cmp = disp_cmp.style.format(fmt_cmp)
+        
+        # ✨ KeyError 원천 차단 방어 로직
         if delta_cols:
             target_delta_cols = [c for c in delta_cols if c in disp_cmp.columns]
             if not funnel_toggle or show_mode == "integrated_only":
+                pos_cols = [c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]]
+                neg_cols = [c for c in target_delta_cols if c in ["광고비 증감/율", "CPC 증감/율"]]
                 try:
-                    styled_cmp = styled_cmp.map(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
-                    styled_cmp = styled_cmp.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+                    if pos_cols: styled_cmp = styled_cmp.map(style_delta_str, subset=pos_cols)
+                    if neg_cols: styled_cmp = styled_cmp.map(style_delta_str_neg, subset=neg_cols)
                 except AttributeError:
-                    styled_cmp = styled_cmp.applymap(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
-                    styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+                    if pos_cols: styled_cmp = styled_cmp.applymap(style_delta_str, subset=pos_cols)
+                    if neg_cols: styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=neg_cols)
             else:
-                try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
-                except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
+                if target_delta_cols:
+                    try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
+                    except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
 
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>캠페인별 기간 비교 데이터</div>", unsafe_allow_html=True)
         render_big_table(styled_cmp, "camp_grid_cmp", 550)
