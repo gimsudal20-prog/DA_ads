@@ -194,7 +194,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    # ✨ 3월 11일 패치 전/후 구분
     patch_date = date(2026, 3, 11)
     has_pre_patch_cur = (f["start"] < patch_date)
     
@@ -211,12 +210,27 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
     
-    # ✨ 실수형 및 퍼센트를 소수점 첫째자리로 강제 통일
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
         "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%"
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
+        "순위 변화": "{:+.1f}"
+    }
+    
+    fmt_cmp = {
+        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
+        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
+        "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
+        "이전 장바구니수": "{:,.1f}", "이전 장바구니 매출액": "{:,.0f}원", "이전 장바구니 ROAS(%)": "{:,.1f}%",
+        "이전 구매완료수": "{:,.1f}", "이전 구매완료 매출": "{:,.0f}원", "이전 구매 ROAS(%)": "{:,.1f}%",
+        "이전 총 전환수": "{:,.1f}", "이전 총 전환매출": "{:,.0f}원", "이전 통합 ROAS(%)": "{:,.1f}%",
+        "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}",
+        "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
+        "장바구니ROAS 증감": "{:+.1f}%", "구매 ROAS 증감(%)": "{:+.1f}%", "통합 ROAS 증감(%)": "{:+.1f}%",
+        "순위 변화": "{:+.1f}"
     }
 
     with tab_main:
@@ -321,7 +335,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                 disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
                 disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
                 disp["총 전환 증감 "] = disp["총 전환 증감"].apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-                disp["통합 ROAS 증감 "] = disp["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+                disp["통합 ROAS 증감 "] = disp["통합 ROAS 증감(%)"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
 
                 metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "총 전환수", "총 전환 증감 ", "총 전환매출", "통합 ROAS(%)", "통합 ROAS 증감 "]
                 delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "총 전환 증감 ", "통합 ROAS 증감 "]
@@ -332,7 +346,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                     disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
                     disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
                     disp["구매 증감 "] = disp["구매 증감"].apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-                    disp["구매 ROAS 증감 "] = disp["구매 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+                    disp["구매 ROAS 증감 "] = disp["구매 ROAS 증감(%)"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
 
                     metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "구매완료수", "구매 증감 ", "구매완료 매출", "구매 ROAS(%)", "구매 ROAS 증감 "]
                     delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "구매 증감 ", "구매 ROAS 증감 "]
@@ -343,13 +357,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "이전 광고비", "광고비", "광고비 증감", "광고비 증감(%)",
                         "이전 장바구니수", "장바구니수", "장바구니 증감", "장바구니 증감(%)",
                         "이전 구매완료수", "구매완료수", "구매 증감", 
-                        "이전 구매 ROAS(%)", "구매 ROAS(%)", "구매 ROAS 증감",
+                        "이전 구매 ROAS(%)", "구매 ROAS(%)", "구매 ROAS 증감(%)",
                         "이전 총 전환수", "총 전환수", "총 전환 증감",
-                        "이전 통합 ROAS(%)", "통합 ROAS(%)", "통합 ROAS 증감"
+                        "이전 통합 ROAS(%)", "통합 ROAS(%)", "통합 ROAS 증감(%)"
                     ]
-                    delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "구매 증감", "구매 ROAS 증감", "총 전환 증감", "통합 ROAS 증감"]
+                    delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "구매 증감", "구매 ROAS 증감(%)", "총 전환 증감", "통합 ROAS 증감(%)"]
 
-            # 키워드 순위 변화 컬럼을 표시 컬럼에 동적 추가
             if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
                 if "순위 변화" not in metrics_cols_cmp:
                     metrics_cols_cmp.append("순위 변화")
@@ -358,30 +371,25 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
             disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-            fmt_cmp = {
-                "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-                "장바구니수": "{:,.1f}", "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-                "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%",
-                "이전 노출": "{:,.0f}", "이전 클릭": "{:,.0f}", "이전 광고비": "{:,.0f}", "이전 CPC(원)": "{:,.0f}",
-                "이전 장바구니수": "{:,.1f}", "이전 구매완료수": "{:,.1f}", "이전 총 전환수": "{:,.1f}",
-                "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}",
-                "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
-                "노출 증감(%)": "{:+.1f}%", "클릭 증감(%)": "{:+.1f}%", "광고비 증감(%)": "{:+.1f}%", "장바구니 증감(%)": "{:+.1f}%",
-                "순위 변화": "{:+.1f}"
-            }
-
             styled_cmp = disp.style.format(fmt_cmp)
+            
+            # ✨ KeyError 원천 차단 방어 로직
             if delta_cols:
                 target_delta_cols = [c for c in delta_cols if c in disp.columns]
+                
                 if not funnel_toggle or show_mode == "integrated_only":
+                    pos_cols = [c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]]
+                    neg_cols = [c for c in target_delta_cols if c in ["광고비 증감/율", "CPC 증감/율"]]
+                    
                     try:
-                        styled_cmp = styled_cmp.map(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
-                        styled_cmp = styled_cmp.map(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+                        if pos_cols: styled_cmp = styled_cmp.map(style_delta_str, subset=pos_cols)
+                        if neg_cols: styled_cmp = styled_cmp.map(style_delta_str_neg, subset=neg_cols)
                     except AttributeError:
-                        styled_cmp = styled_cmp.applymap(style_delta_str, subset=[c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]])
-                        styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=[c for c in ["광고비 증감/율", "CPC 증감/율"] if c in target_delta_cols])
+                        if pos_cols: styled_cmp = styled_cmp.applymap(style_delta_str, subset=pos_cols)
+                        if neg_cols: styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=neg_cols)
                 else:
-                    try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
-                    except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
+                    if target_delta_cols:
+                        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
+                        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
 
             st.dataframe(styled_cmp, use_container_width=True, height=550, hide_index=True)
