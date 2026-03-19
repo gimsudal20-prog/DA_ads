@@ -285,6 +285,51 @@ def list_keywords(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/keywords", customer_id, {"nccAdgroupId": adgroup_id})
     return data if ok and isinstance(data, list) else []
 
+def make_live_keyword_resolver(customer_id: str):
+    cache: dict[str, dict] = {}
+
+    def _build(adgroup_id: str):
+        gid = str(adgroup_id or "").strip()
+        if not gid:
+            return {"exact": {}, "rows": []}
+        if gid in cache:
+            return cache[gid]
+        exact = {}
+        rows = []
+        try:
+            kws = list_keywords(customer_id, gid)
+            for k in kws or []:
+                kid = str(k.get("nccKeywordId") or k.get("keywordId") or "").strip()
+                kw = str(k.get("keyword") or k.get("relKeyword") or k.get("keywordName") or k.get("name") or "").strip()
+                if not kid or not kw:
+                    continue
+                kw_l = kw.lower()
+                kw_n = normalize_keyword_text(kw)
+                exact[(gid, kw)] = kid
+                exact[(gid, kw_l)] = kid
+                exact[(gid, kw_n)] = kid
+                rows.append((kw_n, kid))
+        except Exception:
+            pass
+        cache[gid] = {"exact": exact, "rows": rows}
+        return cache[gid]
+
+    def resolve(adgroup_id: str, keyword_text: str) -> str:
+        gid = str(adgroup_id or "").strip()
+        kw = str(keyword_text or "").strip()
+        if not gid or not kw or kw == '-':
+            return ""
+        built = _build(gid)
+        kw_l = kw.lower()
+        kw_n = normalize_keyword_text(kw)
+        kid = built["exact"].get((gid, kw)) or built["exact"].get((gid, kw_l)) or built["exact"].get((gid, kw_n))
+        if kid:
+            return kid
+        cands = keyword_text_candidates(kw_n, built.get("rows", []))
+        return cands[0] if len(cands) == 1 else ""
+
+    return resolve
+
 def list_ads(customer_id: str, adgroup_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/ads", customer_id, {"nccAdgroupId": adgroup_id})
     if ok and isinstance(data, list) and data: return data
@@ -686,7 +731,7 @@ def format_split_summary(summary: dict) -> str:
         f"위시리스트 {fmt(summary.get('wishlist_conv', 0))}건"
     )
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, live_keyword_resolver=None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
     camp_map, kw_map, ad_map = {}, {}, {}
     summary = empty_split_summary()
     debug_rows = []
@@ -1028,6 +1073,11 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                         kw_obj_id = uniq_cands[0]
                 elif uniq_cands:
                     kw_obj_id = uniq_cands
+            if not kw_obj_id and live_keyword_resolver:
+                try:
+                    kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
+                except Exception:
+                    kw_obj_id = ""
         if kw_obj_id:
             apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
@@ -1327,6 +1377,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
+        live_keyword_resolver = make_live_keyword_resolver(customer_id)
+
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
         dfs: Dict[str, pd.DataFrame | None] = {}
@@ -1392,6 +1444,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         report_hint=tp,
                         keyword_lookup=keyword_lookup,
                         keyword_unique_lookup=keyword_unique_lookup,
+                        live_keyword_resolver=live_keyword_resolver,
                         debug_account_name=account_name,
                         debug_target_date=str(target_date),
                     )
@@ -1425,7 +1478,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 # 쇼핑 키워드 detail 은 AD keyword split 이 비었을 때만 fallback 으로 사용한다.
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                kw_map = ad_kw_map if ad_kw_map else shop_kw_map
+                kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
@@ -1433,7 +1486,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
-                    kw_src = 'AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none')
+                    kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
