@@ -159,6 +159,25 @@ def ensure_tables(engine: Engine):
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
                 conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_shopping_query_daily (
+                    dt DATE,
+                    customer_id TEXT,
+                    campaign_id TEXT,
+                    adgroup_id TEXT,
+                    ad_id TEXT,
+                    query_text TEXT,
+                    total_conv DOUBLE PRECISION,
+                    total_sales BIGINT DEFAULT 0,
+                    purchase_conv DOUBLE PRECISION,
+                    purchase_sales BIGINT DEFAULT 0,
+                    cart_conv DOUBLE PRECISION,
+                    cart_sales BIGINT DEFAULT 0,
+                    wishlist_conv DOUBLE PRECISION,
+                    wishlist_sales BIGINT DEFAULT 0,
+                    split_available BOOLEAN,
+                    data_source TEXT,
+                    PRIMARY KEY(dt, customer_id, adgroup_id, ad_id, query_text)
+                )"""))
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
                         dt DATE,
@@ -247,6 +266,40 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
 
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    tuples = list(df.itertuples(index=False, name=None))
+
+    for attempt in range(3):
+        raw_conn, cur = None, None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
+            raw_conn.commit()
+            break
+        except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except Exception: pass
+            time.sleep(3)
+            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
+        finally:
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
+
+def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    table = "fact_shopping_query_daily"
+    clear_fact_range(engine, table, customer_id, d1)
+    if not rows:
+        return
+
+    pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
 
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
@@ -1109,7 +1162,141 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
     return camp_map, kw_map, ad_map, summary
 
 
+def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id: str) -> List[Dict[str, Any]]:
+    if df is None or df.empty:
+        return []
 
+    rows_map: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+
+    def classify(v) -> tuple[bool, bool, bool]:
+        ctype = str(v).strip().lower()
+        ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
+        is_purchase = ('구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'})
+        is_cart = ('장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'})
+        is_wishlist = ('위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'})
+        return is_purchase, is_cart, is_wishlist
+
+    sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
+
+    def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
+        max_cols = max((len(r) for r in sample_rows), default=0)
+        best_idx, best_score, best_prefix_hits = -1, -1, 0
+        for i in range(max_cols):
+            score = 0
+            prefix_hits = 0
+            dash_hits = 0
+            for r in sample_rows:
+                if len(r) <= i:
+                    continue
+                v = str(r.iloc[i]).strip().lower()
+                if v.startswith(target_prefix):
+                    score += 5
+                    prefix_hits += 1
+                elif allow_dash and v == '-':
+                    dash_hits += 1
+            if prefix_hits > 0:
+                score += min(dash_hits, prefix_hits)
+            if preferred_after >= 0 and i <= preferred_after:
+                score -= 2
+            if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
+                best_idx, best_score, best_prefix_hits = i, score, prefix_hits
+        return best_idx if best_prefix_hits > 0 else -1
+
+    cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
+    gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
+    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx))
+
+    kw_text_idx = -1
+    candidate = gid_idx + 1 if gid_idx != -1 else -1
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    if 0 <= candidate < max_cols:
+        text_score = 0
+        for r in sample_rows:
+            if len(r) <= candidate:
+                continue
+            v = str(r.iloc[candidate]).strip()
+            if v and v != '-' and not v.lower().startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-')):
+                vv = v.replace(',', '')
+                if not re.fullmatch(r'-?\d+(?:\.\d+)?', vv):
+                    text_score += 1
+        if text_score > 0:
+            kw_text_idx = candidate
+
+    for _, r in df.iterrows():
+        vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
+        if len(vals) < 2:
+            continue
+
+        text_type_hits = []
+        numeric_type_hits = []
+        n = len(vals)
+        for idx, v in enumerate(vals):
+            s_raw = str(v).strip()
+            is_purchase, is_cart, is_wishlist = classify(v)
+            if not (is_purchase or is_cart or is_wishlist):
+                continue
+            if s_raw in {'1', '3'}:
+                if idx >= max(0, n - 6):
+                    numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+            else:
+                text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+        type_hits = text_type_hits if text_type_hits else numeric_type_hits
+        if not type_hits:
+            continue
+
+        anchor_idx, is_purchase, is_cart, is_wishlist = type_hits[-1]
+        numeric_right = []
+        for j in range(anchor_idx + 1, min(anchor_idx + 4, len(vals))):
+            s = str(vals[j]).strip().replace(',', '')
+            if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+                try:
+                    numeric_right.append((j, float(s)))
+                except Exception:
+                    pass
+        if not numeric_right:
+            continue
+
+        c_val = float(numeric_right[0][1])
+        s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
+        row_cid = vals[cid_idx].strip() if 0 <= cid_idx < len(vals) else ""
+        row_gid = vals[gid_idx].strip() if 0 <= gid_idx < len(vals) else ""
+        row_adid = vals[adid_idx].strip() if 0 <= adid_idx < len(vals) else ""
+        query_text = vals[kw_text_idx].strip() if 0 <= kw_text_idx < len(vals) else ""
+        if not row_gid or not row_adid or not query_text or query_text == '-':
+            continue
+
+        key = (row_cid, row_gid, row_adid, query_text)
+        row = rows_map.setdefault(key, {
+            "dt": target_date,
+            "customer_id": str(customer_id),
+            "campaign_id": row_cid,
+            "adgroup_id": row_gid,
+            "ad_id": row_adid,
+            "query_text": query_text,
+            "total_conv": 0.0,
+            "total_sales": 0,
+            "purchase_conv": 0.0,
+            "purchase_sales": 0,
+            "cart_conv": 0.0,
+            "cart_sales": 0,
+            "wishlist_conv": 0.0,
+            "wishlist_sales": 0,
+            "split_available": True,
+            "data_source": "SHOPPINGKEYWORD_CONVERSION_DETAIL",
+        })
+        row["total_conv"] += c_val
+        row["total_sales"] += s_val
+        if is_purchase:
+            row["purchase_conv"] += c_val
+            row["purchase_sales"] += s_val
+        elif is_cart:
+            row["cart_conv"] += c_val
+            row["cart_sales"] += s_val
+        elif is_wishlist:
+            row["wishlist_conv"] += c_val
+            row["wishlist_sales"] += s_val
+
+    return list(rows_map.values())
 
 def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, dict]:
     lookup = {}
@@ -1474,6 +1661,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         else:
             split_report_ok = False
             camp_map, kw_map, ad_map = {}, {}, {}
+            shop_query_rows: List[Dict[str, Any]] = []
             ad_report_df = dfs.get("AD")
 
             if not split_enabled_for_date(target_date):
@@ -1539,6 +1727,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 ad_camp_map, ad_kw_map, ad_ad_map, ad_summary = ad_conv_maps
                 shop_camp_map, shop_kw_map, shop_ad_map, shop_summary = shop_kw_maps
 
+                shop_query_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL")
+                if shop_query_df is not None and not shop_query_df.empty:
+                    try:
+                        shop_query_rows = parse_shopping_query_report(shop_query_df, target_date, customer_id)
+                    except Exception as _e:
+                        log(f"   ⚠️ [ {account_name} ] 쇼핑검색어 분리 저장 파싱 실패: {_e}")
+                        shop_query_rows = []
+
                 # 포렌식 결과상 AD_CONVERSION 이 대시보드 총합에 훨씬 가깝고,
                 # SHOPPINGKEYWORD_CONVERSION_DETAIL 은 일부 subset 만 내려오는 경우가 있다.
                 # 따라서 summary / campaign / ad / keyword 의 우선 원천은 AD_CONVERSION 으로 두고,
@@ -1555,9 +1751,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
                     kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
+                    query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
-                        f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}"
+                        f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}, query={query_src}"
                     )
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
@@ -1579,6 +1776,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
             else:
                 a_cnt = 0
+
+            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
+            if shop_query_rows:
+                log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
