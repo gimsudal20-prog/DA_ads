@@ -220,11 +220,14 @@ def ensure_target_roas_column(_engine):
     if "target_roas" not in cols:
         try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
         except Exception: pass
+    if "min_roas" not in cols:
+        try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN min_roas NUMERIC DEFAULT 0")
+        except Exception: pass
 
-def update_campaign_target_roas(_engine, cid: int, campaign_id: str, val: float):
+def update_campaign_target_roas(_engine, cid: int, campaign_id: str, target_val: float, min_val: float):
     ensure_target_roas_column(_engine)
-    sql_exec(_engine, "UPDATE dim_campaign SET target_roas = :val WHERE customer_id = :cid AND campaign_id = :camp_id", 
-             {"val": val, "cid": cid, "camp_id": campaign_id})
+    sql_exec(_engine, "UPDATE dim_campaign SET target_roas = :t_val, min_roas = :m_val WHERE customer_id = :cid AND campaign_id = :camp_id", 
+             {"t_val": target_val, "m_val": min_val, "cid": cid, "camp_id": campaign_id})
 
 def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
     prefix = f"{alias}." if alias else ""
@@ -386,7 +389,9 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
+    
     target_roas_select = ", c.target_roas" if "target_roas" in cols else ", 0.0 as target_roas"
+    min_roas_select = ", c.min_roas" if "min_roas" in cols else ", 0.0 as min_roas"
     
     type_filter_sql = ""
     if type_sel:
@@ -427,7 +432,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         )
         SELECT 
             agg.customer_id, agg.campaign_id, 
-            c.campaign_name, c.{cp_col} as campaign_type {target_roas_select},
+            c.campaign_name, c.{cp_col} as campaign_type {target_roas_select} {min_roas_select},
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
