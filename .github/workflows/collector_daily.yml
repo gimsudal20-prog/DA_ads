@@ -2,9 +2,10 @@ name: Daily Naver Ads Collector
 
 on:
   schedule:
-    # UTC 기준 19시, 1시, 7시, 13시 
-    # (한국 시간 KST 기준 04:00, 10:00, 16:00, 22:00 -> 6시간 간격)
-    - cron: "0 19,1,7,13 * * *"
+    # UTC 기준 19:07, 01:07, 07:07, 13:07
+    # 한국 시간(KST) 기준 04:07, 10:07, 16:07, 22:07
+    # 정각(0분)은 GitHub Actions 부하가 몰릴 수 있어 7분으로 분산
+    - cron: "7 19,1,7,13 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -15,7 +16,6 @@ jobs:
   run-collector:
     runs-on: ubuntu-latest
     env:
-      # 전체 환경을 한국 시간(KST)으로 고정
       TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
@@ -29,32 +29,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Cache pip
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # pandas 패키지 명시적 추가 (대용량 리포트 처리용)
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
 
-      - name: Run collector (Yesterday & Today)
+      - name: Run collector (Yesterday full / Today stats only)
         run: |
-          echo "⏰ 현재 한국 시간: $(date +%H)시"
-          
-          # 1. 어제 데이터 수집 (지연된 전환 및 매출 보정을 위해 매번 실행)
+          echo "⏰ 현재 한국 시간: $(date +%F' '%H:%M:%S)"
+
           YESTERDAY=$(date -d "yesterday" +%F)
-          echo "🚀 Collect date (Yesterday) = ${YESTERDAY}"
-          python collector.py --date "${YESTERDAY}"
-          
-          # 2. 오늘 데이터 수집 (당일 실시간 성과 확인용)
           TODAY=$(date +%F)
-          echo "🚀 Collect date (Today) = ${TODAY}"
-          python collector.py --date "${TODAY}"
+
+          echo "🚀 Collect date (Yesterday, full) = ${YESTERDAY}"
+          python collector.py --date "${YESTERDAY}"
+
+          echo "🚀 Collect date (Today, stats only) = ${TODAY}"
+          python collector.py --date "${TODAY}" --skip_dim
