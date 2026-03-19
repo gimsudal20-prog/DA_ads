@@ -506,6 +506,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 </div>
                 """
             html_tracker += "</div>"
+            # 바로 이 부분에 unsafe_allow_html=True 가 반드시 있어야 합니다.
             st.markdown(html_tracker, unsafe_allow_html=True)
         else:
             st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
