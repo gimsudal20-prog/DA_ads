@@ -191,36 +191,21 @@ def page_settings(engine) -> None:
 
         st.divider()
 
-        # 3. DB 중복 제거 및 대청소 (VACUUM)
-        st.markdown("### DB 중복 제거 및 대청소 (VACUUM ANALYZE)")
-        st.caption("과거 다중 담당자로 인해 DB에 중복으로 쌓여버린 성과 데이터를 삭제하고 성능을 회복시킵니다.")
-        if st.button("중복 데이터 스캔 및 튜닝 실행", type="secondary"):
-            with st.spinner("중복 데이터를 스캔하고 안전하게 삭제 중입니다... (1~2분 소요)"):
+        # 3. DB 찌꺼기 대청소 (VACUUM)
+        st.markdown("### DB 찌꺼기 대청소 (VACUUM ANALYZE)")
+        st.caption("중복 데이터 제거 후 보이지 않는 빈 공간을 압축하여 리소스 경고를 해결하고 DB 성능을 회복시킵니다.")
+        if st.button("DB 대청소 및 튜닝 실행", type="secondary"):
+            with st.spinner("DB 대청소 중... (안전하게 백그라운드에서 진행됩니다)"):
                 try:
+                    tables_to_vacuum = [
+                        "fact_keyword_daily", "fact_ad_daily", "fact_campaign_daily", 
+                        "dim_customer", "dim_campaign", "dim_ad"
+                    ]
                     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-                        # 중복 데이터 삭제 (PostgreSQL 전용 로직)
-                        dedup_queries = [
-                            "DELETE FROM fact_campaign_daily a USING (SELECT MIN(ctid) as ctid, dt, customer_id, campaign_id FROM fact_campaign_daily GROUP BY dt, customer_id, campaign_id HAVING COUNT(*) > 1) b WHERE a.dt = b.dt AND a.customer_id = b.customer_id AND a.campaign_id = b.campaign_id AND a.ctid <> b.ctid;",
-                            "DELETE FROM fact_keyword_daily a USING (SELECT MIN(ctid) as ctid, dt, customer_id, keyword_id FROM fact_keyword_daily GROUP BY dt, customer_id, keyword_id HAVING COUNT(*) > 1) b WHERE a.dt = b.dt AND a.customer_id = b.customer_id AND a.keyword_id = b.keyword_id AND a.ctid <> b.ctid;",
-                            "DELETE FROM fact_ad_daily a USING (SELECT MIN(ctid) as ctid, dt, customer_id, ad_id FROM fact_ad_daily GROUP BY dt, customer_id, ad_id HAVING COUNT(*) > 1) b WHERE a.dt = b.dt AND a.customer_id = b.customer_id AND a.ad_id = b.ad_id AND a.ctid <> b.ctid;"
-                        ]
-                        for q in dedup_queries:
-                            try: conn.execute(text(q))
-                            except Exception: pass
-                        
-                        # VACUUM
-                        tables_to_vacuum = [
-                            "fact_keyword_daily", "fact_ad_daily", "fact_campaign_daily", 
-                            "dim_customer", "dim_campaign", "dim_ad"
-                        ]
                         for tbl in tables_to_vacuum:
                             try: conn.execute(text(f"VACUUM ANALYZE {tbl};"))
                             except Exception: pass 
-                            
-                    st.success("중복 데이터 제거 및 DB 대청소가 완료되었습니다.")
-                    time.sleep(2)
-                    st.cache_data.clear()
-                    st.rerun()
+                    st.success("DB 대청소 및 튜닝이 완료되었습니다.")
                 except Exception as e:
                     st.error(f"청소 중 오류 발생: {e}")
 
