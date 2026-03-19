@@ -365,61 +365,57 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='{cls_value}' title='{value}'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
     if not combined_toggle:
-        kpi_html = f"""
-        <div class='kpi-group-container'>
-            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
-                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
-                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
-                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
-            </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
-                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
-                {_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
-            </div></div>
-            <div class='kpi-group'>
-                <div class='kpi-group-title'>성과 지표</div>
-                <div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
-                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
-                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
-                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
-                </div>
-                <div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
-                    {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
-                    {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
-                    {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
-                </div>
-                <div class='kpi-row'>
-                    {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
-                    {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
-                    {_kpi_html("장바구니 매출", format_currency(cur.get("cart_sales", 0.0)), f"{pct_to_arrow(_delta_pct('cart_sales'))}", _delta_pct("cart_sales"))}
-                </div>
-            </div>
-        </div>
-        """
+        kpi_html = f"""<div class='kpi-group-container'>
+<div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+{_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+{_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+{_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+</div></div>
+<div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+{_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+{_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+{_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
+</div></div>
+<div class='kpi-group'>
+<div class='kpi-group-title'>성과 지표</div>
+<div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
+{_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+{_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+{_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+</div>
+<div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
+{_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+{_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+{_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
+</div>
+<div class='kpi-row'>
+{_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
+{_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+{_kpi_html("장바구니 매출", format_currency(cur.get("cart_sales", 0.0)), f"{pct_to_arrow(_delta_pct('cart_sales'))}", _delta_pct("cart_sales"))}
+</div>
+</div>
+</div>"""
     else:
-        kpi_html = f"""
-        <div class='kpi-group-container kpi-legacy-equal'>
-            <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
-                {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
-                {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
-                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
-            </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
-                {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
-                {_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
-            </div></div>
-            <div class='kpi-group'>
-                <div class='kpi-group-title'>성과 지표</div>
-                <div class='kpi-row'>
-                    {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
-                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
-                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
-                </div>
-            </div>
-        </div>
-        """
+        kpi_html = f"""<div class='kpi-group-container kpi-legacy-equal'>
+<div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
+{_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
+{_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
+{_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+</div></div>
+<div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
+{_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
+{_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
+{_kpi_html("CPM", format_currency(cur.get("cpm", 0.0)), f"{pct_to_arrow(_delta_pct('cpm'))}", _delta_pct("cpm"), improve_when_up=False)}
+</div></div>
+<div class='kpi-group'>
+<div class='kpi-group-title'>성과 지표</div>
+<div class='kpi-row'>
+{_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+{_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+{_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+</div>
+</div>
+</div>"""
     st.markdown(kpi_html, unsafe_allow_html=True)
 
 
@@ -447,7 +443,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    # 캠페인별 목표 ROAS 달성 현황 섹션 (최소/목표 달성 조건에 따른 색상 및 텍스트 반영)
+    # 캠페인별 목표 ROAS 달성 현황 섹션 (최소/목표 달성 조건에 따른 색상 및 텍스트 반영 - 들여쓰기 완벽 제거 버전)
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>캠페인별 ROAS 달성 현황</div>", unsafe_allow_html=True)
     if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
         target_df = cur_camp[(cur_camp["target_roas"] > 0) | (cur_camp["min_roas"] > 0)].copy()
@@ -461,7 +457,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             target_df = target_df.sort_values(by="cost", ascending=False)
             
-            html_tracker = "<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;'>"
+            html_tracker = "<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;'>\n"
             for _, row in target_df.iterrows():
                 camp_name = row["campaign_name"]
                 t_roas = row["target_roas"]
@@ -484,29 +480,28 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     color = "#F79009"  # 주황색 (미달)
                     status = "미달"
                 
-                html_tracker += f"""
-                <div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
-                    <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
-                        <div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
-                        <div style='text-align:right;'>
-                            <div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
-                            <div style='font-size:11px; font-weight:600; color:{color}; margin-top:2px;'>{status}</div>
-                        </div>
-                    </div>
-                    <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px; position:relative;'>
-                        <div style='width:{achieve}%; height:100%; background:{color}; transition:width 0.3s ease;'></div>
-                    </div>
-                    <div style='display:flex; justify-content:space-between; font-size:13px;'>
-                        <div><span style='color:var(--nv-muted-light);'>현재 ({roas_label_text}):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas:,.1f}%</span></div>
-                        <div style='text-align:right;'>
-                            <span style='color:var(--nv-muted-light); margin-right:4px;'>최소:</span><span style='font-weight:600; color:var(--nv-text); margin-right:8px;'>{m_roas:,.0f}%</span>
-                            <span style='color:var(--nv-muted-light); margin-right:4px;'>목표:</span><span style='font-weight:600; color:var(--nv-text);'>{t_roas:,.0f}%</span>
-                        </div>
-                    </div>
-                </div>
-                """
+                # 줄 맨 앞 들여쓰기를 전부 제거하여 Markdown 코드로 변환되는 것을 방지합니다.
+                html_tracker += f"""<div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
+<div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
+<div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
+<div style='text-align:right;'>
+<div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
+<div style='font-size:11px; font-weight:600; color:{color}; margin-top:2px;'>{status}</div>
+</div>
+</div>
+<div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px; position:relative;'>
+<div style='width:{achieve}%; height:100%; background:{color}; transition:width 0.3s ease;'></div>
+</div>
+<div style='display:flex; justify-content:space-between; font-size:13px;'>
+<div><span style='color:var(--nv-muted-light);'>현재 ({roas_label_text}):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas:,.1f}%</span></div>
+<div style='text-align:right;'>
+<span style='color:var(--nv-muted-light); margin-right:4px;'>최소:</span><span style='font-weight:600; color:var(--nv-text); margin-right:8px;'>{m_roas:,.0f}%</span>
+<span style='color:var(--nv-muted-light); margin-right:4px;'>목표:</span><span style='font-weight:600; color:var(--nv-text);'>{t_roas:,.0f}%</span>
+</div>
+</div>
+</div>\n"""
             html_tracker += "</div>"
-            # 바로 이 부분에 unsafe_allow_html=True 가 반드시 있어야 합니다.
+            # 들여쓰기를 제거한 안전한 HTML을 렌더링합니다.
             st.markdown(html_tracker, unsafe_allow_html=True)
         else:
             st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
