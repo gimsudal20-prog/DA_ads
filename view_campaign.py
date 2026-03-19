@@ -10,7 +10,7 @@ from typing import Dict
 
 from data import query_campaign_bundle, query_keyword_bundle, query_ad_bundle, query_campaign_off_log, load_dim_campaign
 from ui import render_big_table
-from page_helpers import get_dynamic_cmp_options, period_compare_range, append_comparison_data, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
+from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
 
 def _format_avg_rank(value):
@@ -25,9 +25,8 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
         if c in view.columns:
             view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
 
-    # 과거 호환용 통합 지표 계산
-    view["총 전환수"] = view.get("구매완료수", 0) + view.get("장바구니수", 0)
-    view["총 전환매출"] = view.get("구매완료 매출", 0) + view.get("장바구니 매출액", 0)
+    view["총 전환수"] = view.get("tot_conv", view.get("구매완료수", 0) + view.get("장바구니수", 0))
+    view["총 전환매출"] = view.get("tot_sales", view.get("구매완료 매출", 0) + view.get("장바구니 매출액", 0))
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
@@ -37,6 +36,80 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     if "장바구니 매출액" in view.columns:
         view["장바구니 ROAS(%)"] = np.where(view["광고비"] > 0, (view["장바구니 매출액"] / view["광고비"]) * 100, 0.0)
     return view
+
+
+def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
+    if view_df.empty: return view_df
+    
+    for k in merge_keys:
+        if k in view_df.columns: view_df[k] = view_df[k].astype(str)
+        if k in base_df.columns: base_df[k] = base_df[k].astype(str)
+            
+    val_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_conv', 'tot_sales']
+    for c in val_cols:
+        if c in base_df.columns:
+            base_df[c] = pd.to_numeric(base_df[c], errors='coerce').fillna(0)
+            
+    agg_dict = {c: 'sum' for c in val_cols if c in base_df.columns}
+    if 'avg_rank' in base_df.columns:
+        agg_dict['avg_rank'] = 'mean'
+        base_df['avg_rank'] = pd.to_numeric(base_df['avg_rank'], errors='coerce')
+        
+    if not base_df.empty:
+        base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+        base_agg = base_agg.rename(columns={c: f"b_{c}" for c in agg_dict.keys()})
+        merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
+    else:
+        merged = view_df.copy()
+        
+    for c in val_cols:
+        bc = f"b_{c}"
+        if bc not in merged.columns: merged[bc] = 0
+        merged[bc] = pd.to_numeric(merged[bc], errors='coerce').fillna(0)
+        
+    if 'b_avg_rank' not in merged.columns: merged['b_avg_rank'] = np.nan
+
+    merged['이전 노출'] = merged['b_imp']
+    merged['노출 증감'] = merged['노출'] - merged['이전 노출']
+    merged['노출 증감(%)'] = np.where(merged['이전 노출'] > 0, (merged['노출 증감'] / merged['이전 노출']) * 100, np.where(merged['노출'] > 0, 100.0, 0.0))
+
+    merged['이전 클릭'] = merged['b_clk']
+    merged['클릭 증감'] = merged['클릭'] - merged['이전 클릭']
+    merged['클릭 증감(%)'] = np.where(merged['이전 클릭'] > 0, (merged['클릭 증감'] / merged['이전 클릭']) * 100, np.where(merged['클릭'] > 0, 100.0, 0.0))
+
+    merged['이전 광고비'] = merged['b_cost']
+    merged['광고비 증감'] = merged['광고비'] - merged['이전 광고비']
+    merged['광고비 증감(%)'] = np.where(merged['이전 광고비'] > 0, (merged['광고비 증감'] / merged['이전 광고비']) * 100, np.where(merged['광고비'] > 0, 100.0, 0.0))
+
+    merged['이전 CPC(원)'] = np.where(merged['이전 클릭'] > 0, merged['이전 광고비'] / merged['이전 클릭'], 0.0)
+    merged['CPC 증감'] = merged['CPC(원)'] - merged['이전 CPC(원)']
+    merged['CPC 증감(%)'] = np.where(merged['이전 CPC(원)'] > 0, (merged['CPC 증감'] / merged['이전 CPC(원)']) * 100, np.where(merged['CPC(원)'] > 0, 100.0, 0.0))
+
+    merged['이전 장바구니수'] = merged['b_cart_conv']
+    merged['이전 장바구니 매출액'] = merged['b_cart_sales']
+    merged['장바구니 증감'] = merged['장바구니수'] - merged['이전 장바구니수']
+    merged['이전 장바구니 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 장바구니 매출액'] / merged['이전 광고비']) * 100, 0.0)
+    merged['장바구니ROAS 증감'] = merged['장바구니 ROAS(%)'] - merged['이전 장바구니 ROAS(%)']
+
+    merged['이전 구매완료수'] = merged['b_conv']
+    merged['이전 구매완료 매출'] = merged['b_sales']
+    merged['구매 증감'] = merged['구매완료수'] - merged['이전 구매완료수']
+    merged['이전 구매 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 구매완료 매출'] / merged['이전 광고비']) * 100, 0.0)
+    merged['구매 ROAS 증감'] = merged['구매 ROAS(%)'] - merged['이전 구매 ROAS(%)']
+
+    merged['이전 총 전환수'] = merged.get('b_tot_conv', merged['b_conv'] + merged['b_cart_conv'])
+    merged['이전 총 전환매출'] = merged.get('b_tot_sales', merged['b_sales'] + merged['b_cart_sales'])
+    merged['총 전환 증감'] = merged['총 전환수'] - merged['이전 총 전환수']
+    merged['이전 통합 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 총 전환매출'] / merged['이전 광고비']) * 100, 0.0)
+    merged['통합 ROAS 증감'] = merged['통합 ROAS(%)'] - merged['이전 통합 ROAS(%)']
+
+    if "avg_rank" in merged.columns:
+        if "평균순위" not in merged.columns:
+            merged['평균순위'] = merged['avg_rank'].apply(_format_avg_rank)
+        merged['이전 평균순위'] = merged['b_avg_rank'].apply(_format_avg_rank)
+        merged['순위 변화'] = np.where((merged['b_avg_rank'] > 0) & (merged['avg_rank'] > 0), merged['avg_rank'] - merged['b_avg_rank'], np.nan)
+        
+    return merged
 
 
 def _normalize_merge_keys(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -78,7 +151,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_campaign", 200))
 
-    # ✨ 토글 스위치 배치
     funnel_toggle = st.toggle("🔄 장바구니 / 구매완료 퍼널 분리해서 보기 (상세 모드)", value=False, key="camp_funnel_toggle")
 
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
@@ -128,11 +200,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     tab_main, tab_group, tab_cmp, tab_history = st.tabs(["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"])
     
+    # ✨ 실수형 및 퍼센트를 소수점 첫째자리로 강제
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "장바구니수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.2f}%",
-        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.2f}%",
-        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.2f}%", "CTR(%)": "{:,.2f}%"
+        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
+        "장바구니 증감": "{:+,.1f}", "구매 증감": "{:+,.1f}", "총 전환 증감": "{:+,.1f}",
+        "장바구니ROAS 증감": "{:+.1f}%", "구매 ROAS 증감": "{:+.1f}%", "통합 ROAS 증감": "{:+.1f}%",
+        "광고비 증감(%)": "{:+.1f}%", "노출 증감(%)": "{:+.1f}%", "클릭 증감(%)": "{:+.1f}%"
     }
 
     with tab_main:
@@ -164,7 +240,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             type_grp = type_grp.sort_values("광고비", ascending=False)
             
             st.dataframe(
-                type_grp.style.format({"광고비": "{:,.0f}", roas_col: "{:,.2f}%"}),
+                type_grp.style.format({"광고비": "{:,.0f}", roas_col: "{:,.1f}%"}),
                 use_container_width=True, hide_index=True,
                 column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형"), "광고비": st.column_config.Column("총 광고비(원)"), "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100), roas_col: st.column_config.Column(f"평균 {roas_col}")}
             )
@@ -212,7 +288,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         scatter_df['짧은이름'] = scatter_df['키워드/상품명'].apply(lambda x: str(x)[:12] + "...")
                         scatter_df['클릭_size'] = scatter_df['클릭'].apply(lambda x: max(x, 1))
 
-                        fig_scatter = px.scatter(scatter_df, x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름', hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.0f', '클릭': ':,.0f'})
+                        fig_scatter = px.scatter(scatter_df, x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름', hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'})
                         fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
                         fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444")
                         fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
@@ -265,31 +341,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not base_bundle.empty:
             valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
             if valid_keys:
-                view_cmp = append_comparison_data(view_cmp, base_bundle, valid_keys)
-                
-                if "cart_conv_base" in view_cmp.columns: view_cmp = view_cmp.rename(columns={"cart_conv_base": "이전 장바구니수"})
-                if "cart_sales_base" in view_cmp.columns: view_cmp = view_cmp.rename(columns={"cart_sales_base": "이전 장바구니 매출액"})
-                if "conv_base" in view_cmp.columns: view_cmp = view_cmp.rename(columns={"conv_base": "이전 구매완료수"})
-                if "sales_base" in view_cmp.columns: view_cmp = view_cmp.rename(columns={"sales_base": "이전 구매완료 매출"})
-                
-                for c in ["이전 장바구니수", "이전 장바구니 매출액", "이전 구매완료수", "이전 구매완료 매출", "이전 광고비"]:
-                    if c not in view_cmp.columns: view_cmp[c] = 0
-                    view_cmp[c] = view_cmp[c].fillna(0)
-
-                view_cmp["이전 총 전환수"] = view_cmp["이전 구매완료수"] + view_cmp["이전 장바구니수"]
-                view_cmp["이전 총 전환매출"] = view_cmp["이전 구매완료 매출"] + view_cmp["이전 장바구니 매출액"]
-                
-                view_cmp["장바구니 증감"] = view_cmp["장바구니수"] - view_cmp["이전 장바구니수"]
-                view_cmp["구매 증감"] = view_cmp["구매완료수"] - view_cmp["이전 구매완료수"]
-                view_cmp["총 전환 증감"] = view_cmp["총 전환수"] - view_cmp["이전 총 전환수"]
-
-                view_cmp["이전 장바구니 ROAS(%)"] = np.where(view_cmp["이전 광고비"] > 0, (view_cmp["이전 장바구니 매출액"] / view_cmp["이전 광고비"]) * 100, 0.0)
-                view_cmp["이전 구매 ROAS(%)"] = np.where(view_cmp["이전 광고비"] > 0, (view_cmp["이전 구매완료 매출"] / view_cmp["이전 광고비"]) * 100, 0.0)
-                view_cmp["이전 통합 ROAS(%)"] = np.where(view_cmp["이전 광고비"] > 0, (view_cmp["이전 총 전환매출"] / view_cmp["이전 광고비"]) * 100, 0.0)
-
-                view_cmp["장바구니ROAS 증감"] = view_cmp["장바구니 ROAS(%)"] - view_cmp["이전 장바구니 ROAS(%)"]
-                view_cmp["구매 ROAS 증감"] = view_cmp["구매 ROAS(%)"] - view_cmp["이전 구매 ROAS(%)"]
-                view_cmp["통합 ROAS 증감"] = view_cmp["통합 ROAS(%)"] - view_cmp["이전 통합 ROAS(%)"]
+                view_cmp = _apply_comparison_metrics(view_cmp, base_bundle, valid_keys)
 
         base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
         
@@ -345,7 +397,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 cols = pivot_df.columns.tolist()
                 cols.insert(2, cols.pop(cols.index('통합 ROAS(%)')))
                 pivot_df = pivot_df[cols]
-                pivot_df['통합 ROAS(%)'] = pivot_df['통합 ROAS(%)'].apply(lambda x: f"{float(x):,.0f}%" if pd.notnull(x) and str(x) != '-' else "-")
+                pivot_df['통합 ROAS(%)'] = pivot_df['통합 ROAS(%)'].apply(lambda x: f"{float(x):,.1f}%" if pd.notnull(x) and str(x) != '-' else "-")
 
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>일자별 꺼짐 기록 및 ROAS 효율 분석</div>", unsafe_allow_html=True)
             
