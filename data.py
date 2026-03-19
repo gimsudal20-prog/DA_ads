@@ -122,21 +122,6 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
                     
             df = df.rename(columns=rename_map)
             
-            # ========================================================
-            # [추가] 중복 계정 방지: 담당자가 2명 이상인 경우 쉼표로 병합
-            # ========================================================
-            if 'customer_id' in df.columns:
-                agg_funcs = {}
-                for col in df.columns:
-                    if col == 'customer_id': continue
-                    elif col == 'manager':
-                        agg_funcs[col] = lambda x: ', '.join(sorted(list(set([str(i).strip() for i in x if pd.notna(i) and str(i).strip()]))))
-                    else:
-                        agg_funcs[col] = 'first'
-                if agg_funcs:
-                    df = df.groupby('customer_id', as_index=False).agg(agg_funcs)
-            # ========================================================
-            
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
@@ -173,24 +158,6 @@ def get_meta(_engine) -> pd.DataFrame:
             elif c_clean in ["담당자", "manager"]:
                 rename_map[c] = "manager"
         df = df.rename(columns=rename_map)
-        
-        # ========================================================
-        # [추가] 조회 시점에도 DB에 남은 다중 담당자를 하나로 묶어서 반환
-        # ========================================================
-        if 'customer_id' in df.columns:
-            agg_funcs = {}
-            for col in df.columns:
-                if col == 'customer_id': continue
-                elif col == 'manager':
-                    agg_funcs[col] = lambda x: ', '.join(sorted(list(set([str(i).strip() for i in x if pd.notna(i) and str(i).strip()]))))
-                elif col == 'monthly_budget':
-                    agg_funcs[col] = 'max'
-                else:
-                    agg_funcs[col] = 'first'
-            if agg_funcs:
-                df = df.groupby('customer_id', as_index=False).agg(agg_funcs)
-        # ========================================================
-        
     return df
 
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
