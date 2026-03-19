@@ -18,18 +18,45 @@ from page_helpers import _perf_common_merge_meta
 def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
-def _build_periodic_report_text(campaign_type: str, imp: float, clk: float, ctr: float, cost: float, tot_conv: float, tot_roas: float, tot_sales: float, top_keywords_label: str, top_keywords: str) -> str:
-    return "\n".join([
+def _build_periodic_report_text(campaign_type: str, report_cur: dict, top_keywords: str = "없음") -> str:
+    lines = [
         f"[ {campaign_type} 성과 요약 ]",
-        _format_report_line("노출수", f"{int(imp):,}"),
-        _format_report_line("클릭수", f"{int(clk):,}"),
-        _format_report_line("클릭률", f"{float(ctr):.2f}%"),
-        _format_report_line("광고 소진비용", f"{int(cost):,}원"),
-        _format_report_line("총 전환수", f"{int(tot_conv):,}"),
-        _format_report_line("총 전환매출", f"{int(tot_sales):,}원"),
-        _format_report_line("통합 ROAS", f"{float(tot_roas):.2f}%"),
-        _format_report_line(top_keywords_label, top_keywords),
+        _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0) or 0)):,}"),
+        _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0) or 0)):,}"),
+        _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0) or 0):.1f}%"),
+        _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0) or 0)):,}원"),
+    ]
+
+    if campaign_type == "파워링크":
+        tot_conv = float(report_cur.get('tot_conv', 0) or 0)
+        tot_roas = float(report_cur.get('tot_roas', 0) or 0)
+        if tot_conv >= 1:
+            lines.append(_format_report_line("총 전환수", f"{tot_conv:.1f}"))
+        if tot_roas > 0:
+            lines.append(_format_report_line("총 ROAS", f"{tot_roas:.1f}%"))
+        lines.append(_format_report_line("주요 유입 키워드 3건", top_keywords))
+        return "\n".join(lines)
+
+    if campaign_type == "쇼핑검색":
+        lines.extend([
+            _format_report_line("구매완료 수", f"{float(report_cur.get('conv', 0) or 0):.1f}"),
+            _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0) or 0)):,}원"),
+            _format_report_line("구매완료 ROAS", f"{float(report_cur.get('roas', 0) or 0):.1f}%"),
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
+        _format_report_line("구매완료수", f"{float(report_cur.get('conv', 0) or 0):.1f}"),
+        _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0) or 0)):,}원"),
+        _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0) or 0):.1f}%"),
+        _format_report_line("총 전환수", f"{float(report_cur.get('tot_conv', 0) or 0):.1f}"),
+        _format_report_line("총 전환매출", f"{int(float(report_cur.get('tot_sales', 0) or 0)):,}원"),
+        _format_report_line("총 ROAS", f"{float(report_cur.get('tot_roas', 0) or 0):.1f}%"),
     ])
+    if top_keywords:
+        lines.append(_format_report_line("주요 유입 키워드", top_keywords))
+    return "\n".join(lines)
+
 
 
 def _selected_type_label(type_sel: tuple) -> str:
@@ -81,9 +108,9 @@ def _cached_type_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
         conv_s_expr = "COALESCE(f.sales, 0)"
 
         if has_primary:
-            conv_sql = f"SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
+            conv_sql = f"SUM(COALESCE(f.primary_conv, 0)) as conv, SUM(COALESCE(f.primary_sales, 0)) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
         else:
-            conv_sql = f"SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
+            conv_sql = f"SUM(GREATEST({conv_c_expr} - {cart_c_expr} - {wish_c_expr}, 0)) as conv, SUM(GREATEST({conv_s_expr} - {cart_s_expr} - {wish_s_expr}, 0)) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
         sql = f"""
             SELECT f.dt, c.campaign_tp, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost, 
@@ -401,31 +428,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         tab_t1, tab_t2 = st.tabs(["비용 및 총전환매출 추이", "유입 지표 추이"])
         with tab_t1:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "총 전환매출", height=320)
+            render_echarts_dual_axis("비용 및 총전환매출 추이", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "총 전환매출", height=320)
         with tab_t2:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+            render_echarts_dual_axis("유입 지표 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else:
         st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
 
 
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
-    if daily_ts is not None and not daily_ts.empty:
-        expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
-        for c in expected_cols:
-            if c not in daily_ts.columns:
-                daily_ts[c] = 0.0
-                
-        daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
-        
-        tab_t1, tab_t2 = st.tabs(["비용 및 총전환매출 추이", "유입 지표 추이"])
-        with tab_t1:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "총 전환매출", height=320)
-        with tab_t2:
-            render_echarts_dual_axis("", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
-    else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
-
-
-    df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     if not cur_camp.empty or not base_camp.empty:
@@ -572,31 +582,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         _display_ts_table(weekly_disp, "주차")
 
     with st.expander("📝 보고서 내보내기", expanded=False):
-        report_campaign_type = selected_type_label
+        report_campaign_type = type_sel[0] if len(type_sel) == 1 else selected_type_label
         report_cur = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
         st.session_state[report_loaded_key] = True
-        
+
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
-            top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
+            top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(3)
             if not top_kws.empty:
                 top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
 
-        report_text = "\n".join([
-            f"[ {report_campaign_type} 성과 요약 ]",
-            _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
-            _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
-            _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.1f}%"),
-            _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
-            _format_report_line("위시리스트수", f"{float(report_cur.get('wishlist_conv', 0)):.1f}"),
-            _format_report_line("장바구니 담기수", f"{float(report_cur.get('cart_conv', 0)):.1f}"),
-            _format_report_line("구매완료수", f"{float(report_cur.get('conv', 0.0)):.1f}"),
-            _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
-            _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.1f}%"),
-            _format_report_line("총 전환수", f"{float(report_cur.get('tot_conv', 0.0)):.1f}"),
-            _format_report_line("총 전환매출", f"{int(float(report_cur.get('tot_sales', 0))):,}원"),
-            _format_report_line("통합 ROAS", f"{float(report_cur.get('tot_roas', 0)):.1f}%"),
-            _format_report_line("주요 유입 키워드", top_kw_str)
-        ])
+        report_text = _build_periodic_report_text(report_campaign_type, report_cur, top_kw_str)
         st.code(report_text, language="text")
