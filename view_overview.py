@@ -102,19 +102,22 @@ def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
         if out_df[col].dtype in ['float64', 'int64']:
-            if col in ["노출수", "클릭수", "장바구니 담기수", "구매완료수", "총 전환수", "평균순위", "순위"]:
+            if col in ["노출수", "클릭수", "평균순위", "순위"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
+            elif col in ["장바구니 담기수", "위시리스트수", "구매완료수", "총 전환수"]:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "0.0")
             elif col in ["광고비", "구매완료 매출", "장바구니 매출액", "총 전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
             elif "차이" in col:
                 if "광고비" in col or "매출" in col or "CPC" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
-                else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
+                elif "노출" in col or "클릭" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
+                else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
             elif "증감" in col:
-                out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}%" if pd.notnull(x) and x != 0 else "0%")
+                out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
             elif "ROAS" in col:
-                out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}%" if pd.notnull(x) else "0%")
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
             elif col == "클릭률(%)":
-                out_df[col] = out_df[col].apply(lambda x: f"{x:,.2f}%" if pd.notnull(x) else "0.00%")
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
     return out_df
 
 def calc_pct_diff(c, b):
@@ -162,6 +165,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
         c_imp, c_clk, c_cost, c_cart, c_csales, c_conv, c_sales = row['imp_cur'], row['clk_cur'], row['cost_cur'], row['cart_conv_cur'], row['cart_sales_cur'], row['conv_cur'], row['sales_cur']
         b_imp, b_clk, b_cost, b_cart, b_csales, b_conv, b_sales = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0), row.get('cart_conv_base', 0), row.get('cart_sales_base', 0), row.get('conv_base', 0), row.get('sales_base', 0)
         
+        # ✨ DB에서 가져온 진짜 tot_conv 를 사용
         c_tot_conv = row.get('tot_conv_cur', c_conv + c_cart)
         c_tot_sales = row.get('tot_sales_cur', c_sales + c_csales)
         b_tot_conv = row.get('tot_conv_base', b_conv + b_cart)
@@ -213,6 +217,7 @@ def _build_ts_df(df, group_col, group_label):
     table_data = []
     for _, row in grp.iterrows():
         c_imp, c_clk, c_cost, c_cart, c_csales, c_conv, c_sales = row['imp'], row['clk'], row['cost'], row['cart_conv'], row['cart_sales'], row['conv'], row['sales']
+        # ✨ DB에서 가져온 진짜 tot_conv 를 사용
         c_tot_conv = row.get('tot_conv', c_conv + c_cart)
         c_tot_sales = row.get('tot_sales', c_sales + c_csales)
         
@@ -259,26 +264,28 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     selected_type_label = _selected_type_label(type_sel)
 
+    # ✨ 모든 비율(%)과 전환 지표를 .1f (소수점 첫째자리)로 강제 고정
     fmt_dict_standard = {
-        "노출수": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
-        "클릭수": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
-        "광고비": "{:,.0f}원", "광고비 증감": "{:+.0f}%", "광고비 차이": "{:+,.0f}원",
-        "CPC": "{:,.0f}원", "CPC 증감": "{:+.0f}%", "CPC 차이": "{:+,.0f}원",
-        "장바구니 담기수": "{:,.0f}", "장바구니 증감": "{:+.0f}%", "장바구니 차이": "{:+,.0f}",
-        "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.0f}%", "장바구니ROAS 증감": "{:+.0f}%",
-        "구매완료수": "{:,.1f}", "구매 증감": "{:+.0f}%", "구매 차이": "{:+,.1f}",
-        "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.0f}%", "구매 매출 차이": "{:+,.0f}원",
-        "구매 ROAS(%)": "{:,.0f}%", "구매 ROAS 증감": "{:+.0f}%",
-        "총 전환수": "{:,.1f}", "총 전환 증감": "{:+.0f}%", "총 전환 차이": "{:+,.1f}",
-        "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.0f}%", "총 매출 차이": "{:+,.0f}원",
-        "통합 ROAS(%)": "{:,.0f}%", "통합 ROAS 증감": "{:+.0f}%"
+        "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
+        "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
+        "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
+        "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
+        "장바구니 담기수": "{:,.1f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.1f}",
+        "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%", "장바구니ROAS 증감": "{:+.1f}%",
+        "구매완료수": "{:,.1f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.1f}",
+        "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
+        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.1f}",
+        "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
+        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
+        "위시리스트수": "{:,.1f}"
     }
     
     fmt_dict_ts = {
         "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
-        "장바구니 담기수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.0f}%",
-        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.0f}%",
-        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.0f}%"
+        "장바구니 담기수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%"
     }
 
     type_kor_map = {
@@ -293,8 +300,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_date_info = f"{cmp_mode} ({b1} ~ {b2})" if b1 and b2 else cmp_mode
     st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
-    # ✨ 기본 모드를 상세(퍼널) 지표로 설정하고, 원할 경우 통합 지표로 볼 수 있도록 토글 변경
-    combined_toggle = st.toggle("🔄 통합 전환 성과로 묶어서 보기 (과거 호환 모드)", value=False)
+    # ✨ 3월 11일 패치 전/후 구분 및 토글 로직
+    patch_date = date(2026, 3, 11)
+    has_pre_patch_cur = (f["start"] < patch_date)
+    
+    if has_pre_patch_cur:
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다. (네이버 장바구니 분리 업데이트 이전)")
+        combined_toggle = True
+    else:
+        combined_toggle = st.toggle("🔄 통합 전환 성과로 묶어서 보기 (과거 호환 모드)", value=False)
 
     cur = cur_summary
     base = base_summary
@@ -323,25 +337,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
     if not combined_toggle:
-        # ✨ 상세 퍼널 뷰 (기본)
+        # ✨ 상세 퍼널 뷰 (구매완료 최상단, 장바구니 하단 분리 레이아웃)
         kpi_html = f"""
         <div class='kpi-group-container'>
             <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
-                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
             </div></div>
             <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True, improve_when_up=False)}
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
             </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>성과 지표</div><div class='kpi-row'>
-                {_kpi_html("장바구니수", format_number_commas(cur.get("cart_conv", 0.0)), f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"), highlight=True)}
-                {_kpi_html("위시리스트수", format_number_commas(cur.get("wishlist_conv", 0.0)), f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"), highlight=True)}
-                {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
-                {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
-                {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"))}
-            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row' style='margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                    {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                    {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
+                </div>
+                <div class='kpi-row'>
+                    {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
+                    {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+                </div>
+            </div>
         </div>
         """
     else:
@@ -351,17 +370,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
                 {_kpi_html("노출수", format_number_commas(cur.get("imp", 0.0)), f"{pct_to_arrow(_delta_pct('imp'))}", _delta_pct("imp"))}
                 {_kpi_html("클릭수", format_number_commas(cur.get("clk", 0.0)), f"{pct_to_arrow(_delta_pct('clk'))}", _delta_pct("clk"))}
-                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.2f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
+                {_kpi_html("클릭률", f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('ctr'))}", _delta_pct("ctr"))}
             </div></div>
             <div class='kpi-group'><div class='kpi-group-title'>비용 지표</div><div class='kpi-row'>
-                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=True, improve_when_up=False)}
+                {_kpi_html("광고비", format_currency(cur.get("cost", 0.0)), f"{pct_to_arrow(_delta_pct('cost'))}", _delta_pct("cost"), highlight=False, improve_when_up=False)}
                 {_kpi_html("CPC", format_currency(cur.get("cpc", 0.0)), f"{pct_to_arrow(_delta_pct('cpc'))}", _delta_pct("cpc"), improve_when_up=False)}
             </div></div>
-            <div class='kpi-group'><div class='kpi-group-title'>성과 지표</div><div class='kpi-row'>
-                {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.0f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
-                {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
-                {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"))}
-            </div></div>
+            <div class='kpi-group'>
+                <div class='kpi-group-title'>성과 지표</div>
+                <div class='kpi-row'>
+                    {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
+            </div>
         </div>
         """
     st.markdown(kpi_html, unsafe_allow_html=True)
@@ -369,11 +391,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown("<div class='nv-sec-title' style='margin-top:40px;'>📊 일자별 성과 추이</div>", unsafe_allow_html=True)
     if daily_ts is not None and not daily_ts.empty:
+        # ✨ 캐시나 DB 구조 차이로 인해 컬럼이 누락되었을 경우를 대비한 방어 로직
         expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
         for c in expected_cols:
             if c not in daily_ts.columns:
                 daily_ts[c] = 0.0
                 
+        # ✨ 안전하게 보장된 컬럼들로만 그룹화 수행
         daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
         
         tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
@@ -441,7 +465,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         def _combine(r, c_val, c_pct, is_currency=False):
             v = r.get(c_val); p = r.get(c_pct)
             if pd.isna(v) or v == 0: return "-"
-            v_str = f"{v:+,.0f}원" if is_currency else f"{v:+,.1f}"
+            v_str = f"{v:+,.0f}원" if is_currency else (f"{v:+,.0f}" if c_val in ["노출 차이", "클릭 차이"] else f"{v:+,.1f}")
             return f"{v_str} ({p:+.1f}%)"
             
         if toggle_state:
@@ -551,11 +575,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 f"[ {report_campaign_type} 성과 요약 ]",
                 _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
                 _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
-                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.2f}%"),
+                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.1f}%"),
                 _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
                 _format_report_line("총 전환수", f"{float(report_cur.get('tot_conv', 0.0)):.1f}"),
                 _format_report_line("총 전환매출", f"{int(float(report_cur.get('tot_sales', 0))):,}원"),
-                _format_report_line("통합 ROAS", f"{float(report_cur.get('tot_roas', 0)):.2f}%"),
+                _format_report_line("통합 ROAS", f"{float(report_cur.get('tot_roas', 0)):.1f}%"),
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         else:
@@ -563,13 +587,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 f"[ {report_campaign_type} 성과 요약 (상세) ]",
                 _format_report_line("노출수", f"{int(float(report_cur.get('imp', 0))):,}"),
                 _format_report_line("클릭수", f"{int(float(report_cur.get('clk', 0))):,}"),
-                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.2f}%"),
+                _format_report_line("클릭률", f"{float(report_cur.get('ctr', 0)):.1f}%"),
                 _format_report_line("광고 소진비용", f"{int(float(report_cur.get('cost', 0))):,}원"),
-                _format_report_line("위시리스트수", f"{int(float(report_cur.get('wishlist_conv', 0))):,}"),
-                _format_report_line("장바구니 담기수", f"{int(float(report_cur.get('cart_conv', 0))):,}"),
+                _format_report_line("위시리스트수", f"{float(report_cur.get('wishlist_conv', 0)):.1f}"),
+                _format_report_line("장바구니 담기수", f"{float(report_cur.get('cart_conv', 0)):.1f}"),
                 _format_report_line("구매완료수", f"{float(report_cur.get('conv', 0.0)):.1f}"),
                 _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
-                _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.2f}%"),
+                _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.1f}%"),
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         st.code(report_text, language="text")
