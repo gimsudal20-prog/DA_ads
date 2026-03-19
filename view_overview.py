@@ -443,34 +443,45 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    # 캠페인별 목표 ROAS 달성 현황 섹션
-    st.markdown("<div class='nv-sec-title' style='margin-top:40px; margin-bottom:10px;'>캠페인별 ROAS 달성 현황</div>", unsafe_allow_html=True)
+    # 캠페인별 목표 ROAS 달성 현황 섹션 (오해 방지 및 캐스팅 오류 완전 차단)
+    st.markdown("<div class='nv-sec-title' style='margin-top:40px; margin-bottom:10px;'>캠페인별 목표 달성 현황 (구매 ROAS 기준)</div>", unsafe_allow_html=True)
     
-    # 통합 ROAS 보기 토글 버튼 (기본은 꺼짐)
-    show_integ_roas = st.toggle("통합 ROAS 수치 함께 보기", value=False)
-    
+    # 통합 ROAS 표기 토글
+    show_integ_roas = st.toggle("🔄 통합 ROAS 수치 함께 보기 (장바구니, 위시리스트 포함)", value=False)
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
     if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
-        target_df = cur_camp[(cur_camp["target_roas"] > 0) | (cur_camp["min_roas"] > 0)].copy()
+        # 안전한 Float 변환을 위해 copy본에서 작업
+        target_df = cur_camp.copy()
+        target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
+        target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
+        
+        # 최소 혹은 목표값이 설정된 캠페인만 추출
+        target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
+        
         if not target_df.empty:
             target_df = target_df.sort_values(by="cost", ascending=False)
             
             html_tracker = "<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;'>\n"
             for _, row in target_df.iterrows():
                 camp_name = row["campaign_name"]
-                t_roas = row["target_roas"]
-                m_roas = row["min_roas"]
+                t_roas = float(row["target_roas"])
+                m_roas = float(row["min_roas"])
+                cost = float(row.get("cost", 0.0))
                 
-                # 달성률 및 프로그레스 바 기준을 무조건 '구매 ROAS'로 고정
-                c_roas_purch = (row.get("sales", 0) / row["cost"] * 100) if row["cost"] > 0 else 0
-                c_roas_integ = (row.get("tot_sales", 0) / row["cost"] * 100) if row["cost"] > 0 else 0
+                # 달성 판정은 무조건 "구매완료 ROAS" 기준으로 고정합니다.
+                sales_purch = float(row.get("sales", 0.0))
+                sales_integ = float(row.get("tot_sales", 0.0))
                 
+                c_roas_purch = (sales_purch / cost * 100) if cost > 0 else 0.0
+                c_roas_integ = (sales_integ / cost * 100) if cost > 0 else 0.0
+                
+                # 프로그레스 바(달성률)를 그리기 위한 기준값 선택 (목표값이 있으면 목표 우선)
                 base_roas = t_roas if t_roas > 0 else m_roas
-                achieve_raw = (c_roas_purch / base_roas * 100) if base_roas > 0 else 0
-                achieve = min(achieve_raw, 100)
+                achieve_raw = (c_roas_purch / base_roas * 100) if base_roas > 0 else 0.0
+                achieve = min(achieve_raw, 100.0)
                 
-                # 구매 ROAS 기준으로 조건 판정
+                # 무조건 구매 ROAS (c_roas_purch) 기준으로 상태를 판별합니다.
                 if t_roas > 0 and c_roas_purch >= t_roas:
                     color = "#0528F2"  # 파란색 (목표 달성)
                     status = "목표 달성"
@@ -481,16 +492,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     color = "#F79009"  # 주황색 (미달)
                     status = "미달"
                 
-                # 통합 ROAS 표기용 HTML (토글 On일때만 렌더링)
+                # 토글 ON 일때만 노출되는 통합 ROAS 텍스트
                 integ_html = f"<div style='margin-top:4px;'><span style='color:var(--nv-muted-light);'>현재 (통합 ROAS):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas_integ:,.1f}%</span></div>" if show_integ_roas else ""
                 
-                # 들여쓰기 0칸으로 밀착하여 마크다운 코드블록 변환 방지
+                # 띄어쓰기(들여쓰기)를 완전히 제거하여 Markdown이 코드로 오작동하는 것을 완벽 차단합니다.
                 html_tracker += f"""<div style='background:var(--nv-bg); border:1px solid var(--nv-line); padding:20px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.02);'>
 <div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>
 <div style='font-weight:700; font-size:14px; color:var(--nv-text); word-break:keep-all; line-height:1.4;'>{camp_name}</div>
 <div style='text-align:right;'>
-<div style='font-size:15px; font-weight:700; color:{color}; white-space:nowrap; margin-left:12px;'>{achieve_raw:,.1f}%</div>
-<div style='font-size:11px; font-weight:600; color:{color}; margin-top:2px;'>{status}</div>
+<div style='font-size:16px; font-weight:800; color:{color}; white-space:nowrap; margin-left:12px;'>달성률 {achieve_raw:,.1f}%</div>
+<div style='font-size:12px; font-weight:700; color:{color}; margin-top:2px;'>{status}</div>
 </div>
 </div>
 <div style='height:8px; background:var(--nv-surface); border-radius:4px; overflow:hidden; margin-bottom:12px; position:relative;'>
@@ -498,7 +509,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 </div>
 <div style='display:flex; justify-content:space-between; font-size:13px; align-items:flex-end;'>
 <div>
-<div><span style='color:var(--nv-muted-light);'>현재 (구매 ROAS):</span> <span style='font-weight:600; color:var(--nv-text);'>{c_roas_purch:,.1f}%</span></div>
+<div><span style='color:var(--nv-primary); font-weight:700;'>현재 (구매 ROAS):</span> <span style='font-weight:700; color:var(--nv-primary);'>{c_roas_purch:,.1f}%</span></div>
 {integ_html}
 </div>
 <div style='text-align:right;'>
