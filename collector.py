@@ -43,6 +43,7 @@ SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
 SKIP_AD_STATS = False       
+FAST_MODE = False
 
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
@@ -54,6 +55,8 @@ DEBUG_DIR = Path(os.getenv("DEBUG_REPORT_DIR", "debug_reports"))
 
 def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
     try:
+        if FAST_MODE:
+            return
         if not os.getenv("DEBUG_REPORTS", "1") in ["1", "true", "TRUE", "yes", "YES"]:
             return
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
@@ -128,6 +131,71 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
         return True, data
     except Exception:
         return False, None
+
+def lock_key_for_job(customer_id: str, target_date: date, scope: str = "collector_daily") -> int:
+    raw = f"{scope}:{str(customer_id).strip()}:{target_date.isoformat()}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=False) & 0x7FFFFFFFFFFFFFFF
+
+
+def acquire_job_lock(engine: Engine, customer_id: str, target_date: date):
+    if not DB_URL or not str(DB_URL).lower().startswith(("postgresql", "postgres://")):
+        return None
+    raw_conn = None
+    cur = None
+    try:
+        raw_conn = engine.raw_connection()
+        cur = raw_conn.cursor()
+        lk = lock_key_for_job(customer_id, target_date)
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lk,))
+        row = cur.fetchone()
+        locked = bool(row[0]) if row else False
+        if not locked:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                raw_conn.close()
+            except Exception:
+                pass
+            return False
+        return raw_conn
+    except Exception as e:
+        log(f"⚠️ 락 획득 실패 - 무락 모드로 진행합니다: {e}")
+        try:
+            if cur:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if raw_conn:
+                raw_conn.close()
+        except Exception:
+            pass
+        return None
+
+
+def release_job_lock(raw_conn, customer_id: str, target_date: date):
+    if raw_conn is None:
+        return
+    cur = None
+    try:
+        cur = raw_conn.cursor()
+        lk = lock_key_for_job(customer_id, target_date)
+        cur.execute("SELECT pg_advisory_unlock(%s)", (lk,))
+    except Exception:
+        pass
+    finally:
+        try:
+            if cur:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            raw_conn.close()
+        except Exception:
+            pass
+
 
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
@@ -456,7 +524,7 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         if status == 200 and isinstance(data, dict) and "data" in data: return data["data"]
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, max(1, len(chunks)))) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results: out.extend(res)
     return out
@@ -598,7 +666,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
         jobs = {}
 
         for tp in batch:
-            time.sleep(random.uniform(0.5, 1.5))
+            time.sleep(random.uniform(0.1, 0.3) if FAST_MODE else random.uniform(0.5, 1.5))
             payload = {"reportTp": tp, "statDt": target_date.strftime("%Y%m%d")}
             status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload, raise_error=False)
             if status == 200 and data and "reportJobId" in data:
@@ -628,7 +696,7 @@ def fetch_multiple_stat_reports(customer_id: str, report_types: List[str], targe
                         safe_call("DELETE", f"/stat-reports/{job_id}", customer_id)
                         del jobs[tp]
             if jobs:
-                time.sleep(1.0)
+                time.sleep(0.5 if FAST_MODE else 1.0)
             max_wait -= 1
 
         for job_id in jobs.values():
@@ -888,7 +956,7 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         })
 
     def flush_debug_rows():
-        if not debug_rows or not debug_account_name or not debug_target_date:
+        if FAST_MODE or not debug_rows or not debug_account_name or not debug_target_date:
             return
         dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
         os.makedirs(dbg_dir, exist_ok=True)
@@ -1512,8 +1580,13 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
     return len(rows)
 
 
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
+
+    job_lock = acquire_job_lock(engine, customer_id, target_date)
+    if job_lock is False:
+        log(f"⏭️ [ {account_name} ] 동일 날짜/계정 수집이 이미 실행 중이라 건너뜁니다. ({target_date})")
+        return
 
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -1631,7 +1704,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
-        live_keyword_resolver = make_live_keyword_resolver(customer_id)
+        live_keyword_resolver = None if fast_mode else make_live_keyword_resolver(customer_id)
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
@@ -1789,6 +1862,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
+    finally:
+        if job_lock is not False:
+            release_job_lock(job_lock, customer_id, target_date)
 
 def main():
     engine = get_engine()
@@ -1799,13 +1875,22 @@ def main():
     parser.add_argument("--account_name", type=str, default="", help="단일 업체명 또는 일부 문자열")
     parser.add_argument("--account_names", type=str, default="", help="쉼표(,)로 구분한 여러 업체명")
     parser.add_argument("--skip_dim", action="store_true")
+    parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
     args = parser.parse_args()
-    
+
+    global FAST_MODE
+    FAST_MODE = bool(args.fast)
+    if FAST_MODE:
+        args.skip_dim = True
+
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else (datetime.utcnow() + timedelta(hours=9)).date() - timedelta(days=1)
     
     print("\n" + "="*50, flush=True)
     print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print("="*50, flush=True)
+    if FAST_MODE:
+        print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
@@ -1865,7 +1950,7 @@ def main():
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim) for acc in accounts_info]
+        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
             except Exception: pass
