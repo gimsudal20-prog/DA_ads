@@ -323,10 +323,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
     patch_date = date(2026, 3, 11)
-    has_pre_patch_cur = (f["start"] < patch_date)
-    if has_pre_patch_cur:
-        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 일부 구매완료/보조전환 지표는 총전환 기준과 차이가 있을 수 있습니다.")
-    combined_toggle = False
+    if f["end"] < patch_date:
+        overview_mode = "legacy"
+        st.info("💡 3월 11일 이전 기간이라 요약지표는 총전환 기준으로 표시됩니다. 구매완료/보조전환 분리는 지원되지 않습니다.")
+    elif f["start"] >= patch_date:
+        overview_mode = "split"
+    else:
+        overview_mode = "mixed"
+        st.info("💡 3월 11일 이전 데이터가 함께 포함되어 있어 요약지표와 추이 그래프는 총전환 기준으로 표시됩니다.")
+    combined_toggle = overview_mode != "split"
 
     cur = cur_summary
     base = base_summary
@@ -354,7 +359,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cls_hl = " highlight-positive" if "ROAS" in label else (" highlight" if highlight else "")
         return f"<div class='kpi{cls_hl}'><div class='k'>{label}</div><div class='v'>{value}</div><div class='d {cls_delta}'>{delta_text}</div></div>"
 
-    if not combined_toggle:
+    if overview_mode == "split":
         kpi_html = f"""
         <div class='kpi-group-container'>
             <div class='kpi-group'><div class='kpi-group-title'>유입 지표</div><div class='kpi-row'>
@@ -368,7 +373,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             </div></div>
             <div class='kpi-group'>
                 <div class='kpi-group-title'>성과 지표</div>
-                <div class='kpi-row' style='margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed var(--nv-line);'>
+                <div class='kpi-row' style='margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
+                <div class='kpi-row' style='margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--nv-line);'>
                     {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                     {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                     {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
@@ -395,7 +405,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             <div class='kpi-group'>
                 <div class='kpi-group-title'>성과 지표</div>
                 <div class='kpi-row'>
-                    {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
                     {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
                     {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
                 </div>
@@ -416,11 +426,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
         with tab_t1:
-            y_col = "sales"
-            # 우측 y축 축제목이 잘려 보이는 문제를 피하기 위해 짧은 라벨 사용
-            # (범례/차트 제목으로 이미 구매완료 매출임을 충분히 안내)
+            if overview_mode == "split":
+                y_col = "sales"
+                chart_title = "비용 및 구매완료 매출 추이"
+            else:
+                y_col = "tot_sales"
+                chart_title = "비용 및 총전환 매출 추이"
             y_name = "매출"
-            render_echarts_dual_axis("비용 및 구매완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
+            render_echarts_dual_axis(chart_title, daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
         with tab_t2:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
