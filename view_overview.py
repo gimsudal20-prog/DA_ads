@@ -324,10 +324,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown(f"<div style='font-size:12px; font-weight:500; color:var(--nv-muted); margin-bottom:16px;'>비교 기준: <span style='color:var(--nv-primary); font-weight:600;'>{cmp_date_info}</span></div>", unsafe_allow_html=True)
 
     patch_date = date(2026, 3, 11)
-    has_pre_patch_cur = (f["start"] < patch_date)
-    if has_pre_patch_cur:
-        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 일부 구매완료/보조전환 지표는 총전환 기준과 차이가 있을 수 있습니다.")
-    combined_toggle = False
+    is_legacy_only = f["end"] < patch_date
+    is_split_only = f["start"] >= patch_date
+    is_mixed_period = (f["start"] < patch_date <= f["end"])
+
+    if is_mixed_period:
+        st.info("💡 3월 11일 이전/이후 데이터가 함께 포함되어 있어 상단 성과지표와 추이 그래프는 총전환 기준으로 표시합니다.")
+    elif is_legacy_only:
+        st.info("💡 3월 11일 이전 데이터 구간이라 상단 성과지표와 추이 그래프는 총전환 기준으로 표시합니다.")
+
+    # True = 총전환(legacy/mixed), False = 분리지표(split-only)
+    combined_toggle = not is_split_only
 
     cur = cur_summary
     base = base_summary
@@ -370,7 +377,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             </div></div>
             <div class='kpi-group'>
                 <div class='kpi-group-title'>성과 지표</div>
-                <div class='kpi-row' style='margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed var(--nv-line);'>
+                <div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
+                    {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                </div>
+                <div class='kpi-row' style='margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--nv-line);'>
                     {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
                     {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                     {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
@@ -378,6 +390,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 <div class='kpi-row'>
                     {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
                     {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+                    {_kpi_html("장바구니 매출", format_currency(cur.get("cart_sales", 0.0)), f"{pct_to_arrow(_delta_pct('cart_sales'))}", _delta_pct("cart_sales"))}
                 </div>
             </div>
         </div>
@@ -418,9 +431,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         
         tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
         with tab_t1:
-            y_col = "sales"
-            y_name = "구매완료 매출"
-            render_echarts_dual_axis("비용 및 구매완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
+            if combined_toggle:
+                y_col = "tot_sales"
+                y_name = "매출"
+                chart_title = "비용 및 총전환 매출 추이"
+            else:
+                y_col = "sales"
+                y_name = "매출"
+                chart_title = "비용 및 구매완료 매출 추이"
+            render_echarts_dual_axis(chart_title, daily_ts_chart, "dt", "cost", "광고비", y_col, y_name, height=320)
         with tab_t2:
             render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
     else: st.info("해당 기간의 일자별 트렌드 데이터가 없습니다.")
