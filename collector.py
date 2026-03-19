@@ -1380,9 +1380,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
-                    # SHOPPINGKEYWORD_CONVERSION_DETAIL 는 이미 쇼핑 전용 리포트라
-                    # 추가 campaign 필터를 걸면 누락될 수 있다. (실제 현업 로그에서 과소집계 발생)
-                    report_allowed_campaign_ids = None if tp == "SHOPPINGKEYWORD_CONVERSION_DETAIL" else shopping_campaign_ids
+                    # 포렌식 결과: AD_CONVERSION 안에도 실제 쇼핑 전환 행이 다수 들어오는데
+                    # 기존 shopping_campaign_ids 필터 때문에 cmp-a001-01 / cmp-a001-04 등의 유효 행이
+                    # 대량으로 campaign_filtered 처리되며 누락되고 있었다.
+                    # 따라서 전환 detail 리포트는 campaign_id로 선필터하지 않고 전부 파싱한다.
+                    report_allowed_campaign_ids = None
 
                     one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
                         conv_df,
@@ -1417,24 +1419,25 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 ad_camp_map, ad_kw_map, ad_ad_map, ad_summary = ad_conv_maps
                 shop_camp_map, shop_kw_map, shop_ad_map, shop_summary = shop_kw_maps
 
-                # 캠페인/소재는 AD_CONVERSION 우선, 없으면 쇼핑 키워드 상세를 fallback으로 사용
+                # 포렌식 결과상 AD_CONVERSION 이 대시보드 총합에 훨씬 가깝고,
+                # SHOPPINGKEYWORD_CONVERSION_DETAIL 은 일부 subset 만 내려오는 경우가 있다.
+                # 따라서 summary / campaign / ad / keyword 의 우선 원천은 AD_CONVERSION 으로 두고,
+                # 쇼핑 키워드 detail 은 AD keyword split 이 비었을 때만 fallback 으로 사용한다.
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-
-                # 키워드는 SHOPPINGKEYWORD_CONVERSION_DETAIL 우선.
-                # 이 리포트가 비거나 keyword 매핑이 0건이면 AD_CONVERSION keyword split을 fallback으로 사용한다.
-                kw_map = shop_kw_map if shop_kw_map else ad_kw_map
+                kw_map = ad_kw_map if ad_kw_map else shop_kw_map
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
-                final_split_summary = merge_split_summaries(ad_summary, shop_summary)
+                final_split_summary = ad_summary if split_summary_has_values(ad_summary) else shop_summary
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
-                    kw_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else ('AD_CONVERSION' if ad_kw_map else 'none')
+                    kw_src = 'AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none')
+                    summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
-                        f"campaign/ad={camp_ad_src}, keyword={kw_src}"
+                        f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}"
                     )
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
