@@ -320,18 +320,21 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     has_cart = "cart_conv" in fact_cols
     has_wish = "wishlist_conv" in fact_cols
     
+    # ✨ COALESCE 처리로 NULL 연산 증발 원천 차단
     cart_c_expr = "COALESCE(f.cart_conv, 0)" if has_cart else "0"
     wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
     cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
     wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
+    conv_c_expr = "COALESCE(f.conv, 0)"
+    conv_s_expr = "COALESCE(f.sales, 0)"
 
     if has_primary:
-        conv_sql = "SUM(COALESCE(f.primary_conv, f.conv)) as conv, SUM(COALESCE(f.primary_sales, f.sales)) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
+        conv_sql = f"SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
     else:
-        conv_sql = f"SUM(f.conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(f.sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
+        conv_sql = f"SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    cart_sql = "SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales" if has_cart else "0 as cart_conv, 0 as cart_sales"
-    wish_sql = "SUM(f.wishlist_conv) as wishlist_conv, SUM(f.wishlist_sales) as wishlist_sales" if has_wish else "0 as wishlist_conv, 0 as wishlist_sales"
+    cart_sql = f"SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
+    wish_sql = f"SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
 
     sql = f"""
         SELECT
@@ -390,24 +393,30 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     has_cart = "cart_conv" in camp_fact_cols
     has_wish = "wishlist_conv" in camp_fact_cols
     
+    # ✨ COALESCE 및 누락된 위시리스트 추가
     cart_c_expr = "COALESCE(cart_conv, 0)" if has_cart else "0"
     wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
     cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
     wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
+    conv_c_expr = "COALESCE(conv, 0)"
+    conv_s_expr = "COALESCE(sales, 0)"
 
     if has_primary:
-        conv_agg_sql = ", SUM(COALESCE(primary_conv, conv)) as conv, SUM(COALESCE(primary_sales, sales)) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
     else:
-        conv_agg_sql = f", SUM(conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if has_cart else ", 0 as cart_conv, 0 as cart_sales"
+    cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
+    wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
+    
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
     sql = f"""
         WITH agg AS (
             SELECT customer_id, campaign_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_campaign_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, campaign_id
@@ -415,7 +424,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         SELECT 
             agg.customer_id, agg.campaign_id, 
             c.campaign_name, c.{cp_col} as campaign_type,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
@@ -464,20 +473,25 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
     cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
     wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
+    conv_c_expr = "COALESCE(conv, 0)"
+    conv_s_expr = "COALESCE(sales, 0)"
 
     if has_primary:
-        conv_agg_sql = ", SUM(COALESCE(primary_conv, conv)) as conv, SUM(COALESCE(primary_sales, sales)) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
     else:
-        conv_agg_sql = f", SUM(conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if has_cart else ", 0 as cart_conv, 0 as cart_sales"
+    cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
+    wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
+    
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
     sql = f"""
         WITH agg AS (
             SELECT customer_id, keyword_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_keyword_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, keyword_id
@@ -486,7 +500,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, k.keyword,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
         JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
@@ -542,20 +556,25 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     wish_c_expr = "COALESCE(wishlist_conv, 0)" if has_wish else "0"
     cart_s_expr = "COALESCE(cart_sales, 0)" if has_cart else "0"
     wish_s_expr = "COALESCE(wishlist_sales, 0)" if has_wish else "0"
+    conv_c_expr = "COALESCE(conv, 0)"
+    conv_s_expr = "COALESCE(sales, 0)"
 
     if has_primary:
-        conv_agg_sql = ", SUM(COALESCE(primary_conv, conv)) as conv, SUM(COALESCE(primary_sales, sales)) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM(COALESCE(primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
     else:
-        conv_agg_sql = f", SUM(conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(conv) as tot_conv, SUM(sales) as tot_sales"
+        conv_agg_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    cart_agg_sql = ", SUM(cart_conv) as cart_conv, SUM(cart_sales) as cart_sales" if has_cart else ", 0 as cart_conv, 0 as cart_sales"
+    cart_agg_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
+    wish_agg_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
+    
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
     sql = f"""
         WITH agg AS (
             SELECT customer_id, ad_id,
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_ad_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, ad_id
@@ -564,7 +583,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
@@ -604,16 +623,19 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
     wish_c_expr = "COALESCE(f.wishlist_conv, 0)" if has_wish else "0"
     cart_s_expr = "COALESCE(f.cart_sales, 0)" if has_cart else "0"
     wish_s_expr = "COALESCE(f.wishlist_sales, 0)" if has_wish else "0"
+    conv_c_expr = "COALESCE(f.conv, 0)"
+    conv_s_expr = "COALESCE(f.sales, 0)"
 
     if has_primary:
-        conv_select_sql = ", SUM(COALESCE(f.primary_conv, f.conv)) as conv, SUM(COALESCE(f.primary_sales, f.sales)) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
+        conv_select_sql = f", SUM(COALESCE(f.primary_conv, {conv_c_expr})) as conv, SUM(COALESCE(f.primary_sales, {conv_s_expr})) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
     else:
-        conv_select_sql = f", SUM(f.conv - {cart_c_expr} - {wish_c_expr}) as conv, SUM(f.sales - {cart_s_expr} - {wish_s_expr}) as sales, SUM(f.conv) as tot_conv, SUM(f.sales) as tot_sales"
+        conv_select_sql = f", SUM({conv_c_expr} - {cart_c_expr} - {wish_c_expr}) as conv, SUM({conv_s_expr} - {cart_s_expr} - {wish_s_expr}) as sales, SUM({conv_c_expr}) as tot_conv, SUM({conv_s_expr}) as tot_sales"
 
-    cart_select_sql = ", SUM(f.cart_conv) as cart_conv, SUM(f.cart_sales) as cart_sales" if has_cart else ", 0 as cart_conv, 0 as cart_sales"
+    cart_select_sql = f", SUM({cart_c_expr}) as cart_conv, SUM({cart_s_expr}) as cart_sales"
+    wish_select_sql = f", SUM({wish_c_expr}) as wishlist_conv, SUM({wish_s_expr}) as wishlist_sales"
 
     sql = f"""
-        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}
+        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}{wish_select_sql}
         FROM fact_campaign_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql} 
@@ -624,7 +646,6 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
     if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
     return df
 
-# ✨ 추가된 쇼핑 검색어(query_text) 분석 전용 쿼리
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_shopping_query_daily"): return pd.DataFrame()
