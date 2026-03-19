@@ -410,17 +410,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         </div>
         <div class='kpi-group'>
             <div class='kpi-group-title'>성과 지표</div>
-            <div style='font-size:12px; font-weight:700; color:var(--nv-primary); margin-bottom:8px;'>구매완료</div>
-            <div class='kpi-row' style='margin-bottom:14px; padding-bottom:14px; border-bottom:1px dashed var(--nv-line);'>
-                {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
-                {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
-                {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
-            </div>
             <div style='font-size:12px; font-weight:700; color:var(--nv-primary); margin-bottom:8px;'>전체 전환</div>
             <div class='kpi-row' style='margin-bottom:14px; padding-bottom:14px; border-bottom:1px dashed var(--nv-line);'>
                 {_kpi_html("총 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
                 {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
                 {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+            </div>
+            <div style='font-size:12px; font-weight:700; color:var(--nv-primary); margin-bottom:8px;'>구매완료</div>
+            <div class='kpi-row' style='margin-bottom:14px; padding-bottom:14px; border-bottom:1px dashed var(--nv-line);'>
+                {_kpi_html("구매 ROAS", f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('roas'))}", _delta_pct("roas"), highlight=True)}
+                {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
+                {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
             </div>
             <div style='font-size:12px; font-weight:700; color:var(--nv-primary); margin-bottom:8px;'>보조 전환</div>
             <div class='kpi-row'>
