@@ -1104,6 +1104,65 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
 
 
+
+def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, dict]:
+    lookup = {}
+    unique_lookup = {}
+    if df is None or df.empty:
+        return lookup, unique_lookup
+
+    header_idx = -1
+    pk_cands = ["키워드id", "keywordid", "ncckeywordid"]
+    for i in range(min(20, len(df))):
+        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
+        if any(c in row_vals for c in [normalize_header(x) for x in pk_cands]) or "노출수" in row_vals or "impressions" in row_vals:
+            header_idx = i
+            break
+
+    if header_idx != -1:
+        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
+        data_df = df.iloc[header_idx + 1:]
+        kid_idx = get_col_idx(headers, ["키워드id", "keywordid", "ncckeywordid"])
+        gid_idx = get_col_idx(headers, ["광고그룹id", "adgroupid", "nccadgroupid"])
+        kw_idx = get_col_idx(headers, ["키워드", "keyword", "연관검색어", "relkeyword", "검색어"])
+    else:
+        # raw TSV fallback: date, customer, campaign, adgroup, keywordText, keywordId, ... 형태를 우선 가정
+        data_df = df.iloc[1:] if ("date" in str(df.iloc[0, 0]).lower() or "id" in str(df.iloc[0, 0]).lower()) else df
+        gid_idx = 3
+        kw_idx = 4
+        kid_idx = 5
+
+    rows = []
+    text_freq = {}
+    group_rows = {}
+    for _, r in data_df.iterrows():
+        vals = r.fillna("").tolist()
+        if len(vals) <= max(kid_idx, gid_idx, kw_idx):
+            continue
+        kid = str(vals[kid_idx]).strip() if kid_idx != -1 and len(vals) > kid_idx else ""
+        gid = str(vals[gid_idx]).strip() if gid_idx != -1 and len(vals) > gid_idx else ""
+        kw = str(vals[kw_idx]).strip() if kw_idx != -1 and len(vals) > kw_idx else ""
+        if not kid or kid == '-' or not gid or gid == '-' or not kw or kw == '-':
+            continue
+        kid_s = kid
+        gid_s = gid
+        kw_s = kw
+        kw_l = kw_s.lower()
+        kw_n = normalize_keyword_text(kw_s)
+        lookup[(gid_s, kw_s)] = kid_s
+        lookup[(gid_s, kw_l)] = kid_s
+        lookup[(gid_s, kw_n)] = kid_s
+        group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
+        if kw_n:
+            text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
+            rows.append((kw_n, kid_s))
+    for gid_s, rs in group_rows.items():
+        lookup[(gid_s, '__rows__')] = rs
+    for kw_n, kid_s in rows:
+        if text_freq.get(kw_n) == 1:
+            unique_lookup.setdefault(kw_n, []).append(kid_s)
+    return lookup, unique_lookup
+
 def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = None, has_conv_report: bool = False) -> dict:
     if df is None or df.empty:
         return {}
@@ -1377,6 +1436,29 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
+        # KEYWORD 리포트가 내려오면, 그 안의 (adgroup_id, keyword_text, keyword_id) 조합으로
+        # shopping keyword text -> keyword_id 매핑을 추가 보강한다.
+        kw_report_lookup, kw_report_unique_lookup = build_keyword_lookup_from_keyword_report(dfs.get("KEYWORD")) if 'dfs' in locals() else ({}, {})
+        if kw_report_lookup:
+            for k, v in kw_report_lookup.items():
+                if k == ('', '__rows__'):
+                    continue
+                if isinstance(v, list):
+                    # __rows__ 는 누적 merge
+                    existing = keyword_lookup.get(k, [])
+                    if not isinstance(existing, list):
+                        existing = []
+                    keyword_lookup[k] = existing + [x for x in v if x not in existing]
+                else:
+                    keyword_lookup[k] = keyword_lookup.get(k) or v
+        if kw_report_unique_lookup:
+            for k, v in kw_report_unique_lookup.items():
+                existing = keyword_unique_lookup.get(k, [])
+                if not isinstance(existing, list):
+                    existing = [existing] if existing else []
+                merged = list(dict.fromkeys(existing + list(v)))
+                keyword_unique_lookup[k] = merged
+
         live_keyword_resolver = make_live_keyword_resolver(customer_id)
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
@@ -1388,7 +1470,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["AD"]
+            report_types = ["AD", "KEYWORD"]
             split_candidate_reports = []
             if split_enabled_for_date(target_date) and shopping_campaign_ids:
                 split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
