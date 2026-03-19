@@ -363,9 +363,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     {_kpi_html("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('conv'))}", _delta_pct("conv"))}
                     {_kpi_html("구매완료 매출", format_currency(cur.get("sales", 0.0)), f"{pct_to_arrow(_delta_pct('sales'))}", _delta_pct("sales"), highlight=True)}
                 </div>
-                <div class='kpi-row'>
+                <div class='kpi-row' style='margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px dashed var(--nv-line);'>
                     {_kpi_html("장바구니수", f"{float(cur.get('cart_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('cart_conv'))}", _delta_pct("cart_conv"))}
                     {_kpi_html("위시리스트수", f"{float(cur.get('wishlist_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('wishlist_conv'))}", _delta_pct("wishlist_conv"))}
+                    {_kpi_html("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}", f"{pct_to_arrow(_delta_pct('tot_conv'))}", _delta_pct("tot_conv"))}
+                </div>
+                <div class='kpi-row'>
+                    {_kpi_html("통합 ROAS", f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", f"{pct_to_arrow(_delta_pct('tot_roas'))}", _delta_pct("tot_roas"), highlight=True)}
+                    {_kpi_html("총 전환매출", format_currency(cur.get("tot_sales", 0.0)), f"{pct_to_arrow(_delta_pct('tot_sales'))}", _delta_pct("tot_sales"), highlight=True)}
+                    {_kpi_html("장바구니 매출액", format_currency(cur.get("cart_sales", 0.0)), f"{pct_to_arrow(_delta_pct('cart_sales'))}", _delta_pct("cart_sales"))}
                 </div>
             </div>
         </div>
@@ -494,15 +500,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ("CPC", "CPC 차이", "CPC 증감", True),
                 ("장바구니 담기수", "장바구니 차이", "장바구니 증감", False),
                 ("위시리스트수", "위시리스트 차이", "위시리스트 증감", False),
-                ("장바구니 매출액", "장바구니 매출액", "장바구니ROAS 증감", True), 
                 ("구매완료수", "구매 차이", "구매 증감", False),
-                ("구매완료 매출", "매출 차이", "매출 증감", True)
+                ("구매완료 매출", "구매 매출 차이", "구매 매출 증감", True),
+                ("총 전환수", "총 전환 차이", "총 전환 증감", False),
+                ("총 전환매출", "총 매출 차이", "총 매출 증감", True),
             ]
             for m in metrics: out[f"{m[0]} 증감/율"] = out.apply(lambda r: _combine(r, m[1], m[2], m[3]), axis=1)
             out["구매 ROAS 증감 "] = out["구매 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
-            
-            display_cols = base_cols + ["노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율", "장바구니 담기수", "장바구니 담기수 증감/율", "위시리스트수", "위시리스트수 증감/율", "구매완료수", "구매완료수 증감/율", "구매완료 매출", "구매완료 매출 증감/율", "구매 ROAS(%)", "구매 ROAS 증감 "]
-            return out[[c for c in display_cols if c in out.columns]], [f"{m[0]} 증감/율" for m in metrics] + ["구매 ROAS 증감 "]
+            out["통합 ROAS 증감 "] = out["통합 ROAS 증감"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+
+            display_cols = base_cols + ["노출수", "노출수 증감/율", "클릭수", "클릭수 증감/율", "광고비", "광고비 증감/율", "CPC", "CPC 증감/율", "장바구니 담기수", "장바구니 담기수 증감/율", "위시리스트수", "위시리스트수 증감/율", "구매완료수", "구매완료수 증감/율", "구매완료 매출", "구매완료 매출 증감/율", "구매 ROAS(%)", "구매 ROAS 증감 ", "총 전환수", "총 전환수 증감/율", "총 전환매출", "총 전환매출 증감/율", "통합 ROAS(%)", "통합 ROAS 증감 "]
+            return out[[c for c in display_cols if c in out.columns]], [f"{m[0]} 증감/율" for m in metrics] + ["구매 ROAS 증감 ", "통합 ROAS 증감 "]
 
     def _display_ts_table(df, col_name, toggle_state_val):
         if df.empty:
@@ -511,7 +519,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if toggle_state_val:
             cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
         else:
-            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
+            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
         
         st.dataframe(df[cols].style.format(fmt_dict_ts), use_container_width=True, hide_index=True)
 
@@ -599,6 +607,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("구매완료수", f"{float(report_cur.get('conv', 0.0)):.1f}"),
                 _format_report_line("구매완료 매출", f"{int(float(report_cur.get('sales', 0))):,}원"),
                 _format_report_line("구매 ROAS", f"{float(report_cur.get('roas', 0)):.1f}%"),
+                _format_report_line("총 전환수", f"{float(report_cur.get('tot_conv', 0.0)):.1f}"),
+                _format_report_line("총 전환매출", f"{int(float(report_cur.get('tot_sales', 0))):,}원"),
+                _format_report_line("통합 ROAS", f"{float(report_cur.get('tot_roas', 0)):.1f}%"),
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         st.code(report_text, language="text")
