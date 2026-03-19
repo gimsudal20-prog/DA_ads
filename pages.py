@@ -17,6 +17,7 @@ from view_ad import page_perf_ad
 from view_settings import page_settings
 from view_trend import page_trend
 from view_media import page_media
+from view_shopping_query import page_perf_shopping_query  # ✨ 추가된 쇼핑 검색어 뷰
 
 def main():
     try: engine = get_engine(); latest = get_latest_dates(engine)
@@ -40,6 +41,7 @@ def main():
         if not meta_ready: 
             st.warning("동기화가 필요합니다.")
 
+        # ✨ 쇼핑 검색어 분석 메뉴 추가
         nav_items = [
             "요약",
             "예산 및 잔액",
@@ -47,6 +49,7 @@ def main():
             "성과 분석 · 캠페인",
             "성과 분석 · 키워드",
             "성과 분석 · 소재",
+            "쇼핑 검색어 분석", 
             "설정 및 연결"
         ] if meta_ready else ["설정 및 연결"]
 
@@ -73,12 +76,14 @@ def main():
             page_media(engine, f)
     elif nav == "성과 분석 · 캠페인":
         page_perf_campaign(meta, engine, f)
-    elif nav in ["성과 분석 · 키워드", "성과 분석 · 소재"]:
+    elif nav in ["성과 분석 · 키워드", "성과 분석 · 소재", "쇼핑 검색어 분석"]: # ✨ 조건 추가
         if not (f.get("manager") or f.get("account")):
             st.info("담당자 또는 광고주(계정) 필터를 먼저 1개 이상 선택하면 데이터가 표시됩니다.")
             st.stop()
         if nav == "성과 분석 · 키워드":
             page_perf_keyword(meta, engine, f)
+        elif nav == "쇼핑 검색어 분석":                                  # ✨ 쇼핑 검색어 라우팅 추가
+            page_perf_shopping_query(meta, engine, f)
         else:
             page_perf_ad(meta, engine, f)
     else: page_settings(engine)
