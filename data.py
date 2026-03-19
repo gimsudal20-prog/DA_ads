@@ -122,6 +122,21 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
                     
             df = df.rename(columns=rename_map)
             
+            # ========================================================
+            # [추가] 중복 계정 방지: 담당자가 2명 이상인 경우 쉼표로 병합
+            # ========================================================
+            if 'customer_id' in df.columns:
+                agg_funcs = {}
+                for col in df.columns:
+                    if col == 'customer_id': continue
+                    elif col == 'manager':
+                        agg_funcs[col] = lambda x: ', '.join(sorted(list(set([str(i).strip() for i in x if pd.notna(i) and str(i).strip()]))))
+                    else:
+                        agg_funcs[col] = 'first'
+                if agg_funcs:
+                    df = df.groupby('customer_id', as_index=False).agg(agg_funcs)
+            # ========================================================
+            
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
@@ -158,6 +173,24 @@ def get_meta(_engine) -> pd.DataFrame:
             elif c_clean in ["담당자", "manager"]:
                 rename_map[c] = "manager"
         df = df.rename(columns=rename_map)
+        
+        # ========================================================
+        # [추가] 조회 시점에도 DB에 남은 다중 담당자를 하나로 묶어서 반환
+        # ========================================================
+        if 'customer_id' in df.columns:
+            agg_funcs = {}
+            for col in df.columns:
+                if col == 'customer_id': continue
+                elif col == 'manager':
+                    agg_funcs[col] = lambda x: ', '.join(sorted(list(set([str(i).strip() for i in x if pd.notna(i) and str(i).strip()]))))
+                elif col == 'monthly_budget':
+                    agg_funcs[col] = 'max'
+                else:
+                    agg_funcs[col] = 'first'
+            if agg_funcs:
+                df = df.groupby('customer_id', as_index=False).agg(agg_funcs)
+        # ========================================================
+        
     return df
 
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
@@ -216,7 +249,6 @@ def format_number_commas(val) -> str:
 # ==========================================
 
 def ensure_target_roas_column(_engine):
-    # 캐시 문제로 인한 누락을 방지하기 위해 강제로 컬럼 생성을 시도합니다 (있으면 에러 무시)
     try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
     except Exception: pass
     
@@ -226,11 +258,9 @@ def ensure_target_roas_column(_engine):
 def update_campaign_target_roas(_engine, cid, campaign_id, target_val, min_val):
     ensure_target_roas_column(_engine)
     
-    # Null(NaN) 값이나 빈 문자열이 들어올 경우 0.0으로 안전하게 변환
     t_val = float(target_val) if pd.notna(target_val) and str(target_val).strip() != "" else 0.0
     m_val = float(min_val) if pd.notna(min_val) and str(min_val).strip() != "" else 0.0
     
-    # WHERE 조건에서 텍스트 기반 비교를 위해 CAST를 적용하여 ProgrammingError 원천 차단
     query = """
         UPDATE dim_campaign 
         SET target_roas = :t_val, min_roas = :m_val 
