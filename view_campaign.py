@@ -141,6 +141,19 @@ def highlight_roas_text(val):
     except: pass
     return ''
 
+# ✨ 누락되었던 텍스트 색상 서식 함수 추가
+def style_delta_str(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #0528F2; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #F04438; font-weight: 600;'
+    return ''
+
+def style_delta_str_neg(val):
+    val_str = str(val).strip()
+    if val_str.startswith("+"): return 'color: #F04438; font-weight: 600;'
+    elif val_str.startswith("-"): return 'color: #0528F2; font-weight: 600;'
+    return ''
+
 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
