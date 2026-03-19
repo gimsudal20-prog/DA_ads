@@ -313,24 +313,42 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         if val > 0: return val
         return _sum_col(c_df, prev_cols)
 
-    # ✨ 바뀐 퍼널 컬럼명에 맞게 매핑 수정
+    # ✨ 3월 11일 패치 이전 기간이 포함된 경우 '통합 데이터'로 자동 폴백(Fallback)
+    patch_date = date(2026, 3, 11)
+    has_pre_patch = (d1 < patch_date) or (b1 < patch_date if b1 else False)
+
     c_cost = _cur_val(["광고비"], ["cost"])
-    c_sales = _cur_val(["총 전환매출", "구매완료 매출", "전환매출"], ["tot_sales", "sales"])
+    b_cost = _base_val(["이전 광고비", "광고비", "cost", "b_cost"], ["p_cost", "cost_base"])
+
+    if has_pre_patch:
+        c_sales = _cur_val(["총 전환매출", "전환매출"], ["tot_sales"])
+        c_conv = _cur_val(["총 전환수", "전환수"], ["tot_conv"])
+        b_sales = _base_val(["이전 총 전환매출", "전환매출", "tot_sales", "b_tot_sales"], ["p_sales", "tot_sales_base"])
+        b_conv = _base_val(["이전 총 전환수", "전환수", "tot_conv", "b_tot_conv"], ["p_conv", "tot_conv_base"])
+        roas_label = "통합 ROAS"
+        conv_label = "총 전환수"
+        sales_label = "총 전환매출"
+    else:
+        c_sales = _cur_val(["구매완료 매출", "전환매출"], ["sales"])
+        c_conv = _cur_val(["구매완료수", "전환수"], ["conv"])
+        b_sales = _base_val(["이전 구매완료 매출", "전환매출", "sales", "b_sales"], ["p_sales", "sales_base"])
+        b_conv = _base_val(["이전 구매완료수", "전환수", "conv", "b_conv"], ["p_conv", "conv_base"])
+        roas_label = "구매 ROAS"
+        conv_label = "구매완료수"
+        sales_label = "구매완료 매출"
+
     c_clk = _cur_val(["클릭", "클릭수"], ["clk"])
     c_imp = _cur_val(["노출", "노출수"], ["imp"])
-    c_conv = _cur_val(["총 전환수", "구매완료수", "전환", "전환수"], ["tot_conv", "conv"])
-    c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
+    b_clk = _base_val(["이전 클릭", "클릭", "클릭수", "clk", "b_clk"], ["p_clk", "clk_base"])
+    b_imp = _base_val(["이전 노출", "노출", "노출수", "imp", "b_imp"], ["p_imp", "imp_base"])
 
-    b_cost = _base_val(["광고비", "cost"], ["p_cost", "cost_base"])
-    b_sales = _base_val(["전환매출", "tot_sales", "sales"], ["p_sales", "tot_sales_base", "sales_base"])
-    b_clk = _base_val(["클릭", "클릭수", "clk"], ["p_clk", "clk_base"])
-    b_imp = _base_val(["노출", "노출수", "imp"], ["p_imp", "imp_base"])
-    b_conv = _base_val(["전환", "전환수", "tot_conv", "conv"], ["p_conv", "tot_conv_base", "conv_base"])
+    c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
     b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
 
     def fmt_krw(v): return f"{int(v):,}원"
     def fmt_num(v): return f"{int(v):,}"
     def fmt_pct(v): return f"{v:.1f}%"
+    def fmt_float(v): return f"{v:,.1f}"
 
     def calc_detail_delta(c, b, is_currency=False, is_pct=False):
         diff = c - b
@@ -362,11 +380,11 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
 
     rows = [
         {"label": "광고비", "base": fmt_krw(b_cost), "curr": fmt_krw(c_cost), "delta": calc_detail_delta(c_cost, b_cost, is_currency=True), "rate": calc_delta_rate(c_cost, b_cost), "emphasis": False, "is_neg": True},
-        {"label": "전환매출", "base": fmt_krw(b_sales), "curr": fmt_krw(c_sales), "delta": calc_detail_delta(c_sales, b_sales, is_currency=True), "rate": calc_delta_rate(c_sales, b_sales), "emphasis": False, "is_neg": False},
-        {"label": "ROAS", "base": fmt_pct(b_roas), "curr": fmt_pct(c_roas), "delta": calc_detail_delta(c_roas, b_roas, is_pct=True), "rate": calc_delta_rate(c_roas, b_roas), "emphasis": True, "is_neg": False},
+        {"label": sales_label, "base": fmt_krw(b_sales), "curr": fmt_krw(c_sales), "delta": calc_detail_delta(c_sales, b_sales, is_currency=True), "rate": calc_delta_rate(c_sales, b_sales), "emphasis": False, "is_neg": False},
+        {"label": roas_label, "base": fmt_pct(b_roas), "curr": fmt_pct(c_roas), "delta": calc_detail_delta(c_roas, b_roas, is_pct=True), "rate": calc_delta_rate(c_roas, b_roas), "emphasis": True, "is_neg": False},
         {"label": "노출수", "base": fmt_num(b_imp), "curr": fmt_num(c_imp), "delta": calc_detail_delta(c_imp, b_imp), "rate": calc_delta_rate(c_imp, b_imp), "emphasis": False, "is_neg": False},
         {"label": "클릭수", "base": fmt_num(b_clk), "curr": fmt_num(c_clk), "delta": calc_detail_delta(c_clk, b_clk), "rate": calc_delta_rate(c_clk, b_clk), "emphasis": False, "is_neg": False},
-        {"label": "전환수", "base": fmt_num(b_conv), "curr": fmt_num(c_conv), "delta": calc_detail_delta(c_conv, b_conv), "rate": calc_delta_rate(c_conv, b_conv), "emphasis": False, "is_neg": False},
+        {"label": conv_label, "base": fmt_float(b_conv), "curr": fmt_float(c_conv), "delta": calc_detail_delta(c_conv, b_conv), "rate": calc_delta_rate(c_conv, b_conv), "emphasis": False, "is_neg": False},
     ]
 
     def _board_rows(items: list[dict], is_right: bool = False) -> str:
