@@ -60,7 +60,7 @@ def get_table_columns(_engine, table_name: str) -> list:
         except (OperationalError, StatementError, InterfaceError):
             if attempt == 2: 
                 st.cache_resource.clear()
-                st.error("⚠️ 데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
+                st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
                 st.stop()
             _engine.dispose()
             time.sleep(1.0)
@@ -76,12 +76,12 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
         except (OperationalError, StatementError, InterfaceError) as e:
             if attempt == 2:
                 st.cache_resource.clear()
-                st.error("⚠️ 밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
+                st.error("밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
                 st.stop()
             _engine.dispose()
             time.sleep(1.0) 
         except Exception as e:
-            st.error(f"⚠️ 데이터 로드 오류 발생: {e}")
+            st.error(f"데이터 로드 오류 발생: {e}")
             st.stop()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
@@ -215,6 +215,16 @@ def format_number_commas(val) -> str:
 # 4. Data Aggregation Queries
 # ==========================================
 
+def ensure_target_roas_column(_engine):
+    cols = get_table_columns(_engine, "dim_campaign")
+    if "target_roas" not in cols:
+        try: sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
+        except Exception: pass
+
+def update_campaign_target_roas(_engine, cid: int, campaign_id: str, val: float):
+    ensure_target_roas_column(_engine)
+    sql_exec(_engine, "UPDATE dim_campaign SET target_roas = :val WHERE customer_id = :cid AND campaign_id = :camp_id", 
+             {"val": val, "cid": cid, "camp_id": campaign_id})
 
 def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
     prefix = f"{alias}." if alias else ""
@@ -376,6 +386,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
+    target_roas_select = ", c.target_roas" if "target_roas" in cols else ", 0.0 as target_roas"
     
     type_filter_sql = ""
     if type_sel:
@@ -416,7 +427,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         )
         SELECT 
             agg.customer_id, agg.campaign_id, 
-            c.campaign_name, c.{cp_col} as campaign_type,
+            c.campaign_name, c.{cp_col} as campaign_type {target_roas_select},
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql} 
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
