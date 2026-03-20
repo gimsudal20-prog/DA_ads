@@ -36,7 +36,6 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
-    /* ✨ 예쁜 3분할 KPI 그리드 스타일 복구 */
     .ov-kpi-grid {
         display:grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -140,7 +139,7 @@ def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 42
     real_height = _auto_table_height(styler_or_df, default_height=height, max_height=height)
     st.dataframe(
         styler_or_df,
-        use_container_width=True,
+        width="stretch",
         height=real_height,
         hide_index=hide_index,
         column_config=_sticky_cfg(first_col),
@@ -269,7 +268,6 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
             styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
     return styler
 
-# 🚀 [핵심 최적화 구간 1] iterrows 제거 및 NumPy 벡터 연산
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty:
         return pd.DataFrame()
@@ -316,7 +314,8 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     def _vec_pct_diff(c, b):
         diff = c - b
-        pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / b) * 100.0)
+        safe_b = np.where(b == 0, 1, b) # 🚨 0 나누기 경고 방지용 안전 장치
+        pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / safe_b) * 100.0)
         return pct, diff
 
     pct_imp, diff_imp = _vec_pct_diff(c_imp, b_imp)
@@ -374,7 +373,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
-# 🚀 [핵심 최적화 구간 2] TS(시계열) 데이터 병합 벡터화
 def _build_ts_df(df, group_col, group_label):
     if df is None or df.empty:
         return pd.DataFrame()
@@ -479,7 +477,6 @@ def _delta_chip(cur_val, base_val, improve_when_up=True):
         text = pct_to_arrow(diff)
     return cls, text
 
-# ✨ 기존의 3분할 그리기 함수 복원
 def _render_kpi_group(title: str, items: list[dict]) -> str:
     cells = []
     for item in items:
@@ -581,7 +578,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
-    # ✨ 외부 박스(container) 제거 및 여백 조정
     head_col_meta, head_col_toggle = st.columns([5, 2])
     with head_col_meta:
         st.markdown(
@@ -652,7 +648,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
-    # ✨ 예쁜 3분할 렌더링 방식 복구
     st.markdown(
         f"<div class='ov-kpi-grid'>"
         f"{_render_kpi_group('유입 지표', inflow_items)}"
@@ -870,7 +865,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 data=excel_buffer.getvalue(),
                 file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",
             )
 
     def _display_ts_table(df, col_name, toggle_state_val):
