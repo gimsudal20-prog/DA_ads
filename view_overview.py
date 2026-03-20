@@ -228,6 +228,56 @@ def style_delta_str_neg(val):
     return ''
 
 
+def _style_delta_numeric(val):
+    try:
+        v = float(val)
+    except Exception:
+        return ''
+    if pd.isna(v) or v == 0:
+        return ''
+    return 'color: #0528F2; font-weight: 700;' if v > 0 else 'color: #F04438; font-weight: 700;'
+
+
+def _style_delta_numeric_neg(val):
+    try:
+        v = float(val)
+    except Exception:
+        return ''
+    if pd.isna(v) or v == 0:
+        return ''
+    return 'color: #F04438; font-weight: 700;' if v > 0 else 'color: #0528F2; font-weight: 700;'
+
+
+def _apply_overview_delta_styles(styler, df: pd.DataFrame):
+    positive_cols = [
+        '노출 증감', '노출 차이', '클릭 증감', '클릭 차이',
+        '위시리스트 증감', '위시리스트 차이',
+        '장바구니 증감', '장바구니 차이',
+        '구매 증감', '구매 차이',
+        '구매 매출 증감', '구매 매출 차이',
+        '구매 ROAS 증감',
+        '총 전환 증감', '총 전환 차이',
+        '총 매출 증감', '총 매출 차이',
+        '통합 ROAS 증감'
+    ]
+    negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
+
+    pos_subset = [c for c in positive_cols if c in df.columns]
+    neg_subset = [c for c in negative_cols if c in df.columns]
+
+    try:
+        if pos_subset:
+            styler = styler.map(_style_delta_numeric, subset=pos_subset)
+        if neg_subset:
+            styler = styler.map(_style_delta_numeric_neg, subset=neg_subset)
+    except AttributeError:
+        if pos_subset:
+            styler = styler.applymap(_style_delta_numeric, subset=pos_subset)
+        if neg_subset:
+            styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
+    return styler
+
+
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty:
         return pd.DataFrame()
@@ -628,11 +678,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not df_type_display.empty:
         with st.expander("캠페인 유형별 성과 상세", expanded=False):
             styled_type_df = df_type_display.style.format(fmt_dict_standard)
+            styled_type_df = _apply_overview_delta_styles(styled_type_df, df_type_display)
             _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
 
     if not camp_disp.empty:
         with st.expander("캠페인별 성과 상세", expanded=False):
             styled_camp_df = camp_disp.style.format(fmt_dict_standard)
+            styled_camp_df = _apply_overview_delta_styles(styled_camp_df, camp_disp)
             _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
 
     if not daily_disp.empty:
