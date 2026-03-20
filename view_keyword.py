@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Optimized)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -11,6 +11,17 @@ from datetime import date
 from data import query_keyword_bundle, query_ad_bundle
 from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
+
+
+# 🚀 초고속 포매팅 도우미 함수
+def _fast_combine_0f(v_series, p_series):
+    return [f"{v:+,.0f} ({p:+.1f}%)" if pd.notna(v) and v != 0 else "-" for v, p in zip(v_series, p_series)]
+
+def _fast_format_1f(series):
+    return [f"{x:+.1f}" if pd.notna(x) and x != 0 else "-" for x in series]
+
+def _fast_format_pct(series):
+    return [f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-" for x in series]
 
 
 def _inject_keyword_css():
@@ -39,34 +50,26 @@ def _inject_keyword_css():
     """, unsafe_allow_html=True)
 
 
-def _format_avg_rank(value):
-    num = pd.to_numeric(value, errors="coerce")
-    if pd.isna(num) or num <= 0:
-        return "미수집"
-    return f"{num:.1f}위"
-
-
+# 🚀 완전 벡터화된 쇼핑/일반 광고 필터 로직
 def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df
     work = df.copy()
-
-    def _is_general_ad(row):
-        ctype = str(row.get("캠페인유형", "")).strip().upper()
-        if "파워링크" in ctype or "WEB_SITE" in ctype:
-            return False
-        if "쇼핑" in ctype or "SHOPPING" in ctype:
-            ad_name = str(row.get("키워드/상품명", "")).strip()
-            if ad_name.startswith("http") or ad_name.endswith((".jpg", ".png", ".jpeg", ".gif")):
-                return False
-            ext_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "파워링크이미지", "추가제목", "플레이스정보"]
-            if any(ext in ad_name for ext in ext_keywords):
-                return False
-            return True
-        return allow_unknown_type
-
+    
     if "키워드/상품명" in work.columns:
-        mask = work.apply(_is_general_ad, axis=1)
+        ctype = work.get("캠페인유형", pd.Series([""] * len(work), index=work.index)).astype(str).str.upper()
+        ad_name = work["키워드/상품명"].astype(str).str.strip()
+        
+        is_pl = ctype.str.contains("파워링크|WEB_SITE", na=False)
+        is_shop = ctype.str.contains("쇼핑|SHOPPING", na=False)
+        
+        is_url_or_img = ad_name.str.startswith("http") | ad_name.str.endswith((".jpg", ".png", ".jpeg", ".gif"))
+        ext_keywords = ["추가홍보문구", "홍보문구", "확장소재", "서브링크", "가격링크", "파워링크이미지", "추가제목", "플레이스정보"]
+        is_ext = ad_name.str.contains("|".join(ext_keywords), na=False)
+        
+        valid_shop = is_shop & ~(is_url_or_img | is_ext)
+        mask = (valid_shop | ~(is_pl | is_shop)) if allow_unknown_type else valid_shop
+            
         return work[mask].copy()
     return work
 
@@ -187,8 +190,8 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
 
     if "avg_rank" in merged.columns:
         if "평균순위" not in merged.columns:
-            merged['평균순위'] = merged['avg_rank'].apply(_format_avg_rank)
-        merged['이전 평균순위'] = merged['b_avg_rank'].apply(_format_avg_rank)
+            merged['평균순위'] = [f"{x:.1f}위" if pd.notna(x) and x > 0 else "미수집" for x in merged['avg_rank']]
+        merged['이전 평균순위'] = [f"{x:.1f}위" if pd.notna(x) and x > 0 else "미수집" for x in merged['b_avg_rank']]
         merged['순위 변화'] = np.where((merged['b_avg_rank'] > 0) & (merged['avg_rank'] > 0), merged['avg_rank'] - merged['b_avg_rank'], np.nan)
 
     return merged
@@ -246,7 +249,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
 
     view = _add_perf_metrics(view)
     if "avg_rank" in view.columns:
-        view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+        view["평균순위"] = [f"{x:.1f}위" if pd.notna(x) and x > 0 else "미수집" for x in view["avg_rank"]]
     return view
 
 
@@ -266,8 +269,6 @@ def style_delta_str_neg(val):
     elif val_str.startswith("-"):
         return 'color: #0528F2; font-weight: 600;'
     return ''
-
-
 
 
 def _keyword_pinned_cfg(columns):
@@ -344,15 +345,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     fmt = {
         "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원}", "장바구니 ROAS(%)": "{:,.1f}%",
-        "위시리스트수": "{:,.1f}", "위시리스트 매출액": "{:,.0f}원}", "위시리스트 ROAS(%)": "{:,.1f}%",
+        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+        "위시리스트수": "{:,.1f}", "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.1f}%",
         "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
         "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%", "CTR(%)": "{:,.1f}%",
         "순위 변화": "{:+.1f}"
     }
-    # fix malformed brace
-    fmt["장바구니 매출액"] = "{:,.0f}원"
-    fmt["위시리스트 매출액"] = "{:,.0f}원"
 
     with tab_main:
         if view.empty:
@@ -454,20 +452,13 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             if has_pre_patch_base or has_pre_patch_cur:
                 st.warning("⚠️ 비교 기간에 3월 11일 이전 데이터가 포함되어 있어 통합 전환 기준으로 표시합니다.")
 
-            def _combine(r, c_val, c_pct):
-                v = r.get(c_val)
-                p = r.get(c_pct)
-                if pd.isna(v) or v == 0:
-                    return "-"
-                v_str = f"{v:+,.0f}" if c_val in ["노출 증감", "클릭 증감", "광고비 증감", "CPC 증감"] else f"{v:+,.1f}"
-                return f"{v_str} ({p:+.1f}%)"
-
-            disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
-            disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
-            disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
-            disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
-            disp["총 전환 증감 "] = disp.get("총 전환 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-            disp["통합 ROAS 증감 "] = disp.get("통합 ROAS 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+            # 🚀 초고속 벡터화 문자열 병합 적용
+            disp["노출 증감/율"] = _fast_combine_0f(disp["노출 증감"], disp["노출 증감(%)"])
+            disp["클릭 증감/율"] = _fast_combine_0f(disp["클릭 증감"], disp["클릭 증감(%)"])
+            disp["광고비 증감/율"] = _fast_combine_0f(disp["광고비 증감"], disp["광고비 증감(%)"])
+            disp["CPC 증감/율"] = _fast_combine_0f(disp["CPC 증감"], disp["CPC 증감(%)"])
+            disp["총 전환 증감 "] = _fast_format_1f(disp.get("총 전환 증감", pd.Series(0.0, index=disp.index)))
+            disp["통합 ROAS 증감 "] = _fast_format_pct(disp.get("통합 ROAS 증감", pd.Series(0.0, index=disp.index)))
 
             metrics_cols_cmp = [
                 "노출", "노출 증감/율",
