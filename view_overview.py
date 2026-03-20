@@ -122,11 +122,21 @@ def _sticky_cfg(first_col: str):
     }
 
 
+def _auto_table_height(data_obj, default_height: int = 420, min_height: int = 88, max_height: int = 560) -> int:
+    try:
+        df = data_obj.data if hasattr(data_obj, "data") else data_obj
+        rows = len(df.index)
+        calc = 42 + (rows * 35)
+        return max(min_height, min(calc, max_height))
+    except Exception:
+        return default_height
+
 def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 420, hide_index: bool = False):
+    real_height = _auto_table_height(styler_or_df, default_height=height, max_height=height)
     st.dataframe(
         styler_or_df,
         use_container_width=True,
-        height=height,
+        height=real_height,
         hide_index=hide_index,
         column_config=_sticky_cfg(first_col),
     )
@@ -603,35 +613,32 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         styled_ts = df[cols].style.format(fmt_dict_ts)
         _render_overview_sticky_table(styled_ts, col_name, height=420, hide_index=True)
 
-    with st.expander("계정별 성과 상세", expanded=False):
-        if not df_display.empty:
+    if not df_display.empty:
+        with st.expander("계정별 성과 상세", expanded=False):
             styled_df = df_display.style.format(fmt_dict_standard)
             _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
-        else:
-            st.info("조회된 데이터가 없습니다.")
 
-    with st.expander("캠페인 유형별 성과 상세", expanded=False):
-        if not df_type_display.empty:
+    if not df_type_display.empty:
+        with st.expander("캠페인 유형별 성과 상세", expanded=False):
             styled_type_df = df_type_display.style.format(fmt_dict_standard)
             _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
-        else:
-            st.info("조회된 데이터가 없습니다.")
 
-    with st.expander("캠페인별 성과 상세", expanded=False):
-        if not camp_disp.empty:
+    if not camp_disp.empty:
+        with st.expander("캠페인별 성과 상세", expanded=False):
             styled_camp_df = camp_disp.style.format(fmt_dict_standard)
             _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
-        else:
-            st.info("조회된 데이터가 없습니다.")
 
-    with st.expander("일자별 성과 상세", expanded=False):
-        _display_ts_table(daily_disp, "일자", combined_toggle)
+    if not daily_disp.empty:
+        with st.expander("일자별 성과 상세", expanded=False):
+            _display_ts_table(daily_disp, "일자", combined_toggle)
 
-    with st.expander("요일별 성과 상세", expanded=False):
-        _display_ts_table(dow_disp, "요일명", combined_toggle)
+    if not dow_disp.empty:
+        with st.expander("요일별 성과 상세", expanded=False):
+            _display_ts_table(dow_disp, "요일명", combined_toggle)
 
-    with st.expander("주간 성과 상세", expanded=False):
-        _display_ts_table(weekly_disp, "주차", combined_toggle)
+    if not weekly_disp.empty:
+        with st.expander("주간 성과 상세", expanded=False):
+            _display_ts_table(weekly_disp, "주차", combined_toggle)
 
     with st.expander("텍스트 보고서 내보내기", expanded=False):
         top_kw_str = "없음"
