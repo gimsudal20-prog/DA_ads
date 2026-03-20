@@ -17,19 +17,6 @@ from page_helpers import get_dynamic_cmp_options, period_compare_range
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-headbar {
-        background: var(--nv-bg);
-        border: 1px solid var(--nv-line);
-        border-radius: 12px;
-        padding: 10px 12px;
-        margin-bottom: 14px;
-    }
-    .ov-headmeta {
-        display:flex;
-        flex-wrap:wrap;
-        gap:8px;
-        align-items:center;
-    }
     .ov-chip {
         background: transparent;
         color: var(--nv-text);
@@ -49,70 +36,60 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
-    
-    /* ✨ 미니멀 단일 통합 박스 스타일 */
-    .ov-single-box {
-        background: var(--nv-bg, #ffffff);
-        border: 1px solid var(--nv-line, #e5e7eb);
+    .ov-kpi-grid {
+        display:grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .ov-kpi-panel {
+        background: var(--nv-bg);
+        border: 1px solid var(--nv-line);
         border-radius: 12px;
-        padding: 24px 28px;
-        margin-bottom: 24px;
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        padding: 16px;
     }
-    .ov-metric-row {
-        display: grid;
-        grid-template-columns: 70px repeat(3, minmax(0, 1fr));
-        align-items: center;
-        gap: 20px;
-    }
-    .ov-metric-row:not(:last-child) {
-        padding-bottom: 20px;
-        border-bottom: 1px solid var(--nv-surface, #f3f4f6);
-    }
-    .ov-row-title {
+    .ov-kpi-title {
         font-size: 13px;
-        font-weight: 800;
-        color: var(--nv-muted, #6b7280);
-        letter-spacing: -0.3px;
+        font-weight: 700;
+        color: var(--nv-text);
+        margin-bottom: 12px;
     }
-    .ov-metric-item {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
+    .ov-kpi-cells {
+        display:grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
     }
-    .ov-item-label {
+    .ov-kpi-cell {
+        background: var(--nv-surface);
+        border-radius: 10px;
+        padding: 12px;
+        min-width: 0;
+    }
+    .ov-kpi-label {
         font-size: 12px;
-        color: var(--nv-muted, #6b7280);
+        color: var(--nv-muted);
+        margin-bottom: 6px;
     }
-    .ov-item-data {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .ov-item-value {
-        font-size: 22px;
+    .ov-kpi-value {
+        font-size: 20px;
         font-weight: 800;
-        color: var(--nv-text, #111827);
-        line-height: 1.1;
+        color: var(--nv-text);
+        line-height: 1.15;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .ov-delta-badge {
+    .ov-kpi-delta {
+        margin-top: 8px;
         font-size: 11px;
         font-weight: 700;
-        padding: 3px 8px;
+        display:inline-flex;
+        padding: 4px 8px;
         border-radius: 999px;
-        display: inline-block;
-        white-space: nowrap;
     }
-    .ov-delta-badge.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
-    .ov-delta-badge.neg { background: #FEE4E2; color: #F04438; }
-    .ov-delta-badge.neu { background: var(--nv-surface); color: var(--nv-muted); border: 1px solid var(--nv-line); }
-    
+    .ov-kpi-delta.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
+    .ov-kpi-delta.neg { background: #FEE4E2; color: #F04438; }
+    .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
     .ov-toolbar {
         background: var(--nv-surface);
         border: 1px solid var(--nv-line);
@@ -126,18 +103,8 @@ def _inject_overview_css():
         color: var(--nv-text);
         margin-bottom: 10px;
     }
-    @media (max-width: 900px) {
-        .ov-metric-row {
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }
-        .ov-row-title {
-            margin-bottom: 4px;
-            border-bottom: 2px solid var(--nv-line);
-            padding-bottom: 8px;
-            display: inline-block;
-        }
-        .ov-single-box { padding: 20px; }
+    @media (max-width: 1100px) {
+        .ov-kpi-grid, .ov-kpi-cells { grid-template-columns: 1fr; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -177,6 +144,7 @@ def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 42
         hide_index=hide_index,
         column_config=_sticky_cfg(first_col),
     )
+
 
 def _selected_type_label(type_sel: tuple) -> str:
     if not type_sel:
@@ -412,6 +380,7 @@ def _build_ts_df(df, group_col, group_label):
     return pd.DataFrame(table_data)
 
 
+
 def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="label"):
     cur_view = _build_ts_df(cur_df, group_col, group_label)
     if cur_view.empty:
@@ -480,26 +449,18 @@ def _delta_chip(cur_val, base_val, improve_when_up=True):
     return cls, text
 
 
-# ✨ 단일 통합 박스 렌더링 함수
-def _render_unified_kpi_box(groups: list[dict]) -> str:
-    html = ["<div class='ov-single-box'>"]
-    for group in groups:
-        html.append("<div class='ov-metric-row'>")
-        html.append(f"<div class='ov-row-title'>{group['title']}</div>")
-        for item in group["items"]:
-            cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
-            html.append(
-                f"<div class='ov-metric-item'>"
-                f"<div class='ov-item-label'>{item['label']}</div>"
-                f"<div class='ov-item-data'>"
-                f"<div class='ov-item-value' title='{item['value']}'>{item['value']}</div>"
-                f"<div class='ov-delta-badge {cls}'>{text}</div>"
-                f"</div>"
-                f"</div>"
-            )
-        html.append("</div>")
-    html.append("</div>")
-    return "".join(html)
+def _render_kpi_group(title: str, items: list[dict]) -> str:
+    cells = []
+    for item in items:
+        cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
+        cells.append(
+            f"<div class='ov-kpi-cell'>"
+            f"<div class='ov-kpi-label'>{item['label']}</div>"
+            f"<div class='ov-kpi-value' title='{item['value']}'>{item['value']}</div>"
+            f"<div class='ov-kpi-delta {cls}'>{text}</div>"
+            f"</div>"
+        )
+    return f"<div class='ov-kpi-panel'><div class='ov-kpi-title'>{title}</div><div class='ov-kpi-cells'>{''.join(cells)}</div></div>"
 
 
 def _normalize_type_label(val) -> str:
@@ -587,28 +548,27 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     is_mixed_period = (f["start"] < patch_date <= f["end"])
     combined_toggle = not is_split_only
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
-
-    head_col_meta, head_col_toggle = st.columns([5.2, 1.6])
-    with head_col_meta:
-        st.markdown(
-            f"<div class='ov-headbar'>"
-            f"<div class='ov-headmeta'>"
-            f"<div class='ov-chip primary'>{selected_type_label}</div>"
-            f"<div class='ov-chip muted'>{f['start']} ~ {f['end']}</div>"
-            f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
-            f"</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
-    with head_col_toggle:
-        purchase_view = st.toggle(
-            "구매완료 데이터로 보기",
-            value=(auto_kpi_mode == "shopping_purchase"),
-            key="overview_purchase_view_toggle",
-            disabled=not can_use_purchase_toggle,
-        )
+    # ✨ 수정사항: 기간/유형 칩(메타데이터)과 토글 버튼을 하나의 미니멀한 박스(컨테이너)로 통합
+    with st.container(border=True):
+        head_col_meta, head_col_toggle = st.columns([5, 2])
+        with head_col_meta:
+            st.markdown(
+                f"<div style='display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-top:4px;'>"
+                f"<div class='ov-chip primary'>{selected_type_label}</div>"
+                f"<div class='ov-chip muted'>{f['start']} ~ {f['end']}</div>"
+                f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with head_col_toggle:
+            purchase_view = st.toggle(
+                "구매완료 데이터로 보기",
+                value=(auto_kpi_mode == "shopping_purchase"),
+                key="overview_purchase_view_toggle",
+                disabled=not can_use_purchase_toggle,
+            )
 
     if is_mixed_period:
         st.info("안내: 3월 11일 이전 및 이후 데이터가 혼재되어 있어, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
@@ -662,13 +622,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
-    # ✨ 수정된 렌더링 호출 (단일 박스 안에 유입, 비용, 성과를 row 단위로 출력)
-    kpi_groups = [
-        {"title": "유입 지표", "items": inflow_items},
-        {"title": "비용 지표", "items": cost_items},
-        {"title": "성과 지표", "items": perf_items},
-    ]
-    st.markdown(_render_unified_kpi_box(kpi_groups), unsafe_allow_html=True)
+    # ✨ 수정사항: KPI 3분할 그리드 레이아웃 원상 복구 완료
+    st.markdown(
+        f"<div class='ov-kpi-grid'>"
+        f"{_render_kpi_group('유입 지표', inflow_items)}"
+        f"{_render_kpi_group('비용 지표', cost_items)}"
+        f"{_render_kpi_group('성과 지표', perf_items)}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
     with st.container(border=True):
         st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
