@@ -726,11 +726,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 else:
                     target_df = target_df.sort_values(by="cost", ascending=False)
 
-                # ✨ 렌더링 부하가 심했던 카드를 제거하고 깔끔한 데이터프레임 표(Table)로 수정
                 if not target_df.empty:
                     disp_target = target_df.rename(columns={
                         "campaign_name": "캠페인명",
-                        "status": "상태",
+                        "achieve": "달성 상태",
                         "achieve_diff": "달성 격차",
                         "c_roas_purch": "현재(구매) ROAS",
                         "target_roas": "목표 ROAS",
@@ -739,18 +738,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "cost": "광고비"
                     })
                     
-                    disp_cols = ["캠페인명", "상태", "달성 격차", "현재(구매) ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
+                    disp_cols = ["캠페인명", "달성 상태", "달성 격차", "현재(구매) ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
                     if show_integ_roas:
                         disp_cols.insert(4, "현재(통합) ROAS")
                         
                     disp_target = disp_target[disp_cols]
                     
-                    def color_status(val):
-                        if val in ["초과 달성", "목표 달성"]: return 'color: #0528F2; font-weight: 700;'
-                        if val == "최소 달성": return 'color: #10B981; font-weight: 700;'
-                        if val == "미달": return 'color: #F79009; font-weight: 700;'
-                        return ''
-
                     def color_diff(val):
                         if pd.isna(val): return ''
                         if val >= 0: return 'color: #0528F2; font-weight: 700;'
@@ -766,11 +759,25 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     }
                     
                     try:
-                        styled_target = disp_target.style.format(fmt_dict).map(color_status, subset=["상태"]).map(color_diff, subset=["달성 격차"])
+                        styled_target = disp_target.style.format(fmt_dict).map(color_diff, subset=["달성 격차"])
                     except AttributeError:
-                        styled_target = disp_target.style.format(fmt_dict).applymap(color_status, subset=["상태"]).applymap(color_diff, subset=["달성 격차"])
+                        styled_target = disp_target.style.format(fmt_dict).applymap(color_diff, subset=["달성 격차"])
 
-                    st.dataframe(styled_target, width="stretch", hide_index=True)
+                    # ✨ 스파크바(ProgressColumn)를 적용하여 직관적인 데이터프레임 렌더링
+                    st.dataframe(
+                        styled_target,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "달성 상태": st.column_config.ProgressColumn(
+                                "달성률(0~100%)",
+                                help="목표 ROAS 대비 현재 달성률을 나타냅니다.",
+                                format="%.1f%%",
+                                min_value=0,
+                                max_value=100,
+                            )
+                        }
+                    )
                     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
                 else:
                     st.info("조건에 맞는 캠페인이 없습니다.")
