@@ -53,6 +53,32 @@ def period_compare_range(d1: date, d2: date, cmp_mode: str):
     else:
         return d1 - timedelta(days=delta), d1 - timedelta(days=1)
 
+def _shift_period(direction: str):
+    """현재 선택된 기간의 일수(delta)만큼 날짜를 앞/뒤로 이동시키는 콜백 함수"""
+    if "filters_v8" not in st.session_state: return
+    sv = st.session_state["filters_v8"]
+    d1 = sv.get("d1")
+    d2 = sv.get("d2")
+    
+    if not d1 or not d2: return
+    
+    delta = (d2 - d1).days + 1
+    if direction == "prev":
+        new_d2 = d1 - timedelta(days=1)
+        new_d1 = new_d2 - timedelta(days=delta - 1)
+    else:
+        new_d1 = d2 + timedelta(days=1)
+        new_d2 = new_d1 + timedelta(days=delta - 1)
+        
+    # 상태값 업데이트
+    sv["d1"], sv["d2"] = new_d1, new_d2
+    sv["period_mode"] = "직접 선택"
+    
+    # UI 위젯 State 강제 업데이트 (화면에 즉시 반영)
+    st.session_state["f_period_mode"] = "직접 선택"
+    st.session_state["f_d1"] = new_d1
+    st.session_state["f_d2"] = new_d2
+
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     today = date.today()
     default_end = today - timedelta(days=1)
@@ -79,13 +105,20 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         if sv_period not in period_options:
             sv_period = "어제"
             
-        period_mode = st.selectbox(
-            "기간 간편 선택",
-            period_options,
-            index=period_options.index(sv_period),
-            key="f_period_mode",
-            label_visibility="collapsed"
-        )
+        # ✨ 좌우 이동 버튼 레이아웃 추가
+        c_prev, c_sel, c_next = st.columns([1.2, 4.6, 1.2])
+        with c_prev:
+            st.button("◀", key="f_btn_prev", on_click=_shift_period, args=("prev",), use_container_width=True)
+        with c_sel:
+            period_mode = st.selectbox(
+                "기간 간편 선택",
+                period_options,
+                index=period_options.index(sv_period),
+                key="f_period_mode",
+                label_visibility="collapsed"
+            )
+        with c_next:
+            st.button("▶", key="f_btn_next", on_click=_shift_period, args=("next",), use_container_width=True)
 
         if period_mode == "직접 선택":
             c1, c2 = st.columns(2)
@@ -313,7 +346,6 @@ def render_item_comparison_search(entity_label: str, df_cur: pd.DataFrame, df_ba
         if val > 0: return val
         return _sum_col(c_df, prev_cols)
 
-    # ✨ 3월 11일 패치 이전 기간이 포함된 경우 '통합 데이터'로 자동 폴백(Fallback)
     patch_date = date(2026, 3, 11)
     has_pre_patch = (d1 < patch_date) or (b1 < patch_date if b1 else False)
 
