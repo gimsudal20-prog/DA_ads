@@ -462,40 +462,25 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                 v_str = f"{v:+,.0f}" if c_val in ["노출 증감", "클릭 증감", "광고비 증감", "CPC 증감"] else f"{v:+,.1f}"
                 return f"{v_str} ({p:+.1f}%)"
 
-            if show_mode == "integrated_only":
-                disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
-                disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
-                disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
-                disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
-                disp["총 전환 증감 "] = disp.get("총 전환 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-                disp["통합 ROAS 증감 "] = disp.get("통합 ROAS 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
+            disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
+            disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
+            disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
+            disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
+            disp["총 전환 증감 "] = disp.get("총 전환 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
+            disp["통합 ROAS 증감 "] = disp.get("통합 ROAS 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
 
-                metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "총 전환수", "총 전환 증감 ", "총 전환매출", "통합 ROAS(%)", "통합 ROAS 증감 "]
-                delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "총 전환 증감 ", "통합 ROAS 증감 "]
-            else:
-                if not funnel_toggle:
-                    disp["노출 증감/율"] = disp.apply(lambda r: _combine(r, "노출 증감", "노출 증감(%)"), axis=1)
-                    disp["클릭 증감/율"] = disp.apply(lambda r: _combine(r, "클릭 증감", "클릭 증감(%)"), axis=1)
-                    disp["광고비 증감/율"] = disp.apply(lambda r: _combine(r, "광고비 증감", "광고비 증감(%)"), axis=1)
-                    disp["CPC 증감/율"] = disp.apply(lambda r: _combine(r, "CPC 증감", "CPC 증감(%)"), axis=1)
-                    disp["구매 증감 "] = disp.get("구매 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}" if pd.notna(x) and x != 0 else "-")
-                    disp["구매 ROAS 증감 "] = disp.get("구매 ROAS 증감", pd.Series(0.0, index=disp.index)).apply(lambda x: f"{x:+.1f}%" if pd.notna(x) and x != 0 else "-")
-
-                    metrics_cols_cmp = ["노출", "노출 증감/율", "클릭", "클릭 증감/율", "광고비", "광고비 증감/율", "CPC(원)", "CPC 증감/율", "구매완료수", "구매 증감 ", "구매완료 매출", "구매 ROAS(%)", "구매 ROAS 증감 "]
-                    delta_cols = ["노출 증감/율", "클릭 증감/율", "광고비 증감/율", "CPC 증감/율", "구매 증감 ", "구매 ROAS 증감 "]
-                else:
-                    metrics_cols_cmp = [
-                        "이전 노출", "노출", "노출 증감", "노출 증감(%)",
-                        "이전 클릭", "클릭", "클릭 증감", "클릭 증감(%)",
-                        "이전 광고비", "광고비", "광고비 증감", "광고비 증감(%)",
-                        "이전 구매완료수", "구매완료수", "구매 증감",
-                        "이전 구매 ROAS(%)", "구매 ROAS(%)", "구매 ROAS 증감(%)",
-                        "이전 장바구니수", "장바구니수", "장바구니 증감", "장바구니 증감(%)",
-                        "이전 위시리스트수", "위시리스트수", "위시리스트 증감", "위시리스트 증감(%)",
-                        "이전 총 전환수", "총 전환수", "총 전환 증감",
-                        "이전 통합 ROAS(%)", "통합 ROAS(%)", "통합 ROAS 증감(%)"
-                    ]
-                    delta_cols = ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "장바구니 증감(%)", "장바구니 증감", "위시리스트 증감(%)", "위시리스트 증감", "구매 증감", "구매 ROAS 증감(%)", "총 전환 증감", "통합 ROAS 증감(%)"]
+            metrics_cols_cmp = [
+                "노출", "노출 증감/율",
+                "클릭", "클릭 증감/율",
+                "광고비", "광고비 증감/율",
+                "CPC(원)", "CPC 증감/율",
+                "총 전환수", "총 전환 증감 ",
+                "총 전환매출", "통합 ROAS(%)", "통합 ROAS 증감 "
+            ]
+            delta_cols = [
+                "노출 증감/율", "클릭 증감/율", "광고비 증감/율",
+                "CPC 증감/율", "총 전환 증감 ", "통합 ROAS 증감 "
+            ]
 
             if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
                 if "순위 변화" not in metrics_cols_cmp:
