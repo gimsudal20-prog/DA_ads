@@ -189,25 +189,13 @@ def render_alert_table(alert_view: pd.DataFrame):
 
 @st.fragment
 def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
-    biz_view["current_roas"] = np.where(biz_view["current_month_cost"] > 0, (biz_view["current_month_sales"] / biz_view["current_month_cost"]) * 100, 0)
-    
-    target_roas = st.slider("전사 목표 ROAS (%)", min_value=100, max_value=1000, value=300, step=50, key="budget_roas_slider")
-    
-    def get_weather(roas, target):
-        if roas >= target: return "목표 달성"
-        elif roas >= target * 0.8: return "모니터링" 
-        else: return "효율 비상"
-        
-    biz_view["ROAS 기상도"] = biz_view["current_roas"].apply(lambda x: get_weather(x, target_roas))
-    
+    # ROAS 목표치 및 기상도 로직 삭제 완료
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
-    count_rain = int(biz_view["ROAS 기상도"].astype(str).str.contains("비상").sum())
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1: ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), key='m_total_balance')
     with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), key='m_month_cost')
-    with c3: ui_metric_or_stmetric('효율 비상 계정', f"{count_rain}건", key='m_need_opt')
 
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
