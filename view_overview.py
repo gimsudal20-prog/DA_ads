@@ -406,6 +406,54 @@ def _render_kpi_group(title: str, items: list[dict]) -> str:
     return f"<div class='ov-kpi-panel'><div class='ov-kpi-title'>{title}</div><div class='ov-kpi-cells'>{''.join(cells)}</div></div>"
 
 
+def _normalize_type_label(val) -> str:
+    s = str(val or "").strip().upper()
+    if not s:
+        return ""
+    if "쇼핑" in s or "SHOPPING" in s:
+        return "쇼핑검색"
+    if "파워링크" in s or "WEB_SITE" in s:
+        return "파워링크"
+    if "브랜드" in s or "BRAND" in s:
+        return "브랜드검색"
+    if "POWER_CONTENTS" in s or "파워컨텐츠" in s:
+        return "파워컨텐츠"
+    if "PLACE" in s or "플레이스" in s:
+        return "플레이스"
+    return str(val).strip()
+
+
+def _infer_kpi_mode(type_sel: tuple, cur_camp: pd.DataFrame, is_split_only: bool) -> str:
+    # 구매완료 KPI는 쇼핑검색 post-split(3/11 이후) 단독 조회일 때만 사용
+    labels = {_normalize_type_label(x) for x in type_sel if str(x).strip()}
+
+    if not labels and cur_camp is not None and not cur_camp.empty:
+        for col in ["campaign_type_label", "campaign_type", "campaign_tp", "캠페인유형"]:
+            if col in cur_camp.columns:
+                vals = cur_camp[col].dropna().astype(str).tolist()
+                labels = {_normalize_type_label(v) for v in vals if str(v).strip()}
+                if labels:
+                    break
+
+    labels = {x for x in labels if x}
+    if is_split_only and labels and labels == {"쇼핑검색"}:
+        return "shopping_purchase"
+    return "generic_conversion"
+
+
+def _format_compact_currency(value: float) -> str:
+    try:
+        v = float(value or 0)
+    except Exception:
+        return "0원"
+    abs_v = abs(v)
+    if abs_v >= 100000000:
+        return f"{v / 100000000:.2f}억"
+    if abs_v >= 10000:
+        return f"{v / 10000:.1f}만원"
+    return f"{int(round(v)):,}원"
+
+
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f:
         return
@@ -464,11 +512,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cur['tot_sales'] = cur.get('tot_sales', cur.get('sales', 0))
     cur['tot_roas'] = (cur['tot_sales'] / cur['cost'] * 100) if cur.get('cost', 0) > 0 else 0
     cur['cpm'] = (cur.get('cost', 0) / cur.get('imp', 0) * 1000) if cur.get('imp', 0) > 0 else 0
+    cur['tot_cvr'] = (cur['tot_conv'] / cur['clk'] * 100) if cur.get('clk', 0) > 0 else 0
+    cur['tot_cpa'] = (cur['cost'] / cur['tot_conv']) if cur.get('tot_conv', 0) > 0 else 0
 
     base['tot_conv'] = base.get('tot_conv', base.get('conv', 0))
     base['tot_sales'] = base.get('tot_sales', base.get('sales', 0))
     base['tot_roas'] = (base['tot_sales'] / base['cost'] * 100) if base.get('cost', 0) > 0 else 0
     base['cpm'] = (base.get('cost', 0) / base.get('imp', 0) * 1000) if base.get('imp', 0) > 0 else 0
+    base['tot_cvr'] = (base['tot_conv'] / base['clk'] * 100) if base.get('clk', 0) > 0 else 0
+    base['tot_cpa'] = (base['cost'] / base['tot_conv']) if base.get('tot_conv', 0) > 0 else 0
+
+    kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
 
     inflow_items = [
         {"label": "노출수", "value": format_number_commas(cur.get("imp", 0.0)), "cur": cur.get("imp", 0), "base": base.get("imp", 0)},
@@ -476,21 +530,21 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         {"label": "클릭률", "value": f"{float(cur.get('ctr', 0.0) or 0.0):.1f}%", "cur": cur.get("ctr", 0), "base": base.get("ctr", 0)},
     ]
     cost_items = [
-        {"label": "광고비", "value": format_currency(cur.get("cost", 0.0)), "cur": cur.get("cost", 0), "base": base.get("cost", 0), "improve_when_up": False},
+        {"label": "광고비", "value": _format_compact_currency(cur.get("cost", 0.0)), "cur": cur.get("cost", 0), "base": base.get("cost", 0), "improve_when_up": False},
         {"label": "CPC", "value": format_currency(cur.get("cpc", 0.0)), "cur": cur.get("cpc", 0), "base": base.get("cpc", 0), "improve_when_up": False},
         {"label": "CPM", "value": format_currency(cur.get("cpm", 0.0)), "cur": cur.get("cpm", 0), "base": base.get("cpm", 0), "improve_when_up": False},
     ]
-    if combined_toggle:
+    if kpi_mode == "shopping_purchase":
         perf_items = [
-            {"label": "통합 ROAS", "value": f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", "cur": cur.get("tot_roas", 0), "base": base.get("tot_roas", 0)},
-            {"label": "총 전환수", "value": f"{float(cur.get('tot_conv', 0.0)):.1f}", "cur": cur.get("tot_conv", 0), "base": base.get("tot_conv", 0)},
-            {"label": "총 전환매출", "value": format_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
+            {"label": "구매 ROAS", "value": f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", "cur": cur.get("roas", 0), "base": base.get("roas", 0)},
+            {"label": "구매완료수", "value": f"{float(cur.get('conv', 0.0)):.0f}", "cur": cur.get("conv", 0), "base": base.get("conv", 0)},
+            {"label": "구매완료 매출", "value": _format_compact_currency(cur.get("sales", 0.0)), "cur": cur.get("sales", 0), "base": base.get("sales", 0)},
         ]
     else:
         perf_items = [
-            {"label": "구매 ROAS", "value": f"{float(cur.get('roas', 0.0) or 0.0):.1f}%", "cur": cur.get("roas", 0), "base": base.get("roas", 0)},
-            {"label": "구매완료수", "value": f"{float(cur.get('conv', 0.0)):.1f}", "cur": cur.get("conv", 0), "base": base.get("conv", 0)},
-            {"label": "구매완료 매출", "value": format_currency(cur.get("sales", 0.0)), "cur": cur.get("sales", 0), "base": base.get("sales", 0)},
+            {"label": "총 전환수", "value": f"{float(cur.get('tot_conv', 0.0)):.0f}", "cur": cur.get("tot_conv", 0), "base": base.get("tot_conv", 0)},
+            {"label": "전환율", "value": f"{float(cur.get('tot_cvr', 0.0) or 0.0):.1f}%", "cur": cur.get("tot_cvr", 0), "base": base.get("tot_cvr", 0)},
+            {"label": "CPA", "value": format_currency(cur.get("tot_cpa", 0.0)), "cur": cur.get("tot_cpa", 0), "base": base.get("tot_cpa", 0), "improve_when_up": False},
         ]
 
     st.markdown(
