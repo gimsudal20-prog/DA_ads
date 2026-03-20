@@ -17,24 +17,37 @@ from page_helpers import get_dynamic_cmp_options, period_compare_range
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-summary-bar {
+    .ov-headbar {
+        background: var(--nv-bg);
+        border: 1px solid var(--nv-line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 14px;
+    }
+    .ov-headmeta {
         display:flex;
         flex-wrap:wrap;
-        gap:10px;
-        margin-bottom:16px;
+        gap:8px;
+        align-items:center;
     }
     .ov-chip {
+        background: transparent;
+        color: var(--nv-text);
+        border: 1px solid var(--nv-line);
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.2;
+    }
+    .ov-chip.primary {
         background: var(--nv-primary-soft);
         color: var(--nv-primary);
-        border-radius: 999px;
-        padding: 6px 12px;
-        font-size: 12px;
-        font-weight: 700;
+        border-color: transparent;
     }
     .ov-chip.muted {
-        background: var(--nv-surface);
         color: var(--nv-muted);
-        border: 1px solid var(--nv-line);
+        background: var(--nv-surface);
     }
     .ov-kpi-grid {
         display:grid;
@@ -485,25 +498,40 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     selected_type_label = _selected_type_label(type_sel)
 
     st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='ov-summary-bar'>"
-        f"<div class='ov-chip'>{selected_type_label}</div>"
-        f"<div class='ov-chip muted'>조회 기간 {f['start']} ~ {f['end']}</div>"
-        f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
     patch_date = date(2026, 3, 11)
     is_legacy_only = f["end"] < patch_date
     is_split_only = f["start"] >= patch_date
     is_mixed_period = (f["start"] < patch_date <= f["end"])
     combined_toggle = not is_split_only
+    auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
+
+    head_col_meta, head_col_toggle = st.columns([5.2, 1.6])
+    with head_col_meta:
+        st.markdown(
+            f"<div class='ov-headbar'>"
+            f"<div class='ov-headmeta'>"
+            f"<div class='ov-chip primary'>{selected_type_label}</div>"
+            f"<div class='ov-chip muted'>{f['start']} ~ {f['end']}</div>"
+            f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with head_col_toggle:
+        purchase_view = st.toggle(
+            "구매완료 데이터로 보기",
+            value=(auto_kpi_mode == "shopping_purchase"),
+            key="overview_purchase_view_toggle",
+            disabled=not is_split_only,
+        )
 
     if is_mixed_period:
         st.info("안내: 3월 11일 이전 및 이후 데이터가 혼재되어 있어, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
     elif is_legacy_only:
         st.info("안내: 3월 11일 이전 데이터 조회 시, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
+
+    if not is_split_only:
+        st.caption("구매완료 데이터 보기는 분리 전환 데이터가 있는 기간에서만 사용할 수 있습니다.")
 
     cur = cur_summary or {}
     base = base_summary or {}
@@ -522,7 +550,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     base['tot_cvr'] = (base['tot_conv'] / base['clk'] * 100) if base.get('clk', 0) > 0 else 0
     base['tot_cpa'] = (base['cost'] / base['tot_conv']) if base.get('tot_conv', 0) > 0 else 0
 
-    kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
+    kpi_mode = "shopping_purchase" if (purchase_view and is_split_only) else auto_kpi_mode
 
     inflow_items = [
         {"label": "노출수", "value": format_number_commas(cur.get("imp", 0.0)), "cur": cur.get("imp", 0), "base": base.get("imp", 0)},
