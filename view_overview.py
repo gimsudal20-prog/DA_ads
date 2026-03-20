@@ -595,7 +595,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     def _display_ts_table(df, col_name, toggle_state_val):
         if df.empty:
-            st.info("조회된 데이터가 없습니다.")
             return
         if toggle_state_val:
             cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]

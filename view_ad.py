@@ -15,6 +15,36 @@ from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_it
 
 
 def _inject_ad_css():
+
+
+def _build_material_name(df: pd.DataFrame) -> pd.DataFrame:
+    work = df.copy()
+    if "ad_title" in work.columns:
+        work["final_ad_name"] = work["ad_title"].fillna("").astype(str).str.strip()
+        mask_empty = work["final_ad_name"].isin(["", "nan", "None"])
+        if "ad_name" in work.columns:
+            work.loc[mask_empty, "final_ad_name"] = work.loc[mask_empty, "ad_name"].fillna("").astype(str).str.strip()
+    elif "ad_name" in work.columns:
+        work["final_ad_name"] = work["ad_name"].fillna("").astype(str).str.strip()
+    else:
+        work["final_ad_name"] = ""
+    return work
+
+def _filter_shop_ext_materials(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    work = df.copy()
+    if "소재내용" not in work.columns:
+        return work
+    s = work["소재내용"].fillna("").astype(str)
+    non_talk = ~s.str.contains("TALK", na=False, case=False)
+    explicit = s.str.contains(r"\[확장소재\]", na=False, regex=True)
+    filtered = work[explicit & non_talk].copy()
+    if not filtered.empty:
+        return filtered
+    # 수집은 됐지만 '[확장소재]' 라벨이 없는 경우를 대비한 fallback
+    return work[non_talk].copy()
+
     st.markdown("""
     <style>
     .ad-toolbar {
@@ -186,7 +216,12 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
     if sel_c != "전체":
         df_target = df_target[df_target["캠페인"] == sel_c]
 
-    base_for_search = base_ad_bundle.rename(columns={"ad_name": "소재내용"}) if not base_ad_bundle.empty else pd.DataFrame()
+    if not base_ad_bundle.empty:
+        base_ad_bundle = _build_material_name(base_ad_bundle)
+        base_for_search = base_ad_bundle.rename(columns={"final_ad_name": "소재내용"})
+        base_for_search = _filter_shop_ext_materials(base_for_search) if "쇼핑검색" in cmp_sub_mode else base_for_search
+    else:
+        base_for_search = pd.DataFrame()
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>개별 소재 비교</div>", unsafe_allow_html=True)
         render_item_comparison_search("소재", df_target, base_for_search, "소재내용", start_dt, end_dt, b1, b2)
@@ -260,8 +295,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     with tab_shop:
         df_shop = view[view["캠페인유형"] == "쇼핑검색"].copy()
         if not df_shop.empty:
-            df_shop = df_shop[df_shop['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
-            df_shop = df_shop[~df_shop['소재내용'].astype(str).str.contains('TALK', na=False, case=False)]
+            df_shop = _filter_shop_ext_materials(df_shop)
         _render_ad_tab(df_shop, "쇼핑검색 확장소재", top_n, fmt, f["start"], f["end"])
 
     with tab_landing:
