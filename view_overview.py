@@ -581,25 +581,24 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
-    # ✨ 요청하신 [상단 헤더 정보 + 버튼 통합 박스] 유지
-    with st.container(border=True):
-        head_col_meta, head_col_toggle = st.columns([5, 2])
-        with head_col_meta:
-            st.markdown(
-                f"<div style='display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-top:4px;'>"
-                f"<div class='ov-chip primary'>{selected_type_label}</div>"
-                f"<div class='ov-chip muted'>{f['start']} ~ {f['end']}</div>"
-                f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        with head_col_toggle:
-            purchase_view = st.toggle(
-                "구매완료 데이터로 보기",
-                value=(auto_kpi_mode == "shopping_purchase"),
-                key="overview_purchase_view_toggle",
-                disabled=not can_use_purchase_toggle,
-            )
+    # ✨ 외부 박스(container) 제거 및 여백 조정
+    head_col_meta, head_col_toggle = st.columns([5, 2])
+    with head_col_meta:
+        st.markdown(
+            f"<div style='display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-top:4px; margin-bottom: 12px;'>"
+            f"<div class='ov-chip primary'>{selected_type_label}</div>"
+            f"<div class='ov-chip muted'>{f['start']} ~ {f['end']}</div>"
+            f"<div class='ov-chip muted'>{cmp_mode} · {b1} ~ {b2}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with head_col_toggle:
+        purchase_view = st.toggle(
+            "구매완료 데이터로 보기",
+            value=(auto_kpi_mode == "shopping_purchase"),
+            key="overview_purchase_view_toggle",
+            disabled=not can_use_purchase_toggle,
+        )
 
     if is_mixed_period:
         st.info("안내: 3월 11일 이전 및 이후 데이터가 혼재되어 있어, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
