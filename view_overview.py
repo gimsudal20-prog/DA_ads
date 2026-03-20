@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view."""
+"""view_overview.py - Overview page view (Hyper-Optimized)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -36,60 +36,70 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
-    .ov-kpi-grid {
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
-        margin-bottom: 18px;
-    }
-    .ov-kpi-panel {
-        background: var(--nv-bg);
-        border: 1px solid var(--nv-line);
+    
+    /* ✨ 미니멀 단일 통합 박스 스타일 */
+    .ov-single-box {
+        background: var(--nv-bg, #ffffff);
+        border: 1px solid var(--nv-line, #e5e7eb);
         border-radius: 12px;
-        padding: 16px;
+        padding: 24px 28px;
+        margin-bottom: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
     }
-    .ov-kpi-title {
+    .ov-metric-row {
+        display: grid;
+        grid-template-columns: 70px repeat(3, minmax(0, 1fr));
+        align-items: center;
+        gap: 20px;
+    }
+    .ov-metric-row:not(:last-child) {
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--nv-surface, #f3f4f6);
+    }
+    .ov-row-title {
         font-size: 13px;
-        font-weight: 700;
-        color: var(--nv-text);
-        margin-bottom: 12px;
-    }
-    .ov-kpi-cells {
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-    }
-    .ov-kpi-cell {
-        background: var(--nv-surface);
-        border-radius: 10px;
-        padding: 12px;
-        min-width: 0;
-    }
-    .ov-kpi-label {
-        font-size: 12px;
-        color: var(--nv-muted);
-        margin-bottom: 6px;
-    }
-    .ov-kpi-value {
-        font-size: 20px;
         font-weight: 800;
-        color: var(--nv-text);
-        line-height: 1.15;
+        color: var(--nv-muted, #6b7280);
+        letter-spacing: -0.3px;
+    }
+    .ov-metric-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .ov-item-label {
+        font-size: 12px;
+        color: var(--nv-muted, #6b7280);
+    }
+    .ov-item-data {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .ov-item-value {
+        font-size: 22px;
+        font-weight: 800;
+        color: var(--nv-text, #111827);
+        line-height: 1.1;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .ov-kpi-delta {
-        margin-top: 8px;
+    .ov-delta-badge {
         font-size: 11px;
         font-weight: 700;
-        display:inline-flex;
-        padding: 4px 8px;
+        padding: 3px 8px;
         border-radius: 999px;
+        display: inline-block;
+        white-space: nowrap;
     }
-    .ov-kpi-delta.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
-    .ov-kpi-delta.neg { background: #FEE4E2; color: #F04438; }
-    .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
+    .ov-delta-badge.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
+    .ov-delta-badge.neg { background: #FEE4E2; color: #F04438; }
+    .ov-delta-badge.neu { background: var(--nv-surface); color: var(--nv-muted); border: 1px solid var(--nv-line); }
+    
     .ov-toolbar {
         background: var(--nv-surface);
         border: 1px solid var(--nv-line);
@@ -103,8 +113,18 @@ def _inject_overview_css():
         color: var(--nv-text);
         margin-bottom: 10px;
     }
-    @media (max-width: 1100px) {
-        .ov-kpi-grid, .ov-kpi-cells { grid-template-columns: 1fr; }
+    @media (max-width: 900px) {
+        .ov-metric-row {
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+        .ov-row-title {
+            margin-bottom: 4px;
+            border-bottom: 2px solid var(--nv-line);
+            padding-bottom: 8px;
+            display: inline-block;
+        }
+        .ov-single-box { padding: 20px; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -144,7 +164,6 @@ def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 42
         hide_index=hide_index,
         column_config=_sticky_cfg(first_col),
     )
-
 
 def _selected_type_label(type_sel: tuple) -> str:
     if not type_sel:
@@ -201,14 +220,6 @@ def format_for_csv(df):
             elif "ROAS" in col or col == "클릭률(%)":
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
     return out_df
-
-
-def calc_pct_diff(c, b):
-    diff = c - b
-    if b == 0:
-        return (100.0 if c > 0 else 0.0), diff
-    return (diff / b * 100.0), diff
-
 
 def style_delta_str(val):
     val_str = str(val).strip()
@@ -277,12 +288,14 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
             styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
     return styler
 
-
+# 🚀 [핵심 최적화 구간] 반복문(iterrows) 제거 및 NumPy 기반 100% 벡터화 연산 적용
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty:
         return pd.DataFrame()
 
-    base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales', 'tot_conv', 'tot_sales']
+    base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
+    
+    # 누락된 컬럼 0으로 채우기
     for c in base_cols[1:]:
         if not cur_df.empty and c not in cur_df.columns:
             cur_df[c] = 0.0
@@ -291,94 +304,133 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     cur_grp = cur_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not cur_df.empty else pd.DataFrame(columns=base_cols)
     base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
+    
+    # tot_conv, tot_sales 사전 계산 (존재할 경우)
+    if not cur_df.empty:
+        cur_grp['tot_conv'] = cur_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in cur_df.columns else cur_grp['conv'] + cur_grp['cart_conv'] + cur_grp['wishlist_conv']
+        cur_grp['tot_sales'] = cur_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in cur_df.columns else cur_grp['sales'] + cur_grp['cart_sales'] + cur_grp['wishlist_sales']
+    
+    if not base_df.empty:
+        base_grp['tot_conv'] = base_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in base_df.columns else base_grp['conv'] + base_grp['cart_conv'] + base_grp['wishlist_conv']
+        base_grp['tot_sales'] = base_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in base_df.columns else base_grp['sales'] + base_grp['cart_sales'] + base_grp['wishlist_sales']
+
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
 
-    table_data = []
-    for _, row in merged.iterrows():
-        c_imp, c_clk, c_cost = row['imp_cur'], row['clk_cur'], row['cost_cur']
-        c_wish, c_wsales = row['wishlist_conv_cur'], row['wishlist_sales_cur']
-        c_cart, c_csales = row['cart_conv_cur'], row['cart_sales_cur']
-        c_conv, c_sales = row['conv_cur'], row['sales_cur']
-        b_imp, b_clk, b_cost = row.get('imp_base', 0), row.get('clk_base', 0), row.get('cost_base', 0)
-        b_wish, b_wsales = row.get('wishlist_conv_base', 0), row.get('wishlist_sales_base', 0)
-        b_cart, b_csales = row.get('cart_conv_base', 0), row.get('cart_sales_base', 0)
-        b_conv, b_sales = row.get('conv_base', 0), row.get('sales_base', 0)
+    # 파생 변수 벡터화 연산 (속도 대폭 향상)
+    c_imp, b_imp = merged.get('imp_cur', 0), merged.get('imp_base', 0)
+    c_clk, b_clk = merged.get('clk_cur', 0), merged.get('clk_base', 0)
+    c_cost, b_cost = merged.get('cost_cur', 0), merged.get('cost_base', 0)
+    c_wish, b_wish = merged.get('wishlist_conv_cur', 0), merged.get('wishlist_conv_base', 0)
+    c_wsales, b_wsales = merged.get('wishlist_sales_cur', 0), merged.get('wishlist_sales_base', 0)
+    c_cart, b_cart = merged.get('cart_conv_cur', 0), merged.get('cart_conv_base', 0)
+    c_csales, b_csales = merged.get('cart_sales_cur', 0), merged.get('cart_sales_base', 0)
+    c_conv, b_conv = merged.get('conv_cur', 0), merged.get('conv_base', 0)
+    c_sales, b_sales = merged.get('sales_cur', 0), merged.get('sales_base', 0)
+    c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
+    c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
-        c_tot_conv = row.get('tot_conv_cur', c_conv + c_cart + c_wish)
-        c_tot_sales = row.get('tot_sales_cur', c_sales + c_csales + c_wsales)
-        b_tot_conv = row.get('tot_conv_base', b_conv + b_cart + b_wish)
-        b_tot_sales = row.get('tot_sales_base', b_sales + b_csales + b_wsales)
+    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
+    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
+    c_roas = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
+    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
+    c_troas = np.where(c_cost > 0, (c_tot_sales / c_cost) * 100, 0)
+    b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
 
-        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
-        b_cpc = (b_cost / b_clk) if b_clk > 0 else 0
-        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
-        b_roas = (b_sales / b_cost * 100) if b_cost > 0 else 0
-        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0
-        b_troas = (b_tot_sales / b_cost * 100) if b_cost > 0 else 0
+    def _vec_pct_diff(c, b):
+        diff = c - b
+        # 분모가 0일 때: c>0 이면 100.0%, 아니면 0.0%
+        pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / b) * 100.0)
+        return pct, diff
 
-        pct_imp, diff_imp = calc_pct_diff(c_imp, b_imp)
-        pct_clk, diff_clk = calc_pct_diff(c_clk, b_clk)
-        pct_cost, diff_cost = calc_pct_diff(c_cost, b_cost)
-        pct_cpc, diff_cpc = calc_pct_diff(c_cpc, b_cpc)
-        pct_wish, diff_wish = calc_pct_diff(c_wish, b_wish)
-        pct_cart, diff_cart = calc_pct_diff(c_cart, b_cart)
-        pct_conv, diff_conv = calc_pct_diff(c_conv, b_conv)
-        pct_sales, diff_sales = calc_pct_diff(c_sales, b_sales)
-        pct_tot_conv, diff_tot_conv = calc_pct_diff(c_tot_conv, b_tot_conv)
-        pct_tot_sales, diff_tot_sales = calc_pct_diff(c_tot_sales, b_tot_sales)
+    pct_imp, diff_imp = _vec_pct_diff(c_imp, b_imp)
+    pct_clk, diff_clk = _vec_pct_diff(c_clk, b_clk)
+    pct_cost, diff_cost = _vec_pct_diff(c_cost, b_cost)
+    pct_cpc, diff_cpc = _vec_pct_diff(c_cpc, b_cpc)
+    pct_wish, diff_wish = _vec_pct_diff(c_wish, b_wish)
+    pct_cart, diff_cart = _vec_pct_diff(c_cart, b_cart)
+    pct_conv, diff_conv = _vec_pct_diff(c_conv, b_conv)
+    pct_sales, diff_sales = _vec_pct_diff(c_sales, b_sales)
+    pct_tot_conv, diff_tot_conv = _vec_pct_diff(c_tot_conv, b_tot_conv)
+    pct_tot_sales, diff_tot_sales = _vec_pct_diff(c_tot_sales, b_tot_sales)
 
-        val = row[group_col]
-        if type_kor_map:
-            val = type_kor_map.get(str(val).upper(), val)
+    # 결과 데이터프레임 조립
+    out = pd.DataFrame()
+    if type_kor_map:
+        out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col])
+    else:
+        out[group_label] = merged[group_col]
 
-        table_data.append({
-            group_label: val,
-            "노출수": c_imp, "노출 증감": pct_imp, "노출 차이": diff_imp,
-            "클릭수": c_clk, "클릭 증감": pct_clk, "클릭 차이": diff_clk,
-            "광고비": c_cost, "광고비 증감": pct_cost, "광고비 차이": diff_cost,
-            "CPC": c_cpc, "CPC 증감": pct_cpc, "CPC 차이": diff_cpc,
-            "위시리스트수": c_wish, "위시리스트 증감": pct_wish, "위시리스트 차이": diff_wish,
-            "장바구니 담기수": c_cart, "장바구니 증감": pct_cart, "장바구니 차이": diff_cart,
-            "장바구니 매출액": c_csales,
-            "구매완료수": c_conv, "구매 증감": pct_conv, "구매 차이": diff_conv,
-            "구매완료 매출": c_sales, "구매 매출 증감": pct_sales, "구매 매출 차이": diff_sales,
-            "구매 ROAS(%)": c_roas, "구매 ROAS 증감": c_roas - b_roas,
-            "총 전환수": c_tot_conv, "총 전환 증감": pct_tot_conv, "총 전환 차이": diff_tot_conv,
-            "총 전환매출": c_tot_sales, "총 매출 증감": pct_tot_sales, "총 매출 차이": diff_tot_sales,
-            "통합 ROAS(%)": c_troas, "통합 ROAS 증감": c_troas - b_troas
-        })
-    return pd.DataFrame(table_data).sort_values("광고비", ascending=False)
+    out['노출수'] = c_imp
+    out['노출 증감'] = pct_imp
+    out['노출 차이'] = diff_imp
+    out['클릭수'] = c_clk
+    out['클릭 증감'] = pct_clk
+    out['클릭 차이'] = diff_clk
+    out['광고비'] = c_cost
+    out['광고비 증감'] = pct_cost
+    out['광고비 차이'] = diff_cost
+    out['CPC'] = c_cpc
+    out['CPC 증감'] = pct_cpc
+    out['CPC 차이'] = diff_cpc
+    out['위시리스트수'] = c_wish
+    out['위시리스트 증감'] = pct_wish
+    out['위시리스트 차이'] = diff_wish
+    out['장바구니 담기수'] = c_cart
+    out['장바구니 증감'] = pct_cart
+    out['장바구니 차이'] = diff_cart
+    out['장바구니 매출액'] = c_csales
+    out['구매완료수'] = c_conv
+    out['구매 증감'] = pct_conv
+    out['구매 차이'] = diff_conv
+    out['구매완료 매출'] = c_sales
+    out['구매 매출 증감'] = pct_sales
+    out['구매 매출 차이'] = diff_sales
+    out['구매 ROAS(%)'] = c_roas
+    out['구매 ROAS 증감'] = c_roas - b_roas
+    out['총 전환수'] = c_tot_conv
+    out['총 전환 증감'] = pct_tot_conv
+    out['총 전환 차이'] = diff_tot_conv
+    out['총 전환매출'] = c_tot_sales
+    out['총 매출 증감'] = pct_tot_sales
+    out['총 매출 차이'] = diff_tot_sales
+    out['통합 ROAS(%)'] = c_troas
+    out['통합 ROAS 증감'] = c_troas - b_troas
 
+    return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
+# 🚀 [핵심 최적화 구간 2] TS(시계열) 데이터 병합 부분도 벡터화
 def _build_ts_df(df, group_col, group_label):
     if df is None or df.empty:
         return pd.DataFrame()
 
     grp_cols = ['imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
-    if 'tot_conv' in df.columns:
+    has_tot = 'tot_conv' in df.columns
+    if has_tot:
         grp_cols.extend(['tot_conv', 'tot_sales'])
 
-    grp = df.groupby(group_col)[[c for c in grp_cols if c in df.columns]].sum().reset_index()
-    table_data = []
-    for _, row in grp.iterrows():
-        c_imp, c_clk, c_cost = row.get('imp', 0), row.get('clk', 0), row.get('cost', 0)
-        c_wish, c_wsales = row.get('wishlist_conv', 0), row.get('wishlist_sales', 0)
-        c_cart, c_csales = row.get('cart_conv', 0), row.get('cart_sales', 0)
-        c_conv, c_sales = row.get('conv', 0), row.get('sales', 0)
-        c_tot_conv = row.get('tot_conv', c_conv + c_cart + c_wish)
-        c_tot_sales = row.get('tot_sales', c_sales + c_csales + c_wsales)
-        c_cpc = (c_cost / c_clk) if c_clk > 0 else 0
-        c_roas = (c_sales / c_cost * 100) if c_cost > 0 else 0
-        c_troas = (c_tot_sales / c_cost * 100) if c_cost > 0 else 0
-        table_data.append({
-            group_label: row[group_col],
-            "노출수": c_imp, "클릭수": c_clk, "광고비": c_cost, "CPC": c_cpc,
-            "위시리스트수": c_wish, "장바구니 담기수": c_cart,
-            "구매완료수": c_conv, "구매완료 매출": c_sales, "구매 ROAS(%)": c_roas,
-            "총 전환수": c_tot_conv, "총 전환매출": c_tot_sales, "통합 ROAS(%)": c_troas
-        })
-    return pd.DataFrame(table_data)
+    for c in grp_cols:
+        if c not in df.columns:
+            df[c] = 0.0
 
+    grp = df.groupby(group_col)[grp_cols].sum().reset_index()
+
+    out = pd.DataFrame()
+    out[group_label] = grp[group_col]
+    out['노출수'] = grp['imp']
+    out['클릭수'] = grp['clk']
+    out['광고비'] = grp['cost']
+    out['CPC'] = np.where(grp['clk'] > 0, grp['cost'] / grp['clk'], 0)
+    out['위시리스트수'] = grp['wishlist_conv']
+    out['장바구니 담기수'] = grp['cart_conv']
+    out['구매완료수'] = grp['conv']
+    out['구매완료 매출'] = grp['sales']
+    out['구매 ROAS(%)'] = np.where(grp['cost'] > 0, (grp['sales'] / grp['cost']) * 100, 0)
+    
+    out['총 전환수'] = grp['tot_conv'] if has_tot else grp['conv'] + grp['cart_conv'] + grp['wishlist_conv']
+    out['총 전환매출'] = grp['tot_sales'] if has_tot else grp['sales'] + grp['cart_sales'] + grp['wishlist_sales']
+    out['통합 ROAS(%)'] = np.where(grp['cost'] > 0, (out['총 전환매출'] / grp['cost']) * 100, 0)
+
+    return out
 
 
 def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="label"):
@@ -426,10 +478,14 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
         ("총 전환매출", "총 매출 증감"),
         ("통합 ROAS(%)", "통합 ROAS 증감"),
     ]
+    
+    # 이 부분도 벡터 연산으로 고속 처리
     for cur_col, diff_col in diff_pairs:
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
-            merged[diff_col] = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0) - pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+            c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
+            b_val = pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+            merged[diff_col] = c_val - b_val
 
     if align_mode == "sequence" and "_seq" in merged.columns:
         merged = merged.drop(columns=["_seq"])
@@ -449,18 +505,25 @@ def _delta_chip(cur_val, base_val, improve_when_up=True):
     return cls, text
 
 
-def _render_kpi_group(title: str, items: list[dict]) -> str:
-    cells = []
-    for item in items:
-        cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
-        cells.append(
-            f"<div class='ov-kpi-cell'>"
-            f"<div class='ov-kpi-label'>{item['label']}</div>"
-            f"<div class='ov-kpi-value' title='{item['value']}'>{item['value']}</div>"
-            f"<div class='ov-kpi-delta {cls}'>{text}</div>"
-            f"</div>"
-        )
-    return f"<div class='ov-kpi-panel'><div class='ov-kpi-title'>{title}</div><div class='ov-kpi-cells'>{''.join(cells)}</div></div>"
+def _render_unified_kpi_box(groups: list[dict]) -> str:
+    html = ["<div class='ov-single-box'>"]
+    for group in groups:
+        html.append("<div class='ov-metric-row'>")
+        html.append(f"<div class='ov-row-title'>{group['title']}</div>")
+        for item in group["items"]:
+            cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
+            html.append(
+                f"<div class='ov-metric-item'>"
+                f"<div class='ov-item-label'>{item['label']}</div>"
+                f"<div class='ov-item-data'>"
+                f"<div class='ov-item-value' title='{item['value']}'>{item['value']}</div>"
+                f"<div class='ov-delta-badge {cls}'>{text}</div>"
+                f"</div>"
+                f"</div>"
+            )
+        html.append("</div>")
+    html.append("</div>")
+    return "".join(html)
 
 
 def _normalize_type_label(val) -> str:
@@ -522,7 +585,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-    with st.spinner("데이터를 집계 중입니다..."):
+    with st.spinner("데이터를 집계 중입니다... (최적화 모드)"):
         cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
         base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
         cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
@@ -550,7 +613,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
-    # ✨ 수정사항: 기간/유형 칩(메타데이터)과 토글 버튼을 하나의 미니멀한 박스(컨테이너)로 통합
     with st.container(border=True):
         head_col_meta, head_col_toggle = st.columns([5, 2])
         with head_col_meta:
@@ -622,15 +684,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
-    # ✨ 수정사항: KPI 3분할 그리드 레이아웃 원상 복구 완료
-    st.markdown(
-        f"<div class='ov-kpi-grid'>"
-        f"{_render_kpi_group('유입 지표', inflow_items)}"
-        f"{_render_kpi_group('비용 지표', cost_items)}"
-        f"{_render_kpi_group('성과 지표', perf_items)}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    kpi_groups = [
+        {"title": "유입 지표", "items": inflow_items},
+        {"title": "비용 지표", "items": cost_items},
+        {"title": "성과 지표", "items": perf_items},
+    ]
+    st.markdown(_render_unified_kpi_box(kpi_groups), unsafe_allow_html=True)
 
     with st.container(border=True):
         st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
@@ -706,7 +765,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
                 if not target_df.empty:
                     cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
-                    for _, row in target_df.iterrows():
+                    # 캠페인이 수십 개일 때 렌더링 부하 방지를 위해 최대 상위 30개만 그림 (필요시 제거 가능)
+                    for _, row in target_df.head(30).iterrows():
                         camp_name = row["campaign_name"]
                         t_roas = float(row["target_roas"])
                         m_roas = float(row["min_roas"])
@@ -734,6 +794,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         )
                     cards.append("</div>")
                     st.markdown("".join(cards), unsafe_allow_html=True)
+                    if len(target_df) > 30:
+                        st.caption(f"렌더링 속도 최적화를 위해 상위 30개 캠페인만 표시합니다. (전체 {len(target_df)}개)")
                     st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
                 else:
                     st.info("조건에 맞는 캠페인이 없습니다.")
