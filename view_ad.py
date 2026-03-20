@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_ad.py - Ad performance & A/B Testing page view."""
+"""view_ad.py - Ad performance & A/B Testing page view (Optimized)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -64,32 +64,7 @@ def _filter_shop_ext_materials(df: pd.DataFrame) -> pd.DataFrame:
     filtered = work[explicit & non_talk].copy()
     if not filtered.empty:
         return filtered
-    # 수집은 됐지만 '[확장소재]' 라벨이 없는 경우를 대비한 fallback
     return work[non_talk].copy()
-
-    st.markdown("""
-    <style>
-    .ad-toolbar {
-        background: var(--nv-surface);
-        border: 1px solid var(--nv-line);
-        border-radius: 12px;
-        padding: 14px 16px 10px 16px;
-        margin-bottom: 16px;
-    }
-    .ad-toolbar-title {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--nv-text);
-        margin-bottom: 10px;
-    }
-    .ad-section-sub {
-        font-size: 12px;
-        color: var(--nv-muted);
-        margin-top: -2px;
-        margin-bottom: 12px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False, max_entries=20, ttl=300)
@@ -262,8 +237,6 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>소재 기간 비교 데이터</div>", unsafe_allow_html=True)
         _render_ad_sticky_table(styled_cmp, list(disp_c.columns), height=500, hide_index=True)
-
-
 
 
 def _ad_pinned_cfg(columns):
