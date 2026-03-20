@@ -710,6 +710,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     )
                 cards.append("</div>")
                 st.markdown("".join(cards), unsafe_allow_html=True)
+                st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
             else:
                 st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
         else:
