@@ -279,11 +279,12 @@ def _keyword_pinned_cfg(columns):
     return cfg
 
 def _make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+    if df is None:
         return df
+    out = df.copy().reset_index(drop=True)
     cols = []
     seen = {}
-    for c in df.columns:
+    for c in out.columns:
         base = str(c)
         if base not in seen:
             seen[base] = 0
@@ -291,7 +292,6 @@ def _make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
         else:
             seen[base] += 1
             cols.append(f"{base}_{seen[base]}")
-    out = df.copy()
     out.columns = cols
     return out
 
@@ -478,8 +478,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "총 전환매출", "통합 ROAS(%)", "통합 ROAS 증감 "
             ]
             delta_cols = [
-                "노출 증감/율", "클릭 증감/율", "광고비 증감/율",
-                "CPC 증감/율", "총 전환 증감 ", "통합 ROAS 증감 "
+                "노출 증감/율", "클릭 증감/율",
+                "광고비 증감/율", "CPC 증감/율",
+                "총 전환 증감 ", "통합 ROAS 증감 "
             ]
 
             if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
@@ -489,6 +490,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
             disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
+            disp = _make_unique_columns(disp)
 
             fmt_cmp = {
                 "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
@@ -508,28 +510,17 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             if delta_cols:
                 target_delta_cols = [c for c in delta_cols if c in disp.columns]
+                pos_cols = [c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]]
+                neg_cols = [c for c in target_delta_cols if c in ["광고비 증감/율", "CPC 증감/율"]]
 
-                if not funnel_toggle or show_mode == "integrated_only":
-                    pos_cols = [c for c in target_delta_cols if c not in ["광고비 증감/율", "CPC 증감/율"]]
-                    neg_cols = [c for c in target_delta_cols if c in ["광고비 증감/율", "CPC 증감/율"]]
-
-                    try:
-                        if pos_cols:
-                            styled_cmp = styled_cmp.map(style_delta_str, subset=pos_cols)
-                        if neg_cols:
-                            styled_cmp = styled_cmp.map(style_delta_str_neg, subset=neg_cols)
-                    except Exception:
-                        if pos_cols:
-                            styled_cmp = styled_cmp.applymap(style_delta_str, subset=pos_cols)
-                        if neg_cols:
-                            styled_cmp = styled_cmp.applymap(style_delta_str_neg, subset=neg_cols)
-                else:
-                    if target_delta_cols:
-                        try:
-                            styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
-                        except Exception:
-                            styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
+                try:
+                    if pos_cols:
+                        styled_cmp = styled_cmp.map(style_delta_str, subset=pos_cols)
+                    if neg_cols:
+                        styled_cmp = styled_cmp.map(style_delta_str_neg, subset=neg_cols)
+                except Exception:
+                    styled_cmp = disp
 
             with st.container(border=True):
-                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>키워드/소재 기간 비교 표</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>{view_mode_cmp} 기간 비교 데이터</div>", unsafe_allow_html=True)
                 _render_keyword_sticky_table(styled_cmp, list(disp.columns), height=550, hide_index=True)
