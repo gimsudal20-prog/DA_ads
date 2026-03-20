@@ -670,47 +670,83 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
             target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
             if not target_df.empty:
-                cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
-                for _, row in target_df.sort_values(by="cost", ascending=False).iterrows():
-                    camp_name = row["campaign_name"]
-                    t_roas = float(row["target_roas"])
-                    m_roas = float(row["min_roas"])
-                    cost = float(row.get("cost", 0.0))
-                    sales_purch = float(row.get("sales", 0.0))
-                    sales_integ = float(row.get("tot_sales", 0.0))
-                    c_roas_purch = (sales_purch / cost * 100) if cost > 0 else 0.0
-                    c_roas_integ = (sales_integ / cost * 100) if cost > 0 else 0.0
-                    base_roas = t_roas if t_roas > 0 else m_roas
-                    achieve_raw = (c_roas_purch / base_roas * 100) if base_roas > 0 else 0.0
-                    achieve = min(achieve_raw, 100.0)
-                    achieve_diff = achieve_raw - 100.0
-                    if t_roas > 0 and c_roas_purch > t_roas:
-                        color, status = "#0528F2", "초과 달성"
-                    elif t_roas > 0 and c_roas_purch == t_roas:
-                        color, status = "#0528F2", "목표 달성"
-                    elif m_roas > 0 and c_roas_purch >= m_roas:
-                        color, status = "#10B981", "최소 달성"
-                    else:
-                        color, status = "#F79009", "미달"
-                    integ_html = (
-                        f"<div style='font-size:12px; color:var(--nv-muted); margin-top:8px;'>현재(통합) {c_roas_integ:,.1f}%</div>"
-                        if show_integ_roas else ""
+                target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
+                target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
+                target_df["tot_sales"] = pd.to_numeric(target_df.get("tot_sales", 0), errors="coerce").fillna(0.0)
+
+                target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
+                target_df["c_roas_purch"] = np.where(target_df["cost"] > 0, (target_df["sales"] / target_df["cost"]) * 100, 0.0)
+                target_df["c_roas_integ"] = np.where(target_df["cost"] > 0, (target_df["tot_sales"] / target_df["cost"]) * 100, 0.0)
+                target_df["achieve_raw"] = np.where(target_df["base_roas"] > 0, (target_df["c_roas_purch"] / target_df["base_roas"]) * 100, 0.0)
+                target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
+                target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
+                target_df["status"] = np.where(
+                    (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
+                    np.where(
+                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "목표 달성",
+                        np.where(
+                            (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "최소 달성",
+                            "미달"
+                        )
                     )
-                    cards.append(
-                        f"<div style='background:var(--nv-bg); border:1px solid var(--nv-line); border-radius:12px; padding:16px;'>"
-                        f"<div style='display:flex; justify-content:space-between; gap:12px; align-items:flex-start;'>"
-                        f"<div style='font-weight:700; line-height:1.4; color:var(--nv-text);'>{camp_name}</div>"
-                        f"<div style='text-align:right; white-space:nowrap;'><div style='font-size:18px; font-weight:800; color:{color};'>{achieve_diff:+,.1f}%</div><div style='font-size:12px; color:{color}; font-weight:700;'>{status}</div></div>"
-                        f"</div>"
-                        f"<div style='height:8px; background:var(--nv-surface); border-radius:999px; overflow:hidden; margin:12px 0;'><div style='width:{achieve}%; height:100%; background:{color};'></div></div>"
-                        f"<div style='font-size:13px; color:var(--nv-text); font-weight:700;'>현재(구매) {c_roas_purch:,.1f}%</div>"
-                        f"<div style='font-size:12px; color:var(--nv-muted); margin-top:6px;'>최소 {m_roas:,.0f}% · 목표 {t_roas:,.0f}%</div>"
-                        f"{integ_html}"
-                        f"</div>"
-                    )
-                cards.append("</div>")
-                st.markdown("".join(cards), unsafe_allow_html=True)
-                st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+                )
+                target_df["card_color"] = np.where(
+                    target_df["status"].isin(["초과 달성", "목표 달성"]), "#0528F2",
+                    np.where(target_df["status"] == "최소 달성", "#10B981", "#F79009")
+                )
+
+                ctrl1, ctrl2 = st.columns([1, 1.2])
+                only_miss = ctrl1.checkbox("미달만 보기", value=False, key="ov_target_only_miss")
+                sort_mode = ctrl2.selectbox(
+                    "정렬 기준",
+                    ["광고비 순", "이름 순", "달성격차 순"],
+                    index=0,
+                    key="ov_target_sort_mode"
+                )
+
+                if only_miss:
+                    target_df = target_df[target_df["status"] == "미달"]
+
+                if sort_mode == "이름 순":
+                    target_df = target_df.sort_values(by="campaign_name", ascending=True)
+                elif sort_mode == "달성격차 순":
+                    target_df = target_df.sort_values(by="achieve_diff", ascending=False)
+                else:
+                    target_df = target_df.sort_values(by="cost", ascending=False)
+
+                if not target_df.empty:
+                    cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
+                    for _, row in target_df.iterrows():
+                        camp_name = row["campaign_name"]
+                        t_roas = float(row["target_roas"])
+                        m_roas = float(row["min_roas"])
+                        c_roas_purch = float(row["c_roas_purch"])
+                        c_roas_integ = float(row["c_roas_integ"])
+                        achieve = float(row["achieve"])
+                        achieve_diff = float(row["achieve_diff"])
+                        color = row["card_color"]
+                        status = row["status"]
+                        integ_html = (
+                            f"<div style='font-size:12px; color:var(--nv-muted); margin-top:8px;'>현재(통합) {c_roas_integ:,.1f}%</div>"
+                            if show_integ_roas else ""
+                        )
+                        cards.append(
+                            f"<div style='background:var(--nv-bg); border:1px solid var(--nv-line); border-radius:12px; padding:16px;'>"
+                            f"<div style='display:flex; justify-content:space-between; gap:12px; align-items:flex-start;'>"
+                            f"<div style='font-weight:700; line-height:1.4; color:var(--nv-text);'>{camp_name}</div>"
+                            f"<div style='text-align:right; white-space:nowrap;'><div style='font-size:18px; font-weight:800; color:{color};'>{achieve_diff:+,.1f}%</div><div style='font-size:12px; color:{color}; font-weight:700;'>{status}</div></div>"
+                            f"</div>"
+                            f"<div style='height:8px; background:var(--nv-surface); border-radius:999px; overflow:hidden; margin:12px 0;'><div style='width:{achieve}%; height:100%; background:{color};'></div></div>"
+                            f"<div style='font-size:13px; color:var(--nv-text); font-weight:700;'>현재(구매) {c_roas_purch:,.1f}%</div>"
+                            f"<div style='font-size:12px; color:var(--nv-muted); margin-top:6px;'>최소 {m_roas:,.0f}% · 목표 {t_roas:,.0f}%</div>"
+                            f"{integ_html}"
+                            f"</div>"
+                        )
+                    cards.append("</div>")
+                    st.markdown("".join(cards), unsafe_allow_html=True)
+                    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+                else:
+                    st.info("조건에 맞는 캠페인이 없습니다.")
             else:
                 st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
         else:
