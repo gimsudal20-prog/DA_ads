@@ -575,7 +575,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             f"</div>",
             unsafe_allow_html=True,
         )
-    can_use_purchase_toggle = is_split_only
+    can_use_purchase_toggle = (f["end"] >= patch_date)
 
     with head_col_toggle:
         purchase_view = st.toggle(
@@ -590,8 +590,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     elif is_legacy_only:
         st.info("안내: 3월 11일 이전 데이터 조회 시, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
 
-    if not is_split_only:
-        st.caption("구매완료 데이터 보기는 분리 전환 데이터가 있는 기간에서만 사용할 수 있습니다.")
+    if not can_use_purchase_toggle:
+        st.caption("구매완료 데이터 보기는 분리 전환 데이터가 포함된 기간에서만 사용할 수 있습니다.")
+    elif is_mixed_period:
+        st.caption("구매완료 데이터 보기 ON 시에는 분리 전환 기준(3/11 이후 구조)에 맞춰 확인해주세요.")
 
     cur = cur_summary or {}
     base = base_summary or {}
@@ -610,7 +612,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     base['tot_cvr'] = (base['tot_conv'] / base['clk'] * 100) if base.get('clk', 0) > 0 else 0
     base['tot_cpa'] = (base['cost'] / base['tot_conv']) if base.get('tot_conv', 0) > 0 else 0
 
-    kpi_mode = "shopping_purchase" if (purchase_view and is_split_only) else "generic_conversion"
+    kpi_mode = "shopping_purchase" if (purchase_view and can_use_purchase_toggle) else "generic_conversion"
 
     inflow_items = [
         {"label": "노출수", "value": format_number_commas(cur.get("imp", 0.0)), "cur": cur.get("imp", 0), "base": base.get("imp", 0)},
