@@ -303,7 +303,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             ad_tmp = pd.DataFrame()
 
-        detail_bundle = pd.concat([kw_tmp, ad_tmp], ignore_index=True)
+        # 🚨 빈 데이터프레임 병합 경고 방지용 안전 장치
+        valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
+        detail_bundle = pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
+        
         df = _perf_common_merge_meta(bundle, meta)
 
         view = df.rename(columns={
@@ -371,7 +374,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             type_grp = type_grp.sort_values("광고비", ascending=False)
             st.dataframe(
                 type_grp.style.format({"광고비": "{:,.0f}", sales_col: "{:,.0f}원", roas_col: "{:,.1f}%"}),
-                use_container_width=True,
+                width="stretch",
                 height=_compact_df_height(type_grp, min_height=74, max_height=220),
                 hide_index=True,
                 column_config={
@@ -390,7 +393,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 fig = px.pie(device_df, values="cost", names="device_name", hole=0.55)
                 fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=180, showlegend=True)
                 fig.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
             else:
                 st.info("기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.")
 
@@ -398,7 +401,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         disp_main = disp_main[final_cols].sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
 
         styled_main, _ = _safe_style(disp_main, fmt, [roas_col])
-        event = st.dataframe(styled_main, use_container_width=True, hide_index=True, selection_mode="single-row", on_select="rerun")
+        event = st.dataframe(styled_main, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
 
         selected_rows = event.selection.rows
         if selected_rows:
@@ -430,7 +433,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
                         fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444")
                         fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
-                        st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
+                        st.plotly_chart(fig_scatter, width="stretch", config={'displayModeBar': False})
 
                     sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비"] + (["구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)"] if funnel_toggle else ["구매완료수", "구매완료 매출", "구매 ROAS(%)"])
                     if has_pre_patch_cur:
@@ -438,7 +441,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
                     styled_kw, _ = _safe_style(kw_disp, fmt, [roas_col])
-                    st.dataframe(styled_kw, use_container_width=True, hide_index=True)
+                    st.dataframe(styled_kw, width="stretch", hide_index=True)
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
 
@@ -466,7 +469,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
 
                 styled_grp, _ = _safe_style(disp_grp, fmt, [roas_col])
-                st.dataframe(styled_grp, use_container_width=True, hide_index=True)
+                st.dataframe(styled_grp, width="stretch", hide_index=True)
 
     with tab_cmp:
         opts = get_dynamic_cmp_options(f["start"], f["end"])
@@ -615,6 +618,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     styled_pivot = pivot_df.style.map(highlight_roas_text, subset=["통합 ROAS(%)"])
                 except AttributeError:
                     styled_pivot = pivot_df.style.applymap(highlight_roas_text, subset=["통합 ROAS(%)"])
-                st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
+                st.dataframe(styled_pivot, width="stretch", hide_index=True)
             else:
-                st.dataframe(pivot_df, use_container_width=True, hide_index=True)
+                st.dataframe(pivot_df, width="stretch", hide_index=True)
