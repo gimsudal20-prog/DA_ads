@@ -36,6 +36,7 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
+    /* ✨ 예쁜 3분할 KPI 그리드 스타일 복구 */
     .ov-kpi-grid {
         display:grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -314,7 +315,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     def _vec_pct_diff(c, b):
         diff = c - b
-        safe_b = np.where(b == 0, 1, b) # 🚨 0 나누기 경고 방지용 안전 장치
+        safe_b = np.where(b == 0, 1, b)
         pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / safe_b) * 100.0)
         return pct, diff
 
@@ -705,10 +706,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         )
                     )
                 )
-                target_df["card_color"] = np.where(
-                    target_df["status"].isin(["초과 달성", "목표 달성"]), "#0528F2",
-                    np.where(target_df["status"] == "최소 달성", "#10B981", "#F79009")
-                )
 
                 ctrl1, ctrl2 = st.columns([1, 1.2])
                 only_miss = ctrl1.checkbox("미달만 보기", value=False, key="ov_target_only_miss")
@@ -729,39 +726,52 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 else:
                     target_df = target_df.sort_values(by="cost", ascending=False)
 
+                # ✨ 렌더링 부하가 심했던 카드를 제거하고 깔끔한 데이터프레임 표(Table)로 수정
                 if not target_df.empty:
-                    cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
-                    for _, row in target_df.head(30).iterrows():
-                        camp_name = row["campaign_name"]
-                        t_roas = float(row["target_roas"])
-                        m_roas = float(row["min_roas"])
-                        c_roas_purch = float(row["c_roas_purch"])
-                        c_roas_integ = float(row["c_roas_integ"])
-                        achieve = float(row["achieve"])
-                        achieve_diff = float(row["achieve_diff"])
-                        color = row["card_color"]
-                        status = row["status"]
-                        integ_html = (
-                            f"<div style='font-size:12px; color:var(--nv-muted); margin-top:8px;'>현재(통합) {c_roas_integ:,.1f}%</div>"
-                            if show_integ_roas else ""
-                        )
-                        cards.append(
-                            f"<div style='background:var(--nv-bg); border:1px solid var(--nv-line); border-radius:12px; padding:16px;'>"
-                            f"<div style='display:flex; justify-content:space-between; gap:12px; align-items:flex-start;'>"
-                            f"<div style='font-weight:700; line-height:1.4; color:var(--nv-text);'>{camp_name}</div>"
-                            f"<div style='text-align:right; white-space:nowrap;'><div style='font-size:18px; font-weight:800; color:{color};'>{achieve_diff:+,.1f}%</div><div style='font-size:12px; color:{color}; font-weight:700;'>{status}</div></div>"
-                            f"</div>"
-                            f"<div style='height:8px; background:var(--nv-surface); border-radius:999px; overflow:hidden; margin:12px 0;'><div style='width:{achieve}%; height:100%; background:{color};'></div></div>"
-                            f"<div style='font-size:13px; color:var(--nv-text); font-weight:700;'>현재(구매) {c_roas_purch:,.1f}%</div>"
-                            f"<div style='font-size:12px; color:var(--nv-muted); margin-top:6px;'>최소 {m_roas:,.0f}% · 목표 {t_roas:,.0f}%</div>"
-                            f"{integ_html}"
-                            f"</div>"
-                        )
-                    cards.append("</div>")
-                    st.markdown("".join(cards), unsafe_allow_html=True)
-                    if len(target_df) > 30:
-                        st.caption(f"렌더링 속도 최적화를 위해 상위 30개 캠페인만 표시합니다. (전체 {len(target_df)}개)")
-                    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+                    disp_target = target_df.rename(columns={
+                        "campaign_name": "캠페인명",
+                        "status": "상태",
+                        "achieve_diff": "달성 격차",
+                        "c_roas_purch": "현재(구매) ROAS",
+                        "target_roas": "목표 ROAS",
+                        "min_roas": "최소 ROAS",
+                        "c_roas_integ": "현재(통합) ROAS",
+                        "cost": "광고비"
+                    })
+                    
+                    disp_cols = ["캠페인명", "상태", "달성 격차", "현재(구매) ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
+                    if show_integ_roas:
+                        disp_cols.insert(4, "현재(통합) ROAS")
+                        
+                    disp_target = disp_target[disp_cols]
+                    
+                    def color_status(val):
+                        if val in ["초과 달성", "목표 달성"]: return 'color: #0528F2; font-weight: 700;'
+                        if val == "최소 달성": return 'color: #10B981; font-weight: 700;'
+                        if val == "미달": return 'color: #F79009; font-weight: 700;'
+                        return ''
+
+                    def color_diff(val):
+                        if pd.isna(val): return ''
+                        if val >= 0: return 'color: #0528F2; font-weight: 700;'
+                        return 'color: #F79009; font-weight: 700;'
+                        
+                    fmt_dict = {
+                        "달성 격차": "{:+.1f}%p",
+                        "현재(구매) ROAS": "{:,.1f}%",
+                        "최소 ROAS": "{:,.0f}%",
+                        "목표 ROAS": "{:,.0f}%",
+                        "현재(통합) ROAS": "{:,.1f}%",
+                        "광고비": "{:,.0f}원"
+                    }
+                    
+                    try:
+                        styled_target = disp_target.style.format(fmt_dict).map(color_status, subset=["상태"]).map(color_diff, subset=["달성 격차"])
+                    except AttributeError:
+                        styled_target = disp_target.style.format(fmt_dict).applymap(color_status, subset=["상태"]).applymap(color_diff, subset=["달성 격차"])
+
+                    st.dataframe(styled_target, width="stretch", hide_index=True)
+                    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
                 else:
                     st.info("조건에 맞는 캠페인이 없습니다.")
             else:
