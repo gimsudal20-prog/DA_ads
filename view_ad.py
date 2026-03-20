@@ -15,7 +15,29 @@ from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_it
 
 
 def _inject_ad_css():
-
+    st.markdown("""
+    <style>
+    .ad-toolbar {
+        background: var(--nv-surface);
+        border: 1px solid var(--nv-line);
+        border-radius: 12px;
+        padding: 14px 16px 10px 16px;
+        margin-bottom: 16px;
+    }
+    .ad-toolbar-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--nv-text);
+        margin-bottom: 10px;
+    }
+    .ad-section-sub {
+        font-size: 12px;
+        color: var(--nv-muted);
+        margin-top: -2px;
+        margin-bottom: 12px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 def _build_material_name(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
@@ -76,11 +98,12 @@ def compute_ad_view(bundle, meta):
         return pd.DataFrame()
 
     df = _perf_common_merge_meta(bundle, meta)
+    df = _build_material_name(df)
 
     view = df.rename(columns={
         "account_name": "업체명", "manager": "담당자",
         "campaign_type": "캠페인유형", "campaign_type_label": "캠페인유형",
-        "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "소재내용",
+        "campaign_name": "캠페인", "adgroup_name": "광고그룹", "final_ad_name": "소재내용",
         "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"
     }).copy()
 
@@ -195,8 +218,7 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
 
     df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_sub_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
     if "쇼핑검색" in cmp_sub_mode:
-        df_target = df_target[df_target['소재내용'].astype(str).str.contains(r'\[확장소재\]', na=False, regex=True)]
-        df_target = df_target[~df_target['소재내용'].astype(str).str.contains('TALK', na=False, case=False)]
+        df_target = _filter_shop_ext_materials(df_target)
 
     if df_target.empty:
         st.info("비교할 데이터가 없습니다.")
