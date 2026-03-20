@@ -393,6 +393,63 @@ def _build_ts_df(df, group_col, group_label):
     return pd.DataFrame(table_data)
 
 
+
+def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="label"):
+    cur_view = _build_ts_df(cur_df, group_col, group_label)
+    if cur_view.empty:
+        return pd.DataFrame()
+
+    base_view = _build_ts_df(base_df, group_col, group_label) if base_df is not None and not base_df.empty else pd.DataFrame()
+
+    if align_mode == "sequence":
+        cur_view = cur_view.reset_index(drop=True).copy()
+        base_view = base_view.reset_index(drop=True).copy() if not base_view.empty else base_view
+        cur_view["_seq"] = range(len(cur_view))
+        if not base_view.empty:
+            base_view["_seq"] = range(len(base_view))
+        merge_key = "_seq"
+    else:
+        merge_key = group_label
+
+    if not base_view.empty:
+        merged = pd.merge(cur_view, base_view, on=merge_key, how="left", suffixes=("", "_base"))
+    else:
+        merged = cur_view.copy()
+        for c in cur_view.columns:
+            if c != merge_key:
+                merged[f"{c}_base"] = 0
+
+    for metric in ["노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]:
+        if metric in merged.columns:
+            base_col = f"{metric}_base"
+            if base_col not in merged.columns:
+                merged[base_col] = 0
+
+    diff_pairs = [
+        ("노출수", "노출 증감"),
+        ("클릭수", "클릭 증감"),
+        ("광고비", "광고비 증감"),
+        ("CPC", "CPC 증감"),
+        ("위시리스트수", "위시리스트 증감"),
+        ("장바구니 담기수", "장바구니 증감"),
+        ("구매완료수", "구매 증감"),
+        ("구매완료 매출", "구매 매출 증감"),
+        ("구매 ROAS(%)", "구매 ROAS 증감"),
+        ("총 전환수", "총 전환 증감"),
+        ("총 전환매출", "총 매출 증감"),
+        ("통합 ROAS(%)", "통합 ROAS 증감"),
+    ]
+    for cur_col, diff_col in diff_pairs:
+        if cur_col in merged.columns:
+            base_col = f"{cur_col}_base"
+            merged[diff_col] = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0) - pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+
+    if align_mode == "sequence" and "_seq" in merged.columns:
+        merged = merged.drop(columns=["_seq"])
+
+    return merged
+
+
 def _delta_chip(cur_val, base_val, improve_when_up=True):
     diff = pct_change(float(cur_val or 0), float(base_val or 0)) if base_val is not None else 0.0
     if abs(diff) < 5:
@@ -486,6 +543,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
         kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
         daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+        base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -612,7 +670,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
             target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
             if not target_df.empty:
-                cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px;'>"]
+                cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
                 for _, row in target_df.sort_values(by="cost", ascending=False).iterrows():
                     camp_name = row["campaign_name"]
                     t_roas = float(row["target_roas"])
@@ -684,14 +742,24 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if daily_ts is not None and not daily_ts.empty:
         daily_copy = daily_ts.copy()
+        base_daily_copy = base_daily_ts.copy() if base_daily_ts is not None and not base_daily_ts.empty else pd.DataFrame()
+
         daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
-        daily_disp = _build_ts_df(daily_copy, '일자', '일자').sort_values('일자', ascending=False)
+        if not base_daily_copy.empty:
+            base_daily_copy['일자'] = base_daily_copy['dt'].dt.strftime('%Y-%m-%d')
+        daily_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '일자', '일자', align_mode="sequence").sort_values('일자', ascending=False)
+
         daily_copy['요일'] = daily_copy['dt'].dt.dayofweek
-        dow_disp = _build_ts_df(daily_copy, '요일', '요일').sort_values('요일')
+        if not base_daily_copy.empty:
+            base_daily_copy['요일'] = base_daily_copy['dt'].dt.dayofweek
+        dow_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '요일', '요일', align_mode="label").sort_values('요일')
         dow_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
         dow_disp['요일명'] = dow_disp['요일'].map(dow_map)
+
         daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
-        weekly_disp = _build_ts_df(daily_copy, '주차', '주차').sort_values('주차', ascending=False)
+        if not base_daily_copy.empty:
+            base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
+        weekly_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '주차', '주차', align_mode="sequence").sort_values('주차', ascending=False)
 
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
@@ -711,7 +779,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
         "위시리스트수": "{:,.0f}", "장바구니 담기수": "{:,.0f}",
         "구매완료수": "{:,.0f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-        "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%"
+        "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%",
+        "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}원", "CPC 증감": "{:+,.0f}원",
+        "위시리스트 증감": "{:+,.0f}", "장바구니 증감": "{:+,.0f}", "구매 증감": "{:+,.0f}",
+        "구매 매출 증감": "{:+,.0f}원", "구매 ROAS 증감": "{:+.1f}%",
+        "총 전환 증감": "{:+,.0f}", "총 매출 증감": "{:+,.0f}원", "통합 ROAS 증감": "{:+.1f}%"
     }
 
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
@@ -746,15 +818,39 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if df.empty:
             return
         if toggle_state_val:
-            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+            cols = [
+                col_name,
+                "노출수", "노출 증감",
+                "클릭수", "클릭 증감",
+                "광고비", "광고비 증감",
+                "CPC", "CPC 증감",
+                "총 전환수", "총 전환 증감",
+                "총 전환매출", "총 매출 증감",
+                "통합 ROAS(%)", "통합 ROAS 증감",
+            ]
         else:
-            cols = [col_name, "노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
-        styled_ts = df[cols].style.format(fmt_dict_ts)
+            cols = [
+                col_name,
+                "노출수", "노출 증감",
+                "클릭수", "클릭 증감",
+                "광고비", "광고비 증감",
+                "CPC", "CPC 증감",
+                "위시리스트수", "위시리스트 증감",
+                "장바구니 담기수", "장바구니 증감",
+                "구매완료수", "구매 증감",
+                "구매완료 매출", "구매 매출 증감",
+                "구매 ROAS(%)", "구매 ROAS 증감",
+            ]
+        cols = [c for c in cols if c in df.columns]
+        disp_ts = df[cols].copy()
+        styled_ts = disp_ts.style.format(fmt_dict_ts)
+        styled_ts = _apply_overview_delta_styles(styled_ts, disp_ts)
         _render_overview_sticky_table(styled_ts, col_name, height=420, hide_index=True)
 
     if not df_display.empty:
         with st.expander("계정별 성과 상세", expanded=False):
             styled_df = df_display.style.format(fmt_dict_standard)
+            styled_df = _apply_overview_delta_styles(styled_df, df_display)
             _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
 
     if not df_type_display.empty:
