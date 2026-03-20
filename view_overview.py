@@ -975,5 +975,3 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
         st.code(report_text, language="text")
-
-}
