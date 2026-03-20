@@ -266,14 +266,44 @@ def _keyword_pinned_cfg(columns):
             cfg[col] = st.column_config.TextColumn(col, pinned=True, width="medium")
     return cfg
 
+def _make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    cols = []
+    seen = {}
+    for c in df.columns:
+        base = str(c)
+        if base not in seen:
+            seen[base] = 0
+            cols.append(base)
+        else:
+            seen[base] += 1
+            cols.append(f"{base}_{seen[base]}")
+    out = df.copy()
+    out.columns = cols
+    return out
+
+
 def _render_keyword_sticky_table(styler_or_df, columns, *, height=550, hide_index=True):
-    st.dataframe(
-        styler_or_df,
-        use_container_width=True,
-        height=height,
-        hide_index=hide_index,
-        column_config=_keyword_pinned_cfg(columns),
-    )
+    try:
+        st.dataframe(
+            styler_or_df,
+            use_container_width=True,
+            height=height,
+            hide_index=hide_index,
+            column_config=_keyword_pinned_cfg(columns),
+        )
+    except Exception:
+        raw_df = styler_or_df.data if hasattr(styler_or_df, "data") else styler_or_df
+        raw_df = _make_unique_columns(raw_df)
+        safe_columns = list(raw_df.columns)
+        st.dataframe(
+            raw_df,
+            use_container_width=True,
+            height=height,
+            hide_index=hide_index,
+            column_config=_keyword_pinned_cfg(safe_columns),
+        )
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
@@ -500,7 +530,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                             styled_cmp = styled_cmp.map(style_delta_str, subset=pos_cols)
                         if neg_cols:
                             styled_cmp = styled_cmp.map(style_delta_str_neg, subset=neg_cols)
-                    except AttributeError:
+                    except Exception:
                         if pos_cols:
                             styled_cmp = styled_cmp.applymap(style_delta_str, subset=pos_cols)
                         if neg_cols:
@@ -509,7 +539,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if target_delta_cols:
                         try:
                             styled_cmp = styled_cmp.map(style_table_deltas, subset=target_delta_cols)
-                        except AttributeError:
+                        except Exception:
                             styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
 
             with st.container(border=True):
