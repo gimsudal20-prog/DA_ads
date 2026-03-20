@@ -71,6 +71,18 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
     return work
 
 
+def _filter_keyword_mode(df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    work = df.copy()
+    ctype = work.get("캠페인유형", pd.Series([""] * len(work), index=work.index)).astype(str).str.upper()
+    if mode == "파워링크":
+        return work[ctype.str.contains("파워링크|WEB_SITE", na=False)].copy()
+    if mode == "쇼핑검색":
+        return work[ctype.str.contains("쇼핑|SHOPPING", na=False)].copy()
+    return work
+
+
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     for c in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "tot_conv", "tot_sales"]:
         if c in view.columns:
@@ -311,8 +323,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     _inject_keyword_css()
 
-    st.markdown("<div class='nv-sec-title'>키워드/소재 상세 분석</div>", unsafe_allow_html=True)
-    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
+    st.markdown("<div class='nv-sec-title'>키워드 상세 분석</div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
@@ -322,10 +333,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     has_pre_patch_cur = (f["start"] < patch_date)
 
     if has_pre_patch_cur:
-        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다. (네이버 장바구니 분리 업데이트 이전)")
-        funnel_toggle = False
-    else:
-        funnel_toggle = st.toggle("🔄 장바구니 / 구매완료 퍼널 분리해서 보기 (상세 모드)", value=False, key="kw_funnel_toggle")
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 통합 전환 기준으로 성과가 표시됩니다.")
 
     with st.spinner("🔄 키워드 및 소재 데이터를 집계하고 있습니다... 잠시만 기다려주세요."):
         kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
@@ -351,10 +359,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("해당 기간의 키워드/소재 성과 데이터가 없습니다.")
         else:
             st.markdown("<div class='kw-toolbar'><div class='kw-toolbar-title'>조회 조건</div>", unsafe_allow_html=True)
-            col_camp, col_grp = st.columns(2)
-            camps = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
+            col_mode, col_camp, col_grp = st.columns([1, 1.2, 1.2])
+            view_mode = col_mode.radio("조회 구분", ["파워링크", "쇼핑검색"], horizontal=True, key="kw_view_mode_main")
+            filtered_mode = _filter_keyword_mode(view, view_mode)
+            camps = ["전체"] + sorted([str(x) for x in filtered_mode["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered_mode.columns else ["전체"]
             sel_camp = col_camp.selectbox("캠페인 필터", camps, key="kw_camp_filter_main")
-            filtered_for_grp = view.copy()
+            filtered_for_grp = filtered_mode.copy()
             if sel_camp != "전체":
                 filtered_for_grp = filtered_for_grp[filtered_for_grp["캠페인"] == sel_camp]
             grps = ["전체"] + sorted([str(x) for x in filtered_for_grp["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered_for_grp.columns else ["전체"]
@@ -368,18 +378,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             if "평균순위" in disp.columns:
                 base_cols.append("평균순위")
 
-            if has_pre_patch_cur:
-                metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-            else:
-                if not funnel_toggle:
-                    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
-                else:
-                    metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+            metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
 
             final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
             disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
             with st.container(border=True):
-                st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>{view_mode} 종합 성과 데이터</div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='kw-section-caption'>표시 행 수: {len(disp):,}개</div>", unsafe_allow_html=True)
                 _render_keyword_sticky_table(disp.style.format(fmt), list(disp.columns), height=550, hide_index=True)
 
@@ -431,10 +435,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
                 render_item_comparison_search("키워드/소재", view_cmp, base_bundle, "키워드/상품명", f["start"], f["end"], b1, b2)
 
             st.markdown("<div class='kw-toolbar'><div class='kw-toolbar-title'>기간 비교 필터</div>", unsafe_allow_html=True)
-            col_camp_cmp, col_grp_cmp = st.columns(2)
-            camps_cmp = ["전체"] + sorted([str(x) for x in view_cmp["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view_cmp.columns else ["전체"]
+            col_mode_cmp, col_camp_cmp, col_grp_cmp = st.columns([1, 1.2, 1.2])
+            view_mode_cmp = col_mode_cmp.radio("조회 구분", ["파워링크", "쇼핑검색"], horizontal=True, key="kw_view_mode_cmp")
+            filtered_mode_cmp = _filter_keyword_mode(view_cmp, view_mode_cmp)
+            camps_cmp = ["전체"] + sorted([str(x) for x in filtered_mode_cmp["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered_mode_cmp.columns else ["전체"]
             sel_camp_cmp = col_camp_cmp.selectbox("캠페인 필터", camps_cmp, key="kw_camp_filter_cmp")
-            filtered_cmp = view_cmp.copy()
+            filtered_cmp = filtered_mode_cmp.copy()
             if sel_camp_cmp != "전체":
                 filtered_cmp = filtered_cmp[filtered_cmp["캠페인"] == sel_camp_cmp]
             grps_cmp = ["전체"] + sorted([str(x) for x in filtered_cmp["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered_cmp.columns else ["전체"]
@@ -446,10 +452,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             has_pre_patch_base = (b1 < patch_date) if b1 else False
             if has_pre_patch_base or has_pre_patch_cur:
-                st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 있습니다. 정확한 비교를 위해 '통합 전환' 기준으로 표시합니다.")
-                show_mode = "integrated_only"
-            else:
-                show_mode = "purchase_default"
+                st.warning("⚠️ 비교 기간에 3월 11일 이전 데이터가 포함되어 있어 통합 전환 기준으로 표시합니다.")
 
             def _combine(r, c_val, c_pct):
                 v = r.get(c_val)
