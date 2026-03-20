@@ -2,6 +2,7 @@
 """view_settings.py - Settings and Sync page view."""
 
 from __future__ import annotations
+import json
 import time
 import pandas as pd
 import streamlit as st
@@ -10,6 +11,124 @@ from sqlalchemy import text
 from data import *
 from ui import *
 from page_helpers import *
+
+PLATFORMS = ["meta", "danggeun", "google", "kakao", "criteo"]
+
+def _platform_label(p: str) -> str:
+    mapping = {
+        "meta": "메타",
+        "danggeun": "당근",
+        "google": "구글",
+        "kakao": "카카오",
+        "criteo": "크리테오",
+    }
+    return mapping.get(p, p)
+
+def _customer_options(engine):
+    meta = get_meta(engine)
+    if meta is None or meta.empty or "customer_id" not in meta.columns:
+        return {}
+    opts = {}
+    for _, row in meta[["customer_id", "account_name"]].drop_duplicates().iterrows():
+        cid = str(row.get("customer_id", "")).strip()
+        name = str(row.get("account_name", "")).strip()
+        label = f"{name} ({cid})" if name else cid
+        if cid:
+            opts[label] = cid
+    return opts
+
+def _render_platform_form(engine, platform: str):
+    st.markdown(f"### {_platform_label(platform)} 연결")
+    ensure_platform_credentials_table(engine)
+
+    rows = get_platform_credentials(engine, platform)
+    customer_opts = _customer_options(engine)
+    customer_labels = ["선택 안 함"] + list(customer_opts.keys())
+
+    with st.form(f"platform_form_{platform}", clear_on_submit=False):
+        left, right = st.columns(2)
+        account_label = left.text_input("연결 이름", key=f"{platform}_account_label")
+        selected_customer_label = left.selectbox("내부 계정 연결", customer_labels, key=f"{platform}_customer_sel")
+        account_id = right.text_input("광고계정 ID", key=f"{platform}_account_id")
+        app_id = left.text_input("App ID / Client ID", key=f"{platform}_app_id")
+        app_secret = right.text_input("App Secret / Client Secret", key=f"{platform}_app_secret", type="password")
+        access_token = left.text_area("Access Token", key=f"{platform}_access_token", height=110)
+        refresh_token = right.text_area("Refresh Token", key=f"{platform}_refresh_token", height=110)
+        extra_json_raw = st.text_area("추가 설정 (JSON)", key=f"{platform}_extra_json", value="{}", height=100)
+        is_active = st.checkbox("활성화", value=True, key=f"{platform}_is_active")
+
+        submitted = st.form_submit_button("저장", use_container_width=True, type="primary")
+        if submitted:
+            try:
+                customer_id = None if selected_customer_label == "선택 안 함" else customer_opts.get(selected_customer_label)
+                try:
+                    parsed_extra = json.loads(extra_json_raw) if str(extra_json_raw).strip() else {}
+                except Exception:
+                    st.error("추가 설정(JSON) 형식이 올바르지 않습니다.")
+                    st.stop()
+
+                upsert_platform_credential(
+                    engine,
+                    {
+                        "platform": platform,
+                        "account_label": account_label,
+                        "customer_id": customer_id,
+                        "account_id": account_id,
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "app_id": app_id,
+                        "app_secret": app_secret,
+                        "extra_json": parsed_extra,
+                        "is_active": is_active,
+                    },
+                )
+                st.success(f"{_platform_label(platform)} 연결 정보를 저장했습니다.")
+                time.sleep(0.3)
+                st.rerun()
+            except Exception as e:
+                st.error(f"저장 실패: {e}")
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    if rows is None or rows.empty:
+        st.info("저장된 연결 정보가 없습니다.")
+        return
+
+    display_df = rows.copy()
+    if "access_token" in display_df.columns:
+        display_df["access_token"] = display_df["access_token"].apply(mask_secret)
+    if "refresh_token" in display_df.columns:
+        display_df["refresh_token"] = display_df["refresh_token"].apply(mask_secret)
+    if "app_secret" in display_df.columns:
+        display_df["app_secret"] = display_df["app_secret"].apply(mask_secret)
+    if "extra_json" in display_df.columns:
+        display_df["extra_json"] = display_df["extra_json"].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else str(x))
+
+    show_cols = [c for c in ["id", "account_label", "customer_id", "account_id", "is_active", "updated_at", "access_token", "refresh_token"] if c in display_df.columns]
+    st.dataframe(display_df[show_cols], use_container_width=True, hide_index=True)
+
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    st.markdown("#### 저장된 연결 관리")
+
+    for _, row in rows.iterrows():
+        rid = int(row["id"])
+        label = f"{row['account_label']} · {str(row.get('account_id', '')).strip() or '계정 ID 없음'}"
+        with st.expander(label, expanded=False):
+            c1, c2, c3 = st.columns(3)
+            is_active = bool(row.get("is_active", True))
+            if c1.button("활성화/비활성 전환", key=f"toggle_{platform}_{rid}", use_container_width=True):
+                try:
+                    toggle_platform_credential(engine, rid, not is_active)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"상태 변경 실패: {e}")
+            if c2.button("삭제", key=f"delete_{platform}_{rid}", use_container_width=True):
+                try:
+                    delete_platform_credential(engine, rid)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 실패: {e}")
+            c3.caption(f"현재 상태: {'활성' if is_active else '비활성'}")
 
 def page_settings(engine) -> None:
     st.markdown("## 설정 및 시스템 관리")
@@ -22,7 +141,7 @@ def page_settings(engine) -> None:
 
     st.markdown("<div style='margin-bottom: 24px;'></div>", unsafe_allow_html=True)
 
-    tab_roas, tab_sync, tab_system = st.tabs(["운영 설정 (ROAS)", "데이터 동기화", "시스템 관리"])
+    tab_roas, tab_sync, tab_conn, tab_system = st.tabs(["운영 설정 (ROAS)", "데이터 동기화", "매체 연결", "시스템 관리"])
 
     with tab_roas:
         st.markdown("### 캠페인별 ROAS 목표 설정")
@@ -94,9 +213,7 @@ def page_settings(engine) -> None:
 
                 if not edit_df.empty:
                     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-
                     edit_df = edit_df[["campaign_id", "type_kor", "campaign_name", "min_roas", "target_roas"]].copy().reset_index(drop=True)
-
                     edited_df = st.data_editor(
                         edit_df,
                         column_config={
@@ -140,6 +257,14 @@ def page_settings(engine) -> None:
                 st.rerun()
             except Exception as e:
                 st.error(f"동기화 실패: {e}")
+
+    with tab_conn:
+        st.markdown("### 매체 연결 준비")
+        st.caption("메타, 당근, 구글, 카카오, 크리테오 연결 정보를 미리 저장해두는 단계입니다. 아직 실제 수집 호출은 붙이지 않아도 됩니다.")
+        tabs = st.tabs([_platform_label(p) for p in PLATFORMS])
+        for p, t in zip(PLATFORMS, tabs):
+            with t:
+                _render_platform_form(engine, p)
 
     with tab_system:
         st.markdown("### 대시보드 캐시 초기화")
