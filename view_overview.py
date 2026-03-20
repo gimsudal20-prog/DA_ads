@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Hyper-Optimized)."""
+"""view_overview.py - Overview page view (Hyper-Optimized & Correct UI)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -36,70 +36,61 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
-    
-    /* ✨ 미니멀 단일 통합 박스 스타일 */
-    .ov-single-box {
-        background: var(--nv-bg, #ffffff);
-        border: 1px solid var(--nv-line, #e5e7eb);
+    /* ✨ 예쁜 3분할 KPI 그리드 스타일 복구 */
+    .ov-kpi-grid {
+        display:grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+    }
+    .ov-kpi-panel {
+        background: var(--nv-bg);
+        border: 1px solid var(--nv-line);
         border-radius: 12px;
-        padding: 24px 28px;
-        margin-bottom: 24px;
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        padding: 16px;
     }
-    .ov-metric-row {
-        display: grid;
-        grid-template-columns: 70px repeat(3, minmax(0, 1fr));
-        align-items: center;
-        gap: 20px;
-    }
-    .ov-metric-row:not(:last-child) {
-        padding-bottom: 20px;
-        border-bottom: 1px solid var(--nv-surface, #f3f4f6);
-    }
-    .ov-row-title {
+    .ov-kpi-title {
         font-size: 13px;
-        font-weight: 800;
-        color: var(--nv-muted, #6b7280);
-        letter-spacing: -0.3px;
+        font-weight: 700;
+        color: var(--nv-text);
+        margin-bottom: 12px;
     }
-    .ov-metric-item {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
+    .ov-kpi-cells {
+        display:grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
     }
-    .ov-item-label {
+    .ov-kpi-cell {
+        background: var(--nv-surface);
+        border-radius: 10px;
+        padding: 12px;
+        min-width: 0;
+    }
+    .ov-kpi-label {
         font-size: 12px;
-        color: var(--nv-muted, #6b7280);
+        color: var(--nv-muted);
+        margin-bottom: 6px;
     }
-    .ov-item-data {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .ov-item-value {
-        font-size: 22px;
+    .ov-kpi-value {
+        font-size: 20px;
         font-weight: 800;
-        color: var(--nv-text, #111827);
-        line-height: 1.1;
+        color: var(--nv-text);
+        line-height: 1.15;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .ov-delta-badge {
+    .ov-kpi-delta {
+        margin-top: 8px;
         font-size: 11px;
         font-weight: 700;
-        padding: 3px 8px;
+        display:inline-flex;
+        padding: 4px 8px;
         border-radius: 999px;
-        display: inline-block;
-        white-space: nowrap;
     }
-    .ov-delta-badge.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
-    .ov-delta-badge.neg { background: #FEE4E2; color: #F04438; }
-    .ov-delta-badge.neu { background: var(--nv-surface); color: var(--nv-muted); border: 1px solid var(--nv-line); }
-    
+    .ov-kpi-delta.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
+    .ov-kpi-delta.neg { background: #FEE4E2; color: #F04438; }
+    .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
     .ov-toolbar {
         background: var(--nv-surface);
         border: 1px solid var(--nv-line);
@@ -113,18 +104,8 @@ def _inject_overview_css():
         color: var(--nv-text);
         margin-bottom: 10px;
     }
-    @media (max-width: 900px) {
-        .ov-metric-row {
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }
-        .ov-row-title {
-            margin-bottom: 4px;
-            border-bottom: 2px solid var(--nv-line);
-            padding-bottom: 8px;
-            display: inline-block;
-        }
-        .ov-single-box { padding: 20px; }
+    @media (max-width: 1100px) {
+        .ov-kpi-grid, .ov-kpi-cells { grid-template-columns: 1fr; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -288,14 +269,13 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
             styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
     return styler
 
-# 🚀 [핵심 최적화 구간] 반복문(iterrows) 제거 및 NumPy 기반 100% 벡터화 연산 적용
+# 🚀 [핵심 최적화 구간 1] iterrows 제거 및 NumPy 벡터 연산
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty:
         return pd.DataFrame()
 
     base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
     
-    # 누락된 컬럼 0으로 채우기
     for c in base_cols[1:]:
         if not cur_df.empty and c not in cur_df.columns:
             cur_df[c] = 0.0
@@ -305,7 +285,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     cur_grp = cur_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not cur_df.empty else pd.DataFrame(columns=base_cols)
     base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
     
-    # tot_conv, tot_sales 사전 계산 (존재할 경우)
     if not cur_df.empty:
         cur_grp['tot_conv'] = cur_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in cur_df.columns else cur_grp['conv'] + cur_grp['cart_conv'] + cur_grp['wishlist_conv']
         cur_grp['tot_sales'] = cur_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in cur_df.columns else cur_grp['sales'] + cur_grp['cart_sales'] + cur_grp['wishlist_sales']
@@ -316,7 +295,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
 
-    # 파생 변수 벡터화 연산 (속도 대폭 향상)
     c_imp, b_imp = merged.get('imp_cur', 0), merged.get('imp_base', 0)
     c_clk, b_clk = merged.get('clk_cur', 0), merged.get('clk_base', 0)
     c_cost, b_cost = merged.get('cost_cur', 0), merged.get('cost_base', 0)
@@ -338,7 +316,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     def _vec_pct_diff(c, b):
         diff = c - b
-        # 분모가 0일 때: c>0 이면 100.0%, 아니면 0.0%
         pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / b) * 100.0)
         return pct, diff
 
@@ -353,7 +330,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     pct_tot_conv, diff_tot_conv = _vec_pct_diff(c_tot_conv, b_tot_conv)
     pct_tot_sales, diff_tot_sales = _vec_pct_diff(c_tot_sales, b_tot_sales)
 
-    # 결과 데이터프레임 조립
     out = pd.DataFrame()
     if type_kor_map:
         out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col])
@@ -398,7 +374,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
-# 🚀 [핵심 최적화 구간 2] TS(시계열) 데이터 병합 부분도 벡터화
+# 🚀 [핵심 최적화 구간 2] TS(시계열) 데이터 병합 벡터화
 def _build_ts_df(df, group_col, group_label):
     if df is None or df.empty:
         return pd.DataFrame()
@@ -479,7 +455,6 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
         ("통합 ROAS(%)", "통합 ROAS 증감"),
     ]
     
-    # 이 부분도 벡터 연산으로 고속 처리
     for cur_col, diff_col in diff_pairs:
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
@@ -504,26 +479,19 @@ def _delta_chip(cur_val, base_val, improve_when_up=True):
         text = pct_to_arrow(diff)
     return cls, text
 
-
-def _render_unified_kpi_box(groups: list[dict]) -> str:
-    html = ["<div class='ov-single-box'>"]
-    for group in groups:
-        html.append("<div class='ov-metric-row'>")
-        html.append(f"<div class='ov-row-title'>{group['title']}</div>")
-        for item in group["items"]:
-            cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
-            html.append(
-                f"<div class='ov-metric-item'>"
-                f"<div class='ov-item-label'>{item['label']}</div>"
-                f"<div class='ov-item-data'>"
-                f"<div class='ov-item-value' title='{item['value']}'>{item['value']}</div>"
-                f"<div class='ov-delta-badge {cls}'>{text}</div>"
-                f"</div>"
-                f"</div>"
-            )
-        html.append("</div>")
-    html.append("</div>")
-    return "".join(html)
+# ✨ 기존의 3분할 그리기 함수 복원
+def _render_kpi_group(title: str, items: list[dict]) -> str:
+    cells = []
+    for item in items:
+        cls, text = _delta_chip(item["cur"], item["base"], item.get("improve_when_up", True))
+        cells.append(
+            f"<div class='ov-kpi-cell'>"
+            f"<div class='ov-kpi-label'>{item['label']}</div>"
+            f"<div class='ov-kpi-value' title='{item['value']}'>{item['value']}</div>"
+            f"<div class='ov-kpi-delta {cls}'>{text}</div>"
+            f"</div>"
+        )
+    return f"<div class='ov-kpi-panel'><div class='ov-kpi-title'>{title}</div><div class='ov-kpi-cells'>{''.join(cells)}</div></div>"
 
 
 def _normalize_type_label(val) -> str:
@@ -613,6 +581,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
+    # ✨ 요청하신 [상단 헤더 정보 + 버튼 통합 박스] 유지
     with st.container(border=True):
         head_col_meta, head_col_toggle = st.columns([5, 2])
         with head_col_meta:
@@ -684,12 +653,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
-    kpi_groups = [
-        {"title": "유입 지표", "items": inflow_items},
-        {"title": "비용 지표", "items": cost_items},
-        {"title": "성과 지표", "items": perf_items},
-    ]
-    st.markdown(_render_unified_kpi_box(kpi_groups), unsafe_allow_html=True)
+    # ✨ 예쁜 3분할 렌더링 방식 복구
+    st.markdown(
+        f"<div class='ov-kpi-grid'>"
+        f"{_render_kpi_group('유입 지표', inflow_items)}"
+        f"{_render_kpi_group('비용 지표', cost_items)}"
+        f"{_render_kpi_group('성과 지표', perf_items)}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
     with st.container(border=True):
         st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
@@ -765,7 +737,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
                 if not target_df.empty:
                     cards = ["<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px; align-items:start;'>"]
-                    # 캠페인이 수십 개일 때 렌더링 부하 방지를 위해 최대 상위 30개만 그림 (필요시 제거 가능)
                     for _, row in target_df.head(30).iterrows():
                         camp_name = row["campaign_name"]
                         t_roas = float(row["target_roas"])
