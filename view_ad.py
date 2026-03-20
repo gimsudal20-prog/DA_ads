@@ -172,7 +172,7 @@ def render_landing_tab(view):
                 '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', '전환': '{:,.1f}',
                 '전환매출': '{:,.0f}', 'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'
             }),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "랜딩페이지 URL": st.column_config.LinkColumn("랜딩페이지 URL (클릭 시 이동)", display_text="링크 열기")
@@ -252,7 +252,7 @@ def _ad_pinned_cfg(columns):
 def _render_ad_sticky_table(styler_or_df, columns, *, height=500, hide_index=True):
     st.dataframe(
         styler_or_df,
-        use_container_width=True,
+        width="stretch",
         height=height,
         hide_index=hide_index,
         column_config=_ad_pinned_cfg(columns),
