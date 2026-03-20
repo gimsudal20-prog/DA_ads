@@ -272,9 +272,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if has_pre_patch_cur:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다. (네이버 장바구니 분리 업데이트 이전)")
-        funnel_toggle = False
-    else:
-        funnel_toggle = st.toggle("🔄 장바구니 / 위시리스트 / 통합 성과 함께 보기 (상세 모드)", value=False, key="camp_funnel_toggle")
+    funnel_toggle = False
 
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
         bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
