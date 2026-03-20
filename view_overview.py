@@ -628,9 +628,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         ]
     else:
         perf_items = [
+            {"label": "총 ROAS", "value": f"{float(cur.get('tot_roas', 0.0) or 0.0):.1f}%", "cur": cur.get("tot_roas", 0), "base": base.get("tot_roas", 0)},
             {"label": "총 전환수", "value": f"{float(cur.get('tot_conv', 0.0)):.0f}", "cur": cur.get("tot_conv", 0), "base": base.get("tot_conv", 0)},
-            {"label": "전환율", "value": f"{float(cur.get('tot_cvr', 0.0) or 0.0):.1f}%", "cur": cur.get("tot_cvr", 0), "base": base.get("tot_cvr", 0)},
-            {"label": "CPA", "value": format_currency(cur.get("tot_cpa", 0.0)), "cur": cur.get("tot_cpa", 0), "base": base.get("tot_cpa", 0), "improve_when_up": False},
+            {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
     st.markdown(
