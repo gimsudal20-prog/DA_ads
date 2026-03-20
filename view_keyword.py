@@ -50,7 +50,6 @@ def _inject_keyword_css():
     """, unsafe_allow_html=True)
 
 
-# 🚀 완전 벡터화된 쇼핑/일반 광고 필터 로직
 def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df
@@ -238,14 +237,12 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         view_ad = df_ad.rename(columns=rename_dict_ad)
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
 
-    if view_kw.empty and view_ad.empty:
-        return pd.DataFrame()
-    if view_kw.empty:
-        view = view_ad.copy()
-    elif view_ad.empty:
-        view = view_kw.copy()
-    else:
-        view = pd.concat([view_kw, view_ad], ignore_index=True)
+    # 🚨 빈 데이터프레임 병합 경고 방지용 안전 장치
+    valid_views = [df for df in [view_kw, view_ad] if not df.empty]
+    view = pd.concat(valid_views, ignore_index=True) if valid_views else pd.DataFrame()
+
+    if view.empty:
+        return view
 
     view = _add_perf_metrics(view)
     if "avg_rank" in view.columns:
@@ -301,7 +298,7 @@ def _render_keyword_sticky_table(styler_or_df, columns, *, height=550, hide_inde
     try:
         st.dataframe(
             styler_or_df,
-            use_container_width=True,
+            width="stretch",
             height=height,
             hide_index=hide_index,
             column_config=_keyword_pinned_cfg(columns),
@@ -312,7 +309,7 @@ def _render_keyword_sticky_table(styler_or_df, columns, *, height=550, hide_inde
         safe_columns = list(raw_df.columns)
         st.dataframe(
             raw_df,
-            use_container_width=True,
+            width="stretch",
             height=height,
             hide_index=hide_index,
             column_config=_keyword_pinned_cfg(safe_columns),
@@ -412,7 +409,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             else:
                 base_ad = pd.DataFrame()
 
-            base_bundle = pd.concat([base_kw, base_ad], ignore_index=True)
+            # 🚨 빈 데이터프레임 병합 경고 방지용 안전 장치
+            valid_bases = [df for df in [base_kw, base_ad] if not df.empty]
+            base_bundle = pd.concat(valid_bases, ignore_index=True) if valid_bases else pd.DataFrame()
 
             view_cmp = view.copy()
             if not base_bundle.empty:
@@ -452,7 +451,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
             if has_pre_patch_base or has_pre_patch_cur:
                 st.warning("⚠️ 비교 기간에 3월 11일 이전 데이터가 포함되어 있어 통합 전환 기준으로 표시합니다.")
 
-            # 🚀 초고속 벡터화 문자열 병합 적용
             disp["노출 증감/율"] = _fast_combine_0f(disp["노출 증감"], disp["노출 증감(%)"])
             disp["클릭 증감/율"] = _fast_combine_0f(disp["클릭 증감"], disp["클릭 증감(%)"])
             disp["광고비 증감/율"] = _fast_combine_0f(disp["광고비 증감"], disp["광고비 증감(%)"])
