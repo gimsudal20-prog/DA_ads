@@ -213,6 +213,19 @@ def _safe_style(df: pd.DataFrame, fmt_map: dict, subset_highlight: list[str] | N
     return styler, work
 
 
+def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int = 260) -> int:
+    try:
+        rows = len(df.index)
+        if rows <= 0:
+            return min_height
+        if rows == 1:
+            return 74
+        if rows == 2:
+            return 108
+        return max(min_height, min(40 + rows * 34, max_height))
+    except Exception:
+        return min_height
+
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(engine, "fact_media_daily"):
         return pd.DataFrame()
@@ -357,6 +370,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.dataframe(
                 type_grp.style.format({"광고비": "{:,.0f}", sales_col: "{:,.0f}원", roas_col: "{:,.1f}%"}),
                 use_container_width=True,
+                height=_compact_df_height(type_grp, min_height=74, max_height=220),
                 hide_index=True,
                 column_config={
                     "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
