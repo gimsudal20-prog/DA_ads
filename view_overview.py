@@ -122,11 +122,19 @@ def _sticky_cfg(first_col: str):
     }
 
 
-def _auto_table_height(data_obj, default_height: int = 420, min_height: int = 88, max_height: int = 560) -> int:
+def _auto_table_height(data_obj, default_height: int = 420, min_height: int = 72, max_height: int = 560) -> int:
     try:
         df = data_obj.data if hasattr(data_obj, "data") else data_obj
         rows = len(df.index)
-        calc = 42 + (rows * 35)
+
+        if rows <= 0:
+            return min_height
+        if rows == 1:
+            return 72
+        if rows == 2:
+            return 106
+
+        calc = 36 + (rows * 34)
         return max(min_height, min(calc, max_height))
     except Exception:
         return default_height
