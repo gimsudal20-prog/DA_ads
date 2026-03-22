@@ -677,14 +677,31 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    with st.container(border=True):
-        st.markdown("<div class='nv-sec-title' style='margin-top:0;'>캠페인별 목표 달성 현황</div>", unsafe_allow_html=True)
-        show_integ_roas = st.toggle("🔄 통합 ROAS 수치 함께 보기 (장바구니, 위시리스트 포함)", value=False, key="ov_toggle_roas")
+    # ✨ 캠페인별 목표 달성 현황 섹션 UI 개선 (Expander 적용 및 컨트롤 정렬)
+    with st.expander("🎯 캠페인별 목표 달성 현황", expanded=False):
+        st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
+        
         if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
+            # 💡 컨트롤 레이아웃 정렬
+            ctrl1, ctrl2, ctrl3 = st.columns([1.5, 1, 1])
+            with ctrl1:
+                show_integ_roas = st.toggle("🔄 통합 ROAS 함께 보기 (장바구니 포함)", value=False, key="ov_toggle_roas")
+            with ctrl2:
+                only_miss = st.toggle("🚨 목표 미달만 보기", value=False, key="ov_target_only_miss")
+            with ctrl3:
+                sort_mode = st.selectbox(
+                    "정렬 기준",
+                    ["광고비 순", "이름 순", "달성격차 순"],
+                    index=0,
+                    key="ov_target_sort_mode",
+                    label_visibility="collapsed"
+                )
+
             target_df = cur_camp.copy()
             target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
             target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
             target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
+            
             if not target_df.empty:
                 target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
                 target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
@@ -696,28 +713,21 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["achieve_raw"] = np.where(target_df["base_roas"] > 0, (target_df["c_roas_purch"] / target_df["base_roas"]) * 100, 0.0)
                 target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
                 target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
+                
+                # 💡 가시성을 높인 상태 아이콘 추가
                 target_df["status"] = np.where(
-                    (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
+                    (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "🟢 초과 달성",
                     np.where(
-                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "목표 달성",
+                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "🔵 목표 달성",
                         np.where(
-                            (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "최소 달성",
-                            "미달"
+                            (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "🟡 최소 달성",
+                            "🔴 미달"
                         )
                     )
                 )
 
-                ctrl1, ctrl2 = st.columns([1, 1.2])
-                only_miss = ctrl1.checkbox("미달만 보기", value=False, key="ov_target_only_miss")
-                sort_mode = ctrl2.selectbox(
-                    "정렬 기준",
-                    ["광고비 순", "이름 순", "달성격차 순"],
-                    index=0,
-                    key="ov_target_sort_mode"
-                )
-
                 if only_miss:
-                    target_df = target_df[target_df["status"] == "미달"]
+                    target_df = target_df[target_df["status"] == "🔴 미달"]
 
                 if sort_mode == "이름 순":
                     target_df = target_df.sort_values(by="campaign_name", ascending=True)
@@ -729,7 +739,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if not target_df.empty:
                     disp_target = target_df.rename(columns={
                         "campaign_name": "캠페인명",
-                        "achieve": "달성 상태",
+                        "achieve": "달성률(%)",
+                        "status": "달성 상태",
                         "achieve_diff": "달성 격차",
                         "c_roas_purch": "현재(구매) ROAS",
                         "target_roas": "목표 ROAS",
@@ -738,16 +749,21 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         "cost": "광고비"
                     })
                     
-                    disp_cols = ["캠페인명", "달성 상태", "달성 격차", "현재(구매) ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
+                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "달성 격차", "현재(구매) ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
                     if show_integ_roas:
-                        disp_cols.insert(4, "현재(통합) ROAS")
+                        disp_cols.insert(5, "현재(통합) ROAS")
                         
                     disp_target = disp_target[disp_cols]
                     
                     def color_diff(val):
                         if pd.isna(val): return ''
                         if val >= 0: return 'color: #0528F2; font-weight: 700;'
-                        return 'color: #F79009; font-weight: 700;'
+                        return 'color: #F04438; font-weight: 700;'
+                        
+                    def color_status(val):
+                        if "초과" in str(val) or "목표" in str(val): return 'color: #027A48; font-weight: 700;'
+                        if "최소" in str(val): return 'color: #B54708; font-weight: 700;'
+                        return 'color: #B42318; font-weight: 700;'
                         
                     fmt_dict = {
                         "달성 격차": "{:+.1f}%p",
@@ -759,18 +775,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     }
                     
                     try:
-                        styled_target = disp_target.style.format(fmt_dict).map(color_diff, subset=["달성 격차"])
+                        styled_target = disp_target.style.format(fmt_dict).map(color_diff, subset=["달성 격차"]).map(color_status, subset=["달성 상태"])
                     except AttributeError:
-                        styled_target = disp_target.style.format(fmt_dict).applymap(color_diff, subset=["달성 격차"])
+                        styled_target = disp_target.style.format(fmt_dict).applymap(color_diff, subset=["달성 격차"]).applymap(color_status, subset=["달성 상태"])
 
-                    # ✨ 스파크바(ProgressColumn)를 적용하여 직관적인 데이터프레임 렌더링
                     st.dataframe(
                         styled_target,
                         width="stretch",
                         hide_index=True,
                         column_config={
-                            "달성 상태": st.column_config.ProgressColumn(
-                                "달성률(0~100%)",
+                            "달성률(%)": st.column_config.ProgressColumn(
+                                "달성률",
                                 help="목표 ROAS 대비 현재 달성률을 나타냅니다.",
                                 format="%.1f%%",
                                 min_value=0,
@@ -778,7 +793,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                             )
                         }
                     )
-                    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
                 else:
                     st.info("조건에 맞는 캠페인이 없습니다.")
             else:
