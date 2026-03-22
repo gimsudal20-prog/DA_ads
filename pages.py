@@ -57,7 +57,6 @@ def main():
             "설정 및 연결"
         ] if meta_ready else ["설정 및 연결"]
 
-        # 억지로 만든 버튼 네비게이션을 버리고, 가장 안정적인 네이티브 라디오 버튼으로 복구
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(
