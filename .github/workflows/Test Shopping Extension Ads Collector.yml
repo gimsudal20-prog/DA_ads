@@ -1,4 +1,5 @@
-name: Test Shopping Extension Ads Collector
+name: 쇼핑 확장소재 수집 테스트
+run-name: 쇼핑 확장소재 테스트 실행
 on:
   workflow_dispatch:
     inputs:

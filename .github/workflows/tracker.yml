@@ -1,4 +1,5 @@
-name: Live Budget Tracker (30분 간격 감시)
+name: 광고비 실시간 감시 (30분 간격)
+run-name: 광고비 실시간 감시 실행
 
 on:
   schedule:

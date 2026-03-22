@@ -1,4 +1,5 @@
-name: 대규모 과거 데이터 백필 (Fast Backfill)
+name: 과거 데이터 대량 백필
+run-name: 과거 데이터 대량 백필 실행
 
 on:
   workflow_dispatch:

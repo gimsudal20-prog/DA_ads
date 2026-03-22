@@ -1,4 +1,5 @@
-name: Naver Ads Auto Collector (Hourly Check)
+name: 네이버 광고 자동 점검 수집 (시간 단위)
+run-name: 네이버 광고 자동 점검 실행
 
 on:
   schedule:

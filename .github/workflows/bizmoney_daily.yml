@@ -1,4 +1,5 @@
-name: Daily BizMoney Collector
+name: 비즈머니 잔액 일일 수집
+run-name: 비즈머니 잔액 수집 실행
 
 on:
   workflow_dispatch: {}

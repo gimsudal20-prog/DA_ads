@@ -1,4 +1,5 @@
-name: GFA Daily Data Sync
+name: GFA 성과 데이터 동기화
+run-name: GFA 성과 동기화 실행
 
 on:
   schedule:
