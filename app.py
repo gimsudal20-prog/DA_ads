@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""app.py - Entry point (kept intentionally small).
-
-✅ Split files (<=5):
-- app.py     : entry + page config
-- styles.py  : ALL CSS
-- data.py    : DB + cached queries + shared formatters
-- ui.py      : UI components (tables/charts/downloads)
-- pages.py   : pages + router
-"""
+"""app.py - Entry point (kept intentionally small)."""
 
 from __future__ import annotations
 
