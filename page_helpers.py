@@ -105,7 +105,6 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         if sv_period not in period_options:
             sv_period = "어제"
             
-        # ✨ 좌우 이동 버튼 레이아웃 추가
         c_prev, c_sel, c_next = st.columns([1.2, 4.6, 1.2])
         with c_prev:
             st.button("◀", key="f_btn_prev", on_click=_shift_period, args=("prev",), use_container_width=True)
@@ -122,8 +121,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         if period_mode == "직접 선택":
             c1, c2 = st.columns(2)
-            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1", label_visibility="collapsed")
-            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2", label_visibility="collapsed")
+            # ✨ 달력 날짜 표기 형식을 숫자로 강제 지정 (YYYY/MM/DD)
+            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1", label_visibility="collapsed", format="YYYY/MM/DD")
+            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2", label_visibility="collapsed", format="YYYY/MM/DD")
         else:
             if period_mode == "오늘": d2 = d1 = today
             elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
