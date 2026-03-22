@@ -1,6 +1,6 @@
 name: Test Shopping Extension Ads Collector
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
     inputs:
       start_date:
         description: '시작 날짜 (YYYY-MM-DD 포맷), 미입력시 당해년도 1월 1일'
@@ -11,14 +11,15 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: '0 1 * * *'  # 매일 오전 10시 (KST) = UTC 01:00
+    - cron: '0 1 * * *'
 
 jobs:
   run-collector:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Seoul
-      
+      ACCOUNT_MASTER_FILE: account_master.xlsx
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -27,6 +28,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install Requirements
         run: |
@@ -38,29 +40,17 @@ jobs:
         run: |
           YEAR=$(TZ=Asia/Seoul date +%Y)
           YESTERDAY=$(TZ=Asia/Seoul date -d 'yesterday' +%Y-%m-%d)
-
-          # 자동 스케줄 실행이면 어제 하루치만
-          if [ "${{ github.event_name }}" == "schedule" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             START_DATE="${YESTERDAY}"
             END_DATE="${YESTERDAY}"
           else
-            # 수동 실행 - 입력값 없으면 1월1일 ~ 어제
-            if [ -z "${{ github.event.inputs.start_date }}" ]; then
-              START_DATE="${YEAR}-01-01"
-            else
-              START_DATE="${{ github.event.inputs.start_date }}"
-            fi
-
-            if [ -z "${{ github.event.inputs.end_date }}" ]; then
-              END_DATE="${YESTERDAY}"
-            else
-              END_DATE="${{ github.event.inputs.end_date }}"
-            fi
+            START_DATE="${{ github.event.inputs.start_date }}"
+            END_DATE="${{ github.event.inputs.end_date }}"
+            if [ -z "$START_DATE" ]; then START_DATE="${YEAR}-01-01"; fi
+            if [ -z "$END_DATE" ]; then END_DATE="${YESTERDAY}"; fi
           fi
-
           echo "start_date=${START_DATE}" >> $GITHUB_OUTPUT
           echo "end_date=${END_DATE}" >> $GITHUB_OUTPUT
-          echo "▶ 수집 기간: ${START_DATE} ~ ${END_DATE}"
 
       - name: Run Shopping Extension Collector
         env:
@@ -71,7 +61,6 @@ jobs:
         run: |
           START="${{ steps.dates.outputs.start_date }}"
           END="${{ steps.dates.outputs.end_date }}"
-
           CURRENT=$START
           while [[ "$CURRENT" < "$END" || "$CURRENT" == "$END" ]]; do
             echo "▶ 수집 중: $CURRENT"

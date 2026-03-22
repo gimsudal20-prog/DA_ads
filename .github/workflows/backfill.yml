@@ -32,7 +32,7 @@ on:
         required: false
         default: 'false'
       with_gfa:
-        description: 'GFA 포함 실행 (true/false, 기본 false)'
+        description: 'GFA 포함 실행 (true/false, 현재 collector_gfa.py가 있을 때만 동작)'
         required: false
         default: 'false'
 
@@ -48,6 +48,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
 
     steps:
       - name: Checkout
@@ -62,46 +63,31 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
-
-      - name: Show selected inputs
-        run: |
-          echo "start_date=${{ github.event.inputs.start_date }}"
-          echo "end_date=${{ github.event.inputs.end_date }}"
-          echo "account_name=${{ github.event.inputs.account_name }}"
-          echo "account_names=${{ github.event.inputs.account_names }}"
-          echo "workers=${{ github.event.inputs.workers }}"
-          echo "fast=${{ github.event.inputs.fast }}"
-          echo "sync_dim_first_day=${{ github.event.inputs.sync_dim_first_day }}"
-          echo "with_gfa=${{ github.event.inputs.with_gfa }}"
+          pip install -r requirements.txt
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run fast backfill
         run: |
-          CMD="python fast_backfill.py --start '${{ github.event.inputs.start_date }}' --end '${{ github.event.inputs.end_date }}' --workers '${{ github.event.inputs.workers }}'"
+          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
-            CMD="$CMD --account_name '${{ github.event.inputs.account_name }}'"
+            CMD+=(--account_name "${{ github.event.inputs.account_name }}")
           fi
-
           if [ -n "${{ github.event.inputs.account_names }}" ]; then
-            CMD="$CMD --account_names '${{ github.event.inputs.account_names }}'"
+            CMD+=(--account_names "${{ github.event.inputs.account_names }}")
           fi
-
           if [ "${{ github.event.inputs.fast }}" = "true" ]; then
-            CMD="$CMD --fast"
+            CMD+=(--fast)
           fi
-
           if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
-            CMD="$CMD --sync_dim_first_day"
+            CMD+=(--sync_dim_first_day)
           fi
-
           if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
-            CMD="$CMD --with_gfa"
+            CMD+=(--with_gfa)
           fi
 
-          echo "실행 명령어: $CMD"
-          eval "$CMD"
+          printf '실행 명령어: %q ' "${CMD[@]}"; echo
+          "${CMD[@]}"
 
       - name: Upload split debug rows
         if: always()

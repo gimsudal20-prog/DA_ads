@@ -2,20 +2,18 @@ name: Live Budget Tracker (30분 간격 감시)
 
 on:
   schedule:
-    # 한국 시간 기준 오전 9시 ~ 밤 11시 50분 사이, 매 30분마다 감시망 가동
-    # (UTC 기준 0시 ~ 14시에 해당)
     - cron: '*/30 0-14 * * *'
-  workflow_dispatch: # 수동 테스트 버튼
+  workflow_dispatch:
 
 jobs:
   track-budget:
     runs-on: ubuntu-latest
-    
     env:
-      TZ: Asia/Seoul # 한국 시간으로 고정
+      TZ: Asia/Seoul
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
 
     steps:
       - name: Checkout code
@@ -25,15 +23,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run OFF Scanner (실시간 꺼짐 감지)
+      - name: Run OFF Scanner
         run: |
-          NOW=$(date +'%Y-%m-%d %H:%M:%S')
-          echo "🕵️ [$NOW] 캠페인/광고그룹 예산 소진 꺼짐 상태를 스캔합니다..."
-          # tracker는 꺼짐 로그 전용(check_off.py)으로 실행해 누락 가능성을 줄입니다.
+          echo "🕵️ [$(date +'%Y-%m-%d %H:%M:%S')] OFF 스캔 시작"
           python check_off.py

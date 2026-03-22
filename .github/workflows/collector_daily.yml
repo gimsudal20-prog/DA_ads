@@ -2,10 +2,7 @@ name: Daily Naver Ads Collector
 
 on:
   schedule:
-    # UTC 기준 19:07, 01:07, 07:07, 13:07
-    # 한국 시간(KST) 기준 04:07, 10:07, 16:07, 22:07
-    # 정각(0분)은 GitHub Actions 부하가 몰릴 수 있어 7분으로 분산
-    - cron: "7 19,1,7,13 * * *"
+    - cron: "7 19,1,7,13 * * *"   # KST 04:07 / 10:07 / 16:07 / 22:07
   workflow_dispatch: {}
 
 concurrency:
@@ -20,6 +17,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
       NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
 
     steps:
       - name: Checkout
@@ -34,8 +32,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas
+          pip install -r requirements.txt
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run collector (Yesterday / Today optimized)
         run: |
@@ -47,11 +45,11 @@ jobs:
 
           if [ "$KST_HOUR" = "04" ]; then
             echo "🚀 Collect date (Yesterday, full refresh) = ${YESTERDAY}"
-            python collector.py --date "${YESTERDAY}"
+            python collector.py --date "${YESTERDAY}" --workers 3
           else
             echo "🚀 Collect date (Yesterday, fast refresh) = ${YESTERDAY}"
-            python collector.py --date "${YESTERDAY}" --fast
+            python collector.py --date "${YESTERDAY}" --workers 3 --fast
           fi
 
           echo "🚀 Collect date (Today, fast refresh) = ${TODAY}"
-          python collector.py --date "${TODAY}" --fast
+          python collector.py --date "${TODAY}" --workers 3 --fast
