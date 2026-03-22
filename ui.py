@@ -17,6 +17,12 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, GridUpdateMode
+    HAS_AGGRID = True
+except ImportError:
+    HAS_AGGRID = False
+
 from data import format_currency
 
 # ==========================================
@@ -85,25 +91,45 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
     st.markdown(html_str, unsafe_allow_html=True)
 
 def render_big_table(df, key: str, height: int = 400) -> None:
+    """대용량 데이터를 위한 AgGrid 렌더러 (AgGrid 미설치 시 기본 dataframe으로 폴백)"""
     if df is None:
-        render_empty_state("데이터 로드 실패")
+        render_empty_state("데이터 로드 실패", height)
         return
         
     is_styler = hasattr(df, "data")
     check_df = df.data if is_styler else df
     
     if check_df.empty:
-        render_empty_state()
+        render_empty_state("조회된 데이터가 없습니다.", height)
         return
+
+    if HAS_AGGRID:
+        gb = GridOptionsBuilder.from_dataframe(check_df)
+        gb.configure_default_column(resizable=True, filterable=True, sortable=True)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
+        gb.configure_selection('single')
+        gridOptions = gb.build()
         
-    try:
-        st.dataframe(df, use_container_width=True, height=height, hide_index=True)
-    except Exception:
-        st.dataframe(check_df, use_container_width=True, height=height, hide_index=True)
+        AgGrid(
+            check_df,
+            gridOptions=gridOptions,
+            height=height,
+            width='100%',
+            theme='alpine',
+            update_mode=GridUpdateMode.NO_UPDATE,
+            columns_auto_size_mode=ColumnsAutoSizeMode.FIT_ALL_COLUMNS_TO_VIEW,
+            allow_unsafe_jscode=True,
+            key=f"aggrid_{key}"
+        )
+    else:
+        try:
+            st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+        except Exception:
+            st.dataframe(check_df, use_container_width=True, height=height, hide_index=True)
 
 def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int = 400) -> None:
     if df is None or df.empty:
-        render_empty_state()
+        render_empty_state("예산 데이터가 없습니다.", height)
         return
         
     df_disp = df.copy()
@@ -147,7 +173,7 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
 
 def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: str, y1_name: str, y2_col: str, y2_name: str, height: int = 300):
     if df.empty:
-        render_empty_state()
+        render_empty_state("차트를 그릴 데이터가 부족합니다.", height)
         return
         
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
@@ -173,7 +199,7 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
 
 def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: str, y_name: str, height: int = 300):
     if df.empty:
-        render_empty_state()
+        render_empty_state("차트를 그릴 데이터가 부족합니다.", height)
         return
         
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
