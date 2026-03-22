@@ -295,80 +295,47 @@ tr:hover td, div[data-testid="stDataFrame"] tr:hover td {
   padding-left: 1.2rem !important;
   padding-right: 1.2rem !important;
 }
-
-/* =========================================
-   사이드바 그룹 헤더 및 버튼(라디오 스타일) CSS
-   ========================================= */
-.nav-sidebar-category {
+.nav-sidebar-title {
   font-size: 11px;
   font-weight: 700;
-  color: var(--nv-muted-light);
-  margin-top: 24px;
-  margin-bottom: 8px;
-  padding-left: 14px;
+  color: var(--nv-muted);
+  margin-bottom: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
 }
 
-/* 1) 비활성 메뉴 (Secondary Button) -> 평소 투명, 호버 시 연파랑 */
-[data-testid="stSidebar"] button[kind="secondary"] {
-    width: 100% !important;
-    justify-content: flex-start !important;
-    padding: 10px 14px !important;
-    margin-bottom: 2px !important;
-    border-radius: 10px !important;
-    background: transparent !important;
-    border: 1px solid transparent !important;
-    color: var(--nv-muted) !important;
-    font-weight: 600 !important;
-    box-shadow: none !important;
-    transition: all 0.15s ease !important;
+/* =========================================
+   순정 라디오 버튼 UI로 완벽 복구
+   ========================================= */
+[data-testid="stSidebar"] [role="radiogroup"] {
+  background: transparent;
+  padding: 0;
+  gap: 4px;
+  display: flex;
+  flex-direction: column;
 }
-[data-testid="stSidebar"] button[kind="secondary"] p {
-    font-size: 14px !important;
-    color: inherit !important;
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding: 10px 14px !important;
+  margin-bottom: 2px !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  border: none !important;
+  transition: all 0.15s ease;
 }
-[data-testid="stSidebar"] button[kind="secondary"]:hover {
-    background: #EAEFFB !important;
-    color: var(--nv-text) !important;
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: #EAEFFB !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label p {
+  color: var(--nv-muted) !important;
+  font-weight: 600 !important;
+  font-size: 14px !important;
 }
-
-/* 2) 활성 메뉴 (Primary Button) -> 라디오 선택된 것처럼 흰색 카드 + 보더 + 섀도우 */
-[data-testid="stSidebar"] button[kind="primary"] {
-    width: 100% !important;
-    justify-content: flex-start !important;
-    padding: 10px 14px !important;
-    margin-bottom: 2px !important;
-    border-radius: 10px !important;
-    background: var(--nv-bg) !important;
-    border: 1px solid var(--nv-line) !important;
-    color: var(--nv-text) !important;
-    font-weight: 800 !important;
-    box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important;
-    transition: all 0.15s ease !important;
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  background: var(--nv-bg) !important;
+  box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important;
+  border: 1px solid var(--nv-line) !important;
 }
-[data-testid="stSidebar"] button[kind="primary"] p {
-    font-size: 14px !important;
-    color: inherit !important;
-}
-[data-testid="stSidebar"] button[kind="primary"]:hover {
-    background: var(--nv-bg) !important;
-    border: 1px solid var(--nv-line) !important;
-}
-
-/* 버튼 클릭 시 생기는 기본 포커스 아웃라인 제거 */
-[data-testid="stSidebar"] button:focus {
-    outline: none !important;
-    box-shadow: none !important;
-    border-color: transparent !important;
-}
-[data-testid="stSidebar"] button[kind="primary"]:focus {
-    box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important;
-    border: 1px solid var(--nv-line) !important;
-}
-/* 클릭할 때 꾹 눌리는 애니메이션 제거 (라디오 느낌 유지) */
-[data-testid="stSidebar"] button:active {
-    transform: none !important;
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
+  color: var(--nv-text) !important;
+  font-weight: 800 !important;
 }
 
 div[data-baseweb="select"] > div,
