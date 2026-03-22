@@ -140,7 +140,7 @@ def upsert_dim_account_meta_bulk(engine: Engine, accounts: List[Dict[str, str]])
                 pass
 
     sql = """
-        INSERT INTO dim_account_meta (customer_id, account_name, manager, platform, naver_media_type, bizmoney_group_key, updated_at)
+        INSERT INTO dim_account_meta (customer_id, account_name, manager, platform, naver_media_type, bizmoney_group_key)
         VALUES %s
         ON CONFLICT (customer_id) DO UPDATE SET
             account_name = EXCLUDED.account_name,
