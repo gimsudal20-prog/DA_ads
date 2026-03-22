@@ -40,24 +40,30 @@ def main():
     meta = get_meta(engine)
     meta_ready = (meta is not None) and (not meta.empty)
 
+    if "active_page" not in st.session_state:
+        st.session_state.active_page = "요약" if meta_ready else "설정 및 연결"
+
     with st.sidebar:
-        st.markdown("<div class='nav-sidebar-title'>Menu</div>", unsafe_allow_html=True)
-
+        menus = {
+            "📊 대시보드": ["요약", "예산 및 잔액", "시장 및 매체 분석"],
+            "📈 성과 분석": ["성과 분석 · 캠페인", "성과 분석 · 키워드", "성과 분석 · 소재", "쇼핑 검색어 분석"],
+            "⚙️ 관리": ["설정 및 연결"]
+        }
+        
         if not meta_ready:
+            menus = {"⚙️ 관리": ["설정 및 연결"]}
             st.warning("동기화가 필요합니다.")
+            st.session_state.active_page = "설정 및 연결"
 
-        nav_items = [
-            "요약",
-            "예산 및 잔액",
-            "시장 및 매체 분석",
-            "성과 분석 · 캠페인",
-            "성과 분석 · 키워드",
-            "성과 분석 · 소재",
-            "쇼핑 검색어 분석",
-            "설정 및 연결"
-        ] if meta_ready else ["설정 및 연결"]
+        for category, items in menus.items():
+            st.markdown(f"<div class='nav-sidebar-category'>{category}</div>", unsafe_allow_html=True)
+            for item in items:
+                btn_type = "primary" if st.session_state.active_page == item else "secondary"
+                if st.button(item, key=f"nav_{item}", use_container_width=True, type=btn_type):
+                    st.session_state.active_page = item
+                    st.rerun()
 
-        nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
+    nav = st.session_state.active_page
 
     st.markdown(
         f"""
