@@ -295,40 +295,43 @@ tr:hover td, div[data-testid="stDataFrame"] tr:hover td {
   padding-left: 1.2rem !important;
   padding-right: 1.2rem !important;
 }
-
-/* 새롭게 추가된 네비게이션 카테고리 스타일 */
-.nav-sidebar-category {
-  font-size: 13px;
-  font-weight: 800;
-  color: var(--nv-text);
-  margin-top: 24px;
-  margin-bottom: 8px;
-  padding-left: 8px;
-  letter-spacing: -0.02em;
+.nav-sidebar-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--nv-muted);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
-
-/* 사이드바 메뉴 버튼을 텍스트 링크처럼 보이게 하는 트릭 */
-[data-testid="stSidebar"] button[kind="secondary"] {
-    border: none !important;
-    background: transparent !important;
-    color: var(--nv-muted) !important;
-    justify-content: flex-start !important;
-    padding: 8px 12px !important;
-    font-weight: 600 !important;
-    box-shadow: none !important;
-    transition: all 0.15s ease !important;
+[data-testid="stSidebar"] [role="radiogroup"] {
+  background: transparent;
+  padding: 0;
+  gap: 4px;
+  display: flex;
+  flex-direction: column;
 }
-[data-testid="stSidebar"] button[kind="secondary"]:hover {
-    background: #EAEFFB !important;
-    color: var(--nv-text) !important;
-    border-radius: 8px !important;
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding: 10px 14px !important;
+  margin-bottom: 2px !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  border: none !important;
+  transition: all 0.15s ease;
 }
-[data-testid="stSidebar"] button[kind="primary"] {
-    justify-content: flex-start !important;
-    padding: 8px 12px !important;
-    font-weight: 800 !important;
-    box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important;
-    border-radius: 8px !important;
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: #EAEFFB !important; }
+[data-testid="stSidebar"] [role="radiogroup"] label p {
+  color: var(--nv-muted) !important;
+  font-weight: 600 !important;
+  font-size: 14px !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  background: var(--nv-bg) !important;
+  box-shadow: 0 1px 3px rgba(25, 25, 26, 0.06) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
+  color: var(--nv-text) !important;
+  font-weight: 800 !important;
 }
 
 div[data-baseweb="select"] > div,
