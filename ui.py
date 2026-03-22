@@ -19,6 +19,40 @@ except Exception:
 
 from data import format_currency
 
+# ==========================================
+# 🎨 Theme Constants (Sync with styles.py)
+# ==========================================
+THEME = {
+    "primary": "#0528F2",
+    "primary_soft": "#E6E9FF",
+    "bg": "#FFFFFF",
+    "surface": "#F8F9FB",
+    "line": "#DEE2E5",
+    "text": "#19191A",
+    "muted": "#62686F",
+    "success": "#0528F2",
+    "warning": "#F79009",
+    "warning_bg": "#FEF0C7",
+    "danger": "#F04438",
+    "danger_bg": "#FEE4E2"
+}
+
+# ==========================================
+# 🧩 UI Components
+# ==========================================
+
+def render_empty_state(message: str = "조회된 데이터가 없습니다.", height: int = 300) -> None:
+    """데이터가 없을 때 표시하는 범용 Empty State 컴포넌트"""
+    safe_msg = html.escape(message)
+    empty_html = f"""
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: {height}px; width: 100%; background-color: {THEME['bg']}; border: 1px dashed {THEME['line']}; border-radius: 12px; color: {THEME['muted']}; text-align: center;">
+        <div style="font-size: 32px; margin-bottom: 12px;">📭</div>
+        <div style="font-size: 14px; font-weight: 600;">{safe_msg}</div>
+        <div style="font-size: 12px; margin-top: 4px; opacity: 0.7;">조건을 변경하거나 동기화를 확인해주세요.</div>
+    </div>
+    """
+    st.markdown(empty_html, unsafe_allow_html=True)
+
 def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str = "마케팅 통합 대시보드") -> None:
     dt_str = "수집 대기 중"
     if latest_dates:
@@ -52,27 +86,35 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
 
 def render_big_table(df, key: str, height: int = 400) -> None:
     if df is None:
+        render_empty_state("데이터 로드 실패")
         return
+        
     is_styler = hasattr(df, "data")
     check_df = df.data if is_styler else df
+    
     if check_df.empty:
+        render_empty_state()
         return
+        
     try:
         st.dataframe(df, use_container_width=True, height=height, hide_index=True)
     except Exception:
         st.dataframe(check_df, use_container_width=True, height=height, hide_index=True)
 
 def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int = 400) -> None:
-    if df is None or df.empty: return
+    if df is None or df.empty:
+        render_empty_state()
+        return
+        
     df_disp = df.copy()
 
     def _pbar(val):
         try: v = float(val) if pd.notna(val) else 0.0
         except Exception: v = 0.0
         w = min(v, 100)
-        c = "#0528F2"
-        if v >= 100: c = "#F04438"
-        elif v >= 90: c = "#F79009"
+        c = THEME['primary']
+        if v >= 100: c = THEME['danger']
+        elif v >= 90: c = THEME['warning']
         return f"<div class='nv-pbar'><div class='nv-pbar-bg'><div class='nv-pbar-fill' style='width:{w}%; background:{c};'></div></div><div class='nv-pbar-txt'>{v:.1f}%</div></div>"
 
     if "집행률(%)" in df_disp.columns:
@@ -88,14 +130,13 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
             val = row[c]
             if c == "상태":
                 v_str = html.escape(str(val))
-                bg, text = "#F8F9FB", "#62686F"
-                if "적정" in v_str: bg, text = "#E6E9FF", "#0528F2"
-                elif "주의" in v_str: bg, text = "#FEF0C7", "#F79009"
-                elif "초과" in v_str or "악화" in v_str: bg, text = "#FEE4E2", "#F04438"
+                bg, text = THEME['surface'], THEME['muted']
+                if "적정" in v_str: bg, text = THEME['primary_soft'], THEME['primary']
+                elif "주의" in v_str: bg, text = THEME['warning_bg'], THEME['warning']
+                elif "초과" in v_str or "악화" in v_str: bg, text = THEME['danger_bg'], THEME['danger']
 
                 tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:6px; font-weight:600; font-size:12px;'>{v_str}</span></td>")
             elif c == "집행률 바":
-                # 진행률 바는 내부에서 이미 생성된 HTML이므로 이스케이프하지 않음
                 tds.append(f"<td>{val}</td>")
             else:
                 tds.append(f"<td>{html.escape(str(val))}</td>")
@@ -105,42 +146,48 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
     st.markdown(table_html, unsafe_allow_html=True)
 
 def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: str, y1_name: str, y2_col: str, y2_name: str, height: int = 300):
-    if df.empty: return
+    if df.empty:
+        render_empty_state()
+        return
+        
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
     y1_data = df[y1_col].fillna(0).tolist()
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 14, "color": "#19191A", "fontWeight": 600}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 14, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
         "legend": {"data": [y1_name, y2_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#DEE2E5"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": THEME['line']}}}],
         "yAxis": [
-            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F8F9FB"}}},
+            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": THEME['surface']}}},
             {"type": "value", "name": y2_name, "splitLine": {"show": False}}
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": "#E6E9FF", "borderRadius": [4,4,0,0]}},
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": "#0528F2"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": THEME['primary_soft'], "borderRadius": [4,4,0,0]}},
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
 
 def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: str, y_name: str, height: int = 300):
-    if df.empty: return
+    if df.empty:
+        render_empty_state()
+        return
+        
     x_data = df[x_col].dt.strftime('%m-%d').tolist() if pd.api.types.is_datetime64_any_dtype(df[x_col]) else df[x_col].astype(str).tolist()
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 14, "color": "#19191A", "fontWeight": 600}, "left": "left", "top": 0},
+        "title": {"text": title, "textStyle": {"fontSize": 14, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 0},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
         "legend": {"data": [y_name], "bottom": 0},
         "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": "#DEE2E5"}}}],
-        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": "#F8F9FB"}}}],
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": THEME['line']}}}],
+        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": THEME['surface']}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": "#0528F2"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
