@@ -255,7 +255,8 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     except Exception:
         return pd.DataFrame()
 
-
+# ✨ 0.1초 컷 최적화: 캠페인 페이지 메인 함수에 Fragment 추가
+@st.fragment
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
@@ -584,7 +585,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     except AttributeError:
                         styled_cmp = styled_cmp.applymap(style_table_deltas, subset=target_delta_cols)
 
-        # ✨ 우측 잘림 방지: render_big_table 대신 직접 st.dataframe 에 width="stretch" 옵션을 주어 렌더링
+        # ✨ 우측 잘림 방지
         st.dataframe(styled_cmp, width="stretch", height=560, hide_index=True)
 
     with tab_history:
