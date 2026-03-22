@@ -13,6 +13,11 @@ from datetime import datetime, date, timedelta
 from sqlalchemy import create_engine
 import psycopg2.extras
 from sqlalchemy.pool import NullPool
+
+try:
+    from account_master import load_naver_accounts
+except Exception:
+    load_naver_accounts = None
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -157,12 +162,33 @@ def main():
     init_db(engine)
     
     accounts = []
-    if os.path.exists("accounts.xlsx"):
+    if load_naver_accounts is not None:
+        try:
+            rows = load_naver_accounts(include_gfa=False)
+            accounts = [str(r["id"]).strip() for r in rows if str(r.get("id", "")).strip()]
+        except Exception:
+            accounts = []
+
+    if not accounts and os.path.exists("accounts.xlsx"):
         try:
             df = pd.read_excel("accounts.xlsx")
             id_col = next((c for c in df.columns if str(c).replace(" ", "").lower() in ["커스텀id", "customerid", "customer_id", "id"]), None)
-            if id_col: accounts = df[id_col].dropna().astype(str).unique().tolist()
-        except Exception: pass
+            name_col = next((c for c in df.columns if str(c).replace(" ", "").lower() in ["업체명", "accountname", "account_name", "name"]), None)
+            if id_col:
+                if name_col:
+                    rows = []
+                    for _, row in df.iterrows():
+                        nm = str(row.get(name_col, "")).strip()
+                        if nm.lower().endswith(" gfa"):
+                            continue
+                        cid = str(row[id_col]).strip()
+                        if cid and cid.lower() != "nan":
+                            rows.append(cid)
+                    accounts = list(dict.fromkeys(rows))
+                else:
+                    accounts = df[id_col].dropna().astype(str).unique().tolist()
+        except Exception:
+            pass
 
     if not accounts and os.getenv("CUSTOMER_ID"):
         accounts = [os.getenv("CUSTOMER_ID")]
@@ -176,3 +202,4 @@ def main():
 
 if __name__ == "__main__": 
     main()
+

@@ -19,6 +19,11 @@ from sqlalchemy import create_engine, text
 import psycopg2.extras
 from sqlalchemy.pool import NullPool
 
+try:
+    from account_master import load_naver_accounts
+except Exception:
+    load_naver_accounts = None
+
 load_dotenv(override=True)
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
@@ -232,6 +237,8 @@ def main():
     engine = get_engine()
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
+    parser.add_argument("--account_name", type=str, default="")
+    parser.add_argument("--account_names", type=str, default="")
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
@@ -241,17 +248,48 @@ def main():
     print("="*50 + "\n", flush=True)
 
     accounts = []
-    try:
-        with engine.connect() as conn:
-            accounts = [str(r[0]) for r in conn.execute(text("SELECT DISTINCT customer_id FROM dim_account_meta"))]
-    except Exception: pass
-    
+    if load_naver_accounts is not None:
+        try:
+            rows = load_naver_accounts(include_gfa=False, media_types=["sa"])
+            accounts = [str(r["id"]).strip() for r in rows if str(r.get("id", "")).strip()]
+        except Exception as e:
+            log(f"⚠️ account_master 로드 실패, dim_account_meta 로 폴백합니다: {e}")
+
+    if not accounts:
+        try:
+            with engine.connect() as conn:
+                accounts = [str(r[0]) for r in conn.execute(text("SELECT DISTINCT customer_id FROM dim_account_meta WHERE COALESCE(naver_media_type, 'sa') <> 'gfa'"))]
+        except Exception:
+            pass
+
     if not accounts:
         cid = os.getenv("CUSTOMER_ID")
-        if cid: accounts = [cid]
+        if cid:
+            accounts = [cid]
+
+    target_name_tokens = []
+    if getattr(args, "account_name", ""):
+        target_name_tokens.append(str(args.account_name).strip())
+    if getattr(args, "account_names", ""):
+        target_name_tokens.extend([x.strip() for x in str(args.account_names).split(",") if x.strip()])
+
+    if target_name_tokens and load_naver_accounts is not None:
+        try:
+            rows = load_naver_accounts(include_gfa=False, media_types=["sa"])
+            exact_set = {x for x in target_name_tokens}
+            filtered = [r for r in rows if r["name"] in exact_set]
+            if not filtered:
+                lowered = [x.lower() for x in target_name_tokens]
+                filtered = [r for r in rows if any(tok in r["name"].lower() for tok in lowered)]
+            if filtered:
+                accounts = [str(r["id"]).strip() for r in filtered]
+                log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(accounts)}개")
+        except Exception:
+            pass
 
     for acc in accounts:
         process_account(engine, acc, target_date)
 
 if __name__ == "__main__":
     main()
+

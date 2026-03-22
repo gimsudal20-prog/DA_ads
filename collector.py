@@ -29,6 +29,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
+try:
+    from account_master import load_naver_accounts
+except Exception:
+    load_naver_accounts = None
+
 load_dotenv(override=False)
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
@@ -1877,6 +1882,7 @@ def main():
     parser.add_argument("--skip_dim", action="store_true")
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
+    parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
     args = parser.parse_args()
 
     global FAST_MODE
@@ -1894,34 +1900,54 @@ def main():
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
-    if args.customer_id: accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
+    if args.customer_id:
+        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
     else:
-        if os.path.exists("accounts.xlsx"):
-            try: df_acc = pd.read_excel("accounts.xlsx")
+        if load_naver_accounts is not None:
+            try:
+                accounts_info = load_naver_accounts(include_gfa=args.include_gfa_accounts)
+                if accounts_info:
+                    excluded_msg = "포함" if args.include_gfa_accounts else "제외"
+                    log(f"🗂️ account_master 기준 계정 로드: {len(accounts_info)}개 (GFA {excluded_msg})")
+            except Exception as e:
+                log(f"⚠️ account_master 로드 실패, 레거시 accounts.xlsx 로 폴백합니다: {e}")
+
+        if not accounts_info and os.path.exists("accounts.xlsx"):
+            try:
+                df_acc = pd.read_excel("accounts.xlsx")
             except Exception:
-                try: df_acc = pd.read_csv("accounts.xlsx")
-                except Exception: df_acc = None
-            
+                try:
+                    df_acc = pd.read_csv("accounts.xlsx")
+                except Exception:
+                    df_acc = None
+
             if df_acc is not None:
                 id_col, name_col = None, None
                 for c in df_acc.columns:
                     c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]: id_col = c
-                    if c_clean in ["업체명", "accountname", "account_name", "name"]: name_col = c
-                
+                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]:
+                        id_col = c
+                    if c_clean in ["업체명", "accountname", "account_name", "name"]:
+                        name_col = c
+
                 if id_col and name_col:
                     seen_ids = set()
                     for _, row in df_acc.iterrows():
                         cid = str(row[id_col]).strip()
+                        nm = str(row[name_col]).strip()
+                        if not args.include_gfa_accounts and nm.lower().endswith(" gfa"):
+                            continue
                         if cid and cid.lower() != 'nan' and cid not in seen_ids:
-                            accounts_info.append({"id": cid, "name": str(row[name_col])})
+                            accounts_info.append({"id": cid, "name": nm})
                             seen_ids.add(cid)
 
         if not accounts_info:
             try:
                 with engine.connect() as conn:
                     accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
-            except Exception: pass
+            except Exception:
+                pass
+
 
     # 업체명 필터 적용 (정확 일치 우선, 없으면 부분일치)
     target_name_tokens = []
@@ -1957,3 +1983,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
