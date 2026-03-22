@@ -36,7 +36,6 @@ def _inject_overview_css():
         color: var(--nv-muted);
         background: var(--nv-surface);
     }
-    /* ✨ 예쁜 3분할 KPI 그리드 스타일 복구 */
     .ov-kpi-grid {
         display:grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -187,7 +186,7 @@ def format_for_csv(df):
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
             elif col in ["장바구니 담기수", "위시리스트수", "구매완료수", "총 전환수"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
-            elif col in ["광고비", "구매완료 매출", "장바구니 매출액", "총 전환매출", "CPC"]:
+            elif col in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "총 전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
             elif "차이" in col:
                 if "광고비" in col or "매출" in col or "CPC" in col:
@@ -351,6 +350,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['위시리스트수'] = c_wish
     out['위시리스트 증감'] = pct_wish
     out['위시리스트 차이'] = diff_wish
+    out['위시리스트 매출액'] = c_wsales
     out['장바구니 담기수'] = c_cart
     out['장바구니 증감'] = pct_cart
     out['장바구니 차이'] = diff_cart
@@ -396,7 +396,9 @@ def _build_ts_df(df, group_col, group_label):
     out['광고비'] = grp['cost']
     out['CPC'] = np.where(grp['clk'] > 0, grp['cost'] / grp['clk'], 0)
     out['위시리스트수'] = grp['wishlist_conv']
+    out['위시리스트 매출액'] = grp['wishlist_sales']
     out['장바구니 담기수'] = grp['cart_conv']
+    out['장바구니 매출액'] = grp['cart_sales']
     out['구매완료수'] = grp['conv']
     out['구매완료 매출'] = grp['sales']
     out['구매 ROAS(%)'] = np.where(grp['cost'] > 0, (grp['sales'] / grp['cost']) * 100, 0)
@@ -433,7 +435,7 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
             if c != merge_key:
                 merged[f"{c}_base"] = 0
 
-    for metric in ["노출수", "클릭수", "광고비", "CPC", "위시리스트수", "장바구니 담기수", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]:
+    for metric in ["노출수", "클릭수", "광고비", "CPC", "위시리스트수", "위시리스트 매출액", "장바구니 담기수", "장바구니 매출액", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]:
         if metric in merged.columns:
             base_col = f"{metric}_base"
             if base_col not in merged.columns:
@@ -682,7 +684,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
         
         if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
-            # 💡 컨트롤 레이아웃 정렬
             ctrl1, ctrl2, ctrl3 = st.columns([1.5, 1, 1])
             with ctrl1:
                 show_integ_roas = st.toggle("🔄 통합 ROAS 함께 보기 (장바구니 포함)", value=False, key="ov_toggle_roas")
@@ -714,7 +715,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
                 target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
                 
-                # 💡 가시성을 높인 상태 아이콘 추가
                 target_df["status"] = np.where(
                     (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "🟢 초과 달성",
                     np.where(
@@ -846,13 +846,16 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
         weekly_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '주차', '주차', align_mode="sequence").sort_values('주차', ascending=False)
 
+    # ✨ 딕셔너리에 장바구니/위시리스트 관련 매출액을 깔끔한 정수형(원 단위)으로 명시적으로 추가했습니다.
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
         "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
         "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}",
+        "위시리스트 매출액": "{:,.0f}원", 
         "장바구니 담기수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
+        "장바구니 매출액": "{:,.0f}원",
         "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
         "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
         "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
@@ -862,7 +865,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
     fmt_dict_ts = {
         "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
-        "위시리스트수": "{:,.0f}", "장바구니 담기수": "{:,.0f}",
+        "위시리스트수": "{:,.0f}", "위시리스트 매출액": "{:,.0f}원", 
+        "장바구니 담기수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원",
         "구매완료수": "{:,.0f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
         "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%",
         "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}원", "CPC 증감": "{:+,.0f}원",
@@ -921,7 +925,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "광고비", "광고비 증감",
                 "CPC", "CPC 증감",
                 "위시리스트수", "위시리스트 증감",
+                "위시리스트 매출액",
                 "장바구니 담기수", "장바구니 증감",
+                "장바구니 매출액",
                 "구매완료수", "구매 증감",
                 "구매완료 매출", "구매 매출 증감",
                 "구매 ROAS(%)", "구매 ROAS 증감",
