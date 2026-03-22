@@ -2,6 +2,7 @@
 """data.py - Database connection, caching, and common queries."""
 import os
 import time
+import json
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -15,23 +16,25 @@ from datetime import date
 @st.cache_resource
 def get_engine():
     db_url = os.getenv("DATABASE_URL", "").strip()
-    if not db_url: return create_engine("sqlite:///:memory:", future=True)
-    if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
-    
+    if not db_url:
+        return create_engine("sqlite:///:memory:", future=True)
+    if "sslmode=" not in db_url:
+        db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
+
     connect_args = {
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5
     }
-    
-    # ✨ pool_recycle을 3600(1시간)으로 설정하여 
-    # 포트 고갈 방지 및 유휴 커넥션 안정적 유지
+
+    # ✨ pool_recycle을 3600(1시간)으로 설정하여 포트 고갈 방지 및 유휴 커넥션 안정적 유지
+    # pool_pre_ping=True 적용으로 쿼리 전 끊긴 연결 자동 갱신
     return create_engine(
-        db_url, 
-        pool_size=20, 
-        max_overflow=40, 
-        pool_pre_ping=True, 
+        db_url,
+        pool_size=20,
+        max_overflow=40,
+        pool_pre_ping=True,
         pool_recycle=3600,
         connect_args=connect_args,
         future=True
@@ -39,9 +42,11 @@ def get_engine():
 
 def db_ping(engine) -> bool:
     try:
-        with engine.connect() as conn: conn.execute(text("SELECT 1"))
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
         return True
-    except Exception: return False
+    except Exception:
+        return False
 
 def table_exists(engine, table_name: str) -> bool:
     if "_table_names_cache" not in st.session_state:
@@ -49,7 +54,8 @@ def table_exists(engine, table_name: str) -> bool:
             with engine.connect() as conn:
                 res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
                 st.session_state["_table_names_cache"] = [r[0] for r in res]
-        except Exception: return False
+        except Exception:
+            return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
 @st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
@@ -60,34 +66,36 @@ def get_table_columns(_engine, table_name: str) -> list:
                 res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
-            if attempt == 2: 
-                # ✨ 자가 치유: 완전히 끊겼다고 판단되면 캐시를 통째로 날려서 다음번에 새 연결을 유도
+            if attempt == 2:
                 st.cache_resource.clear()
-                return []
+                st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
+                st.stop()
             _engine.dispose()
-            time.sleep(0.5)
-        except Exception: return []
+            time.sleep(1.0)
+        except Exception:
+            return []
 
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     for attempt in range(3):
         try:
-            with _engine.connect() as conn: 
+            with _engine.connect() as conn:
                 return pd.read_sql(text(query), conn, params=params)
-        except (OperationalError, StatementError, InterfaceError) as e:
+        except (OperationalError, StatementError, InterfaceError):
             if attempt == 2:
-                # ✨ 화면 상단에 빨간 에러창을 띄우는 대신 조용히 엔진 캐시를 날리고 빈 데이터 반환 (화면 깨짐 방지)
                 st.cache_resource.clear()
-                return pd.DataFrame()
+                st.error("밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
+                st.stop()
             _engine.dispose()
-            time.sleep(0.5) 
+            time.sleep(1.0)
         except Exception as e:
-            return pd.DataFrame()
+            st.error(f"데이터 로드 오류 발생: {e}")
+            st.stop()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     for attempt in range(3):
         try:
-            with _engine.begin() as conn: 
+            with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
             break
         except (OperationalError, StatementError, InterfaceError) as e:
@@ -95,12 +103,13 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
                 st.cache_resource.clear()
                 raise e
             _engine.dispose()
-            time.sleep(0.5)
+            time.sleep(1.0)
         except Exception as e:
             raise e
 
 def _sql_in_str_list(lst) -> str:
-    if not lst: return "''"
+    if not lst:
+        return "''"
     return ",".join(f"'{str(x)}'" for x in lst)
 
 # ==========================================
@@ -108,7 +117,8 @@ def _sql_in_str_list(lst) -> str:
 # ==========================================
 def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
-        if df is None and file_buffer is not None: df = pd.read_excel(file_buffer)
+        if df is None and file_buffer is not None:
+            df = pd.read_excel(file_buffer)
         if df is not None:
             rename_map = {}
             for c in df.columns:
@@ -119,9 +129,9 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
                     rename_map[c] = "account_name"
                 elif c_clean in ["담당자", "manager"]:
                     rename_map[c] = "manager"
-                    
+
             df = df.rename(columns=rename_map)
-            
+
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
@@ -129,13 +139,15 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
                     if cid_col and "monthly_budget" in old_df.columns:
                         budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
                         df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
-                except Exception: pass
-            
+                except Exception:
+                    pass
+
             if "monthly_budget" not in df.columns:
                 df["monthly_budget"] = 0
-                
+
             df.to_sql("dim_customer", engine, if_exists="replace", index=False)
-            if "_table_names_cache" in st.session_state: del st.session_state["_table_names_cache"]
+            if "_table_names_cache" in st.session_state:
+                del st.session_state["_table_names_cache"]
             get_meta.clear()
             return {"meta": len(df)}
         return {"meta": 0}
@@ -145,7 +157,8 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
 
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_customer"): return pd.DataFrame()
+    if not table_exists(_engine, "dim_customer"):
+        return pd.DataFrame()
     df = sql_read(_engine, "SELECT * FROM dim_customer")
     if not df.empty:
         rename_map = {}
@@ -162,14 +175,17 @@ def get_meta(_engine) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
-    if not table_exists(_engine, "dim_campaign"): return pd.DataFrame()
+    if not table_exists(_engine, "dim_campaign"):
+        return pd.DataFrame()
     return sql_read(_engine, "SELECT * FROM dim_campaign")
 
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
-    if dim_campaign is None or dim_campaign.empty: return ["파워링크", "쇼핑검색"]
+    if dim_campaign is None or dim_campaign.empty:
+        return ["파워링크", "쇼핑검색"]
     col_name = "campaign_tp" if "campaign_tp" in dim_campaign.columns else ("campaign_type_label" if "campaign_type_label" in dim_campaign.columns else "campaign_type")
-    if col_name not in dim_campaign.columns: return ["파워링크", "쇼핑검색"]
-    
+    if col_name not in dim_campaign.columns:
+        return ["파워링크", "쇼핑검색"]
+
     mapping = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENT": "파워컨텐츠", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
     raw_opts = [str(x) for x in dim_campaign[col_name].dropna().unique() if str(x).strip()]
     opts = list(set([mapping.get(x.upper(), x) for x in raw_opts]))
@@ -184,51 +200,257 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     dates = {}
-    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily"]:
+    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
         if table_exists(_engine, tbl):
             df = sql_read(_engine, f"SELECT MAX(dt) as dt FROM {tbl}")
-            if not df.empty and pd.notna(df.iloc[0]['dt']): dates[tbl] = df.iloc[0]['dt']
+            if not df.empty and pd.notna(df.iloc[0]["dt"]):
+                dates[tbl] = df.iloc[0]["dt"]
     return dates
+
+# ==========================================
+# 2-1. Platform Credential Storage
+# ==========================================
+def ensure_platform_credentials_table(_engine) -> None:
+    sql = """
+    CREATE TABLE IF NOT EXISTS platform_credentials (
+        id BIGSERIAL PRIMARY KEY,
+        platform VARCHAR(30) NOT NULL,
+        account_label VARCHAR(120) NOT NULL,
+        customer_id BIGINT NULL,
+        account_id VARCHAR(120) NULL,
+        access_token TEXT NULL,
+        refresh_token TEXT NULL,
+        app_id VARCHAR(200) NULL,
+        app_secret TEXT NULL,
+        extra_json JSONB DEFAULT '{}'::jsonb,
+        is_active BOOLEAN DEFAULT TRUE,
+        updated_at TIMESTAMP DEFAULT NOW()
+    );
+    """
+    sql_exec(_engine, sql)
+    sql_exec(_engine, "CREATE INDEX IF NOT EXISTS idx_platform_credentials_platform ON platform_credentials(platform)")
+    sql_exec(_engine, "CREATE INDEX IF NOT EXISTS idx_platform_credentials_customer_id ON platform_credentials(customer_id)")
+    if "_table_names_cache" in st.session_state:
+        del st.session_state["_table_names_cache"]
+
+def _normalize_extra_json(extra_json) -> str:
+    if extra_json is None:
+        return "{}"
+    if isinstance(extra_json, str):
+        s = extra_json.strip()
+        return s if s else "{}"
+    try:
+        return json.dumps(extra_json, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+@st.cache_data(ttl=60, max_entries=20, show_spinner=False)
+def get_platform_credentials(_engine, platform: str = "") -> pd.DataFrame:
+    ensure_platform_credentials_table(_engine)
+    if platform:
+        df = sql_read(
+            _engine,
+            """
+            SELECT *
+            FROM platform_credentials
+            WHERE platform = :platform
+            ORDER BY is_active DESC, updated_at DESC, id DESC
+            """,
+            {"platform": platform},
+        )
+    else:
+        df = sql_read(
+            _engine,
+            """
+            SELECT *
+            FROM platform_credentials
+            ORDER BY platform, is_active DESC, updated_at DESC, id DESC
+            """
+        )
+    if df.empty:
+        return df
+
+    if "extra_json" in df.columns:
+        df["extra_json"] = df["extra_json"].apply(lambda x: x if isinstance(x, dict) else (json.loads(x) if isinstance(x, str) and str(x).strip().startswith("{") else {}))
+    return df
+
+def clear_platform_credentials_cache():
+    try:
+        get_platform_credentials.clear()
+    except Exception:
+        pass
+
+def upsert_platform_credential(_engine, row: dict) -> None:
+    ensure_platform_credentials_table(_engine)
+
+    payload = {
+        "id": row.get("id"),
+        "platform": str(row.get("platform", "")).strip().lower(),
+        "account_label": str(row.get("account_label", "")).strip(),
+        "customer_id": None if str(row.get("customer_id", "")).strip() in ["", "None", "nan"] else int(row.get("customer_id")),
+        "account_id": str(row.get("account_id", "")).strip(),
+        "access_token": str(row.get("access_token", "")).strip(),
+        "refresh_token": str(row.get("refresh_token", "")).strip(),
+        "app_id": str(row.get("app_id", "")).strip(),
+        "app_secret": str(row.get("app_secret", "")).strip(),
+        "extra_json": _normalize_extra_json(row.get("extra_json")),
+        "is_active": bool(row.get("is_active", True)),
+    }
+
+    if not payload["platform"] or not payload["account_label"]:
+        raise ValueError("platform, account_label은 필수입니다.")
+
+    if payload["id"]:
+        sql_exec(
+            _engine,
+            """
+            UPDATE platform_credentials
+               SET platform=:platform,
+                   account_label=:account_label,
+                   customer_id=:customer_id,
+                   account_id=:account_id,
+                   access_token=:access_token,
+                   refresh_token=:refresh_token,
+                   app_id=:app_id,
+                   app_secret=:app_secret,
+                   extra_json=CAST(:extra_json AS JSONB),
+                   is_active=:is_active,
+                   updated_at=NOW()
+             WHERE id=:id
+            """,
+            payload,
+        )
+    else:
+        sql_exec(
+            _engine,
+            """
+            INSERT INTO platform_credentials
+                (platform, account_label, customer_id, account_id, access_token, refresh_token, app_id, app_secret, extra_json, is_active, updated_at)
+            VALUES
+                (:platform, :account_label, :customer_id, :account_id, :access_token, :refresh_token, :app_id, :app_secret, CAST(:extra_json AS JSONB), :is_active, NOW())
+            """,
+            payload,
+        )
+    clear_platform_credentials_cache()
+
+def delete_platform_credential(_engine, row_id: int) -> None:
+    ensure_platform_credentials_table(_engine)
+    sql_exec(_engine, "DELETE FROM platform_credentials WHERE id = :id", {"id": int(row_id)})
+    clear_platform_credentials_cache()
+
+def toggle_platform_credential(_engine, row_id: int, is_active: bool) -> None:
+    ensure_platform_credentials_table(_engine)
+    sql_exec(
+        _engine,
+        "UPDATE platform_credentials SET is_active = :is_active, updated_at = NOW() WHERE id = :id",
+        {"id": int(row_id), "is_active": bool(is_active)},
+    )
+    clear_platform_credentials_cache()
 
 # ==========================================
 # 3. Helper Functions (Math & Formatting)
 # ==========================================
 def pct_change(cur: float, base: float) -> float:
-    if not base or base == 0: return 100.0 if cur and cur > 0 else 0.0
+    if not base or base == 0:
+        return 100.0 if cur and cur > 0 else 0.0
     return ((cur - base) / base) * 100.0
 
 def pct_to_arrow(val) -> str:
-    if val is None or pd.isna(val): return "-"
-    if val > 0: return f"▲ {val:.1f}%"
-    if val < 0: return f"▼ {abs(val):.1f}%"
+    if val is None or pd.isna(val):
+        return "-"
+    if val > 0:
+        return f"▲ {val:.1f}%"
+    if val < 0:
+        return f"▼ {abs(val):.1f}%"
     return "-"
 
 def format_currency(val) -> str:
-    try: return f"{int(float(val)):,}원"
-    except (ValueError, TypeError): return "0원"
+    try:
+        return f"{int(float(val)):,}원"
+    except (ValueError, TypeError):
+        return "0원"
 
 def format_number_commas(val) -> str:
-    try: return f"{int(float(val)):,}"
-    except (ValueError, TypeError): return "0"
+    try:
+        return f"{int(float(val)):,}"
+    except (ValueError, TypeError):
+        return "0"
+
+def mask_secret(val: str) -> str:
+    s = str(val or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "*" * len(s)
+    return f"{s[:4]}{'*' * max(4, len(s) - 8)}{s[-4:]}"
 
 # ==========================================
 # 4. Data Aggregation Queries
 # ==========================================
+def ensure_target_roas_column(_engine):
+    try:
+        sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN target_roas NUMERIC DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        sql_exec(_engine, "ALTER TABLE dim_campaign ADD COLUMN min_roas NUMERIC DEFAULT 0")
+    except Exception:
+        pass
+
+def update_campaign_target_roas(_engine, cid, campaign_id, target_val, min_val):
+    ensure_target_roas_column(_engine)
+
+    t_val = float(target_val) if pd.notna(target_val) and str(target_val).strip() != "" else 0.0
+    m_val = float(min_val) if pd.notna(min_val) and str(min_val).strip() != "" else 0.0
+
+    query = """
+        UPDATE dim_campaign
+        SET target_roas = :t_val, min_roas = :m_val
+        WHERE CAST(customer_id AS TEXT) = :cid
+          AND CAST(campaign_id AS TEXT) = :camp_id
+    """
+    sql_exec(_engine, query, {
+        "t_val": t_val,
+        "m_val": m_val,
+        "cid": str(cid),
+        "camp_id": str(campaign_id)
+    })
+
+def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
+    prefix = f"{alias}." if alias else ""
+    has_purchase = "purchase_conv" in fact_cols
+    has_cart = "cart_conv" in fact_cols
+    has_wish = "wishlist_conv" in fact_cols
+
+    return {
+        "purchase_conv_expr": f"COALESCE({prefix}purchase_conv, 0)" if has_purchase else "0",
+        "purchase_sales_expr": f"COALESCE({prefix}purchase_sales, 0)" if has_purchase else "0",
+        "cart_conv_expr": f"COALESCE({prefix}cart_conv, 0)" if has_cart else "0",
+        "cart_sales_expr": f"COALESCE({prefix}cart_sales, 0)" if has_cart else "0",
+        "wish_conv_expr": f"COALESCE({prefix}wishlist_conv, 0)" if has_wish else "0",
+        "wish_sales_expr": f"COALESCE({prefix}wishlist_sales, 0)" if has_wish else "0",
+        "total_conv_expr": f"COALESCE({prefix}conv, 0)",
+        "total_sales_expr": f"COALESCE({prefix}sales, 0)",
+    }
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, avg_days: int) -> pd.DataFrame:
+def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
-    if meta.empty: return pd.DataFrame()
-    
+    if meta.empty:
+        return pd.DataFrame()
+
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
+
     sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
     df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2)})
-    
+
     sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
     df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2)})
-    
+
+    sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
+    df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2)})
+
     if table_exists(_engine, "fact_bizmoney_daily"):
         latest_dt_df = sql_read(_engine, "SELECT MAX(dt) as latest_dt FROM fact_bizmoney_daily")
         latest_dt = None if latest_dt_df.empty else latest_dt_df.iloc[0].get("latest_dt")
@@ -240,25 +462,39 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
         )
     else:
         df_b = pd.DataFrame(columns=["customer_id", "bizmoney_balance"])
-        
+
     df = meta.copy()
-    if cids_tuple: df = df[df["customer_id"].isin(cids_tuple)]
-    
+    if cids_tuple:
+        df = df[df["customer_id"].isin(cids_tuple)]
+
     df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_avg.empty: df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_m.empty: df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
-    if not df_b.empty: df_b["customer_id"] = pd.to_numeric(df_b["customer_id"], errors="coerce").fillna(0).astype(int)
-    
-    if not df_avg.empty: df = df.merge(df_avg, on="customer_id", how="left")
-    if not df_m.empty: df = df.merge(df_m, on="customer_id", how="left")
-    if not df_b.empty: df = df.merge(df_b, on="customer_id", how="left")
-    
-    for c in ["avg_cost", "current_month_cost", "current_month_sales", "bizmoney_balance", "monthly_budget"]:
-        if c not in df.columns: df[c] = 0
+    if not df_avg.empty:
+        df_avg["customer_id"] = pd.to_numeric(df_avg["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_m.empty:
+        df_m["customer_id"] = pd.to_numeric(df_m["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_prev_m.empty:
+        df_prev_m["customer_id"] = pd.to_numeric(df_prev_m["customer_id"], errors="coerce").fillna(0).astype(int)
+    if not df_b.empty:
+        df_b["customer_id"] = pd.to_numeric(df_b["customer_id"], errors="coerce").fillna(0).astype(int)
+
+    if not df_avg.empty:
+        df = df.merge(df_avg, on="customer_id", how="left")
+    if not df_m.empty:
+        df = df.merge(df_m, on="customer_id", how="left")
+    if not df_prev_m.empty:
+        df = df.merge(df_prev_m, on="customer_id", how="left")
+    if not df_b.empty:
+        df = df.merge(df_b, on="customer_id", how="left")
+
+    for c in ["avg_cost", "current_month_cost", "current_month_sales", "prev_month_cost", "bizmoney_balance", "monthly_budget"]:
+        if c not in df.columns:
+            df[c] = 0
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-        
-    if "manager" not in df.columns: df["manager"] = "미배정"
-    if "account_name" not in df.columns: df["account_name"] = df["customer_id"].astype(str)
+
+    if "manager" not in df.columns:
+        df["manager"] = "미배정"
+    if "account_name" not in df.columns:
+        df["account_name"] = df["customer_id"].astype(str)
     return df
 
 def update_monthly_budget(_engine, cid: int, val: int):
@@ -276,7 +512,8 @@ def update_monthly_budget(_engine, cid: int, val: int):
                 elif c_clean in ["담당자", "manager"]:
                     rename_map[c] = "manager"
             df = df.rename(columns=rename_map)
-            if "monthly_budget" not in df.columns: df["monthly_budget"] = 0
+            if "monthly_budget" not in df.columns:
+                df["monthly_budget"] = 0
             df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
         else:
             if "monthly_budget" not in cols:
@@ -287,57 +524,78 @@ def update_monthly_budget(_engine, cid: int, val: int):
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_off_log"): return pd.DataFrame()
+    if not table_exists(_engine, "fact_campaign_off_log"):
+        return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
 
 @st.cache_data(ttl=600, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
-    if not table_exists(_engine, f"fact_{entity}_daily"): return {}
+    if not table_exists(_engine, f"fact_{entity}_daily"):
+        return {}
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     type_join_sql = ""
     type_where_sql = ""
     if type_sel and table_exists(_engine, "dim_campaign"):
-        fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
         dim_cols = get_table_columns(_engine, "dim_campaign")
         cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
+        fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
         if "campaign_id" in fact_cols and cp_col in dim_cols:
             rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
             db_types = [rev_map.get(t, t) for t in type_sel]
             type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
             type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
-            
+
+    fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
+    expr = _strict_conv_selects(fact_cols, alias="f")
+
     sql = f"""
         SELECT
             SUM(f.imp) as imp,
             SUM(f.clk) as clk,
             SUM(f.cost) as cost,
-            SUM(f.conv) as conv,
-            SUM(f.sales) as sales
+            SUM({expr['purchase_conv_expr']}) as conv,
+            SUM({expr['purchase_sales_expr']}) as sales,
+            SUM({expr['total_conv_expr']}) as tot_conv,
+            SUM({expr['total_sales_expr']}) as tot_sales,
+            SUM({expr['cart_conv_expr']}) as cart_conv,
+            SUM({expr['cart_sales_expr']}) as cart_sales,
+            SUM({expr['wish_conv_expr']}) as wishlist_conv,
+            SUM({expr['wish_sales_expr']}) as wishlist_sales
         FROM fact_{entity}_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
     """
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    if df.empty: return {}
+    if df.empty:
+        return {}
+
     row = df.iloc[0].fillna(0).to_dict()
-    row['ctr'] = (row['clk'] / row['imp'] * 100) if row.get('imp', 0) > 0 else 0
-    row['cpc'] = (row['cost'] / row['clk']) if row.get('clk', 0) > 0 else 0
-    row['roas'] = (row['sales'] / row['cost'] * 100) if row.get('cost', 0) > 0 else 0
+    row["tot_conv"] = row.get("tot_conv", 0)
+    row["tot_sales"] = row.get("tot_sales", 0)
+    row["ctr"] = (row["clk"] / row["imp"] * 100) if row.get("imp", 0) > 0 else 0
+    row["cpc"] = (row["cost"] / row["clk"]) if row.get("clk", 0) > 0 else 0
+    row["roas"] = (row["sales"] / row["cost"] * 100) if row.get("cost", 0) > 0 else 0
+    row["cart_roas"] = (row["cart_sales"] / row["cost"] * 100) if row.get("cost", 0) > 0 else 0
+    row["wishlist_roas"] = (row["wishlist_sales"] / row["cost"] * 100) if row.get("cost", 0) > 0 else 0
     return row
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
+def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
+
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
+
+    target_roas_select = ", c.target_roas" if "target_roas" in cols else ", 0.0 as target_roas"
+    min_roas_select = ", c.min_roas" if "min_roas" in cols else ", 0.0 as min_roas"
+
     type_filter_sql = ""
     if type_sel:
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
@@ -358,39 +616,48 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    expr = _strict_conv_selects(camp_fact_cols)
+    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
+    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
+    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, campaign_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_campaign_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, campaign_id
         )
-        SELECT 
-            agg.customer_id, agg.campaign_id, 
-            c.campaign_name, c.{cp_col} as campaign_type,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+        SELECT
+            agg.customer_id, agg.campaign_id,
+            c.campaign_name, c.{cp_col} as campaign_type {target_roas_select} {min_roas_select},
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-    
+    if topn_cost > 0:
+        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type')
+    df = _map_campaign_types(df, "campaign_type")
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int=0) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_keyword_daily"): return pd.DataFrame()
+def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_keyword_daily"):
+        return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
+
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
+
     type_filter_sql = ""
     if type_sel:
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
@@ -411,47 +678,56 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    expr = _strict_conv_selects(kw_fact_cols)
+    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
+    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
+    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, keyword_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_keyword_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, keyword_id
         )
-        SELECT 
+        SELECT
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, k.keyword,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM agg
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
         JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-        
+    if topn_cost > 0:
+        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type_label')
+    df = _map_campaign_types(df, "campaign_type_label")
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int=0, top_k: int=50) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_ad_daily"): return pd.DataFrame()
+def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_ad_daily"):
+        return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    
+
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-    
+
     ad_cols = get_table_columns(_engine, "dim_ad")
     url_select = "ad.pc_landing_url as landing_url" if "pc_landing_url" in ad_cols else "'' as landing_url"
     title_select = "ad.ad_title" if "ad_title" in ad_cols else "ad.ad_name as ad_title"
     image_select = "ad.image_url" if "image_url" in ad_cols else "'' as image_url"
-    
+
     type_filter_sql = ""
     if type_sel:
         rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
@@ -472,38 +748,100 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
         rank_select_sql = ", agg.avg_rank"
 
+    expr = _strict_conv_selects(ad_fact_cols)
+    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
+    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
+    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
+
     sql = f"""
         WITH agg AS (
             SELECT customer_id, ad_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, 
-                   SUM(conv) as conv, SUM(sales) as sales{rank_agg_sql}
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_ad_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
             GROUP BY customer_id, ad_id
         )
-        SELECT 
+        SELECT
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
             a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales{rank_select_sql} 
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    
-    if topn_cost > 0: sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-        
+    if topn_cost > 0:
+        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, 'campaign_type_label')
+    df = _map_campaign_types(df, "campaign_type_label")
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_daily"): return pd.DataFrame()
+    if not table_exists(_engine, "fact_campaign_daily"):
+        return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    df = sql_read(_engine, f"SELECT dt, SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost, SUM(conv) as conv, SUM(sales) as sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY dt ORDER BY dt", {"d1": str(d1), "d2": str(d2)})
-    if not df.empty: df["dt"] = pd.to_datetime(df["dt"])
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+
+    type_join_sql = ""
+    type_where_sql = ""
+    if type_sel and table_exists(_engine, "dim_campaign"):
+        cols = get_table_columns(_engine, "dim_campaign")
+        cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        db_types = [rev_map.get(t, t) for t in type_sel]
+        type_list_str = ",".join([f"'{x}'" for x in db_types])
+        type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
+        type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+
+    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
+    expr = _strict_conv_selects(fact_cols, alias="f")
+    conv_select_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
+    cart_select_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
+    wish_select_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+
+    sql = f"""
+        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}{wish_select_sql}
+        FROM fact_campaign_daily f
+        {type_join_sql}
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
+        GROUP BY f.dt ORDER BY f.dt
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    if not df.empty:
+        df["dt"] = pd.to_datetime(df["dt"])
+    return df
+
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_shopping_query_daily"):
+        return pd.DataFrame()
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+
+    sql = f"""
+        SELECT
+            f.customer_id, c.campaign_name, a.adgroup_name, f.query_text,
+            SUM(f.total_conv) as total_conv,
+            SUM(f.total_sales) as total_sales,
+            SUM(f.purchase_conv) as purchase_conv,
+            SUM(f.purchase_sales) as purchase_sales,
+            SUM(f.cart_conv) as cart_conv,
+            SUM(f.cart_sales) as cart_sales,
+            SUM(f.wishlist_conv) as wishlist_conv,
+            SUM(f.wishlist_sales) as wishlist_sales
+        FROM fact_shopping_query_daily f
+        LEFT JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+        LEFT JOIN dim_adgroup a ON f.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY f.customer_id, c.campaign_name, a.adgroup_name, f.query_text
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     return df
