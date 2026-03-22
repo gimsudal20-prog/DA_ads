@@ -87,8 +87,8 @@ def _inject_overview_css():
         padding: 4px 8px;
         border-radius: 999px;
     }
-    .ov-kpi-delta.pos { background: var(--nv-primary-soft); color: var(--nv-primary); }
-    .ov-kpi-delta.neg { background: #FEE4E2; color: #F04438; }
+    .ov-kpi-delta.pos { background: #E8F0FE; color: #1A73E8; }
+    .ov-kpi-delta.neg { background: #FCE8E6; color: #EA4335; }
     .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
     .ov-toolbar {
         background: var(--nv-surface);
@@ -204,18 +204,18 @@ def format_for_csv(df):
 def style_delta_str(val):
     val_str = str(val).strip()
     if val_str.startswith("+"):
-        return 'color: #0528F2; font-weight: 600;'
+        return 'color: #1A73E8; font-weight: 600;'
     elif val_str.startswith("-"):
-        return 'color: #F04438; font-weight: 600;'
+        return 'color: #EA4335; font-weight: 600;'
     return ''
 
 
 def style_delta_str_neg(val):
     val_str = str(val).strip()
     if val_str.startswith("+"):
-        return 'color: #F04438; font-weight: 600;'
+        return 'color: #EA4335; font-weight: 600;'
     elif val_str.startswith("-"):
-        return 'color: #0528F2; font-weight: 600;'
+        return 'color: #1A73E8; font-weight: 600;'
     return ''
 
 
@@ -226,7 +226,7 @@ def _style_delta_numeric(val):
         return ''
     if pd.isna(v) or v == 0:
         return ''
-    return 'color: #0528F2; font-weight: 700;' if v > 0 else 'color: #F04438; font-weight: 700;'
+    return 'color: #1A73E8; font-weight: 700;' if v > 0 else 'color: #EA4335; font-weight: 700;'
 
 
 def _style_delta_numeric_neg(val):
@@ -236,7 +236,7 @@ def _style_delta_numeric_neg(val):
         return ''
     if pd.isna(v) or v == 0:
         return ''
-    return 'color: #F04438; font-weight: 700;' if v > 0 else 'color: #0528F2; font-weight: 700;'
+    return 'color: #EA4335; font-weight: 700;' if v > 0 else 'color: #1A73E8; font-weight: 700;'
 
 
 def _apply_overview_delta_styles(styler, df: pd.DataFrame):
@@ -679,13 +679,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    # ✨ 캠페인별 목표 달성 현황 섹션 (미달만 보기 필터 유지, 이모지/p 텍스트 제거)
+    # ✨ 캠페인별 목표 달성 현황 섹션 (미달만 보기 필터 유지, 이모지/p 제거, 맑은 색상 적용)
     with st.expander("🎯 캠페인별 목표 달성 현황", expanded=False):
         st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
         
         if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
             
-            # ✨ 사용자가 요청한 '미달만 보기' 토글만 깔끔하게 유지
             only_miss = st.toggle("목표 미달만 보기", value=False, key="ov_target_only_miss")
             
             target_df = cur_camp.copy()
@@ -703,7 +702,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
                 target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
                 
-                # ✨ 이모지 제거 및 텍스트로만 상태 표기
+                # ✨ 이모지 제거, 깔끔한 텍스트
                 target_df["status"] = np.where(
                     (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
                     np.where(
@@ -718,7 +717,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if only_miss:
                     target_df = target_df[target_df["status"] == "미달"]
 
-                # 광고비 순 기본 정렬 
                 target_df = target_df.sort_values(by="cost", ascending=False)
 
                 if not target_df.empty:
@@ -736,17 +734,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "달성 격차", "현재 ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
                     disp_target = disp_target[disp_cols]
                     
+                    # ✨ 맑고 쨍한 컬러 적용 (Blue: #1A73E8, Red: #EA4335, Orange: #FF9900)
                     def color_diff(val):
                         if pd.isna(val): return ''
-                        if val >= 0: return 'color: #0528F2; font-weight: 700;'
-                        return 'color: #F04438; font-weight: 700;'
+                        if val >= 0: return 'color: #1A73E8; font-weight: 700;'
+                        return 'color: #EA4335; font-weight: 700;'
                         
                     def color_status(val):
-                        if "초과" in str(val) or "목표" in str(val): return 'color: #027A48; font-weight: 700;'
-                        if "최소" in str(val): return 'color: #B54708; font-weight: 700;'
-                        return 'color: #B42318; font-weight: 700;'
+                        if "초과" in str(val) or "목표" in str(val): return 'color: #1A73E8; font-weight: 700;'
+                        if "최소" in str(val): return 'color: #FF9900; font-weight: 700;'
+                        return 'color: #EA4335; font-weight: 700;'
                         
-                    # ✨ 달성 격차의 'p' 제거 
+                    # ✨ 달성 격차 %p 텍스트 제거
                     fmt_dict = {
                         "달성 격차": "{:+.1f}%",
                         "현재 ROAS": "{:,.1f}%",
@@ -859,7 +858,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if has_data_to_export:
         with st.container(border=True):
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>내보내기</div>", unsafe_allow_html=True)
-            st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>계정/유형/캠페인/일자 상세 데이터를 한 번에 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>계정/유형/캠페인/일자 상세 데이터를 한 일괄 다운로드합니다.</div>", unsafe_allow_html=True)
             excel_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_buffer) as writer:
                 if not df_display.empty:
