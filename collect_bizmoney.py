@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-"""collect_bizmoney.py - 네이버 비즈머니(잔액) 전용 수집기
+"""collect_bizmoney.py - 네이버 비즈머니(잔액) 전용 수집기 (debug)
 
-핵심 원칙
-- account_master.xlsx 기준으로 네이버 SA/GFA 계정을 함께 읽는다.
-- 이름 끝이 ' GFA' 인 계정은 네이버 GFA 로 간주한다.
-- 비즈머니는 bizmoney_group_key 단위로 공유될 수 있으므로 그룹별로 1회 조회한다.
-- 결과는 두 군데에 저장한다.
-  1) fact_bizmoney_group_daily : 그룹 기준 잔액(중복 합산 방지용)
-  2) fact_bizmoney_daily       : 계정 기준 잔액(대시보드 계정행 표시용)
-- SA/GFA 성과 데이터는 별도 collector 에서 따로 수집한다.
+추가 디버그
+- 어떤 계정 마스터 파일을 읽었는지 로그 출력
+- SA/GFA 계정 로드 개수 출력
+- GFA 계정명 목록 출력
+- SA+GFA 공유 그룹 목록 출력
 """
 from __future__ import annotations
 
@@ -39,6 +36,7 @@ API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").s
 API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or "").strip()
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 CUSTOMER_ID = (os.getenv("CUSTOMER_ID") or "").strip()
+ACCOUNT_MASTER_FILE = (os.getenv("ACCOUNT_MASTER_FILE") or "account_master.xlsx").strip()
 BASE_URL = "https://api.searchad.naver.com"
 
 
@@ -89,7 +87,6 @@ def get_bizmoney(customer_id: str) -> Tuple[Optional[int], Optional[dict]]:
                 total_balance += int(data.get("bizmoney", 0) or 0)
                 total_balance += int(data.get("couponBizmoney", 0) or 0)
                 total_balance += int(data.get("prepaidBizmoney", 0) or 0)
-                # 원본 키가 달라도 최대한 합산
                 for k, v in data.items():
                     if isinstance(v, (int, float)) and "bizmoney" in str(k).lower() and k not in {"bizmoney", "couponBizmoney", "prepaidBizmoney"}:
                         total_balance += int(v or 0)
@@ -127,7 +124,6 @@ def upsert_dim_account_meta_bulk(engine: Engine, accounts: List[Dict[str, str]])
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """))
-        # 안전한 컬럼 추가
         for ddl in [
             "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS platform TEXT",
             "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS naver_media_type TEXT",
@@ -151,9 +147,7 @@ def upsert_dim_account_meta_bulk(engine: Engine, accounts: List[Dict[str, str]])
             updated_at = NOW()
     """
     tuples = [
-        (
-            a["id"], a["name"], a.get("manager", ""), "naver", a.get("media_type", "sa"), a.get("bizmoney_group_key", "")
-        )
+        (a["id"], a["name"], a.get("manager", ""), "naver", a.get("media_type", "sa"), a.get("bizmoney_group_key", ""))
         for a in accounts
     ]
     raw_conn, cur = None, None
@@ -272,27 +266,26 @@ def upsert_bizmoney_bulk(engine: Engine, account_rows: List[Dict[str, Any]], gro
 def main():
     engine = get_engine()
 
-    groups = load_bizmoney_groups()
-    accounts = load_naver_accounts(include_gfa=True, media_types=["sa", "gfa"])
+    log(f"📄 ACCOUNT_MASTER_FILE={ACCOUNT_MASTER_FILE} / exists={os.path.exists(ACCOUNT_MASTER_FILE)}")
+    try:
+        log(f"📁 CWD files: {sorted(os.listdir('.'))[:30]}")
+    except Exception:
+        pass
 
-    if not groups:
-        # 레거시 폴백
-        legacy_accounts = load_naver_accounts(include_gfa=True)
-        if legacy_accounts:
-            accounts = legacy_accounts
-            groups = []
-            by_name: Dict[str, List[Dict[str, str]]] = {}
-            for acc in accounts:
-                key = acc.get("bizmoney_group_key") or acc.get("group_name") or acc["name"]
-                by_name.setdefault(key, []).append(acc)
-            for key, members in by_name.items():
-                groups.append({
-                    "bizmoney_group_key": key,
-                    "representative": members[0],
-                    "members": members,
-                    "has_gfa": any(m.get("media_type") == "gfa" for m in members),
-                    "has_sa": any(m.get("media_type") == "sa" for m in members),
-                })
+    groups = load_bizmoney_groups(file_path=ACCOUNT_MASTER_FILE)
+    accounts = load_naver_accounts(file_path=ACCOUNT_MASTER_FILE, include_gfa=True, media_types=["sa", "gfa"])
+
+    gfa_accounts = [a for a in accounts if a.get("media_type") == "gfa"]
+    shared_groups = [g for g in groups if g.get("has_gfa") and g.get("has_sa")]
+
+    log(f"📋 master 로드 결과: 계정 {len(accounts)}개 / GFA {len(gfa_accounts)}개 / 그룹 {len(groups)}개 / SA+GFA 공유그룹 {len(shared_groups)}개")
+    if gfa_accounts:
+        log("🧩 GFA 계정 목록: " + ", ".join(a["name"] for a in gfa_accounts))
+    else:
+        log("⚠️ GFA 계정이 0개입니다. account_master.xlsx 또는 account_master.py 로더가 반영되지 않았을 가능성이 큽니다.")
+    if shared_groups:
+        for g in shared_groups:
+            log(f"🔗 공유 그룹: {g['bizmoney_group_key']} -> " + ", ".join(m['name'] for m in g['members']))
 
     if not groups and CUSTOMER_ID:
         groups = [{
