@@ -1,8 +1,14 @@
 name: 비즈머니 잔액 일일 수집
-run-name: 비즈머니 잔액 디버그 수집
+run-name: 비즈머니 잔액 수집 실행
 
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 */4 * * *"
+
+concurrency:
+  group: bizmoney-daily
+  cancel-in-progress: false
 
 jobs:
   run-bizmoney:
@@ -22,32 +28,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
-
-      - name: Check repo files
-        run: |
-          echo "pwd=$(pwd)"
-          ls -lah
-          echo "ACCOUNT_MASTER_FILE=${ACCOUNT_MASTER_FILE}"
-          if [ -f "${ACCOUNT_MASTER_FILE}" ]; then
-            echo "account master exists"
-          else
-            echo "account master missing"
-            exit 1
-          fi
-          if [ -f "account_master.py" ]; then
-            echo "account_master.py exists"
-          else
-            echo "account_master.py missing"
-            exit 1
-          fi
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements.txt
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
-      - name: Run BizMoney Collector (debug)
+      - name: Confirm account master file
+        run: |
+          echo "ACCOUNT_MASTER_FILE=${ACCOUNT_MASTER_FILE}"
+          ls -lah
+          if [ ! -f "${ACCOUNT_MASTER_FILE}" ]; then
+            echo "❌ account master file not found: ${ACCOUNT_MASTER_FILE}"
+            exit 1
+          fi
+
+      - name: Run BizMoney Collector
         run: |
           python collect_bizmoney.py
