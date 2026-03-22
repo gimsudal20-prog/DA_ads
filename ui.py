@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import html
 import pandas as pd
 import streamlit as st
 
@@ -24,23 +25,30 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
         cd = latest_dates.get("campaign")
         dt_str = str(cd)[:10] if cd else "수집 대기 중"
 
+    safe_title = html.escape(dashboard_title)
+    safe_dt = html.escape(dt_str)
+
     st.sidebar.markdown(f"""
     <div class='sidebar-info-box'>
-        <div class='sidebar-info-label'>{dashboard_title}</div>
-        <div class='sidebar-info-value'>최근 수집: <span>{dt_str}</span></div>
+        <div class='sidebar-info-label'>{safe_title}</div>
+        <div class='sidebar-info-value'>최근 수집: <span>{safe_dt}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):
-    html = f"""
+    safe_title = html.escape(str(title))
+    safe_value = html.escape(str(value))
+    safe_desc = html.escape(str(desc))
+    
+    html_str = f"""
     <div class="nv-metric-card">
-        <div class="nv-metric-card-title">{title}</div>
-        <div class="nv-metric-card-value">{value}</div>
-        <div class="nv-metric-card-desc">{desc}</div>
+        <div class="nv-metric-card-title">{safe_title}</div>
+        <div class="nv-metric-card-value">{safe_value}</div>
+        <div class="nv-metric-card-desc">{safe_desc}</div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(html_str, unsafe_allow_html=True)
 
 def render_big_table(df, key: str, height: int = 400) -> None:
     if df is None:
@@ -72,21 +80,25 @@ def render_budget_month_table_with_bars(df: pd.DataFrame, key: str, height: int 
 
     html_rows = []
     cols = [c for c in df_disp.columns if c != "집행률(%)"]
-    th_html = "".join(f"<th>{c}</th>" for c in cols)
+    th_html = "".join(f"<th>{html.escape(str(c))}</th>" for c in cols)
+    
     for _, row in df_disp.iterrows():
         tds = []
         for c in cols:
             val = row[c]
             if c == "상태":
-                v_str = str(val)
+                v_str = html.escape(str(val))
                 bg, text = "#F8F9FB", "#62686F"
                 if "적정" in v_str: bg, text = "#E6E9FF", "#0528F2"
                 elif "주의" in v_str: bg, text = "#FEF0C7", "#F79009"
                 elif "초과" in v_str or "악화" in v_str: bg, text = "#FEE4E2", "#F04438"
 
                 tds.append(f"<td><span style='background:{bg}; color:{text}; padding:4px 8px; border-radius:6px; font-weight:600; font-size:12px;'>{v_str}</span></td>")
-            else:
+            elif c == "집행률 바":
+                # 진행률 바는 내부에서 이미 생성된 HTML이므로 이스케이프하지 않음
                 tds.append(f"<td>{val}</td>")
+            else:
+                tds.append(f"<td>{html.escape(str(val))}</td>")
         html_rows.append(f"<tr>{''.join(tds)}</tr>")
 
     table_html = f"<div style='height:{height}px; overflow-y:auto;'><table class='nv-table'><thead><tr>{th_html}</tr></thead><tbody>{''.join(html_rows)}</tbody></table></div>"
