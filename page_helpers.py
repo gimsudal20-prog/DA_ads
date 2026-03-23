@@ -105,6 +105,10 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         if sv_period not in period_options:
             sv_period = "어제"
             
+        # ✨ 위젯 경고 해결: session_state가 없을 때만 초기값 세팅
+        if "f_period_mode" not in st.session_state:
+            st.session_state["f_period_mode"] = sv_period
+
         c_prev, c_sel, c_next = st.columns([1.2, 4.6, 1.2])
         with c_prev:
             st.button("◀", key="f_btn_prev", on_click=_shift_period, args=("prev",), use_container_width=True)
@@ -112,8 +116,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             period_mode = st.selectbox(
                 "기간 간편 선택",
                 period_options,
-                index=period_options.index(sv_period),
-                key="f_period_mode",
+                # ✨ 핵심: index 값을 강제로 넣지 않고 key(session_state)에 온전히 제어권을 넘김
+                key="f_period_mode", 
                 label_visibility="collapsed"
             )
         with c_next:
@@ -121,9 +125,15 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         if period_mode == "직접 선택":
             c1, c2 = st.columns(2)
-            # ✨ 달력 날짜 표기 형식을 숫자로 강제 지정 (YYYY/MM/DD)
-            d1 = c1.date_input("시작일", sv.get("d1", default_start), key="f_d1", label_visibility="collapsed", format="YYYY/MM/DD")
-            d2 = c2.date_input("종료일", sv.get("d2", default_end), key="f_d2", label_visibility="collapsed", format="YYYY/MM/DD")
+            
+            # ✨ 날짜도 마찬가지로 session_state 초기화 후 key로만 제어
+            if "f_d1" not in st.session_state:
+                st.session_state["f_d1"] = sv.get("d1", default_start)
+            if "f_d2" not in st.session_state:
+                st.session_state["f_d2"] = sv.get("d2", default_end)
+                
+            d1 = c1.date_input("시작일", key="f_d1", label_visibility="collapsed")
+            d2 = c2.date_input("종료일", key="f_d2", label_visibility="collapsed")
         else:
             if period_mode == "오늘": d2 = d1 = today
             elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
@@ -133,6 +143,11 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             elif period_mode == "지난 주": d2 = today - timedelta(days=today.weekday() + 1); d1 = today - timedelta(days=today.weekday() + 7)
             elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
             else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
+            
+            # ✨ 다른 모드를 선택했을 때도 세션의 날짜 상태를 갱신해두어야
+            # 나중에 '직접 선택'을 눌렀을 때 엉뚱한 날짜가 표시되지 않음
+            st.session_state["f_d1"] = d1
+            st.session_state["f_d2"] = d2
 
         st.divider()
 
