@@ -9,7 +9,6 @@ from typing import Dict
 from datetime import date
 
 from data import query_keyword_bundle, query_ad_bundle
-from ui import render_big_table
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
 
 
@@ -117,7 +116,6 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     return merged
 
 
-# ✨ 최고속도 최적화: 가장 무거운 연산(병합 및 지표 계산)을 캐싱하여 메모리에서 즉시 반환
 @st.cache_data(show_spinner=False, max_entries=20, ttl=300)
 def compute_keyword_view(kw_bundle, ad_bundle, meta):
     if (kw_bundle is None or kw_bundle.empty) and (ad_bundle is None or ad_bundle.empty):
@@ -160,7 +158,31 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-# ✨ UI 속도 개선 1: 종합 성과 탭 렌더링 파편화
+# ✨ 새로운 틀고정 전용 렌더러
+def _render_sticky_table(styler_or_df, first_col: str, height: int = 550):
+    try:
+        df = styler_or_df.data if hasattr(styler_or_df, "data") else styler_or_df
+        rows = len(df.index)
+        if rows <= 0:
+            calc_height = 100
+        elif rows == 1:
+            calc_height = 80
+        else:
+            calc_height = min(height, max(100, 40 + (rows * 36)))
+    except Exception:
+        calc_height = height
+        
+    st.dataframe(
+        styler_or_df,
+        use_container_width=True,
+        height=calc_height,
+        hide_index=True,
+        column_config={
+            first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")
+        }
+    )
+
+
 @st.fragment
 def render_keyword_main(view, top_n, fmt):
     if view.empty:
@@ -182,7 +204,8 @@ def render_keyword_main(view, top_n, fmt):
     if sel_grp != "전체":
         disp = disp[disp["광고그룹"] == sel_grp]
 
-    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+    # ✨ 핵심: 사용자가 스크롤할 때 기준이 되는 '키워드'를 가장 앞으로 배치
+    base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "평균순위" in disp.columns:
         base_cols.append("평균순위")
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
@@ -191,10 +214,11 @@ def render_keyword_main(view, top_n, fmt):
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
-    render_big_table(disp.style.format(fmt), "kw_grid_main", 550)
+    
+    styled_df = disp.style.format(fmt)
+    _render_sticky_table(styled_df, "키워드", height=550)
 
 
-# ✨ UI 속도 개선 2: 기간 비교 탭 렌더링 파편화
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, end_dt):
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -233,7 +257,8 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
     ]
 
-    base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹", "키워드"]
+    # ✨ 여기도 키워드를 맨 앞으로 배치
+    base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
         base_cols_cmp.extend(["평균순위", "이전 평균순위", "순위 변화"])
 
@@ -264,10 +289,11 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    render_big_table(styled_cmp, "kw_cmp_grid", 550)
+    
+    # ✨ 기간 비교 탭에도 틀고정 적용
+    _render_sticky_table(styled_cmp, "키워드", height=550)
 
-# ✨ 0.1초 컷: 메인 페이지 함수에도 @st.fragment 추가!
-@st.fragment
+
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
@@ -278,11 +304,9 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    # 기본 번들 로드
     kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
     ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
     
-    # 캐싱된 함수 호출로 체감 속도 0.1초 달성
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
 
     tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
