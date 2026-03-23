@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Hyper-Optimized & Correct UI)."""
+"""view_overview.py - Overview page view (Hyper-Optimized & Correct UI with Tabs)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -541,7 +541,7 @@ def _format_compact_currency(value: float) -> str:
     return f"{int(round(v)):,}원"
 
 
-# ✨ 요약 페이지 렌더링 함수에 @st.fragment 추가!
+# ✨ 요약 페이지 렌더링 함수
 @st.fragment
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f:
@@ -778,6 +778,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
 
+    # ----------------------------------------------------
+    # 각 상세 데이터 구성 파트 (이전 코드 동일)
+    # ----------------------------------------------------
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -852,34 +855,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "총 전환 증감": "{:+,.0f}", "총 매출 증감": "{:+,.0f}원", "통합 ROAS 증감": "{:+.1f}%"
     }
 
-    has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
-    if has_data_to_export:
-        with st.container(border=True):
-            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>내보내기</div>", unsafe_allow_html=True)
-            st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>계정/유형/캠페인/일자 상세 데이터를 한 번에 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer) as writer:
-                if not df_display.empty:
-                    format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
-                if not df_type_display.empty:
-                    format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
-                if not camp_disp.empty:
-                    format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
-                if not daily_disp.empty:
-                    format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
-                if not dow_disp.empty:
-                    dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
-                    format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
-                if not weekly_disp.empty:
-                    format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
-            st.download_button(
-                label="통합 데이터 전체 다운로드",
-                data=excel_buffer.getvalue(),
-                file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-            )
-
     def _display_ts_table(df, col_name, toggle_state_val):
         if df.empty:
             return
@@ -915,37 +890,89 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         styled_ts = _apply_overview_delta_styles(styled_ts, disp_ts)
         _render_overview_sticky_table(styled_ts, col_name, height=420, hide_index=True)
 
-    if not df_display.empty:
-        with st.expander("계정별 성과 상세", expanded=False):
+
+    # ====================================================
+    # ✨ 미니멀리즘 탭 구조 적용 
+    # ====================================================
+    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+    
+    tab_acc, tab_type, tab_period, tab_camp = st.tabs([
+        "🏢 업체별 요약", 
+        "🏷️ 매체/유형별 요약", 
+        "📅 기간별 상세", 
+        "🔍 캠페인 상세 분석"
+    ])
+
+    with tab_acc:
+        if not df_display.empty:
             styled_df = df_display.style.format(fmt_dict_standard)
             styled_df = _apply_overview_delta_styles(styled_df, df_display)
             _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
+        else:
+            st.info("조건에 맞는 데이터가 없습니다.")
 
-    if not df_type_display.empty:
-        with st.expander("캠페인 유형별 성과 상세", expanded=False):
+    with tab_type:
+        if not df_type_display.empty:
             styled_type_df = df_type_display.style.format(fmt_dict_standard)
             styled_type_df = _apply_overview_delta_styles(styled_type_df, df_type_display)
             _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
+        else:
+            st.info("조건에 맞는 데이터가 없습니다.")
 
-    if not camp_disp.empty:
-        with st.expander("캠페인별 성과 상세", expanded=False):
+    with tab_period:
+        if any(not df.empty for df in [daily_disp, dow_disp, weekly_disp]):
+            sub_daily, sub_weekly, sub_dow = st.tabs(["일자별", "주차별", "요일별"])
+            with sub_daily:
+                _display_ts_table(daily_disp, "일자", combined_toggle)
+            with sub_weekly:
+                _display_ts_table(weekly_disp, "주차", combined_toggle)
+            with sub_dow:
+                _display_ts_table(dow_disp, "요일명", combined_toggle)
+        else:
+            st.info("조건에 맞는 데이터가 없습니다.")
+
+    with tab_camp:
+        if not camp_disp.empty:
             styled_camp_df = camp_disp.style.format(fmt_dict_standard)
             styled_camp_df = _apply_overview_delta_styles(styled_camp_df, camp_disp)
             _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
+        else:
+            st.info("조건에 맞는 데이터가 없습니다.")
 
-    if not daily_disp.empty:
-        with st.expander("일자별 성과 상세", expanded=False):
-            _display_ts_table(daily_disp, "일자", combined_toggle)
+    # ====================================================
+    # 엑셀 다운로드 및 보고서 생성 (이전 코드 동일 유지)
+    # ====================================================
+    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
-    if not dow_disp.empty:
-        with st.expander("요일별 성과 상세", expanded=False):
-            _display_ts_table(dow_disp, "요일명", combined_toggle)
+    has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
+    if has_data_to_export:
+        with st.container(border=True):
+            st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>엑셀 데이터 일괄 다운로드</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>계정/유형/캠페인/일자/요일별 상세 데이터를 하나의 엑셀 파일로 내려받습니다.</div>", unsafe_allow_html=True)
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer) as writer:
+                if not df_display.empty:
+                    format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
+                if not df_type_display.empty:
+                    format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
+                if not camp_disp.empty:
+                    format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
+                if not daily_disp.empty:
+                    format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
+                if not dow_disp.empty:
+                    dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
+                    format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
+                if not weekly_disp.empty:
+                    format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
+            st.download_button(
+                label="통합 엑셀 다운로드",
+                data=excel_buffer.getvalue(),
+                file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
 
-    if not weekly_disp.empty:
-        with st.expander("주간 성과 상세", expanded=False):
-            _display_ts_table(weekly_disp, "주차", combined_toggle)
-
-    with st.expander("텍스트 보고서 내보내기", expanded=False):
+    with st.expander("📝 텍스트 보고서 생성", expanded=False):
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
