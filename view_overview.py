@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Hyper-Optimized & Fast Rendering)."""
+"""view_overview.py - Overview page view (Hyper-Optimized & All Features Restored)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -93,7 +93,6 @@ def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel
         ts = query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
         return ts if ts is not None else pd.DataFrame()
     except Exception: return pd.DataFrame()
-
 
 def format_for_csv(df):
     out_df = df.copy()
@@ -344,9 +343,97 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     st.markdown(f"<div class='ov-kpi-grid'>{_render_kpi_group('유입 지표', inflow_items)}{_render_kpi_group('비용 지표', cost_items)}{_render_kpi_group('성과 지표', perf_items)}</div>", unsafe_allow_html=True)
 
-    # 🚀 핵심 속도 개선: st.tabs 대신 st.pills(지연 로딩) 적용
+    # ====================================================
+    # 📈 복구된 기능 1: 일자별 성과 추이 (트렌드 차트)
+    # ====================================================
+    with st.container(border=True):
+        st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
+        if daily_ts is not None and not daily_ts.empty:
+            expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
+            for c in expected_cols:
+                if c not in daily_ts.columns:
+                    daily_ts[c] = 0.0
+            daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
+            
+            # 차트 탭 대신 pills 적용으로 렌더링 최적화
+            chart_tab = st.pills("차트 선택", ["비용 및 매출 추이", "유입 지표 추이"], default="비용 및 매출 추이")
+            
+            if chart_tab == "비용 및 매출 추이":
+                if combined_toggle:
+                    render_echarts_dual_axis("비용 및 총 전환 매출 추이", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "매출", height=320)
+                else:
+                    render_echarts_dual_axis("비용 및 구매 완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", "sales", "매출", height=320)
+            else:
+                render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+        else:
+            st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
+
+    # ====================================================
+    # 🎯 복구된 기능 2: 캠페인별 목표 달성 현황
+    # ====================================================
+    with st.expander("🎯 캠페인별 목표 달성 현황", expanded=False):
+        st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
+        
+        if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
+            only_miss = st.toggle("목표 미달만 보기", value=False, key="ov_target_only_miss_restored")
+            
+            target_df = cur_camp.copy()
+            target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
+            target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
+            target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
+            
+            if not target_df.empty:
+                target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
+                target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
+
+                target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
+                target_df["c_roas_purch"] = np.where(target_df["cost"] > 0, (target_df["sales"] / target_df["cost"]) * 100, 0.0)
+                target_df["achieve_raw"] = np.where(target_df["base_roas"] > 0, (target_df["c_roas_purch"] / target_df["base_roas"]) * 100, 0.0)
+                target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
+                target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
+                
+                target_df["status"] = np.where(
+                    (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "🟢 초과 달성",
+                    np.where(
+                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "🔵 목표 달성",
+                        np.where(
+                            (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "🟡 최소 달성",
+                            "🔴 미달"
+                        )
+                    )
+                )
+
+                if only_miss: target_df = target_df[target_df["status"] == "🔴 미달"]
+                target_df = target_df.sort_values(by="cost", ascending=False)
+
+                if not target_df.empty:
+                    disp_target = target_df.rename(columns={
+                        "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
+                        "achieve_diff": "달성 격차", "c_roas_purch": "현재 ROAS",
+                        "target_roas": "목표 ROAS", "min_roas": "최소 ROAS", "cost": "광고비"
+                    })
+                    
+                    # 느린 Pandas Style 대신 고속 column_config 사용
+                    st.dataframe(
+                        disp_target[["캠페인명", "달성 상태", "달성률(%)", "달성 격차", "현재 ROAS", "최소 ROAS", "목표 ROAS", "광고비"]],
+                        width="stretch", hide_index=True,
+                        column_config={
+                            "달성 상태": st.column_config.TextColumn("상태", width="small"),
+                            "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
+                            "달성 격차": st.column_config.NumberColumn("달성 격차", format="%+.1f%%"),
+                            "현재 ROAS": st.column_config.NumberColumn("현재 ROAS", format="%.1f%%"),
+                            "최소 ROAS": st.column_config.NumberColumn("최소 ROAS", format="%d%%"),
+                            "목표 ROAS": st.column_config.NumberColumn("목표 ROAS", format="%d%%"),
+                            "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
+                        }
+                    )
+                else: st.info("조건에 맞는 캠페인이 없습니다.")
+            else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+        else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+
+    # 🚀 요약 테이블 구역
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
-    selected_tab = st.pills("분석 탭 선택", ["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"], default="🏢 업체별 요약")
+    selected_tab = st.pills("상세 분석 선택", ["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"], default="🏢 업체별 요약")
 
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -405,7 +492,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not camp_disp.empty: _render_overview_sticky_table(camp_disp, "캠페인명", height=460, hide_index=True)
         else: st.info("조건에 맞는 데이터가 없습니다.")
 
-    # 엑셀 다운로드 (유지)
+    # 엑셀 다운로드 
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
     if has_data_to_export:
