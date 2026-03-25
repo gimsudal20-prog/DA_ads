@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (NameError Fixed, Toggle Left, Full Funnel Metrics)."""
+"""view_overview.py - Overview page view (Perfect Funnel Layout, Text Report Labels & Shop Keywords Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -163,7 +163,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
 
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
 
-    # 기본값 추출
     c_imp, b_imp = merged.get('imp_cur', 0), merged.get('imp_base', 0)
     c_clk, b_clk = merged.get('clk_cur', 0), merged.get('clk_base', 0)
     c_cost, b_cost = merged.get('cost_cur', 0), merged.get('cost_base', 0)
@@ -172,7 +171,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
-    # 🚨 NameError 원인이었던 cpc 변수 정상 정의 확인 🚨
     c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
     b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
 
@@ -546,11 +544,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if not target_df.empty:
                     disp_target = target_df.rename(columns={
                         "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
-                        "c_roas_purch": "구매 ROAS(%)", "target_roas": "목표 ROAS(%)", "min_roas": "최소 ROAS(%)", "cost": "광고비",
+                        "c_roas_purch": "구매완료 ROAS(%)", "target_roas": "목표 ROAS(%)", "min_roas": "최소 ROAS(%)", "cost": "광고비",
                         "conv": "구매완료수"
                     })
                     
-                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "구매완료수", "구매 ROAS(%)", "최소 ROAS(%)", "목표 ROAS(%)", "광고비"]
+                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "구매완료수", "구매완료 ROAS(%)", "최소 ROAS(%)", "목표 ROAS(%)", "광고비"]
                     st.dataframe(
                         disp_target[disp_cols],
                         width="stretch", hide_index=True,
@@ -558,9 +556,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                             "달성 상태": st.column_config.TextColumn("상태", width="small"),
                             "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
                             "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
-                            "구매 ROAS(%)": st.column_config.NumberColumn("구매 ROAS(%)", format="%.1f%%"),
-                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%d%%"),
-                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%d%%"),
+                            "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS", format="%.1f%%"),
+                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS", format="%d%%"),
+                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS", format="%d%%"),
                             "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
                         }
                     )
@@ -625,7 +623,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
 
     # ====================================================
-    # ✨ 퍼널 뷰 배치 및 절대값(차이) 토글 로직 (토글 왼쪽 배치)
+    # ✨ 퍼널 뷰 배치 및 절대값(차이) 토글 로직 (왼쪽 배치)
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
@@ -652,14 +650,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
         cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_abs else ["CPC", "CPC 증감"])
         
-        # 유저 요청: "구매완료 수, 구매완료 ROAS 표에 넣어달라"
-        # 토글 상태 상관없이 항상 포함하도록 명시적 처리
+        # 유저 요청사항: 토글 상관없이 "구매완료수, 구매완료 ROAS 표에 넣어달라"
         cols.extend(["구매완료수", "구매 증감", "구매 차이"] if show_abs else ["구매완료수", "구매 증감"])
         cols.extend(["구매 전환율(%)", "구매 전환율 증감"])
         cols.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_abs else ["구매완료 매출", "구매 매출 증감"])
         cols.extend(["구매 ROAS(%)", "구매 ROAS 증감"])
         
-        # 총(통합) 지표
         cols.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_abs else ["총 전환수", "총 전환 증감"])
         cols.extend(["총 전환율(%)", "총 전환율 증감"])
         cols.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_abs else ["총 전환매출", "총 매출 증감"])
@@ -720,7 +716,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ----------------------------------------------------
-    # 엑셀 다운로드 
+    # 엑셀 다운로드 (원래 데이터 모두 포함)
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
@@ -741,27 +737,32 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
     with st.expander("📝 텍스트 보고서 생성", expanded=False):
+        # 1. 일반 주요 유입 키워드 (파워링크 등)
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
             top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
-            if not top_kws.empty: top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
+            if not top_kws.empty: 
+                top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
 
-        if combined_toggle:
+        # 2. 쇼핑검색 주요 전환 키워드 (구매완료수 기준 Top 3)
+        shop_kw_str = "없음"
+        if cids:
+            try:
+                from data import sql_read, _sql_in_str_list
+                cid_sql = _sql_in_str_list(list(cids))
+                q = f"SELECT query_text, SUM(purchase_conv) as conv FROM fact_shopping_query_daily WHERE dt BETWEEN '{f['start']}' AND '{f['end']}' AND customer_id IN ({cid_sql}) GROUP BY query_text HAVING SUM(purchase_conv) > 0 ORDER BY SUM(purchase_conv) DESC LIMIT 3"
+                df_shop_q = sql_read(engine, q)
+                if not df_shop_q.empty:
+                    shop_kw_str = ", ".join([f"{r['query_text']}({int(r['conv']):,}회)" for _, r in df_shop_q.iterrows()])
+            except Exception:
+                pass
+
+        is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
+
+        if is_shopping_only:
             report_text = "\n".join([
                 f"[ {selected_type_label} 성과 요약 ]",
-                _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
-                _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
-                _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
-                _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
-                _format_report_line("총 전환수", f"{float(cur.get('tot_conv', 0.0)):.1f}"),
-                _format_report_line("총 전환매출", f"{int(float(cur.get('tot_sales', 0))):,}원"),
-                _format_report_line("통합 ROAS", f"{float(cur.get('tot_roas', 0)):.1f}%"),
-                _format_report_line("주요 유입 키워드", top_kw_str)
-            ])
-        else:
-            report_text = "\n".join([
-                f"[ {selected_type_label} 성과 요약 (상세) ]",
                 _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
                 _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
                 _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
@@ -769,6 +770,28 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}"),
                 _format_report_line("구매완료 매출", f"{int(float(cur.get('sales', 0))):,}원"),
                 _format_report_line("구매 ROAS", f"{float(cur.get('roas', 0)):.1f}%"),
+                _format_report_line("주요 전환 키워드", shop_kw_str)
+            ])
+        else:
+            if combined_toggle or kpi_mode != "shopping_purchase":
+                c_conv_val = cur.get('tot_conv', 0)
+                c_sales_val = cur.get('tot_sales', 0)
+                c_roas_val = cur.get('tot_roas', 0)
+            else:
+                c_conv_val = cur.get('conv', 0)
+                c_sales_val = cur.get('sales', 0)
+                c_roas_val = cur.get('roas', 0)
+
+            report_text = "\n".join([
+                f"[ {selected_type_label} 성과 요약 ]",
+                _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
+                _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
+                _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
+                _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
+                _format_report_line("전환수", f"{float(c_conv_val):.1f}"),
+                _format_report_line("총전환매출", f"{int(float(c_sales_val)):,}원"),
+                _format_report_line("ROAS", f"{float(c_roas_val):.1f}%"),
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
+            
         st.code(report_text, language="text")
