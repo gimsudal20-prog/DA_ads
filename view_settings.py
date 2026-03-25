@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_settings.py - Settings and Sync page view."""
+"""view_settings.py - Settings and Sync page view (Target ROAS Feature Restored)."""
 
 from __future__ import annotations
 import time
@@ -11,12 +11,16 @@ from data import *
 from ui import *
 from page_helpers import *
 
-# ✨ 0.1초 컷: 메인 페이지 함수에 @st.fragment 추가!
+# ✨ 0.1초 컷: 메인 페이지 함수에 @st.fragment 추가
 @st.fragment
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 및 데이터 관리")
-    try: db_ping(engine); st.success("DB 연결 상태: 정상 ✅")
-    except Exception as e: st.error(f"DB 연결 실패: {e}"); return
+    try: 
+        db_ping(engine)
+        st.success("DB 연결 상태: 정상 ✅")
+    except Exception as e: 
+        st.error(f"DB 연결 실패: {e}")
+        return
     
     st.markdown("### 📌 accounts.xlsx → DB 동기화")
     st.caption("새로운 광고주가 추가되거나 정보가 변경되었을 때 엑셀 파일을 업로드하여 DB를 최신화하세요.")
@@ -27,15 +31,96 @@ def page_settings(engine) -> None:
         colA, colB, colC = st.columns([1.2, 1.0, 2.2], gap="small")
         with colA: do_sync = st.button("🔁 동기화 실행", use_container_width=True, type="primary")
         with colB: 
-            if st.button("🧹 캐시 비우기", use_container_width=True): st.cache_data.clear(); st.rerun()
+            if st.button("🧹 캐시 비우기", use_container_width=True): 
+                st.cache_data.clear()
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
     if do_sync:
         try:
             df_src = pd.read_excel(up) if up else None
             res = seed_from_accounts_xlsx(engine, df=df_src)
-            st.success(f"✅ 동기화 완료: {res.get('meta', 0)}건"); st.cache_data.clear(); st.rerun()
-        except Exception as e: st.error(f"실패: {e}")
+            st.success(f"✅ 동기화 완료: {res.get('meta', 0)}건")
+            st.cache_data.clear()
+            time.sleep(1)
+            st.rerun()
+        except Exception as e: 
+            st.error(f"실패: {e}")
+
+    st.divider()
+
+    # ====================================================
+    # 🎯 복구된 기능: 캠페인별 목표 ROAS 설정 (고속 렌더링 적용)
+    # ====================================================
+    st.markdown("### 🎯 캠페인별 목표 ROAS 설정")
+    st.caption("캠페인별로 최소/목표 ROAS를 설정하세요. 요약 지면의 '🎯 캠페인별 목표 달성 현황'에 실시간 반영됩니다.")
+
+    try:
+        # 안전장치: DB에 컬럼이 없을 경우 자동 생성
+        with engine.begin() as conn:
+            try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN target_roas DOUBLE PRECISION;"))
+            except Exception: pass
+            try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN min_roas DOUBLE PRECISION;"))
+            except Exception: pass
+
+        sql = """
+            SELECT 
+                c.customer_id, 
+                COALESCE(cust.account_name, c.customer_id) as account_name,
+                c.campaign_id, 
+                c.campaign_name, 
+                c.target_roas, 
+                c.min_roas 
+            FROM dim_campaign c
+            LEFT JOIN dim_customer cust ON c.customer_id = cust.customer_id
+        """
+        camp_df = sql_read(engine, sql)
+
+        if not camp_df.empty:
+            camp_df = camp_df.sort_values(['account_name', 'campaign_name']).reset_index(drop=True)
+            
+            # Pandas 연산을 최소화하고 st.data_editor의 네이티브 기능으로 렌더링 최적화
+            edited_df = st.data_editor(
+                camp_df,
+                hide_index=True,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "customer_id": None, # 화면에서 숨김
+                    "campaign_id": None, # 화면에서 숨김
+                    "account_name": st.column_config.TextColumn("광고주명", disabled=True),
+                    "campaign_name": st.column_config.TextColumn("캠페인명", disabled=True),
+                    "min_roas": st.column_config.NumberColumn("최소 ROAS(%)", help="예: 200", min_value=0, step=10, format="%d"),
+                    "target_roas": st.column_config.NumberColumn("목표 ROAS(%)", help="예: 300", min_value=0, step=10, format="%d")
+                },
+                key="roas_editor"
+            )
+
+            if st.button("💾 목표 ROAS 저장하기", type="primary"):
+                with st.spinner("저장 중입니다..."):
+                    with engine.begin() as conn:
+                        for _, row in edited_df.iterrows():
+                            t_roas = row['target_roas']
+                            m_roas = row['min_roas']
+                            cid = row['customer_id']
+                            campid = row['campaign_id']
+                            
+                            t_val = float(t_roas) if pd.notna(t_roas) and str(t_roas).strip() != "" else None
+                            m_val = float(m_roas) if pd.notna(m_roas) and str(m_roas).strip() != "" else None
+                            
+                            conn.execute(
+                                text("UPDATE dim_campaign SET target_roas = :t, min_roas = :m WHERE customer_id = :cid AND campaign_id = :campid"),
+                                {"t": t_val, "m": m_val, "cid": str(cid), "campid": str(campid)}
+                            )
+                st.success("✅ 모든 캠페인의 목표 ROAS가 성공적으로 저장되었습니다!")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.info("💡 설정할 캠페인 정보가 없습니다. 먼저 상단의 동기화를 진행하거나 광고 데이터를 수집해주세요.")
+
+    except Exception as e:
+        st.error(f"목표 ROAS 설정 로딩 중 오류 발생: {e}")
 
     st.divider()
 
