@@ -141,7 +141,6 @@ def lock_key_for_job(customer_id: str, target_date: date, scope: str = "collecto
     raw = f"{scope}:{str(customer_id).strip()}:{target_date.isoformat()}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=False) & 0x7FFFFFFFFFFFFFFF
 
-
 def acquire_job_lock(engine: Engine, customer_id: str, target_date: date):
     if not DB_URL or not str(DB_URL).lower().startswith(("postgresql", "postgres://")):
         return None
@@ -179,7 +178,6 @@ def acquire_job_lock(engine: Engine, customer_id: str, target_date: date):
             pass
         return None
 
-
 def release_job_lock(raw_conn, customer_id: str, target_date: date):
     if raw_conn is None:
         return
@@ -201,7 +199,6 @@ def release_job_lock(raw_conn, customer_id: str, target_date: date):
         except Exception:
             pass
 
-
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
@@ -218,7 +215,6 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}"))
     except Exception: pass
-
 
 def ensure_tables(engine: Engine):
     for attempt in range(3):
@@ -331,7 +327,7 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
         except Exception:
             time.sleep(3)
 
-
+# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     clear_fact_range(engine, table, customer_id, d1)
     if not rows:
@@ -340,7 +336,16 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
 
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    
+    if update_cols:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+    else:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
+
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -365,6 +370,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 try: raw_conn.close()
                 except Exception: pass
 
+# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     table = "fact_shopping_query_daily"
     clear_fact_range(engine, table, customer_id, d1)
@@ -374,7 +380,16 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
 
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    
+    if update_cols:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+    else:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO NOTHING'
+
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -533,7 +548,6 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         results = executor.map(fetch_chunk, chunks)
         for res in results: out.extend(res)
     return out
-
 
 def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, ids: List[str], id_key: str, table_name: str, split_map: dict | None = None) -> int:
     if not ids:
@@ -716,13 +730,11 @@ def normalize_keyword_text(v: str) -> str:
     s = str(v or "").strip().lower()
     if not s or s == "-":
         return ""
-    # 공백/특수문자 차이를 최대한 줄여 키워드 텍스트 매핑 안정화
     out = []
     for ch in s:
         if ch.isalnum() or ('가' <= ch <= '힣'):
             out.append(ch)
     return "".join(out)
-
 
 def extract_prefixed_token(vals, prefix: str) -> str:
     prefix_l = str(prefix).lower()
@@ -735,7 +747,6 @@ def extract_prefixed_token(vals, prefix: str) -> str:
         if m:
             return m.group(0)
     return ""
-
 
 def keyword_text_candidates(kw_norm: str, rows: list[tuple[str, str]]) -> list[str]:
     if not kw_norm:
@@ -752,7 +763,6 @@ def keyword_text_candidates(kw_norm: str, rows: list[tuple[str, str]]) -> list[s
             seen.add(kid)
             out.append(kid)
     return out
-
 
 def get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [normalize_header(h) for h in headers]
@@ -772,10 +782,8 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
-
 def split_enabled_for_date(target_date: date) -> bool:
     return target_date >= CART_ENABLE_DATE
-
 
 def is_shopping_campaign_obj(camp: dict) -> bool:
     hay = " ".join([
@@ -785,7 +793,6 @@ def is_shopping_campaign_obj(camp: dict) -> bool:
         str(camp.get("name", "")),
     ]).lower()
     return any(k in hay for k in SHOPPING_HINT_KEYS)
-
 
 def merge_split_maps(*maps: dict) -> dict:
     out = {}
@@ -811,9 +818,6 @@ def merge_split_maps(*maps: dict) -> dict:
             b["wishlist_sales"] += int(float(v.get("wishlist_sales", 0) or 0))
     return out
 
-
-
-
 def empty_split_summary() -> dict:
     return {
         "purchase_conv": 0.0,
@@ -823,7 +827,6 @@ def empty_split_summary() -> dict:
         "wishlist_conv": 0.0,
         "wishlist_sales": 0,
     }
-
 
 def add_split_summary(summary: dict, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
     if is_purchase:
@@ -835,7 +838,6 @@ def add_split_summary(summary: dict, is_purchase: bool, is_cart: bool, is_wishli
     elif is_wishlist:
         summary["wishlist_conv"] += float(c_val or 0.0)
         summary["wishlist_sales"] += int(s_val or 0)
-
 
 def merge_split_summaries(*summaries: dict) -> dict:
     out = empty_split_summary()
@@ -850,12 +852,10 @@ def merge_split_summaries(*summaries: dict) -> dict:
         out["wishlist_sales"] += int(float(s.get("wishlist_sales", 0) or 0))
     return out
 
-
 def split_summary_has_values(summary: dict) -> bool:
     if not summary:
         return False
     return any(float(summary.get(k, 0) or 0) > 0 for k in ["purchase_conv", "cart_conv", "wishlist_conv"])
-
 
 def format_split_summary(summary: dict) -> str:
     def fmt(v):
@@ -999,7 +999,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 return v
         return first_value_with_prefix(vals, prefix)
 
-    # 1) 헤더가 있는 형식 우선 처리
     header_idx = -1
     for i in range(min(20, len(df))):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
@@ -1046,8 +1045,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 flush_debug_rows()
                 return camp_map, kw_map, ad_map, summary
 
-    # 2) 헤더 없는 TSV 형식 처리
-    # 샘플: 20260311 | accountId | cmp-... | grp-... | nkw-.../- | nad-... | bsn-... | ...
     sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
 
     def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
@@ -1066,7 +1063,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                     prefix_hits += 1
                 elif allow_dash and v == '-':
                     dash_hits += 1
-            # '-' 는 보조 힌트로만 사용하고, 실제 prefix hit 가 한 번도 없는 컬럼은 선택하지 않는다.
             if prefix_hits > 0:
                 score += min(dash_hits, prefix_hits)
             if preferred_after >= 0 and i <= preferred_after:
@@ -1101,11 +1097,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         if n < 2:
             continue
 
-        # 행 내 전환유형 탐지
-        # 중요: 일부 원시 TSV는 `... | 1 | add_to_cart | 30 | 0` 형태로 내려오는데,
-        # 여기서 앞의 `1`은 conversion method 같은 다른 코드일 수 있다.
-        # 따라서 텍스트형 전환유형(add_to_cart/purchase/장바구니/구매완료)을 우선하고,
-        # 숫자 코드 1/3은 텍스트형이 전혀 없을 때만 보조적으로 사용한다.
         text_type_hits = []
         numeric_type_hits = []
         for idx, v in enumerate(vals):
@@ -1115,8 +1106,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             if not (is_purchase or is_cart or is_wishlist):
                 continue
             if s_raw in {'1', '3'}:
-                # 숫자 코드 1/3은 오탐이 많아서 뒤쪽 6칸 안에서만 인정하고,
-                # 텍스트형 전환유형이 하나도 없을 때만 후보로 사용한다.
                 if idx >= max(0, n - 6):
                     numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
             else:
@@ -1125,8 +1114,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         type_hits = text_type_hits if text_type_hits else numeric_type_hits
 
         if not type_hits and report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
-            # 일부 쇼핑 전환 리포트는 헤더/타입 컬럼이 불명확할 수 있어 뒤쪽 숫자만 보이는 경우가 있다.
-            # 이 경우 안전하게 스킵하고 총합만 유지한다.
             pass
         if not type_hits:
             add_debug_row(vals, "", 0, 0, False, "no_type_hit")
@@ -1139,11 +1126,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
         picked = None
         for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
-            # 원시 TSV는 `... | 2 | purchase | 1 | 64400` 또는
-            # `... | 1 | add_to_cart | 30 | 0` 형태가 많다.
-            # 여기서 앞의 1/2는 전환방식(직접/간접)일 가능성이 크므로,
-            # 전환유형 문자열(purchase/add_to_cart/wishlist) 바로 오른쪽 숫자를
-            # 전환수로, 그 다음 숫자를 전환매출액으로 본다.
             anchor_idx = type_idx
             anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
             raw_tok = str(vals[type_idx]).strip().lower()
@@ -1164,8 +1146,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             if not numeric_right:
                 continue
 
-            # 전환유형 문자열 바로 오른쪽 첫 숫자 = 전환수
-            # 다음 숫자 = 전환매출액
             c_val = float(numeric_right[0][1])
             s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
 
@@ -1233,7 +1213,6 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
 
     flush_debug_rows()
     return camp_map, kw_map, ad_map, summary
-
 
 def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id: str) -> List[Dict[str, Any]]:
     if df is None or df.empty:
@@ -1392,7 +1371,6 @@ def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, di
         gid_idx = get_col_idx(headers, ["광고그룹id", "adgroupid", "nccadgroupid"])
         kw_idx = get_col_idx(headers, ["키워드", "keyword", "연관검색어", "relkeyword", "검색어"])
     else:
-        # raw TSV fallback: date, customer, campaign, adgroup, keywordText, keywordId, ... 형태를 우선 가정
         data_df = df.iloc[1:] if ("date" in str(df.iloc[0, 0]).lower() or "id" in str(df.iloc[0, 0]).lower()) else df
         gid_idx = 3
         kw_idx = 4
@@ -1526,7 +1504,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
 
     return res
 
-
 def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str) -> int:
     if not stat_res:
         return 0
@@ -1546,8 +1523,6 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         wishlist_sales = s.get("wishlist_sales")
         wishlist_roas = None if wishlist_sales is None or cost <= 0 else (wishlist_sales / cost * 100.0)
 
-        # conv/sales/roas 는 네이버 총합(구매+장바구니+위시리스트+기타)을 그대로 유지한다.
-        # 구매완료 중심 운영을 위해 primary_* 는 purchase 가 있으면 purchase 기준, 없으면 총합 기준으로 저장한다.
         primary_conv = s.get("purchase_conv") if s.get("purchase_conv") is not None else s["conv"]
         primary_sales = purchase_sales if purchase_sales is not None else total_sales
         primary_roas = None if primary_sales is None or cost <= 0 else (primary_sales / cost * 100.0)
@@ -1583,7 +1558,6 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
 
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
-
 
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
@@ -1747,12 +1721,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             elif not shopping_campaign_ids:
                 log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
             else:
-                # 핵심:
-                # - 캠페인/소재 분리값은 AD_CONVERSION을 우선 사용
-                # - 키워드 분리값은 SHOPPINGKEYWORD_CONVERSION_DETAIL을 우선 사용
-                #   (이 리포트는 키워드 텍스트 기반으로 내려오는 경우가 많아 keyword_lookup 매핑 필요)
-                # - 두 리포트를 "하나만 선택"하면 3skbox처럼 크게 누락될 수 있으므로
-                #   서로 다른 용도로 나눠 사용한다.
                 source_maps = {}
                 report_candidates = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
                 for tp in report_candidates:
@@ -1762,13 +1730,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         continue
                     if conv_df.empty:
                         log(f"   ℹ️ [ {account_name} ] {tp} 리포트가 비어 있습니다. purchase/cart/wishlist 는 미확정(NULL)로 유지합니다.")
-                        log(f"   🔎 [ {account_name} ] {tp} raw rows=0 / parsed split: campaign(0) keyword(0) ad(0)")
                         continue
 
-                    # 포렌식 결과: AD_CONVERSION 안에도 실제 쇼핑 전환 행이 다수 들어오는데
-                    # 기존 shopping_campaign_ids 필터 때문에 cmp-a001-01 / cmp-a001-04 등의 유효 행이
-                    # 대량으로 campaign_filtered 처리되며 누락되고 있었다.
-                    # 따라서 전환 detail 리포트는 campaign_id로 선필터하지 않고 전부 파싱한다.
                     report_allowed_campaign_ids = None
 
                     one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
@@ -1781,18 +1744,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         debug_account_name=account_name,
                         debug_target_date=str(target_date),
                     )
-                    log(f"   🔎 [ {account_name} ] {tp} raw rows={len(conv_df)} / parsed split: campaign({len(one_camp_map)}) keyword({len(one_kw_map)}) ad({len(one_ad_map)})")
-                    if split_summary_has_values(one_summary):
-                        log(f"   🔎 [ {account_name} ] {tp} raw summary: {format_split_summary(one_summary)}")
-                    sample_vals = conv_df.iloc[min(5, len(conv_df)-1)].fillna("").tolist()
-                    head = sample_vals[:8]
-                    tail = sample_vals[-4:] if len(sample_vals) > 8 else []
-                    sample_row = head + (["..."] if tail else []) + tail
-                    preview = " | ".join([str(x) for x in sample_row])
-                    log(f"   🔎 [ {account_name} ] {tp} sample: {preview}")
-                    safe_account_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(account_name))
-                    log(f"   🧪 [ {account_name} ] {tp} debug rows 저장: debug_split_rows/{target_date}_{safe_account_name}_{tp}.csv")
-
+                    
                     if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
                         log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
                         continue
@@ -1813,10 +1765,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ⚠️ [ {account_name} ] 쇼핑검색어 분리 저장 파싱 실패: {_e}")
                         shop_query_rows = []
 
-                # 포렌식 결과상 AD_CONVERSION 이 대시보드 총합에 훨씬 가깝고,
-                # SHOPPINGKEYWORD_CONVERSION_DETAIL 은 일부 subset 만 내려오는 경우가 있다.
-                # 따라서 summary / campaign / ad / keyword 의 우선 원천은 AD_CONVERSION 으로 두고,
-                # 쇼핑 키워드 detail 은 AD keyword split 이 비었을 때만 fallback 으로 사용한다.
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
                 kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
@@ -1836,11 +1784,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     )
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
-                        if kw_src == 'none':
-                            log(f"   ⚠️ [ {account_name} ] keyword split은 아직 미매핑 상태입니다. detail split 합계는 keyword별 적재값과 다를 수 있습니다.")
 
-            # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
-            # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map)
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if not SKIP_KEYWORD_STATS else 0
 
@@ -1949,7 +1893,6 @@ def main():
                 pass
 
 
-    # 업체명 필터 적용 (정확 일치 우선, 없으면 부분일치)
     target_name_tokens = []
     if args.account_name and str(args.account_name).strip():
         target_name_tokens.append(str(args.account_name).strip())
@@ -1969,6 +1912,12 @@ def main():
             ]
         log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(accounts_info)}개")
 
+    # [수정됨] 중복 ID를 완벽히 제거하여 동일 계정이 여러 스레드에 할당되는 Race Condition/에러 방지
+    unique_accounts = {}
+    for acc in accounts_info:
+        unique_accounts[acc["id"]] = acc
+    accounts_info = list(unique_accounts.values())
+
     if not accounts_info: 
         log("⚠️ 수집할 계정이 없습니다.")
         return
@@ -1983,4 +1932,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
