@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Hyper-Optimized)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -9,7 +9,7 @@ from typing import Dict
 from datetime import date
 
 from data import query_keyword_bundle, query_ad_bundle
-from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search, style_table_deltas
+from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search
 
 
 def _format_avg_rank(value):
@@ -158,33 +158,65 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-# ✨ 새로운 틀고정 전용 렌더러
-def _render_sticky_table(styler_or_df, first_col: str, height: int = 550):
+# ⚡ 고속 렌더링용 Column Config 사전 정의
+FAST_KW_CONFIG = {
+    "노출": st.column_config.NumberColumn("노출", format="%d"),
+    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
+    "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
+    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
+    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
+    "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
+}
+
+FAST_KW_CMP_CONFIG = FAST_KW_CONFIG.copy()
+FAST_KW_CMP_CONFIG.update({
+    "이전 노출": st.column_config.NumberColumn("이전 노출", format="%d"),
+    "노출 증감": st.column_config.NumberColumn("노출 증감", format="%+d"),
+    "노출 증감(%)": st.column_config.NumberColumn("노출 증감(%)", format="%+.2f %%"),
+    "이전 클릭": st.column_config.NumberColumn("이전 클릭", format="%d"),
+    "클릭 증감": st.column_config.NumberColumn("클릭 증감", format="%+d"),
+    "클릭 증감(%)": st.column_config.NumberColumn("클릭 증감(%)", format="%+.2f %%"),
+    "이전 광고비": st.column_config.NumberColumn("이전 광고비", format="%d 원"),
+    "광고비 증감": st.column_config.NumberColumn("광고비 증감", format="%+d 원"),
+    "광고비 증감(%)": st.column_config.NumberColumn("광고비 증감(%)", format="%+.2f %%"),
+    "이전 CPC(원)": st.column_config.NumberColumn("이전 CPC(원)", format="%d 원"),
+    "CPC 증감": st.column_config.NumberColumn("CPC 증감", format="%+d 원"),
+    "CPC 증감(%)": st.column_config.NumberColumn("CPC 증감(%)", format="%+.2f %%"),
+    "이전 전환": st.column_config.NumberColumn("이전 전환", format="%.1f"),
+    "전환 증감": st.column_config.NumberColumn("전환 증감", format="%+.1f"),
+    "이전 ROAS(%)": st.column_config.NumberColumn("이전 ROAS(%)", format="%.2f %%"),
+    "ROAS 증감(%)": st.column_config.NumberColumn("ROAS 증감(%)", format="%+.2f %%"),
+    "순위 변화": st.column_config.NumberColumn("순위 변화", format="%+.1f"),
+})
+
+
+# ✨ Pandas .style을 제거한 고속 틀고정 렌더러
+def _render_sticky_table(df, first_col: str, height: int = 550, col_config: dict = None):
     try:
-        df = styler_or_df.data if hasattr(styler_or_df, "data") else styler_or_df
         rows = len(df.index)
-        if rows <= 0:
-            calc_height = 100
-        elif rows == 1:
-            calc_height = 80
-        else:
-            calc_height = min(height, max(100, 40 + (rows * 36)))
+        if rows <= 0: calc_height = 100
+        elif rows == 1: calc_height = 80
+        else: calc_height = min(height, max(100, 40 + (rows * 36)))
     except Exception:
         calc_height = height
         
+    cfg = col_config.copy() if col_config else {}
+    cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
+
     st.dataframe(
-        styler_or_df,
+        df,
         use_container_width=True,
         height=calc_height,
         hide_index=True,
-        column_config={
-            first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")
-        }
+        column_config=cfg
     )
 
 
 @st.fragment
-def render_keyword_main(view, top_n, fmt):
+def render_keyword_main(view, top_n):
     if view.empty:
         st.info("해당 기간의 키워드/소재 성과 데이터가 없습니다.")
         return
@@ -204,7 +236,6 @@ def render_keyword_main(view, top_n, fmt):
     if sel_grp != "전체":
         disp = disp[disp["광고그룹"] == sel_grp]
 
-    # ✨ 핵심: 사용자가 스크롤할 때 기준이 되는 '키워드'를 가장 앞으로 배치
     base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "평균순위" in disp.columns:
         base_cols.append("평균순위")
@@ -214,13 +245,11 @@ def render_keyword_main(view, top_n, fmt):
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
-    
-    styled_df = disp.style.format(fmt)
-    _render_sticky_table(styled_df, "키워드", height=550)
+    _render_sticky_table(disp, "키워드", height=550, col_config=FAST_KW_CONFIG)
 
 
 @st.fragment
-def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, end_dt):
+def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     opts = get_dynamic_cmp_options(start_dt, end_dt)
     cmp_opts = [o for o in opts if o != "비교 안함"]
     cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="kw_cmp_mode")
@@ -257,7 +286,6 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
         "CPA(원)", "전환매출", "이전 ROAS(%)", "ROAS(%)", "ROAS 증감(%)"
     ]
 
-    # ✨ 여기도 키워드를 맨 앞으로 배치
     base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
         base_cols_cmp.extend(["평균순위", "이전 평균순위", "순위 변화"])
@@ -282,16 +310,8 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, start_dt, e
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
     disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-    styled_cmp = disp.style.format(fmt_cmp)
-    delta_cols = [c for c in ["노출 증감(%)", "노출 증감", "클릭 증감(%)", "클릭 증감", "광고비 증감(%)", "광고비 증감", "CPC 증감(%)", "CPC 증감", "순위 변화", "전환 증감", "ROAS 증감(%)"] if c in disp.columns]
-    if delta_cols:
-        try: styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-        except AttributeError: styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
-
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    
-    # ✨ 기간 비교 탭에도 틀고정 적용
-    _render_sticky_table(styled_cmp, "키워드", height=550)
+    _render_sticky_table(disp, "키워드", height=550, col_config=FAST_KW_CMP_CONFIG)
 
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -309,25 +329,10 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
 
-    tab_main, tab_cmp = st.tabs(["종합 성과", "기간 비교"])
-    
-    fmt = {
-        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}",
-        "CPA(원)": "{:,.0f}", "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
-    }
+    # 🚀 핵심: st.tabs 대신 st.pills 기반 지연 로딩(Lazy Loading) 적용
+    selected_tab = st.pills("분석 탭 선택", ["종합 성과", "기간 비교"], default="종합 성과")
 
-    with tab_main:
-        render_keyword_main(view, top_n, fmt)
-
-    with tab_cmp:
-        fmt_cmp = fmt.copy()
-        fmt_cmp.update({
-            "이전 노출": "{:,.0f}", "노출 증감": "{:+,.0f}", "노출 증감(%)": "{:+.2f}%",
-            "이전 클릭": "{:,.0f}", "클릭 증감": "{:+,.0f}", "클릭 증감(%)": "{:+.2f}%",
-            "이전 광고비": "{:,.0f}", "광고비 증감": "{:+,.0f}", "광고비 증감(%)": "{:+.2f}%",
-            "이전 CPC(원)": "{:,.0f}", "CPC 증감": "{:+,.0f}", "CPC 증감(%)": "{:+.2f}%",
-            "이전 전환": "{:,.1f}", "전환 증감": "{:+.1f}",
-            "이전 ROAS(%)": "{:,.2f}%", "ROAS 증감(%)": "{:+.2f}%",
-            "순위 변화": "{:+.1f}"
-        })
-        render_keyword_cmp(view, engine, cids, type_sel, top_n, fmt_cmp, f["start"], f["end"])
+    if selected_tab == "종합 성과":
+        render_keyword_main(view, top_n)
+    elif selected_tab == "기간 비교":
+        render_keyword_cmp(view, engine, cids, type_sel, top_n, f["start"], f["end"])
