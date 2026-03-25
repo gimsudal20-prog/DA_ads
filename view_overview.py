@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Perfect Funnel Layout, Text Report Labels & Shop Keywords Fixed)."""
+"""view_overview.py - Overview page view (Perfect Funnel Layout, %p removed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -100,7 +100,7 @@ def format_for_csv(df):
                 else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
             elif "증감" in col:
                 if "ROAS" in col or "전환율" in col or "클릭률" in col:
-                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.2f}%p" if pd.notnull(x) and x != 0 else "0.00%p")
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.2f}%" if pd.notnull(x) and x != 0 else "0.00%")
                 else:
                     out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
             elif "ROAS" in col or "전환율" in col or "클릭률" in col:
@@ -217,7 +217,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     _apply_pct_diff(c_tot_conv, b_tot_conv, '총 전환 증감', '총 전환 차이')
     _apply_pct_diff(c_tot_sales, b_tot_sales, '총 매출 증감', '총 매출 차이')
 
-    # Rates diffs (percentage points)
+    # Rates diffs
     out['클릭률 증감'] = out['클릭률(%)'] - b_ctr
     out['구매 전환율 증감'] = out['구매 전환율(%)'] - b_cvr
     out['구매 ROAS 증감'] = out['구매 ROAS(%)'] - b_roas
@@ -609,28 +609,27 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
-        "클릭률(%)": "{:,.2f}%", "클릭률 증감": "{:+.2f}%p",
+        "클릭률(%)": "{:,.2f}%", "클릭률 증감": "{:+.2f}%",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
         "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
         "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
-        "구매 전환율(%)": "{:,.2f}%", "구매 전환율 증감": "{:+.2f}%p",
+        "구매 전환율(%)": "{:,.2f}%", "구매 전환율 증감": "{:+.2f}%",
         "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
-        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%p",
+        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
         "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
-        "총 전환율(%)": "{:,.2f}%", "총 전환율 증감": "{:+.2f}%p",
+        "총 전환율(%)": "{:,.2f}%", "총 전환율 증감": "{:+.2f}%",
         "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
-        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%p"
+        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%"
     }
 
     # ====================================================
-    # ✨ 퍼널 뷰 배치 및 절대값(차이) 토글 로직 (왼쪽 배치)
+    # ✨ 퍼널 뷰 배치 및 절대값(차이) 토글 로직
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
     st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
     show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="ov_abs_toggle")
 
-    # 모든 표에 구매/통합 관련 지표 강제 표출
     if kpi_mode == "shopping_purchase":
         c_conv, c_conv_pct, c_conv_abs = "구매완료수", "구매 증감", "구매 차이"
         c_cvr, c_cvr_pct = "구매 전환율(%)", "구매 전환율 증감"
@@ -650,7 +649,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
         cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_abs else ["CPC", "CPC 증감"])
         
-        # 유저 요청사항: 토글 상관없이 "구매완료수, 구매완료 ROAS 표에 넣어달라"
         cols.extend(["구매완료수", "구매 증감", "구매 차이"] if show_abs else ["구매완료수", "구매 증감"])
         cols.extend(["구매 전환율(%)", "구매 전환율 증감"])
         cols.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_abs else ["구매완료 매출", "구매 매출 증감"])
@@ -662,7 +660,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["통합 ROAS(%)", "통합 ROAS 증감"])
         return cols
 
-    # 표 렌더링 탭
     tab_acc, tab_type, tab_period, tab_camp = st.tabs(["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"])
 
     with tab_acc:
@@ -705,7 +702,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     with tab_camp:
         if not camp_disp.empty:
-            camp_disp_top = camp_disp.head(200) # 브라우저 렌더링 과부하 방지 (200개 한정)
+            camp_disp_top = camp_disp.head(200) 
             view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_abs_diff) if c in camp_disp_top.columns]
             disp_camp = camp_disp_top[view_cols].copy()
             styled_camp_df = disp_camp.style.format(fmt_dict_standard)
@@ -716,7 +713,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ----------------------------------------------------
-    # 엑셀 다운로드 (원래 데이터 모두 포함)
+    # 엑셀 다운로드
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
@@ -737,7 +734,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
     with st.expander("📝 텍스트 보고서 생성", expanded=False):
-        # 1. 일반 주요 유입 키워드 (파워링크 등)
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
@@ -745,7 +741,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not top_kws.empty: 
                 top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
 
-        # 2. 쇼핑검색 주요 전환 키워드 (구매완료수 기준 Top 3)
         shop_kw_str = "없음"
         if cids:
             try:
