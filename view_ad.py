@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_ad.py - Ad performance & A/B Testing page view (Optimized)."""
+"""view_ad.py - Ad performance & A/B Testing page view (Hyper-Optimized)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -11,31 +11,15 @@ from datetime import date
 from data import *
 from ui import *
 from page_helpers import *
-from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_item_comparison_search, style_table_deltas
+from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_item_comparison_search
 
 
 def _inject_ad_css():
     st.markdown("""
     <style>
-    .ad-toolbar {
-        background: var(--nv-surface);
-        border: 1px solid var(--nv-line);
-        border-radius: 12px;
-        padding: 14px 16px 10px 16px;
-        margin-bottom: 16px;
-    }
-    .ad-toolbar-title {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--nv-text);
-        margin-bottom: 10px;
-    }
-    .ad-section-sub {
-        font-size: 12px;
-        color: var(--nv-muted);
-        margin-top: -2px;
-        margin-bottom: 12px;
-    }
+    .ad-toolbar { background: var(--nv-surface); border: 1px solid var(--nv-line); border-radius: 12px; padding: 14px 16px 10px 16px; margin-bottom: 16px; }
+    .ad-toolbar-title { font-size: 13px; font-weight: 700; color: var(--nv-text); margin-bottom: 10px; }
+    .ad-section-sub { font-size: 12px; color: var(--nv-muted); margin-top: -2px; margin-bottom: 12px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -53,24 +37,64 @@ def _build_material_name(df: pd.DataFrame) -> pd.DataFrame:
     return work
 
 def _filter_shop_ext_materials(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame() if df is None else df
+    if df is None or df.empty: return pd.DataFrame() if df is None else df
     work = df.copy()
-    if "소재내용" not in work.columns:
-        return work
+    if "소재내용" not in work.columns: return work
     s = work["소재내용"].fillna("").astype(str)
     non_talk = ~s.str.contains("TALK", na=False, case=False)
     explicit = s.str.contains(r"\[확장소재\]", na=False, regex=True)
     filtered = work[explicit & non_talk].copy()
-    if not filtered.empty:
-        return filtered
+    if not filtered.empty: return filtered
     return work[non_talk].copy()
+
+
+def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
+    if view_df.empty: return view_df
+    for k in merge_keys:
+        if k in view_df.columns: view_df[k] = view_df[k].astype(str)
+        if k in base_df.columns: base_df[k] = base_df[k].astype(str)
+            
+    agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
+    if not base_df.empty:
+        base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+        base_agg = base_agg.rename(columns={'imp': 'b_imp', 'clk': 'b_clk', 'cost': 'b_cost', 'conv': 'b_conv', 'sales': 'b_sales'})
+        merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
+    else:
+        merged = view_df.copy()
+        
+    for c in ['b_imp', 'b_clk', 'b_cost', 'b_conv', 'b_sales']:
+        if c not in merged.columns: merged[c] = 0
+        merged[c] = merged[c].fillna(0)
+
+    merged['이전 노출'] = merged['b_imp']
+    merged['노출 증감'] = merged['노출'] - merged['이전 노출']
+    merged['노출 증감(%)'] = np.where(merged['이전 노출'] > 0, (merged['노출 증감'] / merged['이전 노출']) * 100, np.where(merged['노출'] > 0, 100.0, 0.0))
+
+    merged['이전 클릭'] = merged['b_clk']
+    merged['클릭 증감'] = merged['클릭'] - merged['이전 클릭']
+    merged['클릭 증감(%)'] = np.where(merged['이전 클릭'] > 0, (merged['클릭 증감'] / merged['이전 클릭']) * 100, np.where(merged['클릭'] > 0, 100.0, 0.0))
+
+    merged['이전 광고비'] = merged['b_cost']
+    merged['광고비 증감'] = merged['광고비'] - merged['이전 광고비']
+    merged['광고비 증감(%)'] = np.where(merged['이전 광고비'] > 0, (merged['광고비 증감'] / merged['이전 광고비']) * 100, np.where(merged['광고비'] > 0, 100.0, 0.0))
+
+    merged['이전 CPC(원)'] = np.where(merged['이전 클릭'] > 0, merged['이전 광고비'] / merged['이전 클릭'], 0.0)
+    merged['CPC 증감'] = merged.get('CPC(원)', 0) - merged['이전 CPC(원)']
+    merged['CPC 증감(%)'] = np.where(merged['이전 CPC(원)'] > 0, (merged['CPC 증감'] / merged['이전 CPC(원)']) * 100, np.where(merged.get('CPC(원)', 0) > 0, 100.0, 0.0))
+
+    merged['이전 전환'] = merged['b_conv']
+    merged['전환 증감'] = merged['전환'] - merged['이전 전환']
+    
+    merged['이전 전환매출'] = merged['b_sales']
+    merged['이전 ROAS(%)'] = np.where(merged['이전 광고비'] > 0, (merged['이전 전환매출'] / merged['이전 광고비']) * 100, 0.0)
+    merged['ROAS 증감(%)'] = merged.get('ROAS(%)', 0) - merged['이전 ROAS(%)']
+        
+    return merged
 
 
 @st.cache_data(show_spinner=False, max_entries=20, ttl=300)
 def compute_ad_view(bundle, meta):
-    if bundle is None or bundle.empty:
-        return pd.DataFrame()
+    if bundle is None or bundle.empty: return pd.DataFrame()
 
     df = _perf_common_merge_meta(bundle, meta)
     df = _build_material_name(df)
@@ -90,14 +114,11 @@ def compute_ad_view(bundle, meta):
         view = view[view["_clean_ad"] != ""]
         view = view.drop(columns=["_clean_ad"])
 
-    if view.empty:
-        return pd.DataFrame()
+    if view.empty: return pd.DataFrame()
 
     for c in ["노출", "클릭", "광고비", "전환", "전환매출"]:
-        if c in view.columns:
-            view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
-        else:
-            view[c] = 0
+        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+        else: view[c] = 0
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CVR(%)"] = np.where(view["클릭"] > 0, (view["전환"] / view["클릭"]) * 100, 0.0)
@@ -108,8 +129,68 @@ def compute_ad_view(bundle, meta):
     return view
 
 
+# ⚡ 고속 렌더링용 Column Config 사전 정의
+FAST_AD_CONFIG = {
+    "노출": st.column_config.NumberColumn("노출", format="%d"),
+    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
+    "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
+    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
+    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
+    "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
+    "CVR(%)": st.column_config.NumberColumn("CVR(%)", format="%.2f %%"),
+}
+
+FAST_AD_CMP_CONFIG = FAST_AD_CONFIG.copy()
+FAST_AD_CMP_CONFIG.update({
+    "이전 노출": st.column_config.NumberColumn("이전 노출", format="%d"),
+    "노출 증감": st.column_config.NumberColumn("노출 증감", format="%+d"),
+    "노출 증감(%)": st.column_config.NumberColumn("노출 증감(%)", format="%+.2f %%"),
+    "이전 클릭": st.column_config.NumberColumn("이전 클릭", format="%d"),
+    "클릭 증감": st.column_config.NumberColumn("클릭 증감", format="%+d"),
+    "클릭 증감(%)": st.column_config.NumberColumn("클릭 증감(%)", format="%+.2f %%"),
+    "이전 광고비": st.column_config.NumberColumn("이전 광고비", format="%d 원"),
+    "광고비 증감": st.column_config.NumberColumn("광고비 증감", format="%+d 원"),
+    "광고비 증감(%)": st.column_config.NumberColumn("광고비 증감(%)", format="%+.2f %%"),
+    "이전 CPC(원)": st.column_config.NumberColumn("이전 CPC(원)", format="%d 원"),
+    "CPC 증감": st.column_config.NumberColumn("CPC 증감", format="%+d 원"),
+    "CPC 증감(%)": st.column_config.NumberColumn("CPC 증감(%)", format="%+.2f %%"),
+    "이전 전환": st.column_config.NumberColumn("이전 전환", format="%.1f"),
+    "전환 증감": st.column_config.NumberColumn("전환 증감", format="%+.1f"),
+    "이전 ROAS(%)": st.column_config.NumberColumn("이전 ROAS(%)", format="%.2f %%"),
+    "ROAS 증감(%)": st.column_config.NumberColumn("ROAS 증감(%)", format="%+.2f %%"),
+})
+
+
+# ✨ Pandas .style을 제거한 고속 틀고정 렌더러
+def _render_ad_sticky_table(df, first_col: str, height: int = 500, col_config: dict = None):
+    try:
+        rows = len(df.index)
+        if rows <= 0: calc_height = 100
+        elif rows == 1: calc_height = 80
+        else: calc_height = min(height, max(100, 40 + (rows * 36)))
+    except Exception:
+        calc_height = height
+        
+    cfg = col_config.copy() if col_config else {}
+    # 틀고정(pinned) 설정
+    cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
+    if "랜딩페이지 URL" in df.columns:
+        cfg["랜딩페이지 URL"] = st.column_config.LinkColumn("랜딩페이지 URL", display_text="링크 열기", pinned=True)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        height=calc_height,
+        hide_index=True,
+        column_config=cfg
+    )
+
+
 @st.fragment
-def _render_ad_tab(df_tab: pd.DataFrame, ad_type_name: str, top_n: int, fmt: dict, start_dt, end_dt):
+def _render_ad_tab(df_tab: pd.DataFrame, ad_type_name: str, top_n: int, start_dt, end_dt):
     if df_tab.empty:
         st.info(f"해당 기간의 {ad_type_name} 데이터가 없습니다.")
         return
@@ -144,7 +225,7 @@ def _render_ad_tab(df_tab: pd.DataFrame, ad_type_name: str, top_n: int, fmt: dic
     with st.container(border=True):
         st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>{ad_type_name} 성과 표</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='ad-section-sub'>표시 행 수: {len(disp):,}개</div>", unsafe_allow_html=True)
-        _render_ad_sticky_table(disp.style.format(fmt), list(disp.columns), height=500, hide_index=True)
+        _render_ad_sticky_table(disp, "소재내용", height=500, col_config=FAST_AD_CONFIG)
 
 
 @st.fragment
@@ -167,21 +248,11 @@ def render_landing_tab(view):
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>랜딩페이지(URL) 효율</div>", unsafe_allow_html=True)
         st.markdown("<div class='ad-section-sub'>소재별 URL 수집값이 있는 경우만 표시됩니다.</div>", unsafe_allow_html=True)
-        st.dataframe(
-            lp_grp.style.background_gradient(cmap="Blues", subset=["CVR(%)", "ROAS(%)"]).format({
-                '노출': '{:,.0f}', '클릭': '{:,.0f}', '광고비': '{:,.0f}', '전환': '{:,.1f}',
-                '전환매출': '{:,.0f}', 'CTR(%)': '{:,.2f}%', 'CVR(%)': '{:,.2f}%', 'ROAS(%)': '{:,.2f}%'
-            }),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "랜딩페이지 URL": st.column_config.LinkColumn("랜딩페이지 URL (클릭 시 이동)", display_text="링크 열기")
-            }
-        )
+        _render_ad_sticky_table(lp_grp, "랜딩페이지 URL", height=500, col_config=FAST_AD_CONFIG)
 
 
 @st.fragment
-def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt):
+def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("<div class='ad-toolbar'><div class='ad-toolbar-title'>기간 비교 설정</div>", unsafe_allow_html=True)
     cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -202,7 +273,8 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
     if not base_ad_bundle.empty:
         valid_keys = [k for k in ['customer_id', 'ad_id'] if k in df_target.columns and k in base_ad_bundle.columns]
         if valid_keys:
-            df_target = append_comparison_data(df_target, base_ad_bundle, valid_keys)
+            # 기간 비교를 위한 df_target 에 base 의 컬럼들을 붙임
+            df_target = _apply_comparison_metrics(df_target, base_ad_bundle, valid_keys)
 
     st.markdown("<div class='ad-toolbar'><div class='ad-toolbar-title'>비교 필터</div>", unsafe_allow_html=True)
     c1, _ = st.columns(2)
@@ -219,6 +291,7 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
         base_for_search = _filter_shop_ext_materials(base_for_search) if "쇼핑검색" in cmp_sub_mode else base_for_search
     else:
         base_for_search = pd.DataFrame()
+        
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>개별 소재 비교</div>", unsafe_allow_html=True)
         render_item_comparison_search("소재", df_target, base_for_search, "소재내용", start_dt, end_dt, b1, b2)
@@ -226,37 +299,10 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, start_dt, end_dt
     cols_cmp = ["업체명", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "전환", "전환매출", "ROAS(%)", "광고비 증감(%)", "ROAS 증감(%)", "전환 증감"]
     disp_c = df_target[[c for c in cols_cmp if c in df_target.columns]].sort_values("광고비", ascending=False).head(top_n)
 
-    styled_cmp = disp_c.style.format(fmt)
-    delta_cols = [c for c in ["광고비 증감(%)", "ROAS 증감(%)", "전환 증감"] if c in disp_c.columns]
-    if delta_cols:
-        try:
-            styled_cmp = styled_cmp.map(style_table_deltas, subset=delta_cols)
-        except AttributeError:
-            styled_cmp = styled_cmp.applymap(style_table_deltas, subset=delta_cols)
-
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>소재 기간 비교 데이터</div>", unsafe_allow_html=True)
-        _render_ad_sticky_table(styled_cmp, list(disp_c.columns), height=500, hide_index=True)
+        _render_ad_sticky_table(disp_c, "소재내용", height=500, col_config=FAST_AD_CMP_CONFIG)
 
-
-def _ad_pinned_cfg(columns):
-    cfg = {}
-    pin_targets = ["업체명", "캠페인", "광고그룹", "소재내용"]
-    for col in pin_targets:
-        if col in columns:
-            cfg[col] = st.column_config.TextColumn(col, pinned=True, width="medium")
-    if "랜딩페이지 URL" in columns:
-        cfg["랜딩페이지 URL"] = st.column_config.LinkColumn("랜딩페이지 URL", display_text="링크 열기", pinned=True)
-    return cfg
-
-def _render_ad_sticky_table(styler_or_df, columns, *, height=500, hide_index=True):
-    st.dataframe(
-        styler_or_df,
-        width="stretch",
-        height=height,
-        hide_index=hide_index,
-        column_config=_ad_pinned_cfg(columns),
-    )
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
@@ -276,25 +322,21 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("해당 기간에 분석할 유효한 광고 소재(카피) 데이터가 없습니다.")
         return
 
-    tab_pl, tab_shop, tab_landing, tab_cmp = st.tabs(["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"])
+    # 🚀 핵심: st.tabs 대신 st.pills 기반 지연 로딩(Lazy Loading) 적용
+    selected_tab = st.pills("분석 탭 선택", ["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"], default="파워링크")
 
-    fmt = {
-        "노출": "{:,.0f}", "클릭": "{:,.0f}", "광고비": "{:,.0f}", "CPC(원)": "{:,.0f}", "CPA(원)": "{:,.0f}",
-        "전환매출": "{:,.0f}", "전환": "{:,.1f}", "CTR(%)": "{:,.2f}%", "ROAS(%)": "{:,.2f}%"
-    }
-
-    with tab_pl:
+    if selected_tab == "파워링크":
         df_pl = view[view["캠페인유형"] == "파워링크"].copy()
-        _render_ad_tab(df_pl, "파워링크", top_n, fmt, f["start"], f["end"])
+        _render_ad_tab(df_pl, "파워링크", top_n, f["start"], f["end"])
 
-    with tab_shop:
+    elif selected_tab == "쇼핑검색":
         df_shop = view[view["캠페인유형"] == "쇼핑검색"].copy()
         if not df_shop.empty:
             df_shop = _filter_shop_ext_materials(df_shop)
-        _render_ad_tab(df_shop, "쇼핑검색 확장소재", top_n, fmt, f["start"], f["end"])
+        _render_ad_tab(df_shop, "쇼핑검색 확장소재", top_n, f["start"], f["end"])
 
-    with tab_landing:
+    elif selected_tab == "랜딩페이지 효율":
         render_landing_tab(view)
 
-    with tab_cmp:
-        render_ad_cmp_tab(view, engine, cids, type_sel, top_n, fmt, f["start"], f["end"])
+    elif selected_tab == "기간 비교":
+        render_ad_cmp_tab(view, engine, cids, type_sel, top_n, f["start"], f["end"])
