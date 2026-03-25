@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_budget.py - Budget and Balance page view."""
+"""view_budget.py - Budget and Balance page view (Safely Optimized with Original UI)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -13,6 +13,15 @@ from datetime import date, timedelta
 from data import *
 from ui import *
 from page_helpers import *
+
+# ⚡ 고속 렌더링을 위한 DB 데이터 캐싱 래퍼 함수 (재렌더링 시 DB 조회 생략)
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _cached_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, topup_avg_days: int) -> pd.DataFrame:
+    try:
+        return query_budget_bundle(_engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, topup_avg_days)
+    except Exception:
+        return pd.DataFrame()
+
 
 @st.fragment
 def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
@@ -189,7 +198,6 @@ def render_alert_table(alert_view: pd.DataFrame):
 
 @st.fragment
 def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
-    # ROAS 목표치 및 기상도 로직 삭제 완료
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
 
@@ -220,11 +228,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     current_day = end_dt.day
     target_pacing_rate = current_day / days_in_month
 
-    bundle = query_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
+    # ⚡ DB 직접 호출 대신 캐싱된 래퍼 함수 사용
+    bundle = _cached_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
 
     alert_avg_d2 = yesterday
     alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    alert_bundle = query_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
+    alert_bundle = _cached_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
     
     if bundle is None or bundle.empty:
         biz_view = pd.DataFrame()
@@ -265,16 +274,22 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
             budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
 
-            def _status(rate: float, budget: int):
-                if budget == 0: return ("미설정", 4)
-                if rate >= 1.0: return ("예산 초과", 0)
-                if rate > target_pacing_rate + 0.1: return ("과속 소진", 1)
-                if rate < target_pacing_rate - 0.1: return ("과소 소진", 3)
-                return ("적정 페이스", 2)
+            # ⚡ 고속 연산을 위한 Vectorization 적용 (apply 제거)
+            cond_zero = budget_view["monthly_budget_val"] == 0
+            cond_over = budget_view["usage_rate"] >= 1.0
+            cond_fast = budget_view["usage_rate"] > target_pacing_rate + 0.1
+            cond_slow = budget_view["usage_rate"] < target_pacing_rate - 0.1
 
-            tmp = budget_view.apply(lambda r: _status(float(r["usage_rate"]), int(r["monthly_budget_val"])), axis=1, result_type="expand")
-            budget_view["상태"] = tmp[0]
-            budget_view["_rank"] = tmp[1].astype(int)
+            budget_view["상태"] = np.select(
+                [cond_zero, cond_over, cond_fast, cond_slow],
+                ["미설정", "예산 초과", "과속 소진", "과소 소진"],
+                default="적정 페이스"
+            )
+            budget_view["_rank"] = np.select(
+                [cond_zero, cond_over, cond_fast, cond_slow],
+                [4, 0, 1, 3],
+                default=2
+            )
 
             budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
