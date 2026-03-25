@@ -36,8 +36,20 @@ GFA_MANAGER_ACCOUNT_NO = (os.getenv("GFA_MANAGER_ACCOUNT_NO") or "").strip()
 GFA_API_VERSION = (os.getenv("GFA_API_VERSION") or "1.0").strip()
 
 # 크롤링용 네이버 로그인 계정
-GFA_ID = (os.getenv("GFA_ID") or "").strip()
-GFA_PW = (os.getenv("GFA_PW") or "").strip()
+GFA_ID = (
+    os.getenv("GFA_ID")
+    or os.getenv("GFA_LOGIN_ID")
+    or os.getenv("NAVER_ID")
+    or os.getenv("NAVER_LOGIN_ID")
+    or ""
+).strip()
+GFA_PW = (
+    os.getenv("GFA_PW")
+    or os.getenv("GFA_LOGIN_PW")
+    or os.getenv("NAVER_PW")
+    or os.getenv("NAVER_PASSWORD")
+    or ""
+).strip()
 GFA_LOGIN_URL = (os.getenv("GFA_LOGIN_URL") or "https://nid.naver.com/nidlogin.login?mode=form&url=https://ads.naver.com/").strip()
 GFA_PLATFORM_URL = (os.getenv("GFA_PLATFORM_URL") or "https://gfa.naver.com/").strip()
 GFA_HEADLESS = (os.getenv("GFA_HEADLESS") or "true").strip().lower() not in {"0", "false", "no", "n"}
@@ -52,6 +64,10 @@ OPENAPI_BASE = "https://openapi.naver.com"
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def mask_present(v: str) -> str:
+    return "SET" if bool((v or "").strip()) else "EMPTY"
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -1344,6 +1360,15 @@ def main() -> None:
     if not accounts:
         die("account_master 기준 GFA 계정이 없습니다. account_master.xlsx 에 naver_media_type=gfa 계정이 있어야 합니다.")
     log(f"🗂️ GFA 계정 로드: {len(accounts)}개")
+    log(
+        "🔎 GFA auth env 상태 | "
+        f"ACCESS_TOKEN={mask_present(GFA_ACCESS_TOKEN)} "
+        f"REFRESH_TOKEN={mask_present(GFA_REFRESH_TOKEN)} "
+        f"CLIENT_ID={mask_present(GFA_CLIENT_ID)} "
+        f"CLIENT_SECRET={mask_present(GFA_CLIENT_SECRET)} "
+        f"GFA_ID={mask_present(GFA_ID)} "
+        f"GFA_PW={mask_present(GFA_PW)}"
+    )
 
     access_token = get_access_token_if_available()
     if access_token:
