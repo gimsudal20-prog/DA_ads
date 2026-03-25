@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Funnel Layout, Absolute Diff Toggle, Delta Colors)."""
+"""view_overview.py - Overview page view (Perfect Funnel Layout, CVR/CTR Added, ROAS Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -17,76 +17,17 @@ from page_helpers import get_dynamic_cmp_options, period_compare_range
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-chip {
-        background: transparent;
-        color: var(--nv-text);
-        border: 1px solid var(--nv-line);
-        border-radius: 8px;
-        padding: 5px 10px;
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1.2;
-    }
-    .ov-chip.primary {
-        background: var(--nv-primary-soft);
-        color: var(--nv-primary);
-        border-color: transparent;
-    }
-    .ov-chip.muted {
-        color: var(--nv-muted);
-        background: var(--nv-surface);
-    }
-    .ov-kpi-grid {
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
-        margin-bottom: 18px;
-    }
-    .ov-kpi-panel {
-        background: var(--nv-bg);
-        border: 1px solid var(--nv-line);
-        border-radius: 12px;
-        padding: 16px;
-    }
-    .ov-kpi-title {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--nv-text);
-        margin-bottom: 12px;
-    }
-    .ov-kpi-cells {
-        display:grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-    }
-    .ov-kpi-cell {
-        background: var(--nv-surface);
-        border-radius: 10px;
-        padding: 12px;
-        min-width: 0;
-    }
-    .ov-kpi-label {
-        font-size: 12px;
-        color: var(--nv-muted);
-        margin-bottom: 6px;
-    }
-    .ov-kpi-value {
-        font-size: 20px;
-        font-weight: 800;
-        color: var(--nv-text);
-        line-height: 1.15;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .ov-kpi-delta {
-        margin-top: 8px;
-        font-size: 11px;
-        font-weight: 700;
-        display:inline-flex;
-        padding: 4px 8px;
-        border-radius: 999px;
-    }
+    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 600; line-height: 1.2; }
+    .ov-chip.primary { background: var(--nv-primary-soft); color: var(--nv-primary); border-color: transparent; }
+    .ov-chip.muted { color: var(--nv-muted); background: var(--nv-surface); }
+    .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .ov-kpi-panel { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 12px; padding: 16px; }
+    .ov-kpi-title { font-size: 13px; font-weight: 700; color: var(--nv-text); margin-bottom: 12px; }
+    .ov-kpi-cells { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .ov-kpi-cell { background: var(--nv-surface); border-radius: 10px; padding: 12px; min-width: 0; }
+    .ov-kpi-label { font-size: 12px; color: var(--nv-muted); margin-bottom: 6px; }
+    .ov-kpi-value { font-size: 20px; font-weight: 800; color: var(--nv-text); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ov-kpi-delta { margin-top: 8px; font-size: 11px; font-weight: 700; display:inline-flex; padding: 4px 8px; border-radius: 999px; }
     .ov-kpi-delta.pos { background: #E8F0FE; color: #1A73E8; }
     .ov-kpi-delta.neg { background: #FCE8E6; color: #EA4335; }
     .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
@@ -118,13 +59,8 @@ def _auto_table_height(data_obj, default_height: int = 420, min_height: int = 72
 
 def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 420, hide_index: bool = False):
     real_height = _auto_table_height(styler_or_df, default_height=height, max_height=height)
-    st.dataframe(
-        styler_or_df,
-        width="stretch",
-        height=real_height,
-        hide_index=hide_index,
-        column_config=_sticky_cfg(first_col),
-    )
+    st.dataframe(styler_or_df, width="stretch", height=real_height, hide_index=hide_index, column_config=_sticky_cfg(first_col))
+
 
 def _selected_type_label(type_sel: tuple) -> str:
     if not type_sel: return "전체 유형"
@@ -146,9 +82,7 @@ def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tup
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try:
-        ts = query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
-        return ts if ts is not None else pd.DataFrame()
+    try: return query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
     except Exception: return pd.DataFrame()
 
 
@@ -156,18 +90,21 @@ def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
         if out_df[col].dtype in ['float64', 'int64']:
-            if col in ["노출수", "클릭수", "평균순위", "순위", "구매완료수", "총 전환수", "장바구니 담기수", "위시리스트수"]:
+            if col in ["노출수", "클릭수", "구매완료수", "총 전환수"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
-            elif col in ["광고비", "구매완료 매출", "총 전환매출", "CPC", "장바구니 매출액", "위시리스트 매출액"]:
+            elif col in ["광고비", "구매완료 매출", "총 전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
             elif "차이" in col:
                 if "광고비" in col or "매출" in col or "CPC" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
                 elif "노출" in col or "클릭" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
                 else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
             elif "증감" in col:
-                out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
-            elif "ROAS" in col or col == "클릭률(%)":
-                out_df[col] = out_df[col].apply(lambda x: f"{x:,.1f}%" if pd.notnull(x) else "0.0%")
+                if "ROAS" in col or "전환율" in col or "클릭률" in col:
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.2f}%p" if pd.notnull(x) and x != 0 else "0.00%p")
+                else:
+                    out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
+            elif "ROAS" in col or "전환율" in col or "클릭률" in col:
+                out_df[col] = out_df[col].apply(lambda x: f"{x:,.2f}%" if pd.notnull(x) else "0.00%")
     return out_df
 
 
@@ -187,9 +124,9 @@ def _style_delta_numeric_neg(val):
 
 def _apply_overview_delta_styles(styler, df: pd.DataFrame):
     positive_cols = [
-        '노출 증감', '노출 차이', '클릭 증감', '클릭 차이',
-        '구매 증감', '구매 차이', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감',
-        '총 전환 증감', '총 전환 차이', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감'
+        '노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '클릭률 증감',
+        '구매 증감', '구매 차이', '구매 전환율 증감', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감',
+        '총 전환 증감', '총 전환 차이', '총 전환율 증감', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감'
     ]
     negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
 
@@ -208,7 +145,7 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty: return pd.DataFrame()
 
-    base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
+    base_cols = [group_col, 'imp', 'clk', 'cost', 'conv', 'sales']
     for c in base_cols[1:]:
         if not cur_df.empty and c not in cur_df.columns: cur_df[c] = 0.0
         if not base_df.empty and c not in base_df.columns: base_df[c] = 0.0
@@ -217,12 +154,12 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
     
     if not cur_df.empty:
-        cur_grp['tot_conv'] = cur_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in cur_df.columns else cur_grp['conv'] + cur_grp['cart_conv'] + cur_grp['wishlist_conv']
-        cur_grp['tot_sales'] = cur_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in cur_df.columns else cur_grp['sales'] + cur_grp['cart_sales'] + cur_grp['wishlist_sales']
+        cur_grp['tot_conv'] = cur_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in cur_df.columns else cur_grp['conv']
+        cur_grp['tot_sales'] = cur_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in cur_df.columns else cur_grp['sales']
     
     if not base_df.empty:
-        base_grp['tot_conv'] = base_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in base_df.columns else base_grp['conv'] + base_grp['cart_conv'] + base_grp['wishlist_conv']
-        base_grp['tot_sales'] = base_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in base_df.columns else base_grp['sales'] + base_grp['cart_sales'] + base_grp['wishlist_sales']
+        base_grp['tot_conv'] = base_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in base_df.columns else base_grp['conv']
+        base_grp['tot_sales'] = base_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in base_df.columns else base_grp['sales']
 
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
 
@@ -234,67 +171,56 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
-    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
-    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
-    c_roas = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
-    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
-    c_troas = np.where(c_cost > 0, (c_tot_sales / c_cost) * 100, 0)
-    b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
-
-    def _vec_pct_diff(c, b):
-        diff = c - b
-        safe_b = np.where(b == 0, 1, b)
-        pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / safe_b) * 100.0)
-        return pct, diff
-
-    pct_imp, diff_imp = _vec_pct_diff(c_imp, b_imp)
-    pct_clk, diff_clk = _vec_pct_diff(c_clk, b_clk)
-    pct_cost, diff_cost = _vec_pct_diff(c_cost, b_cost)
-    pct_cpc, diff_cpc = _vec_pct_diff(c_cpc, b_cpc)
-    pct_conv, diff_conv = _vec_pct_diff(c_conv, b_conv)
-    pct_sales, diff_sales = _vec_pct_diff(c_sales, b_sales)
-    pct_tot_conv, diff_tot_conv = _vec_pct_diff(c_tot_conv, b_tot_conv)
-    pct_tot_sales, diff_tot_sales = _vec_pct_diff(c_tot_sales, b_tot_sales)
-
     out = pd.DataFrame()
     out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col]) if type_kor_map else merged[group_col]
 
     out['노출수'] = c_imp
-    out['노출 증감'] = pct_imp
-    out['노출 차이'] = diff_imp
     out['클릭수'] = c_clk
-    out['클릭 증감'] = pct_clk
-    out['클릭 차이'] = diff_clk
+    out['클릭률(%)'] = np.where(c_imp > 0, (c_clk / c_imp) * 100, 0)
     out['광고비'] = c_cost
-    out['광고비 증감'] = pct_cost
-    out['광고비 차이'] = diff_cost
-    out['CPC'] = c_cpc
-    out['CPC 증감'] = pct_cpc
-    out['CPC 차이'] = diff_cpc
+    out['CPC'] = np.where(c_clk > 0, c_cost / c_clk, 0)
     
     out['구매완료수'] = c_conv
-    out['구매 증감'] = pct_conv
-    out['구매 차이'] = diff_conv
+    out['구매 전환율(%)'] = np.where(c_clk > 0, (c_conv / c_clk) * 100, 0)
     out['구매완료 매출'] = c_sales
-    out['구매 매출 증감'] = pct_sales
-    out['구매 매출 차이'] = diff_sales
-    out['구매 ROAS(%)'] = c_roas
-    out['구매 ROAS 증감'] = c_roas - b_roas
+    out['구매 ROAS(%)'] = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
     
     out['총 전환수'] = c_tot_conv
-    out['총 전환 증감'] = pct_tot_conv
-    out['총 전환 차이'] = diff_tot_conv
+    out['총 전환율(%)'] = np.where(c_clk > 0, (c_tot_conv / c_clk) * 100, 0)
     out['총 전환매출'] = c_tot_sales
-    out['총 매출 증감'] = pct_tot_sales
-    out['총 매출 차이'] = diff_tot_sales
-    out['통합 ROAS(%)'] = c_troas
-    out['통합 ROAS 증감'] = c_troas - b_troas
+    out['통합 ROAS(%)'] = np.where(c_cost > 0, (c_tot_sales / c_cost) * 100, 0)
 
-    # 엑셀 다운로드 지원용으로만 보관 (화면 표출에서는 제외됨)
-    out['위시리스트수'] = merged.get('wishlist_conv_cur', 0)
-    out['장바구니 담기수'] = merged.get('cart_conv_cur', 0)
-    out['위시리스트 매출액'] = merged.get('wishlist_sales_cur', 0)
-    out['장바구니 매출액'] = merged.get('cart_sales_cur', 0)
+    # Base values for deltas
+    b_ctr = np.where(b_imp > 0, (b_clk / b_imp) * 100, 0)
+    b_cvr = np.where(b_clk > 0, (b_conv / b_clk) * 100, 0)
+    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
+    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
+    
+    b_tcvr = np.where(b_clk > 0, (b_tot_conv / b_clk) * 100, 0)
+    b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
+
+    def _apply_pct_diff(c, b, pct_col, abs_col):
+        diff = c - b
+        safe_b = np.where(b == 0, 1, b)
+        pct = np.where(b == 0, np.where(c > 0, 100.0, 0.0), (diff / safe_b) * 100.0)
+        out[pct_col] = pct
+        out[abs_col] = diff
+
+    _apply_pct_diff(c_imp, b_imp, '노출 증감', '노출 차이')
+    _apply_pct_diff(c_clk, b_clk, '클릭 증감', '클릭 차이')
+    _apply_pct_diff(c_cost, b_cost, '광고비 증감', '광고비 차이')
+    _apply_pct_diff(c_cpc, b_cpc, 'CPC 증감', 'CPC 차이')
+    _apply_pct_diff(c_conv, b_conv, '구매 증감', '구매 차이')
+    _apply_pct_diff(c_sales, b_sales, '구매 매출 증감', '구매 매출 차이')
+    _apply_pct_diff(c_tot_conv, b_tot_conv, '총 전환 증감', '총 전환 차이')
+    _apply_pct_diff(c_tot_sales, b_tot_sales, '총 매출 증감', '총 매출 차이')
+
+    # Rates diffs (percentage points)
+    out['클릭률 증감'] = out['클릭률(%)'] - b_ctr
+    out['구매 전환율 증감'] = out['구매 전환율(%)'] - b_cvr
+    out['구매 ROAS 증감'] = out['구매 ROAS(%)'] - b_roas
+    out['총 전환율 증감'] = out['총 전환율(%)'] - b_tcvr
+    out['통합 ROAS 증감'] = out['통합 ROAS(%)'] - b_troas
 
     return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
@@ -314,14 +240,17 @@ def _build_ts_df(df, group_col, group_label):
     out[group_label] = grp[group_col]
     out['노출수'] = grp['imp']
     out['클릭수'] = grp['clk']
+    out['클릭률(%)'] = np.where(grp['imp'] > 0, (grp['clk'] / grp['imp']) * 100, 0)
     out['광고비'] = grp['cost']
     out['CPC'] = np.where(grp['clk'] > 0, grp['cost'] / grp['clk'], 0)
     
     out['구매완료수'] = grp['conv']
+    out['구매 전환율(%)'] = np.where(grp['clk'] > 0, (grp['conv'] / grp['clk']) * 100, 0)
     out['구매완료 매출'] = grp['sales']
     out['구매 ROAS(%)'] = np.where(grp['cost'] > 0, (grp['sales'] / grp['cost']) * 100, 0)
     
     out['총 전환수'] = grp['tot_conv'] if has_tot else grp['conv']
+    out['총 전환율(%)'] = np.where(grp['clk'] > 0, (out['총 전환수'] / grp['clk']) * 100, 0)
     out['총 전환매출'] = grp['tot_sales'] if has_tot else grp['sales']
     out['통합 ROAS(%)'] = np.where(grp['cost'] > 0, (out['총 전환매출'] / grp['cost']) * 100, 0)
 
@@ -372,8 +301,14 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
             merged[pct_col] = pct
             merged[abs_col] = diff
 
-    roas_pairs = [("구매 ROAS(%)", "구매 ROAS 증감"), ("통합 ROAS(%)", "통합 ROAS 증감")]
-    for cur_col, diff_col in roas_pairs:
+    rate_diff_pairs = [
+        ("클릭률(%)", "클릭률 증감"),
+        ("구매 전환율(%)", "구매 전환율 증감"),
+        ("총 전환율(%)", "총 전환율 증감"),
+        ("구매 ROAS(%)", "구매 ROAS 증감"),
+        ("통합 ROAS(%)", "통합 ROAS 증감")
+    ]
+    for cur_col, diff_col in rate_diff_pairs:
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
             c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
@@ -668,14 +603,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
         "클릭수": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
+        "클릭률(%)": "{:,.2f}%", "클릭률 증감": "{:+.2f}%p",
         "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
         "CPC": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
         "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
+        "구매 전환율(%)": "{:,.2f}%", "구매 전환율 증감": "{:+.2f}%p",
         "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
-        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
+        "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%p",
         "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
+        "총 전환율(%)": "{:,.2f}%", "총 전환율 증감": "{:+.2f}%p",
         "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
-        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%"
+        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%p"
     }
 
     # ====================================================
@@ -692,22 +630,26 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if kpi_mode == "shopping_purchase":
         c_conv, c_conv_pct, c_conv_abs = "구매완료수", "구매 증감", "구매 차이"
+        c_cvr, c_cvr_pct = "구매 전환율(%)", "구매 전환율 증감"
         c_sales, c_sales_pct, c_sales_abs = "구매완료 매출", "구매 매출 증감", "구매 매출 차이"
         c_roas, c_roas_pct = "구매 ROAS(%)", "구매 ROAS 증감"
     else:
         c_conv, c_conv_pct, c_conv_abs = "총 전환수", "총 전환 증감", "총 전환 차이"
+        c_cvr, c_cvr_pct = "총 전환율(%)", "총 전환율 증감"
         c_sales, c_sales_pct, c_sales_abs = "총 전환매출", "총 매출 증감", "총 매출 차이"
         c_roas, c_roas_pct = "통합 ROAS(%)", "통합 ROAS 증감"
 
     def get_funnel_cols(show_abs):
         cols = []
-        cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
         cols.extend(["노출수", "노출 증감", "노출 차이"] if show_abs else ["노출수", "노출 증감"])
         cols.extend(["클릭수", "클릭 증감", "클릭 차이"] if show_abs else ["클릭수", "클릭 증감"])
+        cols.extend(["클릭률(%)", "클릭률 증감"])
+        cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
         cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_abs else ["CPC", "CPC 증감"])
         cols.extend([c_conv, c_conv_pct, c_conv_abs] if show_abs else [c_conv, c_conv_pct])
+        cols.extend([c_cvr, c_cvr_pct])
         cols.extend([c_sales, c_sales_pct, c_sales_abs] if show_abs else [c_sales, c_sales_pct])
-        cols.extend([c_roas, c_roas_pct]) # ROAS는 %포인트(p) 차이이므로 증감만 표시
+        cols.extend([c_roas, c_roas_pct])
         return cols
 
     # 표 렌더링 탭
@@ -764,7 +706,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ----------------------------------------------------
-    # 엑셀 다운로드 (원래 컬럼 모두 포함되어 출력됨)
+    # 엑셀 다운로드 
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
