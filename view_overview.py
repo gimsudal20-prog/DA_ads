@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Perfect Funnel Layout, CVR/CTR Added, ROAS Fixed)."""
+"""view_overview.py - Overview page view (Perfect Funnel Layout, CVR/CTR Added, NameError Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -171,6 +171,9 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
+    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
+    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
+
     out = pd.DataFrame()
     out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col]) if type_kor_map else merged[group_col]
 
@@ -178,7 +181,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['클릭수'] = c_clk
     out['클릭률(%)'] = np.where(c_imp > 0, (c_clk / c_imp) * 100, 0)
     out['광고비'] = c_cost
-    out['CPC'] = np.where(c_clk > 0, c_cost / c_clk, 0)
+    out['CPC'] = c_cpc
     
     out['구매완료수'] = c_conv
     out['구매 전환율(%)'] = np.where(c_clk > 0, (c_conv / c_clk) * 100, 0)
@@ -194,7 +197,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     b_ctr = np.where(b_imp > 0, (b_clk / b_imp) * 100, 0)
     b_cvr = np.where(b_clk > 0, (b_conv / b_clk) * 100, 0)
     b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
-    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
     
     b_tcvr = np.where(b_clk > 0, (b_tot_conv / b_clk) * 100, 0)
     b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
@@ -652,7 +654,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend([c_roas, c_roas_pct])
         return cols
 
-    # 표 렌더링 탭
     tab_acc, tab_type, tab_period, tab_camp = st.tabs(["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"])
 
     with tab_acc:
@@ -706,7 +707,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ----------------------------------------------------
-    # 엑셀 다운로드 
+    # 엑셀 다운로드 (원래 데이터 모두 포함)
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
