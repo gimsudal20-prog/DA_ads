@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Cart/Wishlist Removed & Delta Colors Applied)."""
+"""view_overview.py - Overview page view (Funnel Layout, Absolute Diff Toggle, Delta Colors)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -90,22 +90,6 @@ def _inject_overview_css():
     .ov-kpi-delta.pos { background: #E8F0FE; color: #1A73E8; }
     .ov-kpi-delta.neg { background: #FCE8E6; color: #EA4335; }
     .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
-    .ov-toolbar {
-        background: var(--nv-surface);
-        border: 1px solid var(--nv-line);
-        border-radius: 12px;
-        padding: 14px 16px 10px 16px;
-        margin-bottom: 16px;
-    }
-    .ov-toolbar-title {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--nv-text);
-        margin-bottom: 10px;
-    }
-    @media (max-width: 1100px) {
-        .ov-kpi-grid, .ov-kpi-cells { grid-template-columns: 1fr; }
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -124,12 +108,9 @@ def _auto_table_height(data_obj, default_height: int = 420, min_height: int = 72
     try:
         df = data_obj.data if hasattr(data_obj, "data") else data_obj
         rows = len(df.index)
-        if rows <= 0:
-            return min_height
-        if rows == 1:
-            return 72
-        if rows == 2:
-            return 106
+        if rows <= 0: return min_height
+        if rows == 1: return 72
+        if rows == 2: return 106
         calc = 36 + (rows * 34)
         return max(min_height, min(calc, max_height))
     except Exception:
@@ -146,27 +127,21 @@ def _render_overview_sticky_table(styler_or_df, first_col: str, height: int = 42
     )
 
 def _selected_type_label(type_sel: tuple) -> str:
-    if not type_sel:
-        return "전체 유형"
-    if len(type_sel) == 1:
-        return type_sel[0]
+    if not type_sel: return "전체 유형"
+    if len(type_sel) == 1: return type_sel[0]
     return ", ".join(type_sel)
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try:
-        return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
-    except Exception:
-        return pd.DataFrame()
+    try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=5000)
+    except Exception: return pd.DataFrame()
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try:
-        return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=0)
-    except Exception:
-        return pd.DataFrame()
+    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=0)
+    except Exception: return pd.DataFrame()
 
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
@@ -174,25 +149,21 @@ def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel
     try:
         ts = query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
         return ts if ts is not None else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 
 def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
         if out_df[col].dtype in ['float64', 'int64']:
-            if col in ["노출수", "클릭수", "평균순위", "순위", "구매완료수", "총 전환수"]:
+            if col in ["노출수", "클릭수", "평균순위", "순위", "구매완료수", "총 전환수", "장바구니 담기수", "위시리스트수"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
-            elif col in ["광고비", "구매완료 매출", "총 전환매출", "CPC"]:
+            elif col in ["광고비", "구매완료 매출", "총 전환매출", "CPC", "장바구니 매출액", "위시리스트 매출액"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
             elif "차이" in col:
-                if "광고비" in col or "매출" in col or "CPC" in col:
-                    out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
-                elif "노출" in col or "클릭" in col:
-                    out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
-                else:
-                    out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
+                if "광고비" in col or "매출" in col or "CPC" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}원" if pd.notnull(x) and x != 0 else "0원")
+                elif "노출" in col or "클릭" in col: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.0f}" if pd.notnull(x) and x != 0 else "0")
+                else: out_df[col] = out_df[col].apply(lambda x: f"{x:+,.1f}" if pd.notnull(x) and x != 0 else "0.0")
             elif "증감" in col:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:+.1f}%" if pd.notnull(x) and x != 0 else "0.0%")
             elif "ROAS" in col or col == "클릭률(%)":
@@ -201,34 +172,24 @@ def format_for_csv(df):
 
 
 def _style_delta_numeric(val):
-    try:
-        v = float(val)
-    except Exception:
-        return ''
-    if pd.isna(v) or v == 0:
-        return ''
+    try: v = float(val)
+    except Exception: return ''
+    if pd.isna(v) or v == 0: return ''
     return 'color: #1A73E8; font-weight: 700;' if v > 0 else 'color: #EA4335; font-weight: 700;'
 
 
 def _style_delta_numeric_neg(val):
-    try:
-        v = float(val)
-    except Exception:
-        return ''
-    if pd.isna(v) or v == 0:
-        return ''
+    try: v = float(val)
+    except Exception: return ''
+    if pd.isna(v) or v == 0: return ''
     return 'color: #EA4335; font-weight: 700;' if v > 0 else 'color: #1A73E8; font-weight: 700;'
 
 
 def _apply_overview_delta_styles(styler, df: pd.DataFrame):
     positive_cols = [
         '노출 증감', '노출 차이', '클릭 증감', '클릭 차이',
-        '구매 증감', '구매 차이',
-        '구매 매출 증감', '구매 매출 차이',
-        '구매 ROAS 증감',
-        '총 전환 증감', '총 전환 차이',
-        '총 매출 증감', '총 매출 차이',
-        '통합 ROAS 증감'
+        '구매 증감', '구매 차이', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감',
+        '총 전환 증감', '총 전환 차이', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감'
     ]
     negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
 
@@ -236,29 +197,21 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
     neg_subset = [c for c in negative_cols if c in df.columns]
 
     try:
-        if pos_subset:
-            styler = styler.map(_style_delta_numeric, subset=pos_subset)
-        if neg_subset:
-            styler = styler.map(_style_delta_numeric_neg, subset=neg_subset)
+        if pos_subset: styler = styler.map(_style_delta_numeric, subset=pos_subset)
+        if neg_subset: styler = styler.map(_style_delta_numeric_neg, subset=neg_subset)
     except AttributeError:
-        if pos_subset:
-            styler = styler.applymap(_style_delta_numeric, subset=pos_subset)
-        if neg_subset:
-            styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
+        if pos_subset: styler = styler.applymap(_style_delta_numeric, subset=pos_subset)
+        if neg_subset: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
     return styler
 
 
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
-    if cur_df.empty and base_df.empty:
-        return pd.DataFrame()
+    if cur_df.empty and base_df.empty: return pd.DataFrame()
 
     base_cols = [group_col, 'imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
-    
     for c in base_cols[1:]:
-        if not cur_df.empty and c not in cur_df.columns:
-            cur_df[c] = 0.0
-        if not base_df.empty and c not in base_df.columns:
-            base_df[c] = 0.0
+        if not cur_df.empty and c not in cur_df.columns: cur_df[c] = 0.0
+        if not base_df.empty and c not in base_df.columns: base_df[c] = 0.0
 
     cur_grp = cur_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not cur_df.empty else pd.DataFrame(columns=base_cols)
     base_grp = base_df.groupby(group_col)[base_cols[1:]].sum().reset_index() if not base_df.empty else pd.DataFrame(columns=base_cols)
@@ -304,10 +257,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     pct_tot_sales, diff_tot_sales = _vec_pct_diff(c_tot_sales, b_tot_sales)
 
     out = pd.DataFrame()
-    if type_kor_map:
-        out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col])
-    else:
-        out[group_label] = merged[group_col]
+    out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col]) if type_kor_map else merged[group_col]
 
     out['노출수'] = c_imp
     out['노출 증감'] = pct_imp
@@ -340,20 +290,23 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['통합 ROAS(%)'] = c_troas
     out['통합 ROAS 증감'] = c_troas - b_troas
 
+    # 엑셀 다운로드 지원용으로만 보관 (화면 표출에서는 제외됨)
+    out['위시리스트수'] = merged.get('wishlist_conv_cur', 0)
+    out['장바구니 담기수'] = merged.get('cart_conv_cur', 0)
+    out['위시리스트 매출액'] = merged.get('wishlist_sales_cur', 0)
+    out['장바구니 매출액'] = merged.get('cart_sales_cur', 0)
+
     return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
 def _build_ts_df(df, group_col, group_label):
-    if df is None or df.empty:
-        return pd.DataFrame()
+    if df is None or df.empty: return pd.DataFrame()
 
-    grp_cols = ['imp', 'clk', 'cost', 'wishlist_conv', 'wishlist_sales', 'cart_conv', 'cart_sales', 'conv', 'sales']
+    grp_cols = ['imp', 'clk', 'cost', 'conv', 'sales']
     has_tot = 'tot_conv' in df.columns
-    if has_tot:
-        grp_cols.extend(['tot_conv', 'tot_sales'])
+    if has_tot: grp_cols.extend(['tot_conv', 'tot_sales'])
 
     for c in grp_cols:
-        if c not in df.columns:
-            df[c] = 0.0
+        if c not in df.columns: df[c] = 0.0
 
     grp = df.groupby(group_col)[grp_cols].sum().reset_index()
 
@@ -368,8 +321,8 @@ def _build_ts_df(df, group_col, group_label):
     out['구매완료 매출'] = grp['sales']
     out['구매 ROAS(%)'] = np.where(grp['cost'] > 0, (grp['sales'] / grp['cost']) * 100, 0)
     
-    out['총 전환수'] = grp['tot_conv'] if has_tot else grp['conv'] + grp['cart_conv'] + grp['wishlist_conv']
-    out['총 전환매출'] = grp['tot_sales'] if has_tot else grp['sales'] + grp['cart_sales'] + grp['wishlist_sales']
+    out['총 전환수'] = grp['tot_conv'] if has_tot else grp['conv']
+    out['총 전환매출'] = grp['tot_sales'] if has_tot else grp['sales']
     out['통합 ROAS(%)'] = np.where(grp['cost'] > 0, (out['총 전환매출'] / grp['cost']) * 100, 0)
 
     return out
@@ -377,8 +330,7 @@ def _build_ts_df(df, group_col, group_label):
 
 def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="label"):
     cur_view = _build_ts_df(cur_df, group_col, group_label)
-    if cur_view.empty:
-        return pd.DataFrame()
+    if cur_view.empty: return pd.DataFrame()
 
     base_view = _build_ts_df(base_df, group_col, group_label) if base_df is not None and not base_df.empty else pd.DataFrame()
 
@@ -386,40 +338,42 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
         cur_view = cur_view.reset_index(drop=True).copy()
         base_view = base_view.reset_index(drop=True).copy() if not base_view.empty else base_view
         cur_view["_seq"] = range(len(cur_view))
-        if not base_view.empty:
-            base_view["_seq"] = range(len(base_view))
+        if not base_view.empty: base_view["_seq"] = range(len(base_view))
         merge_key = "_seq"
-    else:
-        merge_key = group_label
+    else: merge_key = group_label
 
-    if not base_view.empty:
-        merged = pd.merge(cur_view, base_view, on=merge_key, how="left", suffixes=("", "_base"))
+    if not base_view.empty: merged = pd.merge(cur_view, base_view, on=merge_key, how="left", suffixes=("", "_base"))
     else:
         merged = cur_view.copy()
         for c in cur_view.columns:
-            if c != merge_key:
-                merged[f"{c}_base"] = 0
-
-    for metric in ["노출수", "클릭수", "광고비", "CPC", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]:
-        if metric in merged.columns:
-            base_col = f"{metric}_base"
-            if base_col not in merged.columns:
-                merged[base_col] = 0
+            if c != merge_key: merged[f"{c}_base"] = 0
 
     diff_pairs = [
-        ("노출수", "노출 증감"),
-        ("클릭수", "클릭 증감"),
-        ("광고비", "광고비 증감"),
-        ("CPC", "CPC 증감"),
-        ("구매완료수", "구매 증감"),
-        ("구매완료 매출", "구매 매출 증감"),
-        ("구매 ROAS(%)", "구매 ROAS 증감"),
-        ("총 전환수", "총 전환 증감"),
-        ("총 전환매출", "총 매출 증감"),
-        ("통합 ROAS(%)", "통합 ROAS 증감"),
+        ("노출수", "노출 증감", "노출 차이"),
+        ("클릭수", "클릭 증감", "클릭 차이"),
+        ("광고비", "광고비 증감", "광고비 차이"),
+        ("CPC", "CPC 증감", "CPC 차이"),
+        ("구매완료수", "구매 증감", "구매 차이"),
+        ("구매완료 매출", "구매 매출 증감", "구매 매출 차이"),
+        ("총 전환수", "총 전환 증감", "총 전환 차이"),
+        ("총 전환매출", "총 매출 증감", "총 매출 차이"),
     ]
     
-    for cur_col, diff_col in diff_pairs:
+    for cur_col, pct_col, abs_col in diff_pairs:
+        if cur_col in merged.columns:
+            base_col = f"{cur_col}_base"
+            c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
+            b_val = pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+            
+            diff = c_val - b_val
+            safe_b = np.where(b_val == 0, 1, b_val)
+            pct = np.where(b_val == 0, np.where(c_val > 0, 100.0, 0.0), (diff / safe_b) * 100.0)
+            
+            merged[pct_col] = pct
+            merged[abs_col] = diff
+
+    roas_pairs = [("구매 ROAS(%)", "구매 ROAS 증감"), ("통합 ROAS(%)", "통합 ROAS 증감")]
+    for cur_col, diff_col in roas_pairs:
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
             c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
@@ -434,14 +388,9 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
 
 def _delta_chip(cur_val, base_val, improve_when_up=True):
     diff = pct_change(float(cur_val or 0), float(base_val or 0)) if base_val is not None else 0.0
-    if abs(diff) < 5:
-        cls = "neu"
-        text = f"유지 ({diff:+.1f}%)"
-    else:
-        improved = diff > 0 if improve_when_up else diff < 0
-        cls = "pos" if improved else "neg"
-        text = pct_to_arrow(diff)
-    return cls, text
+    if abs(diff) < 5: return "neu", f"유지 ({diff:+.1f}%)"
+    improved = diff > 0 if improve_when_up else diff < 0
+    return "pos" if improved else "neg", pct_to_arrow(diff)
 
 def _render_kpi_group(title: str, items: list[dict]) -> str:
     cells = []
@@ -459,55 +408,40 @@ def _render_kpi_group(title: str, items: list[dict]) -> str:
 
 def _normalize_type_label(val) -> str:
     s = str(val or "").strip().upper()
-    if not s:
-        return ""
-    if "쇼핑" in s or "SHOPPING" in s:
-        return "쇼핑검색"
-    if "파워링크" in s or "WEB_SITE" in s:
-        return "파워링크"
-    if "브랜드" in s or "BRAND" in s:
-        return "브랜드검색"
-    if "POWER_CONTENTS" in s or "파워컨텐츠" in s:
-        return "파워컨텐츠"
-    if "PLACE" in s or "플레이스" in s:
-        return "플레이스"
+    if not s: return ""
+    if "쇼핑" in s or "SHOPPING" in s: return "쇼핑검색"
+    if "파워링크" in s or "WEB_SITE" in s: return "파워링크"
+    if "브랜드" in s or "BRAND" in s: return "브랜드검색"
+    if "POWER_CONTENTS" in s or "파워컨텐츠" in s: return "파워컨텐츠"
+    if "PLACE" in s or "플레이스" in s: return "플레이스"
     return str(val).strip()
 
 
 def _infer_kpi_mode(type_sel: tuple, cur_camp: pd.DataFrame, is_split_only: bool) -> str:
     labels = {_normalize_type_label(x) for x in type_sel if str(x).strip()}
-
     if not labels and cur_camp is not None and not cur_camp.empty:
         for col in ["campaign_type_label", "campaign_type", "campaign_tp", "캠페인유형"]:
             if col in cur_camp.columns:
                 vals = cur_camp[col].dropna().astype(str).tolist()
                 labels = {_normalize_type_label(v) for v in vals if str(v).strip()}
-                if labels:
-                    break
-
+                if labels: break
     labels = {x for x in labels if x}
-    if is_split_only and labels and labels == {"쇼핑검색"}:
-        return "shopping_purchase"
+    if is_split_only and labels and labels == {"쇼핑검색"}: return "shopping_purchase"
     return "generic_conversion"
 
 
 def _format_compact_currency(value: float) -> str:
-    try:
-        v = float(value or 0)
-    except Exception:
-        return "0원"
+    try: v = float(value or 0)
+    except Exception: return "0원"
     abs_v = abs(v)
-    if abs_v >= 100000000:
-        return f"{v / 100000000:.2f}억"
-    if abs_v >= 10000:
-        return f"{v / 10000:.1f}만원"
+    if abs_v >= 100000000: return f"{v / 100000000:.2f}억"
+    if abs_v >= 10000: return f"{v / 10000:.1f}만원"
     return f"{int(round(v)):,}원"
 
 
 @st.fragment
 def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
-    if not f:
-        return
+    if not f: return
 
     _inject_overview_css()
 
@@ -529,10 +463,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     account_name = "전체 계정"
     if cids and not meta.empty:
         acc_names = meta[meta['customer_id'].isin(cids)]['account_name'].dropna().unique()
-        if len(acc_names) == 1:
-            account_name = f"{acc_names[0]}"
-        elif len(acc_names) > 1:
-            account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
+        if len(acc_names) == 1: account_name = f"{acc_names[0]}"
+        elif len(acc_names) > 1: account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
 
     selected_type_label = _selected_type_label(type_sel)
 
@@ -567,11 +499,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("안내: 3월 11일 이전 및 이후 데이터가 혼재되어 있어, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
     elif is_legacy_only:
         st.info("안내: 3월 11일 이전 데이터 조회 시, 상단 성과 지표와 추이 그래프는 '총 전환' 기준으로 표시됩니다.")
-
-    if not can_use_purchase_toggle:
-        st.caption("구매완료 데이터 보기는 분리 전환 데이터가 포함된 기간에서만 사용할 수 있습니다.")
-    elif is_mixed_period:
-        st.caption("구매완료 데이터 보기 ON 시에는 분리 전환 기준(3/11 이후 구조)에 맞춰 확인해주세요.")
 
     cur = cur_summary or {}
     base = base_summary or {}
@@ -627,12 +554,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     with st.container(border=True):
         st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
         if daily_ts is not None and not daily_ts.empty:
-            expected_cols = ['imp', 'clk', 'cost', 'cart_conv', 'cart_sales', 'wishlist_conv', 'wishlist_sales', 'conv', 'sales', 'tot_sales', 'tot_conv']
+            expected_cols = ['imp', 'clk', 'cost', 'conv', 'sales', 'tot_sales', 'tot_conv']
             for c in expected_cols:
                 if c not in daily_ts.columns:
                     daily_ts[c] = 0.0
             daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
-            
             tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
             with tab_t1:
                 if combined_toggle:
@@ -648,9 +574,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
         
         if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
-            
             only_miss = st.toggle("목표 미달만 보기", value=False, key="ov_target_only_miss")
-            
             target_df = cur_camp.copy()
             target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
             target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
@@ -664,7 +588,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["c_roas_purch"] = np.where(target_df["cost"] > 0, (target_df["sales"] / target_df["cost"]) * 100, 0.0)
                 target_df["achieve_raw"] = np.where(target_df["base_roas"] > 0, (target_df["c_roas_purch"] / target_df["base_roas"]) * 100, 0.0)
                 target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
-                target_df["achieve_diff"] = target_df["achieve_raw"] - 100.0
                 
                 target_df["status"] = np.where(
                     (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
@@ -676,73 +599,34 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         )
                     )
                 )
-
-                if only_miss:
-                    target_df = target_df[target_df["status"] == "미달"]
-
+                if only_miss: target_df = target_df[target_df["status"] == "미달"]
                 target_df = target_df.sort_values(by="cost", ascending=False).head(200)
 
                 if not target_df.empty:
                     disp_target = target_df.rename(columns={
-                        "campaign_name": "캠페인명",
-                        "achieve": "달성률(%)",
-                        "status": "달성 상태",
-                        "achieve_diff": "달성 격차",
-                        "c_roas_purch": "현재 ROAS",
-                        "target_roas": "목표 ROAS",
-                        "min_roas": "최소 ROAS",
-                        "cost": "광고비"
+                        "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
+                        "c_roas_purch": "현재 ROAS", "target_roas": "목표 ROAS", "min_roas": "최소 ROAS", "cost": "광고비"
                     })
                     
-                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "달성 격차", "현재 ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
-                    disp_target = disp_target[disp_cols]
-                    
-                    def color_diff(val):
-                        if pd.isna(val): return ''
-                        if val >= 0: return 'color: #1A73E8; font-weight: 700;'
-                        return 'color: #EA4335; font-weight: 700;'
-                        
-                    def color_status(val):
-                        if "초과" in str(val) or "목표" in str(val): return 'color: #1A73E8; font-weight: 700;'
-                        if "최소" in str(val): return 'color: #FF9900; font-weight: 700;'
-                        return 'color: #EA4335; font-weight: 700;'
-                        
-                    fmt_dict = {
-                        "달성 격차": "{:+.1f}%",
-                        "현재 ROAS": "{:,.1f}%",
-                        "최소 ROAS": "{:,.0f}%",
-                        "목표 ROAS": "{:,.0f}%",
-                        "광고비": "{:,.0f}원"
-                    }
-                    
-                    try:
-                        styled_target = disp_target.style.format(fmt_dict).map(color_diff, subset=["달성 격차"]).map(color_status, subset=["달성 상태"])
-                    except AttributeError:
-                        styled_target = disp_target.style.format(fmt_dict).applymap(color_diff, subset=["달성 격차"]).applymap(color_status, subset=["달성 상태"])
-
+                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "현재 ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
                     st.dataframe(
-                        styled_target,
-                        width="stretch",
-                        hide_index=True,
+                        disp_target[disp_cols],
+                        width="stretch", hide_index=True,
                         column_config={
-                            "달성률(%)": st.column_config.ProgressColumn(
-                                "달성률",
-                                help="목표 ROAS 대비 현재 달성률을 나타냅니다.",
-                                format="%.1f%%",
-                                min_value=0,
-                                max_value=100,
-                            )
+                            "달성 상태": st.column_config.TextColumn("상태", width="small"),
+                            "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
+                            "현재 ROAS": st.column_config.NumberColumn("현재 ROAS", format="%.1f%%"),
+                            "최소 ROAS": st.column_config.NumberColumn("최소 ROAS", format="%d%%"),
+                            "목표 ROAS": st.column_config.NumberColumn("목표 ROAS", format="%d%%"),
+                            "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
                         }
                     )
-                else:
-                    st.info("조건에 맞는 캠페인이 없습니다.")
-            else:
-                st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
-        else:
-            st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+                else: st.info("조건에 맞는 캠페인이 없습니다.")
+            else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
+        else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
 
     # ----------------------------------------------------
-    # 각 상세 데이터 구성 파트
+    # 상세 데이터 전처리
     # ----------------------------------------------------
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -750,44 +634,35 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not cur_camp.empty or not base_camp.empty:
         if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
             mapping = dict(zip(meta['customer_id'].astype(str), meta['account_name']))
-            if not cur_camp.empty:
-                cur_camp['account_name'] = cur_camp['customer_id'].astype(str).map(mapping).fillna(cur_camp['customer_id'].astype(str))
-            if not base_camp.empty:
-                base_camp['account_name'] = base_camp['customer_id'].astype(str).map(mapping).fillna(base_camp['customer_id'].astype(str))
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str).map(mapping).fillna(cur_camp['customer_id'].astype(str))
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str).map(mapping).fillna(base_camp['customer_id'].astype(str))
         else:
-            if not cur_camp.empty:
-                cur_camp['account_name'] = cur_camp['customer_id'].astype(str)
-            if not base_camp.empty:
-                base_camp['account_name'] = base_camp['customer_id'].astype(str)
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str)
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str)
 
         df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '계정명')
         type_kor_map = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
         type_col = 'campaign_tp' if 'campaign_tp' in cur_camp.columns else ('campaign_type' if 'campaign_type' in cur_camp.columns else None)
-        if type_col:
-            df_type_display = _build_comparison_df(cur_camp, base_camp, type_col, '캠페인 유형', type_kor_map)
+        if type_col: df_type_display = _build_comparison_df(cur_camp, base_camp, type_col, '캠페인 유형', type_kor_map)
         camp_col = 'campaign_name' if 'campaign_name' in cur_camp.columns else None
-        if camp_col:
-            camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
+        if camp_col: camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
 
     if daily_ts is not None and not daily_ts.empty:
         daily_copy = daily_ts.copy()
         base_daily_copy = base_daily_ts.copy() if base_daily_ts is not None and not base_daily_ts.empty else pd.DataFrame()
 
         daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
-        if not base_daily_copy.empty:
-            base_daily_copy['일자'] = base_daily_copy['dt'].dt.strftime('%Y-%m-%d')
+        if not base_daily_copy.empty: base_daily_copy['일자'] = base_daily_copy['dt'].dt.strftime('%Y-%m-%d')
         daily_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '일자', '일자', align_mode="sequence").sort_values('일자', ascending=False)
 
         daily_copy['요일'] = daily_copy['dt'].dt.dayofweek
-        if not base_daily_copy.empty:
-            base_daily_copy['요일'] = base_daily_copy['dt'].dt.dayofweek
+        if not base_daily_copy.empty: base_daily_copy['요일'] = base_daily_copy['dt'].dt.dayofweek
         dow_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '요일', '요일', align_mode="label").sort_values('요일')
         dow_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
         dow_disp['요일명'] = dow_disp['요일'].map(dow_map)
 
         daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
-        if not base_daily_copy.empty:
-            base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
+        if not base_daily_copy.empty: base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
         weekly_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '주차', '주차', align_mode="sequence").sort_values('주차', ascending=False)
 
     fmt_dict_standard = {
@@ -802,67 +677,58 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
         "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%"
     }
-    fmt_dict_ts = {
-        "노출수": "{:,.0f}", "클릭수": "{:,.0f}", "광고비": "{:,.0f}원", "CPC": "{:,.0f}원",
-        "구매완료수": "{:,.0f}", "구매완료 매출": "{:,.0f}원", "구매 ROAS(%)": "{:,.1f}%",
-        "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원", "통합 ROAS(%)": "{:,.1f}%",
-        "노출 증감": "{:+,.0f}", "클릭 증감": "{:+,.0f}", "광고비 증감": "{:+,.0f}원", "CPC 증감": "{:+,.0f}원",
-        "구매 증감": "{:+,.0f}", "구매 매출 증감": "{:+,.0f}원", "구매 ROAS 증감": "{:+.1f}%",
-        "총 전환 증감": "{:+,.0f}", "총 매출 증감": "{:+,.0f}원", "통합 ROAS 증감": "{:+.1f}%"
-    }
 
-    def _display_ts_table(df, col_name, toggle_state_val):
-        if df.empty:
-            return
-        if toggle_state_val:
-            cols = [
-                col_name,
-                "노출수", "노출 증감",
-                "클릭수", "클릭 증감",
-                "광고비", "광고비 증감",
-                "CPC", "CPC 증감",
-                "총 전환수", "총 전환 증감",
-                "총 전환매출", "총 매출 증감",
-                "통합 ROAS(%)", "통합 ROAS 증감",
-            ]
-        else:
-            cols = [
-                col_name,
-                "노출수", "노출 증감",
-                "클릭수", "클릭 증감",
-                "광고비", "광고비 증감",
-                "CPC", "CPC 증감",
-                "구매완료수", "구매 증감",
-                "구매완료 매출", "구매 매출 증감",
-                "구매 ROAS(%)", "구매 ROAS 증감",
-            ]
-        cols = [c for c in cols if c in df.columns]
-        disp_ts = df[cols].copy()
-        styled_ts = disp_ts.style.format(fmt_dict_ts)
-        styled_ts = _apply_overview_delta_styles(styled_ts, disp_ts)
-        _render_overview_sticky_table(styled_ts, col_name, height=420, hide_index=True)
-
+    # ====================================================
+    # ✨ 퍼널 뷰 배치 및 절대값(차이) 토글 로직
+    # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
-    tab_acc, tab_type, tab_period, tab_camp = st.tabs([
-        "🏢 업체별 요약", 
-        "🏷️ 매체/유형별 요약", 
-        "📅 기간별 상세", 
-        "🔍 캠페인 상세 분석"
-    ])
+    col_tb1, col_tb2 = st.columns([1, 1])
+    with col_tb1: st.markdown("<div style='font-size:15px; font-weight:700;'>세부 성과 표</div>", unsafe_allow_html=True)
+    with col_tb2:
+        st.markdown("<div style='display:flex; justify-content:flex-end;'>", unsafe_allow_html=True)
+        show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="ov_abs_toggle")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if kpi_mode == "shopping_purchase":
+        c_conv, c_conv_pct, c_conv_abs = "구매완료수", "구매 증감", "구매 차이"
+        c_sales, c_sales_pct, c_sales_abs = "구매완료 매출", "구매 매출 증감", "구매 매출 차이"
+        c_roas, c_roas_pct = "구매 ROAS(%)", "구매 ROAS 증감"
+    else:
+        c_conv, c_conv_pct, c_conv_abs = "총 전환수", "총 전환 증감", "총 전환 차이"
+        c_sales, c_sales_pct, c_sales_abs = "총 전환매출", "총 매출 증감", "총 매출 차이"
+        c_roas, c_roas_pct = "통합 ROAS(%)", "통합 ROAS 증감"
+
+    def get_funnel_cols(show_abs):
+        cols = []
+        cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
+        cols.extend(["노출수", "노출 증감", "노출 차이"] if show_abs else ["노출수", "노출 증감"])
+        cols.extend(["클릭수", "클릭 증감", "클릭 차이"] if show_abs else ["클릭수", "클릭 증감"])
+        cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_abs else ["CPC", "CPC 증감"])
+        cols.extend([c_conv, c_conv_pct, c_conv_abs] if show_abs else [c_conv, c_conv_pct])
+        cols.extend([c_sales, c_sales_pct, c_sales_abs] if show_abs else [c_sales, c_sales_pct])
+        cols.extend([c_roas, c_roas_pct]) # ROAS는 %포인트(p) 차이이므로 증감만 표시
+        return cols
+
+    # 표 렌더링 탭
+    tab_acc, tab_type, tab_period, tab_camp = st.tabs(["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"])
 
     with tab_acc:
         if not df_display.empty:
-            styled_df = df_display.style.format(fmt_dict_standard)
-            styled_df = _apply_overview_delta_styles(styled_df, df_display)
+            view_cols = ["계정명"] + [c for c in get_funnel_cols(show_abs_diff) if c in df_display.columns]
+            disp_df = df_display[view_cols].copy()
+            styled_df = disp_df.style.format(fmt_dict_standard)
+            styled_df = _apply_overview_delta_styles(styled_df, disp_df)
             _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
     with tab_type:
         if not df_type_display.empty:
-            styled_type_df = df_type_display.style.format(fmt_dict_standard)
-            styled_type_df = _apply_overview_delta_styles(styled_type_df, df_type_display)
+            view_cols = ["캠페인 유형"] + [c for c in get_funnel_cols(show_abs_diff) if c in df_type_display.columns]
+            disp_type_df = df_type_display[view_cols].copy()
+            styled_type_df = disp_type_df.style.format(fmt_dict_standard)
+            styled_type_df = _apply_overview_delta_styles(styled_type_df, disp_type_df)
             _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
@@ -870,26 +736,37 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     with tab_period:
         if any(not df.empty for df in [daily_disp, dow_disp, weekly_disp]):
             sub_daily, sub_weekly, sub_dow = st.tabs(["일자별", "주차별", "요일별"])
-            with sub_daily:
-                _display_ts_table(daily_disp, "일자", combined_toggle)
-            with sub_weekly:
-                _display_ts_table(weekly_disp, "주차", combined_toggle)
-            with sub_dow:
-                _display_ts_table(dow_disp, "요일명", combined_toggle)
+            
+            def _display_ts_tab(df, col_name):
+                if df.empty: return
+                v_cols = [col_name] + [c for c in get_funnel_cols(show_abs_diff) if c in df.columns]
+                d_df = df[v_cols].copy()
+                s_df = d_df.style.format(fmt_dict_standard)
+                s_df = _apply_overview_delta_styles(s_df, d_df)
+                _render_overview_sticky_table(s_df, col_name, height=420, hide_index=True)
+
+            with sub_daily: _display_ts_tab(daily_disp, "일자")
+            with sub_weekly: _display_ts_tab(weekly_disp, "주차")
+            with sub_dow: _display_ts_tab(dow_disp, "요일명")
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
     with tab_camp:
         if not camp_disp.empty:
-            camp_disp_top = camp_disp.head(200)
-            styled_camp_df = camp_disp_top.style.format(fmt_dict_standard)
-            styled_camp_df = _apply_overview_delta_styles(styled_camp_df, camp_disp_top)
+            camp_disp_top = camp_disp.head(200) # 브라우저 렌더링 과부하 방지 (200개 한정)
+            view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_abs_diff) if c in camp_disp_top.columns]
+            disp_camp = camp_disp_top[view_cols].copy()
+            styled_camp_df = disp_camp.style.format(fmt_dict_standard)
+            styled_camp_df = _apply_overview_delta_styles(styled_camp_df, disp_camp)
             _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
+    # ----------------------------------------------------
+    # 엑셀 다운로드 (원래 컬럼 모두 포함되어 출력됨)
+    # ----------------------------------------------------
+    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
     if has_data_to_export:
         with st.container(border=True):
@@ -897,34 +774,22 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>계정/유형/캠페인/일자/요일별 상세 데이터를 하나의 엑셀 파일로 내려받습니다.</div>", unsafe_allow_html=True)
             excel_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_buffer) as writer:
-                if not df_display.empty:
-                    format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
-                if not df_type_display.empty:
-                    format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
-                if not camp_disp.empty:
-                    format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
-                if not daily_disp.empty:
-                    format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
+                if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
+                if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
+                if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
+                if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
                 if not dow_disp.empty:
                     dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
                     format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
-                if not weekly_disp.empty:
-                    format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
-            st.download_button(
-                label="통합 엑셀 다운로드",
-                data=excel_buffer.getvalue(),
-                file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-            )
+                if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
+            st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
     with st.expander("📝 텍스트 보고서 생성", expanded=False):
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
             top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
-            if not top_kws.empty:
-                top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
+            if not top_kws.empty: top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
 
         if combined_toggle:
             report_text = "\n".join([
