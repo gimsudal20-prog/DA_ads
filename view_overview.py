@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_overview.py - Overview page view (Perfect Funnel Layout, CVR/CTR Added, NameError Fixed)."""
+"""view_overview.py - Overview page view (Perfect Funnel Layout, Toggle Left, Purchase ROAS/Conv Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -171,9 +171,6 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
-    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
-    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
-
     out = pd.DataFrame()
     out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col]) if type_kor_map else merged[group_col]
 
@@ -181,7 +178,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['클릭수'] = c_clk
     out['클릭률(%)'] = np.where(c_imp > 0, (c_clk / c_imp) * 100, 0)
     out['광고비'] = c_cost
-    out['CPC'] = c_cpc
+    out['CPC'] = np.where(c_clk > 0, c_cost / c_clk, 0)
     
     out['구매완료수'] = c_conv
     out['구매 전환율(%)'] = np.where(c_clk > 0, (c_conv / c_clk) * 100, 0)
@@ -197,6 +194,7 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     b_ctr = np.where(b_imp > 0, (b_clk / b_imp) * 100, 0)
     b_cvr = np.where(b_clk > 0, (b_conv / b_clk) * 100, 0)
     b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
+    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
     
     b_tcvr = np.where(b_clk > 0, (b_tot_conv / b_clk) * 100, 0)
     b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
@@ -520,6 +518,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not target_df.empty:
                 target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
                 target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
+                target_df["conv"] = pd.to_numeric(target_df.get("conv", 0), errors="coerce").fillna(0.0)
 
                 target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
                 target_df["c_roas_purch"] = np.where(target_df["cost"] > 0, (target_df["sales"] / target_df["cost"]) * 100, 0.0)
@@ -542,19 +541,21 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if not target_df.empty:
                     disp_target = target_df.rename(columns={
                         "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
-                        "c_roas_purch": "현재 ROAS", "target_roas": "목표 ROAS", "min_roas": "최소 ROAS", "cost": "광고비"
+                        "c_roas_purch": "구매완료 ROAS(%)", "target_roas": "목표 ROAS(%)", "min_roas": "최소 ROAS(%)", "cost": "광고비",
+                        "conv": "구매완료수"
                     })
                     
-                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "현재 ROAS", "최소 ROAS", "목표 ROAS", "광고비"]
+                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "구매완료수", "구매완료 ROAS(%)", "최소 ROAS(%)", "목표 ROAS(%)", "광고비"]
                     st.dataframe(
                         disp_target[disp_cols],
                         width="stretch", hide_index=True,
                         column_config={
                             "달성 상태": st.column_config.TextColumn("상태", width="small"),
                             "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
-                            "현재 ROAS": st.column_config.NumberColumn("현재 ROAS", format="%.1f%%"),
-                            "최소 ROAS": st.column_config.NumberColumn("최소 ROAS", format="%d%%"),
-                            "목표 ROAS": st.column_config.NumberColumn("목표 ROAS", format="%d%%"),
+                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
+                            "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS", format="%.1f%%"),
+                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS", format="%d%%"),
+                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS", format="%d%%"),
                             "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
                         }
                     )
@@ -623,24 +624,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
-    col_tb1, col_tb2 = st.columns([1, 1])
-    with col_tb1: st.markdown("<div style='font-size:15px; font-weight:700;'>세부 성과 표</div>", unsafe_allow_html=True)
-    with col_tb2:
-        st.markdown("<div style='display:flex; justify-content:flex-end;'>", unsafe_allow_html=True)
-        show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="ov_abs_toggle")
-        st.markdown("</div>", unsafe_allow_html=True)
+    # ⚡ 토글 버튼 왼쪽 배치 완료
+    st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
+    show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="ov_abs_toggle")
 
-    if kpi_mode == "shopping_purchase":
-        c_conv, c_conv_pct, c_conv_abs = "구매완료수", "구매 증감", "구매 차이"
-        c_cvr, c_cvr_pct = "구매 전환율(%)", "구매 전환율 증감"
-        c_sales, c_sales_pct, c_sales_abs = "구매완료 매출", "구매 매출 증감", "구매 매출 차이"
-        c_roas, c_roas_pct = "구매 ROAS(%)", "구매 ROAS 증감"
-    else:
-        c_conv, c_conv_pct, c_conv_abs = "총 전환수", "총 전환 증감", "총 전환 차이"
-        c_cvr, c_cvr_pct = "총 전환율(%)", "총 전환율 증감"
-        c_sales, c_sales_pct, c_sales_abs = "총 전환매출", "총 매출 증감", "총 매출 차이"
-        c_roas, c_roas_pct = "통합 ROAS(%)", "통합 ROAS 증감"
-
+    # ⚡ 모든 표에 [구매완료수, 구매 ROAS] & [총 전환수, 통합 ROAS] 무조건 포함 (퍼널 순서 최적화)
     def get_funnel_cols(show_abs):
         cols = []
         cols.extend(["노출수", "노출 증감", "노출 차이"] if show_abs else ["노출수", "노출 증감"])
@@ -648,10 +636,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["클릭률(%)", "클릭률 증감"])
         cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs else ["광고비", "광고비 증감"])
         cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_abs else ["CPC", "CPC 증감"])
-        cols.extend([c_conv, c_conv_pct, c_conv_abs] if show_abs else [c_conv, c_conv_pct])
-        cols.extend([c_cvr, c_cvr_pct])
-        cols.extend([c_sales, c_sales_pct, c_sales_abs] if show_abs else [c_sales, c_sales_pct])
-        cols.extend([c_roas, c_roas_pct])
+        cols.extend(["구매완료수", "구매 증감", "구매 차이"] if show_abs else ["구매완료수", "구매 증감"])
+        cols.extend(["구매 전환율(%)", "구매 전환율 증감"])
+        cols.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_abs else ["구매완료 매출", "구매 매출 증감"])
+        cols.extend(["구매 ROAS(%)", "구매 ROAS 증감"])
+        cols.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_abs else ["총 전환수", "총 전환 증감"])
+        cols.extend(["총 전환율(%)", "총 전환율 증감"])
+        cols.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_abs else ["총 전환매출", "총 매출 증감"])
+        cols.extend(["통합 ROAS(%)", "통합 ROAS 증감"])
         return cols
 
     tab_acc, tab_type, tab_period, tab_camp = st.tabs(["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"])
