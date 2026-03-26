@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_campaign.py - Campaign performance page view (Toggle renamed & controls both % and abs)."""
+"""view_campaign.py - Campaign performance page view (Rank Delta Toggle & Integer Format Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -35,7 +35,8 @@ FMT_DICT = {
     "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
     "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
     "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
-    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}"
+    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}",
+    "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
 }
 
 def _style_delta_numeric(val):
@@ -51,8 +52,8 @@ def _style_delta_numeric_neg(val):
     return 'color: #EA4335; font-weight: 700;' if v > 0 else 'color: #1A73E8; font-weight: 700;'
 
 def _apply_delta_styles(styler, df: pd.DataFrame):
-    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '장바구니 증감', '장바구니 차이', '위시리스트 증감', '위시리스트 차이', '구매 증감', '구매 차이', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감', '총 전환 증감', '총 전환 차이', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감', '순위 변화'] if c in df.columns]
-    neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이'] if c in df.columns]
+    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '장바구니 증감', '장바구니 차이', '위시리스트 증감', '위시리스트 차이', '구매 증감', '구매 차이', '구매 매출 증감', '구매 매출 차이', '구매 ROAS 증감', '총 전환 증감', '총 전환 차이', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감'] if c in df.columns]
+    neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이', '순위 변화'] if c in df.columns]
     try:
         if pos_cols: styler = styler.map(_style_delta_numeric, subset=pos_cols)
         if neg_cols: styler = styler.map(_style_delta_numeric_neg, subset=neg_cols)
@@ -64,7 +65,7 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
-    return f"{num:.1f}위"
+    return f"{num:.0f}위"
 
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     for c in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "tot_conv", "tot_sales"]:
@@ -368,7 +369,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        # ⚡ 토글 명칭 변경 및 기본값 축소 로직 적용
+        # ⚡ 토글 명칭 변경 (왼쪽 정렬)
         show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -389,7 +390,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
         if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
 
-        # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 로직 적용
+        # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 및 "순위 변화" 조건 완벽 적용
         metrics_cols_cmp = []
         metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
         metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
@@ -405,10 +406,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             metrics_cols_cmp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_deltas else ["구매완료 매출"])
             metrics_cols_cmp.extend(["구매 ROAS(%)", "구매 ROAS 증감"] if show_deltas else ["구매 ROAS(%)"])
 
-        if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
-            if "순위 변화" not in metrics_cols_cmp: metrics_cols_cmp.append("순위 변화")
-
         base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
+        if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
+            base_cols_cmp.append("평균순위")
+            if show_deltas: # ⚡ 토글을 켰을 때만 순위 변화 등장
+                metrics_cols_cmp.append("순위 변화")
+
         final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
