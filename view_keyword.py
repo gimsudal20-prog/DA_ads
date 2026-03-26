@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view (Toggle renamed & controls both % and abs)."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Powerlink Empty Cache Removed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -128,23 +128,37 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         
     return merged
 
+
 @st.cache_data(show_spinner=False, max_entries=20, ttl=300)
 def compute_keyword_view(kw_bundle, ad_bundle, meta):
     if (kw_bundle is None or kw_bundle.empty) and (ad_bundle is None or ad_bundle.empty): return pd.DataFrame()
     df_kw = _perf_common_merge_meta(kw_bundle, meta) if not kw_bundle.empty else pd.DataFrame()
     df_ad = _perf_common_merge_meta(ad_bundle, meta) if not ad_bundle.empty else pd.DataFrame()
     view_kw, view_ad = pd.DataFrame(), pd.DataFrame()
+    
     if not df_kw.empty: view_kw = df_kw.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"})
     if not df_ad.empty:
         view_ad = df_ad.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"})
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
+        
     if view_kw.empty and view_ad.empty: return pd.DataFrame()
     elif view_kw.empty: view = view_ad.copy()
     elif view_ad.empty: view = view_kw.copy()
     else: view = pd.concat([view_kw, view_ad], ignore_index=True)
+    
     view = _add_perf_metrics(view)
     if "avg_rank" in view.columns: view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+
+    # ⚡ [수정된 부분] 쇼핑검색은 건드리지 않고, 파워링크의 찌꺼기(빈칸) 데이터만 핀셋 삭제
+    if "키워드" in view.columns and "캠페인유형" in view.columns:
+        is_powerlink = view["캠페인유형"] == "파워링크"
+        is_empty_kw = view["키워드"].isna() | view["키워드"].astype(str).str.strip().isin(["", "nan", "None", "NaN"])
+        
+        # 파워링크이면서 키워드가 빈칸인 행을 제외(~ 반전)하고 덮어씌움
+        view = view[~(is_powerlink & is_empty_kw)]
+
     return view
+
 
 FAST_KW_CONFIG = {
     "노출": st.column_config.NumberColumn("노출", format="%d"),
@@ -169,6 +183,7 @@ def _render_sticky_table(df, first_col: str, height: int = 550, col_config: dict
     cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
     st.dataframe(df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
 
+
 @st.fragment
 def render_keyword_main(view, top_n):
     if view.empty:
@@ -191,10 +206,11 @@ def render_keyword_main(view, top_n):
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
     _render_sticky_table(disp, "키워드", height=550, col_config=FAST_KW_CONFIG)
 
+
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
-    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-    # ⚡ 토글 명칭 변경 및 기본값 축소 로직 적용
+    st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
+    # ⚡ 토글 명칭 변경 (왼쪽 정렬)
     show_deltas = st.toggle("📊 증감율 보기", value=False, key="kw_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
