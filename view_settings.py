@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_settings.py - Settings and Sync page view (Target ROAS Feature Restored)."""
+"""view_settings.py - Settings and Sync page view (Target ROAS Feature Fixed)."""
 
 from __future__ import annotations
 import time
@@ -7,17 +7,13 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from data import *
-from ui import *
-from page_helpers import *
+from data import sql_read, sql_exec, db_ping, seed_from_accounts_xlsx
 
-# ✨ 0.1초 컷: 메인 페이지 함수에 @st.fragment 추가
 @st.fragment
 def page_settings(engine) -> None:
     st.markdown("## ⚙️ 설정 및 데이터 관리")
     try: 
         db_ping(engine)
-        st.success("DB 연결 상태: 정상 ✅")
     except Exception as e: 
         st.error(f"DB 연결 실패: {e}")
         return
@@ -50,13 +46,12 @@ def page_settings(engine) -> None:
     st.divider()
 
     # ====================================================
-    # 🎯 복구된 기능: 캠페인별 목표 ROAS 설정 (고속 렌더링 적용)
+    # 🎯 완벽 복구된 캠페인별 목표 ROAS 설정
     # ====================================================
     st.markdown("### 🎯 캠페인별 목표 ROAS 설정")
-    st.caption("캠페인별로 최소/목표 ROAS를 설정하세요. 요약 지면의 '🎯 캠페인별 목표 달성 현황'에 실시간 반영됩니다.")
+    st.caption("업체를 선택하고 캠페인별 최소/목표 ROAS를 입력하세요. 요약 지면의 '목표 달성 현황'에 즉시 연동됩니다.")
 
     try:
-        # 안전장치: DB에 컬럼이 없을 경우 자동 생성
         with engine.begin() as conn:
             try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN target_roas DOUBLE PRECISION;"))
             except Exception: pass
@@ -79,24 +74,31 @@ def page_settings(engine) -> None:
         if not camp_df.empty:
             camp_df = camp_df.sort_values(['account_name', 'campaign_name']).reset_index(drop=True)
             
-            # Pandas 연산을 최소화하고 st.data_editor의 네이티브 기능으로 렌더링 최적화
+            # ⚡ 너무 많은 캠페인이 뜨지 않도록 업체별 필터 추가
+            accounts = ["전체"] + list(camp_df['account_name'].dropna().unique())
+            sel_acc = st.selectbox("🎯 설정할 업체 선택", accounts)
+            
+            disp_df = camp_df.copy()
+            if sel_acc != "전체":
+                disp_df = disp_df[disp_df['account_name'] == sel_acc].reset_index(drop=True)
+
             edited_df = st.data_editor(
-                camp_df,
+                disp_df,
                 hide_index=True,
                 use_container_width=True,
                 height=400,
                 column_config={
-                    "customer_id": None, # 화면에서 숨김
-                    "campaign_id": None, # 화면에서 숨김
+                    "customer_id": None, 
+                    "campaign_id": None, 
                     "account_name": st.column_config.TextColumn("광고주명", disabled=True),
-                    "campaign_name": st.column_config.TextColumn("캠페인명", disabled=True),
-                    "min_roas": st.column_config.NumberColumn("최소 ROAS(%)", help="예: 200", min_value=0, step=10, format="%d"),
-                    "target_roas": st.column_config.NumberColumn("목표 ROAS(%)", help="예: 300", min_value=0, step=10, format="%d")
+                    "campaign_name": st.column_config.TextColumn("캠페인명", disabled=True, width="large"),
+                    "min_roas": st.column_config.NumberColumn("최소 ROAS(%)", min_value=0, step=10, format="%d"),
+                    "target_roas": st.column_config.NumberColumn("목표 ROAS(%)", min_value=0, step=10, format="%d")
                 },
-                key="roas_editor"
+                key=f"roas_editor_{sel_acc}"
             )
 
-            if st.button("💾 목표 ROAS 저장하기", type="primary"):
+            if st.button("💾 화면의 목표 ROAS 저장", type="primary"):
                 with st.spinner("저장 중입니다..."):
                     with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
@@ -112,12 +114,12 @@ def page_settings(engine) -> None:
                                 text("UPDATE dim_campaign SET target_roas = :t, min_roas = :m WHERE customer_id = :cid AND campaign_id = :campid"),
                                 {"t": t_val, "m": m_val, "cid": str(cid), "campid": str(campid)}
                             )
-                st.success("✅ 모든 캠페인의 목표 ROAS가 성공적으로 저장되었습니다!")
+                st.success("✅ 선택한 항목의 목표 ROAS가 성공적으로 저장되었습니다!")
                 st.cache_data.clear()
                 time.sleep(1)
                 st.rerun()
         else:
-            st.info("💡 설정할 캠페인 정보가 없습니다. 먼저 상단의 동기화를 진행하거나 광고 데이터를 수집해주세요.")
+            st.info("💡 설정할 캠페인 정보가 없습니다. 데이터 동기화를 먼저 진행해주세요.")
 
     except Exception as e:
         st.error(f"목표 ROAS 설정 로딩 중 오류 발생: {e}")
@@ -125,10 +127,10 @@ def page_settings(engine) -> None:
     st.divider()
 
     st.markdown("### 🚀 대시보드 속도 최적화 (인덱스 생성)")
-    st.caption("대량의 백필 데이터가 추가되어 대시보드가 느려졌을 때, 이 버튼을 눌러 DB 검색 속도를 복구하세요. (최초 1회만 실행)")
+    st.caption("대량의 데이터가 추가되어 화면이 느려졌을 때 검색 속도를 복구합니다. (최초 1회 권장)")
     
-    if st.button("⚡ 초고속 DB 목차(인덱스) 만들기", type="secondary"):
-        with st.spinner("DB 최적화 진행 중... (데이터량에 따라 최대 1~2분 소요될 수 있습니다)"):
+    if st.button("⚡ 초고속 DB 목차 만들기", type="secondary"):
+        with st.spinner("DB 최적화 진행 중..."):
             try:
                 indexes = [
                     "CREATE INDEX IF NOT EXISTS idx_fcd_dt ON fact_campaign_daily(dt);",
@@ -142,56 +144,34 @@ def page_settings(engine) -> None:
                     for idx in indexes:
                         try: conn.execute(text(idx))
                         except Exception: pass
-                st.success("🎉 DB 최적화가 완료되었습니다! 이제 대시보드가 날아다닐 겁니다.")
-                time.sleep(2)
-                st.cache_data.clear()
-                st.rerun()
+                st.success("🎉 DB 최적화 완료!")
             except Exception as e:
-                st.error(f"최적화 중 오류 발생: {e}")
+                st.error(f"오류 발생: {e}")
 
     st.divider()
 
     st.markdown("### 🧹 DB 찌꺼기 대청소 (VACUUM ANALYZE)")
-    st.caption("중복 데이터 제거 후 보이지 않는 빈 공간을 압축하여 Supabase 리소스 경고를 해결하고 DB 체력을 회복시킵니다.")
-    
     if st.button("♻️ DB 대청소 및 튜닝 실행", type="secondary"):
-        with st.spinner("DB 대청소 중... (이 작업은 2분 제한 없이 끝까지 안전하게 백그라운드에서 진행됩니다)"):
+        with st.spinner("DB 대청소 중..."):
             try:
-                tables_to_vacuum = [
-                    "fact_keyword_daily", 
-                    "fact_ad_daily", 
-                    "fact_campaign_daily", 
-                    "dim_customer", 
-                    "dim_campaign", 
-                    "dim_ad"
-                ]
-                # AUTOCOMMIT으로 트랜잭션 락을 방지하고 끝까지 실행되도록 보장합니다.
+                tables_to_vacuum = ["fact_keyword_daily", "fact_ad_daily", "fact_campaign_daily", "dim_customer", "dim_campaign", "dim_ad"]
                 with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                     for tbl in tables_to_vacuum:
-                        try:
-                            conn.execute(text(f"VACUUM ANALYZE {tbl};"))
-                        except Exception as e:
-                            pass # 특정 테이블이 없거나 에러나도 다음 청소 진행
-                st.success("🎉 DB 대청소 및 튜닝이 완벽하게 끝났습니다! Supabase 경고 메시지도 곧 자연스럽게 사라질 것입니다.")
-                time.sleep(2)
+                        try: conn.execute(text(f"VACUUM ANALYZE {tbl};"))
+                        except Exception: pass
+                st.success("🎉 DB 대청소 완료!")
             except Exception as e:
-                st.error(f"청소 중 오류 발생: {e}")
+                st.error(f"청소 중 오류: {e}")
 
     st.divider()
 
-    st.markdown("### 🛑 Danger Zone (수동 DB 소각)")
-    st.caption("동기화 후에도 계속 뜨는 악성 '유령 계정'이 있다면 커스텀 ID(숫자)를 입력해 과거 데이터까지 DB에서 완전히 소각하세요. **이 작업은 되돌릴 수 없습니다.**")
-    
+    st.markdown("### 🛑 Danger Zone (수동 데이터 삭제)")
     with st.container():
-        st.markdown("<div style='background-color:#FEF2F2; padding:20px; border-radius:12px; border:1px solid #FECACA; margin-bottom:16px;'>", unsafe_allow_html=True)
-        
         col_del1, col_del2 = st.columns([2, 1])
         with col_del1:
             del_cid = st.text_input("삭제할 커스텀 ID 입력", placeholder="예: 12345678", label_visibility="collapsed")
-            confirm_delete = st.checkbox("⚠️ 데이터가 완전히 삭제되며 복구할 수 없음을 이해했습니다.", key="confirm_delete_chk")
-            
+            confirm_delete = st.checkbox("⚠️ 복구 불가 영구 삭제 동의", key="confirm_delete_chk")
         with col_del2:
-            st.markdown("<div style='height:2px'></div>", unsafe_allow_html=True) 
             if st.button("🗑️ 영구 삭제 실행", type="primary", use_container_width=True, disabled=not confirm_delete):
                 if del_cid.strip() and del_cid.strip().isdigit():
                     try:
@@ -200,13 +180,7 @@ def page_settings(engine) -> None:
                         for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_search_term_daily", "fact_ad_daily", "fact_bizmoney_daily"]:
                             try: sql_exec(engine, f"DELETE FROM {table} WHERE customer_id::text = :cid", {"cid": cid_val})
                             except Exception: pass
-                                
-                        st.success(f"✅ ID '{del_cid}' 업체의 모든 데이터가 영구 소각되었습니다.")
+                        st.success("✅ 삭제 완료!")
                         st.cache_data.clear()
-                        time.sleep(1)
-                        st.rerun()
                     except Exception as e:
-                        st.error(f"삭제 중 오류 발생: {e}")
-                else:
-                    st.warning("유효한 숫자 형태의 커스텀 ID를 입력해주세요.")
-        st.markdown("</div>", unsafe_allow_html=True)
+                        st.error(f"오류: {e}")
