@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view (Toggle & Delta Colors)."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Toggle renamed & controls both % and abs)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -20,7 +20,7 @@ FMT_DICT = {
     "전환": "{:,.0f}", "전환 증감": "{:+.1f}%", "전환 차이": "{:+,.0f}",
     "CPA(원)": "{:,.0f}원",
     "전환매출": "{:,.0f}원", "전환매출 증감": "{:+.1f}%", "전환매출 차이": "{:+,.0f}원",
-    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%p"
+    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
 }
 
 def _style_delta_numeric(val):
@@ -194,7 +194,8 @@ def render_keyword_main(view, top_n):
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-    show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="kw_abs_toggle")
+    # ⚡ 토글 명칭 변경 및 기본값 축소 로직 적용
+    show_deltas = st.toggle("📊 증감율 보기", value=False, key="kw_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -220,15 +221,16 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
         else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
     else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
 
+    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 로직 적용
     metrics_cols_cmp = []
-    metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_abs_diff else ["노출", "노출 증감"])
-    metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_abs_diff else ["클릭", "클릭 증감"])
-    metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs_diff else ["광고비", "광고비 증감"])
-    metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_abs_diff else ["CPC(원)", "CPC 증감"])
-    metrics_cols_cmp.extend(["전환", "전환 증감", "전환 차이"] if show_abs_diff else ["전환", "전환 증감"])
+    metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
+    metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
+    metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
+    metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC(원)"])
+    metrics_cols_cmp.extend(["전환", "전환 증감", "전환 차이"] if show_deltas else ["전환"])
     metrics_cols_cmp.extend(["CPA(원)"])
-    metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_abs_diff else ["전환매출", "전환매출 증감"])
-    metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"])
+    metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_deltas else ["전환매출"])
+    metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"] if show_deltas else ["ROAS(%)"])
 
     base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
