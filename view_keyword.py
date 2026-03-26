@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view (Powerlink Empty Cache Removed)."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Rank Delta Toggle & Integer Format Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -20,7 +20,8 @@ FMT_DICT = {
     "전환": "{:,.0f}", "전환 증감": "{:+.1f}%", "전환 차이": "{:+,.0f}",
     "CPA(원)": "{:,.0f}원",
     "전환매출": "{:,.0f}원", "전환매출 증감": "{:+.1f}%", "전환매출 차이": "{:+,.0f}원",
-    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
+    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%",
+    "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
 }
 
 def _style_delta_numeric(val):
@@ -36,8 +37,9 @@ def _style_delta_numeric_neg(val):
     return 'color: #EA4335; font-weight: 700;' if v > 0 else 'color: #1A73E8; font-weight: 700;'
 
 def _apply_delta_styles(styler, df: pd.DataFrame):
-    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '전환매출 증감', '전환매출 차이', 'ROAS 증감', '순위 변화'] if c in df.columns]
-    neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이'] if c in df.columns]
+    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '전환매출 증감', '전환매출 차이', 'ROAS 증감'] if c in df.columns]
+    # 순위 변화는 숫자가 커지면(순위 하락) 빨간색, 작아지면(순위 상승) 파란색이어야 하므로 neg_cols에 포함
+    neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이', '순위 변화'] if c in df.columns]
     try:
         if pos_cols: styler = styler.map(_style_delta_numeric, subset=pos_cols)
         if neg_cols: styler = styler.map(_style_delta_numeric_neg, subset=neg_cols)
@@ -49,7 +51,7 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
-    return f"{num:.1f}위"
+    return f"{num:.0f}위"
 
 def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
     if df is None or df.empty: return pd.DataFrame() if df is None else df
@@ -149,12 +151,10 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     view = _add_perf_metrics(view)
     if "avg_rank" in view.columns: view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
 
-    # ⚡ [수정된 부분] 쇼핑검색은 건드리지 않고, 파워링크의 찌꺼기(빈칸) 데이터만 핀셋 삭제
+    # 파워링크의 빈칸(캐시 찌꺼기) 키워드 핀셋 삭제
     if "키워드" in view.columns and "캠페인유형" in view.columns:
         is_powerlink = view["캠페인유형"] == "파워링크"
         is_empty_kw = view["키워드"].isna() | view["키워드"].astype(str).str.strip().isin(["", "nan", "None", "NaN"])
-        
-        # 파워링크이면서 키워드가 빈칸인 행을 제외(~ 반전)하고 덮어씌움
         view = view[~(is_powerlink & is_empty_kw)]
 
     return view
@@ -198,9 +198,11 @@ def render_keyword_main(view, top_n):
     sel_grp = col_grp.selectbox("광고그룹 필터", grps, key="kw_grp_filter_main")
     disp = filtered_for_grp.copy()
     if sel_grp != "전체": disp = disp[disp["광고그룹"] == sel_grp]
+    
     base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "평균순위" in disp.columns: base_cols.append("평균순위")
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+    
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
@@ -210,7 +212,6 @@ def render_keyword_main(view, top_n):
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
-    # ⚡ 토글 명칭 변경 (왼쪽 정렬)
     show_deltas = st.toggle("📊 증감율 보기", value=False, key="kw_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -237,7 +238,7 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
         else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
     else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
 
-    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 로직 적용
+    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 및 "순위 변화" 조건 완벽 적용
     metrics_cols_cmp = []
     metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
     metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
@@ -250,7 +251,9 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
 
     base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
-        base_cols_cmp.extend(["평균순위", "순위 변화"])
+        base_cols_cmp.append("평균순위")
+        if show_deltas: # ⚡ 토글을 켰을 때만 순위 변화 등장
+            metrics_cols_cmp.append("순위 변화")
 
     render_item_comparison_search("키워드/소재", view_cmp, base_bundle, "키워드", start_dt, end_dt, b1, b2)
 
