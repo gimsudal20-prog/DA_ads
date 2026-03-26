@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_campaign.py - Campaign performance page view (Toggle & Delta Colors)."""
+"""view_campaign.py - Campaign performance page view (Toggle renamed & controls both % and abs)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -30,10 +30,10 @@ FMT_DICT = {
     "CPC(원)": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
     "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
     "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
-    "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%p",
+    "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
     "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
     "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
-    "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%p",
+    "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
     "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
     "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}"
 }
@@ -368,7 +368,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="camp_abs_toggle")
+        # ⚡ 토글 명칭 변경 및 기본값 축소 로직 적용
+        show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
         opts = get_dynamic_cmp_options(f["start"], f["end"])
@@ -388,20 +389,21 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
         if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
 
+        # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 로직 적용
         metrics_cols_cmp = []
-        metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_abs_diff else ["노출", "노출 증감"])
-        metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_abs_diff else ["클릭", "클릭 증감"])
-        metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs_diff else ["광고비", "광고비 증감"])
-        metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_abs_diff else ["CPC(원)", "CPC 증감"])
+        metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
+        metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
+        metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
+        metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC(원)"])
 
         if show_mode == "integrated_only":
-            metrics_cols_cmp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_abs_diff else ["총 전환수", "총 전환 증감"])
-            metrics_cols_cmp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_abs_diff else ["총 전환매출", "총 매출 증감"])
-            metrics_cols_cmp.extend(["통합 ROAS(%)", "통합 ROAS 증감"])
+            metrics_cols_cmp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_deltas else ["총 전환수"])
+            metrics_cols_cmp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_deltas else ["총 전환매출"])
+            metrics_cols_cmp.extend(["통합 ROAS(%)", "통합 ROAS 증감"] if show_deltas else ["통합 ROAS(%)"])
         else:
-            metrics_cols_cmp.extend(["구매완료수", "구매 증감", "구매 차이"] if show_abs_diff else ["구매완료수", "구매 증감"])
-            metrics_cols_cmp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_abs_diff else ["구매완료 매출", "구매 매출 증감"])
-            metrics_cols_cmp.extend(["구매 ROAS(%)", "구매 ROAS 증감"])
+            metrics_cols_cmp.extend(["구매완료수", "구매 증감", "구매 차이"] if show_deltas else ["구매완료수"])
+            metrics_cols_cmp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_deltas else ["구매완료 매출"])
+            metrics_cols_cmp.extend(["구매 ROAS(%)", "구매 ROAS 증감"] if show_deltas else ["구매 ROAS(%)"])
 
         if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
             if "순위 변화" not in metrics_cols_cmp: metrics_cols_cmp.append("순위 변화")
