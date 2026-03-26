@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_ad.py - Ad performance & A/B Testing page view (Toggle & Delta Colors)."""
+"""view_ad.py - Ad performance & A/B Testing page view (Toggle renamed & controls both % and abs)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -16,13 +16,14 @@ from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_it
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
     "클릭": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
-    "CTR(%)": "{:,.2f}%", 
+    "CTR(%)": "{:,.2f}%", "CTR 증감": "{:+.2f}%",
     "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
     "CPC(원)": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
     "전환": "{:,.0f}", "전환 증감": "{:+.1f}%", "전환 차이": "{:+,.0f}",
+    "CVR(%)": "{:,.2f}%", "CVR 증감": "{:+.2f}%",
     "CPA(원)": "{:,.0f}원",
     "전환매출": "{:,.0f}원", "전환매출 증감": "{:+.1f}%", "전환매출 차이": "{:+,.0f}원",
-    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%p"
+    "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
 }
 
 def _style_delta_numeric(val):
@@ -38,7 +39,7 @@ def _style_delta_numeric_neg(val):
     return 'color: #EA4335; font-weight: 700;' if v > 0 else 'color: #1A73E8; font-weight: 700;'
 
 def _apply_delta_styles(styler, df: pd.DataFrame):
-    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '전환매출 증감', '전환매출 차이', 'ROAS 증감'] if c in df.columns]
+    pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', 'CTR 증감', '전환 증감', '전환 차이', 'CVR 증감', '전환매출 증감', '전환매출 차이', 'ROAS 증감'] if c in df.columns]
     neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이'] if c in df.columns]
     try:
         if pos_cols: styler = styler.map(_style_delta_numeric, subset=pos_cols)
@@ -106,20 +107,31 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     c_imp, b_imp = merged.get('노출', 0), merged.get('b_imp', 0)
     c_clk, b_clk = merged.get('클릭', 0), merged.get('b_clk', 0)
     c_cost, b_cost = merged.get('광고비', 0), merged.get('b_cost', 0)
-    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
-    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
     c_conv, b_conv = merged.get('전환', 0), merged.get('b_conv', 0)
     c_sales, b_sales = merged.get('전환매출', 0), merged.get('b_sales', 0)
 
+    c_ctr = np.where(c_imp > 0, (c_clk / c_imp) * 100, 0)
+    b_ctr = np.where(b_imp > 0, (b_clk / b_imp) * 100, 0)
+    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
+    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
+    c_cvr = np.where(c_clk > 0, (c_conv / c_clk) * 100, 0)
+    b_cvr = np.where(b_clk > 0, (b_conv / b_clk) * 100, 0)
+    c_roas = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
+    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
+
+    merged['CTR(%)'] = c_ctr
+    merged['CPC(원)'] = c_cpc
+    merged['CVR(%)'] = c_cvr
+    merged['ROAS(%)'] = c_roas
+
     merged['노출 증감'], merged['노출 차이'] = _vec_pct_diff(c_imp, b_imp)
     merged['클릭 증감'], merged['클릭 차이'] = _vec_pct_diff(c_clk, b_clk)
+    merged['CTR 증감'] = c_ctr - b_ctr
     merged['광고비 증감'], merged['광고비 차이'] = _vec_pct_diff(c_cost, b_cost)
     merged['CPC 증감'], merged['CPC 차이'] = _vec_pct_diff(c_cpc, b_cpc)
     merged['전환 증감'], merged['전환 차이'] = _vec_pct_diff(c_conv, b_conv)
+    merged['CVR 증감'] = c_cvr - b_cvr
     merged['전환매출 증감'], merged['전환매출 차이'] = _vec_pct_diff(c_sales, b_sales)
-
-    c_roas = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
-    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
     merged['ROAS 증감'] = c_roas - b_roas
         
     return merged
@@ -204,7 +216,7 @@ def _render_ad_tab(df_tab: pd.DataFrame, ad_type_name: str, top_n: int, start_dt
                 st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>A/B 비교</div>", unsafe_allow_html=True)
                 _render_ab_test_sbs(df_tab, start_dt, end_dt)
 
-    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+    cols = ["업체명", "담당자", "캠페인", "광고그룹", "소재내용", "노출", "클릭", "CTR(%)", "광고비", "CPC(원)", "전환", "CVR(%)", "CPA(원)", "전환매출", "ROAS(%)"]
     disp = df_tab[[c for c in cols if c in df_tab.columns]].copy()
     disp = disp.sort_values("광고비", ascending=False).head(top_n)
 
@@ -234,17 +246,17 @@ def render_landing_tab(view):
 
 @st.fragment
 def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
+    # ⚡ 왼쪽 정렬 및 "증감율 보기" 토글 적용
+    st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
+    show_deltas = st.toggle("📊 증감율 보기", value=False, key="ad_abs_toggle")
+    st.markdown("</div>", unsafe_allow_html=True)
+
     st.markdown("<div class='ad-toolbar'><div class='ad-toolbar-title'>기간 비교 설정</div>", unsafe_allow_html=True)
     c1, c2 = st.columns([1, 1])
-    with c1:
-        cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
+    with c1: cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
     with c2:
-        st.markdown("<div style='display:flex; justify-content:flex-end;'>", unsafe_allow_html=True)
-        show_abs_diff = st.toggle("📊 증감 절대값(차이) 함께 보기", value=False, key="ad_abs_toggle")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    opts = get_dynamic_cmp_options(start_dt, end_dt)
-    cmp_mode = st.radio("비교 기준", [o for o in opts if o != "비교 안함"], horizontal=True, key="ad_cmp_base")
+        opts = get_dynamic_cmp_options(start_dt, end_dt)
+        cmp_mode = st.radio("비교 기준", [o for o in opts if o != "비교 안함"], horizontal=True, key="ad_cmp_base")
     st.markdown("</div>", unsafe_allow_html=True)
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
@@ -278,14 +290,18 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>개별 소재 비교</div>", unsafe_allow_html=True)
         render_item_comparison_search("소재", df_target, base_for_search, "소재내용", start_dt, end_dt, b1, b2)
 
+    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 (퍼널 및 비율 최적화)
     metrics_cols_cmp = []
-    metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_abs_diff else ["노출", "노출 증감"])
-    metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_abs_diff else ["클릭", "클릭 증감"])
-    metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_abs_diff else ["광고비", "광고비 증감"])
-    metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_abs_diff else ["CPC(원)", "CPC 증감"])
-    metrics_cols_cmp.extend(["전환", "전환 증감", "전환 차이"] if show_abs_diff else ["전환", "전환 증감"])
-    metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_abs_diff else ["전환매출", "전환매출 증감"])
-    metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"])
+    metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
+    metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
+    metrics_cols_cmp.extend(["CTR(%)", "CTR 증감"] if show_deltas else ["CTR(%)"])
+    metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
+    metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC(원)"])
+    metrics_cols_cmp.extend(["전환", "전환 증감", "전환 차이"] if show_deltas else ["전환"])
+    metrics_cols_cmp.extend(["CVR(%)", "CVR 증감"] if show_deltas else ["CVR(%)"])
+    metrics_cols_cmp.extend(["CPA(원)"])
+    metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_deltas else ["전환매출"])
+    metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"] if show_deltas else ["ROAS(%)"])
 
     base_cols_cmp = ["업체명", "캠페인", "광고그룹", "소재내용"]
     cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in df_target.columns]
