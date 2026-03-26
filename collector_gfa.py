@@ -51,7 +51,9 @@ GFA_PW = (
     or ""
 ).strip()
 GFA_LOGIN_URL = (os.getenv("GFA_LOGIN_URL") or "https://nid.naver.com/nidlogin.login?mode=form&url=https://ads.naver.com/").strip()
+ADS_HOME_URL = (os.getenv("ADS_HOME_URL") or "https://ads.naver.com/").strip()
 GFA_PLATFORM_URL = (os.getenv("GFA_PLATFORM_URL") or "https://gfa.naver.com/").strip()
+GFA_PLATFORM_FALLBACK_URLS = [u.strip() for u in [os.getenv("GFA_PLATFORM_URL_2") or "https://ads.naver.com/gfa", "https://gfa.naver.com/"] if (u or "").strip()]
 GFA_HEADLESS = (os.getenv("GFA_HEADLESS") or "true").strip().lower() not in {"0", "false", "no", "n"}
 GFA_DEBUG_DIR = Path(os.getenv("GFA_DEBUG_DIR") or "gfa_debug")
 GFA_DOWNLOAD_DIR = Path(os.getenv("GFA_DOWNLOAD_DIR") or "gfa_downloads")
@@ -1017,12 +1019,54 @@ class GfaCrawler:
         body = body or ""
         return any(t in body for t in texts)
 
-    def click_first(self, selectors: Iterable[str], *, timeout_ms: int = 3000) -> bool:
+    def _adopt_latest_page(self) -> None:
+        try:
+            pages = list(self.context.pages) if self.context else []
+        except Exception:
+            pages = []
+        chosen = None
+        for pg in reversed(pages):
+            try:
+                url = (pg.url or "").strip()
+            except Exception:
+                url = ""
+            if url and url != "about:blank":
+                chosen = pg
+                break
+        if chosen is not None and chosen is not self.page:
+            self.page = chosen
+            try:
+                self.page.set_default_timeout(GFA_PLAYWRIGHT_TIMEOUT_MS)
+            except Exception:
+                pass
+
+    def goto_soft(self, url: str, *, wait_until: str = "domcontentloaded", timeout_ms: Optional[int] = None) -> None:
+        try:
+            self.page.goto(url, wait_until=wait_until, timeout=timeout_ms or GFA_PLAYWRIGHT_TIMEOUT_MS)
+        except Exception as e:
+            msg = str(e)
+            if "ERR_ABORTED" in msg:
+                time.sleep(2.0)
+                self._adopt_latest_page()
+                return
+            raise
+        self._adopt_latest_page()
+
+    def click_first(self, selectors: Iterable[str], *, timeout_ms: int = 3000, allow_popup: bool = False) -> bool:
         for sel in selectors:
             try:
+                before_n = len(list(self.context.pages)) if (allow_popup and self.context) else 0
                 loc = self.page.locator(sel).first
                 if loc.count() > 0:
                     loc.click(timeout=timeout_ms)
+                    if allow_popup:
+                        time.sleep(1.5)
+                        try:
+                            after_n = len(list(self.context.pages)) if self.context else 0
+                        except Exception:
+                            after_n = 0
+                        if after_n > before_n:
+                            self._adopt_latest_page()
                     return True
             except Exception:
                 continue
@@ -1048,7 +1092,7 @@ class GfaCrawler:
 
     def login(self, user_id: str, password: str) -> None:
         log("🌐 네이버 로그인 페이지 진입")
-        self.page.goto(GFA_LOGIN_URL, wait_until="domcontentloaded")
+        self.goto_soft(GFA_LOGIN_URL, wait_until="domcontentloaded")
         self.wait_network_idle(2)
 
         id_ok = self.fill_first([
@@ -1091,25 +1135,56 @@ class GfaCrawler:
 
     def go_gfa_platform(self) -> None:
         log("🧭 GFA 플랫폼 진입 시도")
-        self.page.goto(GFA_PLATFORM_URL, wait_until="domcontentloaded")
-        self.wait_network_idle(5)
 
-        # 통합 광고센터에서 플랫폼 선택이 필요한 경우
-        if self.contains_text(["광고 플랫폼", "검색광고", "성과형 디스플레이 광고"]):
+        # 1) 광고주센터 홈으로 이동 후 헤더 메뉴에서 진입 시도
+        if "ads.naver.com" not in (self.page.url or ""):
+            self.goto_soft(ADS_HOME_URL, wait_until="domcontentloaded")
+            self.wait_network_idle(4)
+
+        success_markers = [
+            "광고 계정", "성과 리포트", "대시보드", "광고관리", "캠페인 만들기",
+            "성과형 디스플레이 광고", "디스플레이 광고",
+        ]
+
+        # 통합 광고주센터에서 플랫폼 선택이 필요한 경우
+        if self.contains_text(["광고 플랫폼", "검색광고", "성과형 디스플레이 광고", "디스플레이 광고"]):
             self.click_first([
                 'button:has-text("광고 플랫폼")',
+                'a:has-text("광고 플랫폼")',
                 'text="광고 플랫폼"',
                 '[aria-label*="광고 플랫폼"]',
-            ], timeout_ms=3000)
+            ], timeout_ms=4000, allow_popup=True)
             time.sleep(1.0)
             self.click_first([
                 'text="성과형 디스플레이 광고"',
                 'button:has-text("성과형 디스플레이 광고")',
                 'a:has-text("성과형 디스플레이 광고")',
-            ], timeout_ms=5000)
+                'text="디스플레이 광고"',
+                'button:has-text("디스플레이 광고")',
+                'a:has-text("디스플레이 광고")',
+            ], timeout_ms=7000, allow_popup=True)
             self.wait_network_idle(5)
+            self._adopt_latest_page()
 
-        self.screenshot("04_gfa_platform_entry.png")
+        if self.contains_text(success_markers):
+            self.screenshot("04_gfa_platform_entry.png")
+            return
+
+        # 2) 직접 URL 진입은 fallback 으로만 시도 (ERR_ABORTED 는 무시 후 현재 페이지 검사)
+        for url in [u for u in [GFA_PLATFORM_URL, *GFA_PLATFORM_FALLBACK_URLS] if u]:
+            try:
+                self.goto_soft(url, wait_until="domcontentloaded")
+                self.wait_network_idle(4)
+                self._adopt_latest_page()
+                if self.contains_text(success_markers) or any(token in (self.page.url or "") for token in ["gfa", "display"]):
+                    self.screenshot("04_gfa_platform_entry.png")
+                    return
+            except Exception:
+                continue
+
+        self.screenshot("04_gfa_platform_entry_failed.png")
+        self.page_dump("04_gfa_platform_entry_failed.html")
+        raise RuntimeError("GFA 플랫폼 진입에 실패했습니다. 통합 광고주센터에서 '광고 플랫폼 > 성과형 디스플레이 광고(또는 디스플레이 광고)' 메뉴 구조가 변경되었을 수 있습니다.")
 
     def select_account(self, customer_id: str, account_name: str) -> None:
         log(f"🎯 계정 선택 시도 | {account_name} ({customer_id})")
