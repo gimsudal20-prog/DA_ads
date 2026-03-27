@@ -200,14 +200,19 @@ def render_keyword_main(view, top_n):
     sel_grp = col2.selectbox("광고그룹 필터", grps, key="kw_grp_filter_main")
 
     col3, col4 = st.columns([3, 1])
-    search_kw = col3.text_input("🔍 키워드 검색 (부분 일치)", key="kw_search_main")
+    search_kw = col3.text_input("🔍 키워드 검색", key="kw_search_main")
+    exact_match_main = col3.checkbox("☑️ 완전 일치", key="kw_exact_main")
     
     col4.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
     agg_kw = col4.checkbox("🎯 동일 키워드 합산 (PC/MO 통합)", key="kw_agg_main", help="캠페인/광고그룹이 달라도 이름이 같은 키워드의 성과를 하나로 합산합니다.")
     
     disp = filtered_for_grp.copy()
     if sel_grp != "전체": disp = disp[disp["광고그룹"] == sel_grp]
-    if search_kw: disp = disp[disp["키워드"].astype(str).str.contains(search_kw, case=False, na=False)]
+    if search_kw:
+        if exact_match_main:
+            disp = disp[disp["키워드"].astype(str).str.lower() == search_kw.strip().lower()]
+        else:
+            disp = disp[disp["키워드"].astype(str).str.contains(search_kw, case=False, na=False)]
 
     base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "평균순위" in disp.columns: base_cols.append("평균순위")
@@ -255,14 +260,19 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     sel_grp_cmp = col_grp_cmp.selectbox("광고그룹 필터", grps_cmp, key="kw_grp_filter_cmp")
 
     col_search_cmp, col_agg_cmp = st.columns([3, 1])
-    search_kw_cmp = col_search_cmp.text_input("🔍 키워드 검색 (부분 일치)", key="kw_search_cmp")
+    search_kw_cmp = col_search_cmp.text_input("🔍 키워드 검색", key="kw_search_cmp")
+    exact_match_cmp = col_search_cmp.checkbox("☑️ 완전 일치", key="kw_exact_cmp")
     
     col_agg_cmp.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
     agg_kw_cmp = col_agg_cmp.checkbox("🎯 동일 키워드 합산", key="kw_agg_cmp", help="PC/MO 등 그룹으로 나뉜 동일 키워드 성과를 하나로 합산합니다.")
 
     disp = filtered_cmp.copy()
     if sel_grp_cmp != "전체": disp = disp[disp["광고그룹"] == sel_grp_cmp]
-    if search_kw_cmp: disp = disp[disp["키워드"].astype(str).str.contains(search_kw_cmp, case=False, na=False)]
+    if search_kw_cmp:
+        if exact_match_cmp:
+            disp = disp[disp["키워드"].astype(str).str.lower() == search_kw_cmp.strip().lower()]
+        else:
+            disp = disp[disp["키워드"].astype(str).str.contains(search_kw_cmp, case=False, na=False)]
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
     base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
