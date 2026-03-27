@@ -38,7 +38,6 @@ def _style_delta_numeric_neg(val):
 
 def _apply_delta_styles(styler, df: pd.DataFrame):
     pos_cols = [c for c in ['노출 증감', '노출 차이', '클릭 증감', '클릭 차이', '전환 증감', '전환 차이', '전환매출 증감', '전환매출 차이', 'ROAS 증감'] if c in df.columns]
-    # 순위 변화는 숫자가 커지면(순위 하락) 빨간색, 작아지면(순위 상승) 파란색이어야 하므로 neg_cols에 포함
     neg_cols = [c for c in ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이', '순위 변화'] if c in df.columns]
     try:
         if pos_cols: styler = styler.map(_style_delta_numeric, subset=pos_cols)
@@ -189,22 +188,44 @@ def render_keyword_main(view, top_n):
     if view.empty:
         st.info("해당 기간의 키워드/소재 성과 데이터가 없습니다.")
         return
-    col_camp, col_grp = st.columns(2)
+
+    col1, col2 = st.columns(2)
     camps = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
-    sel_camp = col_camp.selectbox("캠페인 필터", camps, key="kw_camp_filter_main")
+    sel_camp = col1.selectbox("캠페인 필터", camps, key="kw_camp_filter_main")
+    
     filtered_for_grp = view.copy()
     if sel_camp != "전체": filtered_for_grp = filtered_for_grp[filtered_for_grp["캠페인"] == sel_camp]
+    
     grps = ["전체"] + sorted([str(x) for x in filtered_for_grp["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered_for_grp.columns else ["전체"]
-    sel_grp = col_grp.selectbox("광고그룹 필터", grps, key="kw_grp_filter_main")
+    sel_grp = col2.selectbox("광고그룹 필터", grps, key="kw_grp_filter_main")
+
+    col3, col4 = st.columns([3, 1])
+    search_kw = col3.text_input("🔍 키워드 검색 (부분 일치)", key="kw_search_main")
+    
+    col4.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
+    agg_kw = col4.checkbox("🎯 동일 키워드 합산 (PC/MO 통합)", key="kw_agg_main", help="캠페인/광고그룹이 달라도 이름이 같은 키워드의 성과를 하나로 합산합니다.")
+    
     disp = filtered_for_grp.copy()
     if sel_grp != "전체": disp = disp[disp["광고그룹"] == sel_grp]
-    
+    if search_kw: disp = disp[disp["키워드"].astype(str).str.contains(search_kw, case=False, na=False)]
+
     base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
     if "평균순위" in disp.columns: base_cols.append("평균순위")
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
-    
+
+    # 키워드 합산(Agg) 처리
+    if agg_kw:
+        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
+        grp_cols = ["업체명", "키워드"]
+        if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
+        
+        disp = disp.groupby(grp_cols, as_index=False).agg(agg_dict)
+        disp = _add_perf_metrics(disp)
+        base_cols = ["키워드", "업체명"] # 캠페인, 광고그룹, 순위 등 제외
+
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
+    
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
     _render_sticky_table(disp, "키워드", height=550, col_config=FAST_KW_CONFIG)
 
@@ -219,26 +240,65 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     cmp_opts = [o for o in opts if o != "비교 안함"]
     cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="kw_cmp_mode")
 
-    b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
-    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
-
     if view.empty:
         st.info("현재 기간의 키워드/소재 데이터가 없습니다.")
         return
+
+    col_camp_cmp, col_grp_cmp = st.columns(2)
+    camps_cmp = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
+    sel_camp_cmp = col_camp_cmp.selectbox("캠페인 필터", camps_cmp, key="kw_camp_filter_cmp")
+
+    filtered_cmp = view.copy()
+    if sel_camp_cmp != "전체": filtered_cmp = filtered_cmp[filtered_cmp["캠페인"] == sel_camp_cmp]
+
+    grps_cmp = ["전체"] + sorted([str(x) for x in filtered_cmp["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered_cmp.columns else ["전체"]
+    sel_grp_cmp = col_grp_cmp.selectbox("광고그룹 필터", grps_cmp, key="kw_grp_filter_cmp")
+
+    col_search_cmp, col_agg_cmp = st.columns([3, 1])
+    search_kw_cmp = col_search_cmp.text_input("🔍 키워드 검색 (부분 일치)", key="kw_search_cmp")
+    
+    col_agg_cmp.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
+    agg_kw_cmp = col_agg_cmp.checkbox("🎯 동일 키워드 합산", key="kw_agg_cmp", help="PC/MO 등 그룹으로 나뉜 동일 키워드 성과를 하나로 합산합니다.")
+
+    disp = filtered_cmp.copy()
+    if sel_grp_cmp != "전체": disp = disp[disp["광고그룹"] == sel_grp_cmp]
+    if search_kw_cmp: disp = disp[disp["키워드"].astype(str).str.contains(search_kw_cmp, case=False, na=False)]
+
+    b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
+    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=50000)
+    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=50000, top_k=50)
 
     base_kw = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
     base_ad = base_ad_bundle.rename(columns={"ad_name": "키워드"}) if not base_ad_bundle.empty else pd.DataFrame()
     base_bundle = pd.concat([base_kw, base_ad], ignore_index=True)
 
-    view_cmp = view.copy()
-    if not base_bundle.empty:
-        valid_keys = [k for k in ["customer_id", "adgroup_id", "키워드"] if k in view_cmp.columns and k in base_bundle.columns]
-        if valid_keys: view_cmp = _apply_comparison_metrics(view_cmp, base_bundle, valid_keys)
-        else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
-    else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [])
+    if agg_kw_cmp:
+        # 1. 대상 기간 합산
+        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
+        grp_cols = ["업체명", "키워드"]
+        if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
+        disp = disp.groupby(grp_cols, as_index=False).agg(agg_dict)
+        disp = _add_perf_metrics(disp)
 
-    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 및 "순위 변화" 조건 완벽 적용
+        # 2. 비교 기간(base) 합산
+        if not base_bundle.empty:
+            base_grp_cols = ["키워드"]
+            if "customer_id" in base_bundle.columns: base_grp_cols.insert(0, "customer_id")
+            base_agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
+            base_bundle = base_bundle.groupby(base_grp_cols, as_index=False).agg(base_agg_dict)
+        
+        valid_keys = [k for k in ["customer_id", "키워드"] if k in disp.columns and k in base_bundle.columns]
+        base_cols_cmp = ["키워드", "업체명"]
+    else:
+        valid_keys = [k for k in ["customer_id", "adgroup_id", "키워드"] if k in disp.columns and k in base_bundle.columns]
+        base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
+        if "평균순위" in disp.columns: base_cols_cmp.append("평균순위")
+
+    if not base_bundle.empty:
+        disp_cmp = _apply_comparison_metrics(disp, base_bundle, valid_keys)
+    else: 
+        disp_cmp = _apply_comparison_metrics(disp, pd.DataFrame(), [])
+
     metrics_cols_cmp = []
     metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
     metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
@@ -249,32 +309,16 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_deltas else ["전환매출"])
     metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"] if show_deltas else ["ROAS(%)"])
 
-    base_cols_cmp = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
-    if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
-        base_cols_cmp.append("평균순위")
-        if show_deltas: # ⚡ 토글을 켰을 때만 순위 변화 등장
-            metrics_cols_cmp.append("순위 변화")
+    if not agg_kw_cmp and show_deltas and ("avg_rank" in disp_cmp.columns or "평균순위" in disp_cmp.columns):
+        metrics_cols_cmp.append("순위 변화")
 
-    render_item_comparison_search("키워드/소재", view_cmp, base_bundle, "키워드", start_dt, end_dt, b1, b2)
+    render_item_comparison_search("키워드/소재", disp_cmp, base_bundle, "키워드", start_dt, end_dt, b1, b2)
 
-    col_camp_cmp, col_grp_cmp = st.columns(2)
-    camps_cmp = ["전체"] + sorted([str(x) for x in view_cmp["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view_cmp.columns else ["전체"]
-    sel_camp_cmp = col_camp_cmp.selectbox("캠페인 필터", camps_cmp, key="kw_camp_filter_cmp")
+    final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp_cmp.columns]
+    disp_final = disp_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-    filtered_cmp = view_cmp.copy()
-    if sel_camp_cmp != "전체": filtered_cmp = filtered_cmp[filtered_cmp["캠페인"] == sel_camp_cmp]
-
-    grps_cmp = ["전체"] + sorted([str(x) for x in filtered_cmp["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered_cmp.columns else ["전체"]
-    sel_grp_cmp = col_grp_cmp.selectbox("광고그룹 필터", grps_cmp, key="kw_grp_filter_cmp")
-
-    disp = filtered_cmp.copy()
-    if sel_grp_cmp != "전체": disp = disp[disp["광고그룹"] == sel_grp_cmp]
-
-    final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp.columns]
-    disp = disp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
-
-    styled_cmp = disp.style.format(FMT_DICT)
-    styled_cmp = _apply_delta_styles(styled_cmp, disp)
+    styled_cmp = disp_final.style.format(FMT_DICT)
+    styled_cmp = _apply_delta_styles(styled_cmp, disp_final)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
     
