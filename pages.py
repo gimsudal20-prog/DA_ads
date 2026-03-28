@@ -6,13 +6,6 @@ from __future__ import annotations
 import os
 import streamlit as st
 
-try:
-    import streamlit_antd_components as sac
-    HAS_SAC = True
-except Exception:
-    sac = None
-    HAS_SAC = False
-
 from data import *
 from ui import render_hero
 from page_helpers import BUILD_TAG, build_filters
@@ -25,43 +18,6 @@ from view_settings import page_settings
 from view_trend import page_trend
 from view_media import page_media
 from view_shopping_query import page_perf_shopping_query
-
-
-def _render_sidebar_nav(nav_items: list[str]) -> str:
-    default_nav = st.session_state.get("nav_page", nav_items[0] if nav_items else "")
-    if default_nav not in nav_items and nav_items:
-        default_nav = nav_items[0]
-
-    if HAS_SAC and nav_items:
-        try:
-            icon_map = {
-                "요약": "house",
-                "예산 및 잔액": "wallet2",
-                "시장 및 매체 분석": "bar-chart",
-                "성과 분석 · 캠페인": "bullseye",
-                "성과 분석 · 키워드": "search",
-                "성과 분석 · 소재": "image",
-                "쇼핑 검색어 분석": "cart",
-                "설정 및 연결": "gear",
-            }
-            items = [sac.MenuItem(label, icon=icon_map.get(label, "app")) for label in nav_items]
-            picked = sac.menu(
-                items=items,
-                index=nav_items.index(default_nav),
-                key="nav_page_sac",
-                open_all=True,
-                indent=14,
-            )
-            if picked in nav_items:
-                st.session_state["nav_page"] = picked
-                return picked
-        except Exception:
-            pass
-
-    picked = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
-    st.session_state["nav_page"] = picked
-    return picked
-
 
 def main():
     try:
@@ -101,7 +57,7 @@ def main():
             "설정 및 연결"
         ] if meta_ready else ["설정 및 연결"]
 
-        nav = _render_sidebar_nav(nav_items)
+        nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
     st.markdown(
         f"""
