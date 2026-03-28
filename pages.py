@@ -82,11 +82,17 @@ def main():
     elif nav == "예산 및 잔액":
         page_budget(meta, engine, f)
     elif nav == "시장 및 매체 분석":
-        tab_trend, tab_media = st.tabs(["시장 트렌드", "매체(지면) 분석"])
-        with tab_trend:
-            page_trend(meta, engine, f)
-        with tab_media:
+        analysis_view = st.segmented_control(
+            "분석 보기",
+            ["시장 트렌드", "매체(지면) 분석"],
+            default="시장 트렌드",
+            key="market_media_view",
+            label_visibility="collapsed",
+        )
+        if analysis_view == "매체(지면) 분석":
             page_media(engine, f)
+        else:
+            page_trend(meta, engine, f)
     elif nav == "성과 분석 · 캠페인":
         page_perf_campaign(meta, engine, f)
     elif nav in ["성과 분석 · 키워드", "성과 분석 · 소재", "쇼핑 검색어 분석"]:
