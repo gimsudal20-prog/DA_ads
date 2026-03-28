@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_settings.py - Settings and Sync page view (Material Icons & Tab separation)."""
+"""view_settings.py - Settings and Sync page view (Fixed Material Icons & Tab separation)."""
 
 from __future__ import annotations
 import time
@@ -149,7 +149,7 @@ def page_settings(engine) -> None:
 
         st.divider()
 
-        st.markdown("### :material/speed: 대시보드 속도 최적화 (인덱스 생성)")
+        st.markdown("### :material/bolt: 대시보드 속도 최적화 (인덱스 생성)")
         st.caption("대량의 데이터가 추가되어 화면이 느려졌을 때 검색 속도를 복구합니다. (최초 1회 권장)")
         
         if st.button("초고속 DB 목차 만들기", type="secondary", icon=":material/bolt:"):
@@ -167,14 +167,14 @@ def page_settings(engine) -> None:
                         for idx in indexes:
                             try: conn.execute(text(idx))
                             except Exception: pass
-                    st.success("DB 최적화 완료!", icon=":material/done_all:")
+                    st.success("DB 최적화 완료!", icon=":material/check_circle:")
                 except Exception as e:
                     st.error(f"오류 발생: {e}", icon=":material/error:")
 
         st.divider()
 
-        st.markdown("### :material/mop: DB 찌꺼기 대청소 (VACUUM ANALYZE)")
-        if st.button("DB 대청소 및 튜닝 실행", type="secondary", icon=":material/database_ready:"):
+        st.markdown("### :material/delete_sweep: DB 찌꺼기 대청소 (VACUUM ANALYZE)")
+        if st.button("DB 대청소 및 튜닝 실행", type="secondary", icon=":material/delete_sweep:"):
             with st.spinner("DB 대청소 중..."):
                 try:
                     tables_to_vacuum = ["fact_keyword_daily", "fact_ad_daily", "fact_campaign_daily", "dim_customer", "dim_campaign", "dim_ad"]
@@ -182,7 +182,7 @@ def page_settings(engine) -> None:
                         for tbl in tables_to_vacuum:
                             try: conn.execute(text(f"VACUUM ANALYZE {tbl};"))
                             except Exception: pass
-                    st.success("DB 대청소 완료!", icon=":material/done_all:")
+                    st.success("DB 대청소 완료!", icon=":material/check_circle:")
                 except Exception as e:
                     st.error(f"청소 중 오류: {e}", icon=":material/error:")
 
