@@ -10,6 +10,7 @@ streamlit-aggrid
 streamlit-echarts
 streamlit-extras
 streamlit-antd-components
+streamlit-shadcn-ui
 
 # Crawling / Others
 playwright>=1.53
