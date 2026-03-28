@@ -29,6 +29,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
+from device_collector_helpers import (
+    ensure_device_tables,
+    build_ad_to_campaign_map,
+    parse_ad_device_report,
+    save_device_stats,
+    summarize_stat_res,
+)
+
 load_dotenv(override=False)
 
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
@@ -210,6 +218,8 @@ def ensure_tables(engine: Engine):
                 ensure_column(engine, table, "primary_roas", "DOUBLE PRECISION")
                 ensure_column(engine, table, "split_available", "BOOLEAN")
                 ensure_column(engine, table, "data_source", "TEXT")
+
+            ensure_device_tables(engine)
             break
         except Exception as e:
             time.sleep(3)
@@ -1633,6 +1643,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
         live_keyword_resolver = make_live_keyword_resolver(customer_id)
 
+        ad_to_campaign_map = build_ad_to_campaign_map(engine, customer_id)
+
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
         dfs: Dict[str, pd.DataFrame | None] = {}
@@ -1766,11 +1778,51 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map)
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if not SKIP_KEYWORD_STATS else 0
 
+            device_ad_cnt = 0
+            device_campaign_cnt = 0
+            ad_stat = {}
+
             if not SKIP_AD_STATS:
                 if ad_report_df is not None and not ad_report_df.empty:
                     ad_data_source = "report_split" if split_report_ok else "report_total_only"
                     ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
                     a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+
+                    ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
+                    if device_meta.get("status") == "ok":
+                        device_ad_cnt = save_device_stats(
+                            engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
+                            data_source="report_device_total_only", source_report="AD"
+                        )
+                        device_campaign_cnt = save_device_stats(
+                            engine, customer_id, target_date, "fact_campaign_device_daily", "campaign_id", camp_device_stat,
+                            data_source="report_device_total_only", source_report="AD"
+                        )
+                        if ad_stat:
+                            total_from_ad = {
+                                "imp": sum(int(v.get("imp", 0) or 0) for v in ad_stat.values()),
+                                "clk": sum(int(v.get("clk", 0) or 0) for v in ad_stat.values()),
+                                "cost": sum(int(v.get("cost", 0) or 0) for v in ad_stat.values()),
+                                "conv": sum(float(v.get("conv", 0.0) or 0.0) for v in ad_stat.values()),
+                                "sales": sum(int(v.get("sales", 0) or 0) for v in ad_stat.values()),
+                            }
+                            total_from_device = summarize_stat_res(ad_device_stat)
+                            diff_cost = total_from_ad["cost"] - total_from_device["cost"]
+                            diff_sales = total_from_ad["sales"] - total_from_device["sales"]
+                            diff_conv = round(total_from_ad["conv"] - total_from_device["conv"], 4)
+                            if diff_cost or diff_sales or diff_conv:
+                                log(
+                                    f"   ⚠️ [ {account_name} ] PC/M 검증 차이 감지: cost={diff_cost}, sales={diff_sales}, conv={diff_conv} "
+                                    f"(source_report=AD, device_rows={device_meta.get('ad_rows', 0)})"
+                                )
+                        miss = int(device_meta.get("missing_campaign_rows", 0) or 0)
+                        miss_msg = f", 캠페인 매핑누락={miss}건" if miss else ""
+                        log(
+                            f"   ✅ [ {account_name} ] PC/M 분리 저장 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})"
+                            f"{miss_msg}"
+                        )
+                    else:
+                        log(f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. status={device_meta.get('status')}")
                 else:
                     log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
                     a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)

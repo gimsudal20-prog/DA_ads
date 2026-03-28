@@ -186,6 +186,38 @@ def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int =
     except: return min_height
 
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    if table_exists(engine, "fact_campaign_device_daily"):
+        fact_cols = get_table_columns(engine, "fact_campaign_device_daily")
+        if "device_name" in fact_cols:
+            where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+            join_sql = ""
+            type_filter = ""
+            if type_sel and table_exists(engine, "dim_campaign"):
+                dim_cols = get_table_columns(engine, "dim_campaign")
+                cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
+                rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+                db_types = [rev_map.get(t, t) for t in type_sel]
+                join_sql = f" LEFT JOIN dim_campaign dc ON f.customer_id::text = dc.customer_id::text AND f.campaign_id::text = dc.campaign_id::text "
+                type_filter = f"AND dc.{cp_col} IN ({_sql_in_str_list(list(db_types))})"
+            sql = f"""
+                SELECT COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류') AS device_name,
+                       SUM(f.cost) AS cost
+                FROM fact_campaign_device_daily f
+                {join_sql}
+                WHERE f.dt BETWEEN :d1 AND :d2
+                  {where_cid}
+                  {type_filter}
+                GROUP BY COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류')
+                HAVING SUM(f.cost) > 0
+                ORDER BY SUM(f.cost) DESC
+            """
+            try:
+                df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+                if df is not None and not df.empty:
+                    return df
+            except Exception:
+                pass
+
     if not table_exists(engine, "fact_media_daily"): return pd.DataFrame()
     cols = get_table_columns(engine, "fact_media_daily")
     if "device_name" not in cols: return pd.DataFrame()
