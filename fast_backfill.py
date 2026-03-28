@@ -1,6 +1,146 @@
-from pathlib import Path
-path=Path('/mnt/data/repo6/DA_ads-main/fast_backfill.py')
-text=path.read_text(encoding='utf-8')
-text=text.replace('        if args.fast:\n            skip_dim_this_run = True\n', '        if args.fast:\n            skip_dim_this_run = True\n            cmd_sa.append("--fast")\n')
-text=text.replace('            print("   ▶ [GFA] 수집 진행 중...", flush=True)\n            cmd_gfa: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]\n            if args.account_name:\n                cmd_gfa += ["--account_name", args.account_name]\n            if args.account_names:\n                cmd_gfa += ["--account_names", args.account_names]\n            run_cmd(cmd_gfa, "GFA", d_str)\n', '            if os.path.exists("collector_gfa.py"):\n                print("   ▶ [GFA] 수집 진행 중...", flush=True)\n                cmd_gfa: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]\n                if args.account_name:\n                    cmd_gfa += ["--account_name", args.account_name]\n                if args.account_names:\n                    cmd_gfa += ["--account_names", args.account_names]\n                run_cmd(cmd_gfa, "GFA", d_str)\n            else:\n                print("   ⏭️ [GFA] collector_gfa.py 파일이 없어 스킵합니다.", flush=True)\n')
-print(text)
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta, date
+from typing import List
+
+
+CART_ENABLE_DATE = date(2026, 3, 11)
+
+
+def clean(v: str | None) -> str:
+    return (v or "").strip()
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="날짜 범위별 SA/GFA 백필 실행기")
+    p.add_argument("--start", required=True, help="시작일 YYYY-MM-DD")
+    p.add_argument("--end", required=True, help="종료일 YYYY-MM-DD")
+    p.add_argument("--workers", type=int, default=1, help="collector.py workers")
+    p.add_argument("--account_name", default="", help="단일 업체명")
+    p.add_argument("--account_names", default="", help="여러 업체명 콤마구분")
+    p.add_argument("--fast", action="store_true", help="collector.py 빠른 수집 모드")
+    p.add_argument(
+        "--sync_dim_first_day",
+        action="store_true",
+        help="첫날만 구조 동기화, 이후 날짜는 --skip_dim",
+    )
+    p.add_argument("--with_gfa", action="store_true", help="collector_gfa.py도 함께 실행")
+    args = p.parse_args()
+    args.start = clean(args.start)
+    args.end = clean(args.end)
+    args.account_name = clean(args.account_name)
+    args.account_names = clean(args.account_names)
+    return args
+
+
+def daterange(start: date, end: date):
+    cur = start
+    while cur <= end:
+        yield cur
+        cur += timedelta(days=1)
+
+
+def run_cmd(cmd: List[str], label: str, day: str) -> None:
+    print(f"   ▶ [{label}] 수집 진행 중...", flush=True)
+    print(f"      실행: {' '.join(cmd)}", flush=True)
+    subprocess.run(cmd, check=True)
+    print(f"   ✅ [{label}] {day} 완료", flush=True)
+
+
+def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]:
+    cmd: List[str] = [
+        sys.executable,
+        "collector.py",
+        "--date",
+        d_str,
+        "--workers",
+        str(args.workers),
+    ]
+    if args.account_name:
+        cmd += ["--account_name", args.account_name]
+    if args.account_names:
+        cmd += ["--account_names", args.account_names]
+    skip_dim_this_run = False
+    if args.fast:
+        skip_dim_this_run = True
+        cmd.append("--fast")
+    if args.sync_dim_first_day:
+        skip_dim_this_run = not first
+    else:
+        skip_dim_this_run = True
+    if skip_dim_this_run:
+        cmd.append("--skip_dim")
+    return cmd
+
+
+def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
+    cmd: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]
+    if args.account_name:
+        cmd += ["--account_name", args.account_name]
+    if args.account_names:
+        cmd += ["--account_names", args.account_names]
+    return cmd
+
+
+def main() -> None:
+    api_key = clean(os.getenv("NAVER_ADS_API_KEY") or os.getenv("NAVER_API_KEY"))
+    if not api_key:
+        print("❌ [FATAL] NAVER_ADS_API_KEY / NAVER_API_KEY 환경변수가 없습니다.", flush=True)
+        sys.exit(1)
+
+    args = parse_args()
+    try:
+        start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
+        end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
+    except ValueError:
+        print("❌ [FATAL] 날짜 형식은 YYYY-MM-DD 여야 합니다.", flush=True)
+        sys.exit(1)
+
+    if start_date > end_date:
+        print("❌ [FATAL] 시작일이 종료일보다 늦습니다.", flush=True)
+        sys.exit(1)
+
+    print(f"🚀 백필 작업 시작: {start_date} ~ {end_date}", flush=True)
+    if args.account_name:
+        print(f"🎯 단일 업체 필터: {args.account_name}", flush=True)
+    if args.account_names:
+        print(f"🎯 복수 업체 필터: {args.account_names}", flush=True)
+    if args.fast:
+        print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
+    if args.sync_dim_first_day:
+        print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
+    else:
+        print("⚡ 전 기간 skip_dim 모드", flush=True)
+    if args.with_gfa:
+        print("📺 GFA 수집 포함", flush=True)
+    print("=" * 60, flush=True)
+
+    first = True
+    for d in daterange(start_date, end_date):
+        d_str = d.strftime("%Y-%m-%d")
+        print(f"\n📅 [ {d_str} ]", flush=True)
+
+        cmd_sa = build_sa_cmd(args, d_str, first)
+        run_cmd(cmd_sa, "SA", d_str)
+
+        if args.with_gfa:
+            if os.path.exists("collector_gfa.py"):
+                cmd_gfa = build_gfa_cmd(args, d_str)
+                run_cmd(cmd_gfa, "GFA", d_str)
+            else:
+                print("   ⏭️ [GFA] collector_gfa.py 파일이 없어 스킵합니다.", flush=True)
+
+        first = False
+
+    print("\n" + "★" * 32, flush=True)
+    print("🎉 백필 작업 완료", flush=True)
+    print("★" * 32, flush=True)
+
+
+if __name__ == "__main__":
+    main()
