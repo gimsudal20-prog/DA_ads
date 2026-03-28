@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""view_settings.py - Settings and Sync page view (Fixed Material Icons & Tab separation)."""
+"""view_settings.py - Settings and Sync page view (Apple Style UI Applied)."""
 
 from __future__ import annotations
 import time
 import pandas as pd
 import streamlit as st
+import streamlit_antd_components as sac  # ✨ 애플 스타일 UI 라이브러리 추가
 from sqlalchemy import text
 
 from data import sql_read, sql_exec, db_ping, seed_from_accounts_xlsx
 
 @st.fragment
 def page_settings(engine) -> None:
-    # ⚡ 제목 마크다운에 Material Icon 적용
+    # 제목 마크다운
     st.markdown("## :material/settings: 설정 및 데이터 관리")
     try: 
         db_ping(engine)
@@ -19,13 +20,30 @@ def page_settings(engine) -> None:
         st.error(f"DB 연결 실패: {e}", icon=":material/error:")
         return
 
-    # 탭은 가장 깔끔하게 텍스트로만 구성
-    tab_roas, tab_manage = st.tabs(["목표 ROAS 설정", "대시보드 관리"])
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ====================================================
+    # 🍎 Apple Style Segmented Control (탭 대신 사용)
+    # ====================================================
+    selected_tab = sac.segmented(
+        items=[
+            sac.SegmentedItem(label='목표 ROAS 설정', icon='bullseye'),
+            sac.SegmentedItem(label='대시보드 관리', icon='sliders'),
+        ],
+        align='center',
+        size='sm',
+        color='indigo',
+        radius='lg',
+        divider=False,
+        use_container_width=True
+    )
+    
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ====================================================
     # 🎯 탭 1: 캠페인별 목표 ROAS 설정
     # ====================================================
-    with tab_roas:
+    if selected_tab == '목표 ROAS 설정':
         st.markdown("### :material/track_changes: 캠페인별 목표 ROAS 설정")
         st.caption("담당자 및 업체를 선택하고 캠페인별 최소/목표 ROAS를 입력하세요. 요약 지면의 '목표 달성 현황'에 즉시 연동됩니다.")
 
@@ -91,7 +109,6 @@ def page_settings(engine) -> None:
                     key=f"roas_editor_{sel_manager}_{sel_acc}"
                 )
 
-                # ⚡ 버튼에 icon 파라미터 적용
                 if st.button("화면의 목표 ROAS 저장", type="primary", icon=":material/save:"):
                     with st.spinner("저장 중입니다..."):
                         with engine.begin() as conn:
@@ -121,7 +138,7 @@ def page_settings(engine) -> None:
     # ====================================================
     # ⚙️ 탭 2: 대시보드 관리 기능
     # ====================================================
-    with tab_manage:
+    elif selected_tab == '대시보드 관리':
         st.markdown("### :material/upload_file: accounts.xlsx → DB 동기화")
         st.caption("새로운 광고주가 추가되거나 정보가 변경되었을 때 엑셀 파일을 업로드하여 DB를 최신화하세요.")
         
@@ -147,7 +164,7 @@ def page_settings(engine) -> None:
             except Exception as e: 
                 st.error(f"실패: {e}", icon=":material/error:")
 
-        st.divider()
+        sac.divider(align='center', color='gray')
 
         st.markdown("### :material/bolt: 대시보드 속도 최적화 (인덱스 생성)")
         st.caption("대량의 데이터가 추가되어 화면이 느려졌을 때 검색 속도를 복구합니다. (최초 1회 권장)")
@@ -171,7 +188,7 @@ def page_settings(engine) -> None:
                 except Exception as e:
                     st.error(f"오류 발생: {e}", icon=":material/error:")
 
-        st.divider()
+        sac.divider(align='center', color='gray')
 
         st.markdown("### :material/delete_sweep: DB 찌꺼기 대청소 (VACUUM ANALYZE)")
         if st.button("DB 대청소 및 튜닝 실행", type="secondary", icon=":material/delete_sweep:"):
@@ -186,7 +203,7 @@ def page_settings(engine) -> None:
                 except Exception as e:
                     st.error(f"청소 중 오류: {e}", icon=":material/error:")
 
-        st.divider()
+        sac.divider(align='center', color='gray')
 
         st.markdown("### :material/warning: Danger Zone (수동 데이터 삭제)")
         with st.container():
