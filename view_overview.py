@@ -498,14 +498,20 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if c not in daily_ts.columns:
                     daily_ts[c] = 0.0
             daily_ts_chart = daily_ts.groupby('dt')[expected_cols].sum().reset_index()
-            tab_t1, tab_t2 = st.tabs(["비용 및 매출 추이", "유입 지표 추이"])
-            with tab_t1:
+            trend_view = st.segmented_control(
+                "추이 보기",
+                ["비용 및 매출 추이", "유입 지표 추이"],
+                default="비용 및 매출 추이",
+                key="overview_trend_view",
+                label_visibility="collapsed",
+            )
+            if trend_view == "유입 지표 추이":
+                render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
+            else:
                 if combined_toggle:
                     render_echarts_dual_axis("비용 및 총 전환 매출 추이", daily_ts_chart, "dt", "cost", "광고비", "tot_sales", "매출", height=320)
                 else:
                     render_echarts_dual_axis("비용 및 구매 완료 매출 추이", daily_ts_chart, "dt", "cost", "광고비", "sales", "매출", height=320)
-            with tab_t2:
-                render_echarts_dual_axis("노출 및 클릭 추이", daily_ts_chart, "dt", "imp", "노출수", "clk", "클릭수", height=320)
         else:
             st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
@@ -651,9 +657,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["통합 ROAS(%)", "통합 ROAS 증감"] if show_deltas else ["통합 ROAS(%)"])
         return cols
 
-    tab_acc, tab_type, tab_period, tab_camp = st.tabs(["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"])
+    detail_panel = st.segmented_control(
+        "세부 성과 보기",
+        ["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"],
+        default="🏢 업체별 요약",
+        key="overview_detail_panel",
+        label_visibility="collapsed",
+    )
 
-    with tab_acc:
+    if detail_panel == "🏢 업체별 요약":
         if not df_display.empty:
             view_cols = ["계정명"] + [c for c in get_funnel_cols(show_deltas) if c in df_display.columns]
             disp_df = df_display[view_cols].copy()
@@ -663,7 +675,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    with tab_type:
+    elif detail_panel == "🏷️ 매체/유형별 요약":
         if not df_type_display.empty:
             view_cols = ["캠페인 유형"] + [c for c in get_funnel_cols(show_deltas) if c in df_type_display.columns]
             disp_type_df = df_type_display[view_cols].copy()
@@ -673,25 +685,36 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    with tab_period:
+    elif detail_panel == "📅 기간별 상세":
         if any(not df.empty for df in [daily_disp, dow_disp, weekly_disp]):
-            sub_daily, sub_weekly, sub_dow = st.tabs(["일자별", "주차별", "요일별"])
-            
+            period_panel = st.segmented_control(
+                "기간 세부 보기",
+                ["일자별", "주차별", "요일별"],
+                default="일자별",
+                key="overview_period_panel",
+                label_visibility="collapsed",
+            )
+
             def _display_ts_tab(df, col_name):
-                if df.empty: return
+                if df.empty:
+                    st.info("조건에 맞는 데이터가 없습니다.")
+                    return
                 v_cols = [col_name] + [c for c in get_funnel_cols(show_deltas) if c in df.columns]
                 d_df = df[v_cols].copy()
                 s_df = d_df.style.format(fmt_dict_standard)
                 s_df = _apply_overview_delta_styles(s_df, d_df)
                 _render_overview_sticky_table(s_df, col_name, height=420, hide_index=True)
 
-            with sub_daily: _display_ts_tab(daily_disp, "일자")
-            with sub_weekly: _display_ts_tab(weekly_disp, "주차")
-            with sub_dow: _display_ts_tab(dow_disp, "요일명")
+            if period_panel == "주차별":
+                _display_ts_tab(weekly_disp, "주차")
+            elif period_panel == "요일별":
+                _display_ts_tab(dow_disp, "요일명")
+            else:
+                _display_ts_tab(daily_disp, "일자")
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    with tab_camp:
+    else:
         if not camp_disp.empty:
             camp_disp_top = camp_disp.head(200) # 브라우저 렌더링 과부하 방지
             view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_deltas) if c in camp_disp_top.columns]
