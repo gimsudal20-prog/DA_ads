@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""view_settings.py - Settings and Sync page view (Apple Style UI Applied)."""
+"""view_settings.py - Settings and Sync page view (Shadcn UI Applied)."""
 
 from __future__ import annotations
 import time
 import pandas as pd
 import streamlit as st
-import streamlit_antd_components as sac  # ✨ 애플 스타일 UI 라이브러리 추가
+import streamlit_shadcn_ui as ui  # ✨ 전 세계 1위 트렌드 Shadcn UI 라이브러리 추가
 from sqlalchemy import text
 
 from data import sql_read, sql_exec, db_ping, seed_from_accounts_xlsx
@@ -23,19 +23,12 @@ def page_settings(engine) -> None:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ====================================================
-    # 🍎 Apple Style Segmented Control (탭 대신 사용)
+    # 🖤 Vercel / Notion 스타일의 Shadcn UI 탭
     # ====================================================
-    selected_tab = sac.segmented(
-        items=[
-            sac.SegmentedItem(label='목표 ROAS 설정', icon='bullseye'),
-            sac.SegmentedItem(label='대시보드 관리', icon='sliders'),
-        ],
-        align='center',
-        size='sm',
-        color='indigo',
-        radius='lg',
-        divider=False,
-        use_container_width=True
+    selected_tab = ui.tabs(
+        options=['목표 ROAS 설정', '대시보드 관리'], 
+        default_value='목표 ROAS 설정', 
+        key="setting_tabs"
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -164,7 +157,7 @@ def page_settings(engine) -> None:
             except Exception as e: 
                 st.error(f"실패: {e}", icon=":material/error:")
 
-        sac.divider(align='center', color='gray')
+        st.divider()
 
         st.markdown("### :material/bolt: 대시보드 속도 최적화 (인덱스 생성)")
         st.caption("대량의 데이터가 추가되어 화면이 느려졌을 때 검색 속도를 복구합니다. (최초 1회 권장)")
@@ -188,7 +181,7 @@ def page_settings(engine) -> None:
                 except Exception as e:
                     st.error(f"오류 발생: {e}", icon=":material/error:")
 
-        sac.divider(align='center', color='gray')
+        st.divider()
 
         st.markdown("### :material/delete_sweep: DB 찌꺼기 대청소 (VACUUM ANALYZE)")
         if st.button("DB 대청소 및 튜닝 실행", type="secondary", icon=":material/delete_sweep:"):
@@ -203,7 +196,7 @@ def page_settings(engine) -> None:
                 except Exception as e:
                     st.error(f"청소 중 오류: {e}", icon=":material/error:")
 
-        sac.divider(align='center', color='gray')
+        st.divider()
 
         st.markdown("### :material/warning: Danger Zone (수동 데이터 삭제)")
         with st.container():
