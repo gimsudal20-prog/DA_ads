@@ -58,11 +58,10 @@ def page_settings(engine) -> None:
             try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN min_roas DOUBLE PRECISION;"))
             except Exception: pass
 
-        # ⚡ 데이터 타입 충돌 해결: c.customer_id를 VARCHAR로 형변환
         sql = """
             SELECT 
                 c.customer_id, 
-                COALESCE(cust.account_name, CAST(c.customer_id AS VARCHAR)) as account_name,
+                COALESCE(cust.account_name, c.customer_id) as account_name,
                 c.campaign_id, 
                 c.campaign_name, 
                 c.target_roas, 
