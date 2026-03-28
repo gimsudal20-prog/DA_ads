@@ -58,16 +58,17 @@ def page_settings(engine) -> None:
             try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN min_roas DOUBLE PRECISION;"))
             except Exception: pass
 
+        # ⚡ 데이터 타입 충돌 완전 해결: JOIN 시 양쪽을 모두 문자열로 형변환(CAST)
         sql = """
             SELECT 
                 c.customer_id, 
-                COALESCE(cust.account_name, c.customer_id) as account_name,
+                COALESCE(cust.account_name, CAST(c.customer_id AS VARCHAR)) as account_name,
                 c.campaign_id, 
                 c.campaign_name, 
                 c.target_roas, 
                 c.min_roas 
             FROM dim_campaign c
-            LEFT JOIN dim_customer cust ON c.customer_id = cust.customer_id
+            LEFT JOIN dim_customer cust ON CAST(c.customer_id AS VARCHAR) = CAST(cust.customer_id AS VARCHAR)
         """
         camp_df = sql_read(engine, sql)
 
@@ -184,3 +185,5 @@ def page_settings(engine) -> None:
                         st.cache_data.clear()
                     except Exception as e:
                         st.error(f"오류: {e}")
+
+}
