@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
+
+try:
+    import streamlit_antd_components as sac
+    HAS_SAC = True
+except Exception:
+    sac = None
+    HAS_SAC = False
 from typing import Dict, List
 
 from data import *
@@ -36,6 +43,53 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
 def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
     try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
     except Exception: return col.multiselect(label, options, default=default, key=key)
+
+
+def _sac_divider(label: str, icon: str | None = None):
+    if HAS_SAC:
+        try:
+            sac.divider(label, icon=icon, color="gray")
+            return
+        except Exception:
+            pass
+    st.markdown(f"<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>{label}</div>", unsafe_allow_html=True)
+
+
+def _sac_segmented_choice(options: list[str], current_value: str, *, key: str, fallback_label: str) -> str:
+    idx = options.index(current_value) if current_value in options else 0
+    if HAS_SAC:
+        try:
+            picked = sac.segmented(
+                items=options,
+                index=idx,
+                key=key,
+                return_index=False,
+                align='center',
+                radius='lg',
+            )
+            if picked in options:
+                return picked
+        except Exception:
+            pass
+    return st.selectbox(fallback_label, options, index=idx, key=f"{key}_fallback", label_visibility="collapsed")
+
+
+def _render_filter_summary_tags(manager_sel: list, account_sel: list, type_sel: list):
+    if not HAS_SAC:
+        return
+    try:
+        tags = []
+        if manager_sel:
+            tags.append(sac.Tag(f"담당자 {len(manager_sel)}", color='blue', bordered=False))
+        if account_sel:
+            tags.append(sac.Tag(f"계정 {len(account_sel)}", color='cyan', bordered=False))
+        if type_sel:
+            tags.append(sac.Tag(f"유형 {len(type_sel)}", color='purple', bordered=False))
+        if tags:
+            sac.tags(tags, key='active_sidebar_filter_tags')
+    except Exception:
+        pass
+
 
 def get_dynamic_cmp_options(d1: date, d2: date) -> List[str]:
     delta = (d2 - d1).days + 1
@@ -98,7 +152,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     with st.sidebar:
         st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
 
-        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
+        _sac_divider("기간 선택", icon="calendar2-week")
         
         period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
         sv_period = sv.get("period_mode", "어제")
@@ -113,13 +167,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         with c_prev:
             st.button("◀", key="f_btn_prev", on_click=_shift_period, args=("prev",), use_container_width=True)
         with c_sel:
-            period_mode = st.selectbox(
-                "기간 간편 선택",
-                period_options,
-                # ✨ 핵심: index 값을 강제로 넣지 않고 key(session_state)에 온전히 제어권을 넘김
-                key="f_period_mode", 
-                label_visibility="collapsed"
-            )
+            period_mode = _sac_segmented_choice(period_options, sv_period, key="f_period_mode_sac", fallback_label="기간 간편 선택")
         with c_next:
             st.button("▶", key="f_btn_next", on_click=_shift_period, args=("next",), use_container_width=True)
 
@@ -151,7 +199,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
 
-        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
+        _sac_divider("담당자 및 계정", icon="people")
         manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체 담당자")
 
         accounts_by_mgr = accounts
@@ -166,9 +214,16 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
         account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
 
+        _render_filter_summary_tags(manager_sel or [], account_sel or [], sv.get('type_sel', []))
+
         st.divider()
         
         with st.expander("상세 설정 (검색, 표시 제한)", expanded=False):
+            if HAS_SAC:
+                try:
+                    sac.divider('고급 필터', icon='sliders', color='gray')
+                except Exception:
+                    pass
             q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 입력")
             type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
@@ -176,6 +231,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
             top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
             top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
+
+        _render_filter_summary_tags(manager_sel or [], account_sel or [], type_sel or [])
 
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
