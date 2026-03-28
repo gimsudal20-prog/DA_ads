@@ -12,14 +12,18 @@ from sqlalchemy.engine import Engine
 
 
 DEVICE_HEADER_CANDIDATES = [
-    "pc mobile type", "pc_mobile_type", "pc/mobile type", "pcmobiletype",
-    "device", "device_name", "devicename", "기기", "디바이스", "노출기기", "노출 기기", "단말기",
+    "pc mobile type", "pc_mobile_type", "pc/mobile type", "pcmobiletype", "pc/mobile",
+    "pcmobile", "pc_mobile", "pc mobile", "pc/m", "device", "device_name",
+    "devicename", "기기", "디바이스", "노출기기", "노출 기기", "노출디바이스",
+    "단말기", "pc모바일", "피시모바일", "기기구분", "디바이스구분", "플랫폼",
 ]
 
 
 def _normalize_header(v: str) -> str:
-    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
-
+    s = str(v or "").strip().lower()
+    for ch in [" ", "_", "-", "\"", "'", "/", "\\", "(", ")", "[", "]", "{", "}", ".", ":", ";", "\t", "\r", "\n"]:
+        s = s.replace(ch, "")
+    return s
 
 def _get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [_normalize_header(h) for h in headers]
@@ -194,6 +198,59 @@ def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, A
                     pass
 
 
+def _looks_like_ad_id(v: Any) -> bool:
+    s = str(v or "").strip().lower()
+    if not s or s == "-":
+        return False
+    return s.startswith("nad-") or s.startswith("ad-") or s.startswith("nad")
+
+
+def _detect_column_by_values(data_df: pd.DataFrame, checker, exclude: set[int] | None = None, min_hits: int = 2) -> int:
+    exclude = exclude or set()
+    if data_df is None or data_df.empty:
+        return -1
+    best_idx = -1
+    best_hits = 0
+    probe = data_df.head(300)
+    for idx in range(probe.shape[1]):
+        if idx in exclude:
+            continue
+        hits = 0
+        seen = 0
+        for v in probe.iloc[:, idx].tolist():
+            s = str(v or "").strip()
+            if not s or s == "-":
+                continue
+            seen += 1
+            if checker(v):
+                hits += 1
+        if hits > best_hits and hits >= min_hits:
+            best_idx = idx
+            best_hits = hits
+    return best_idx
+
+
+def _find_header_idx(df: pd.DataFrame) -> int:
+    pk_needles = [_normalize_header(x) for x in ["광고id", "소재id", "adid"]]
+    metric_needles = [_normalize_header(x) for x in [
+        "노출수", "impressions", "impcnt", "클릭수", "clicks", "clkcnt",
+        "총비용", "cost", "salesamt", "전환수", "conversions", "ccnt"
+    ]]
+    for i in range(min(120, len(df))):
+        row_vals = [_normalize_header(str(x)) for x in df.iloc[i].fillna("")]
+        if not any(row_vals):
+            continue
+        has_pk = any(x in row_vals for x in pk_needles)
+        has_metric = any(x in row_vals for x in metric_needles)
+        if has_pk and has_metric:
+            return i
+        if has_pk and any("campaignid" == x or "광고그룹id" == x or "adgroupid" == x for x in row_vals):
+            return i
+        if has_pk and any("date" == x or "일자" == x for x in row_vals):
+            return i
+    return -1
+
+
 def parse_ad_device_report(
     df: pd.DataFrame,
     ad_to_campaign: Dict[str, str] | None = None,
@@ -202,25 +259,14 @@ def parse_ad_device_report(
         return {}, {}, {"status": "empty"}
 
     ad_to_campaign = ad_to_campaign or {}
-    header_idx = -1
-    pk_needles = [_normalize_header(x) for x in ["광고id", "소재id", "adid"]]
-    device_needles = [_normalize_header(x) for x in DEVICE_HEADER_CANDIDATES]
-    metric_needles = [_normalize_header(x) for x in ["노출수", "impressions", "impcnt", "클릭수", "clicks", "clkcnt"]]
-
-    for i in range(min(25, len(df))):
-        row_vals = [_normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        has_pk = any(x in row_vals for x in pk_needles)
-        has_device = any(x in row_vals for x in device_needles)
-        has_metric = any(x in row_vals for x in metric_needles)
-        if has_pk and has_device and has_metric:
-            header_idx = i
-            break
+    header_idx = _find_header_idx(df)
 
     if header_idx == -1:
         return {}, {}, {"status": "no_header"}
 
-    headers = [_normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-    data_df = df.iloc[header_idx + 1:]
+    raw_headers = [str(x) for x in df.iloc[header_idx].fillna("")]
+    headers = [_normalize_header(x) for x in raw_headers]
+    data_df = df.iloc[header_idx + 1:].reset_index(drop=True)
 
     ad_idx = _get_col_idx(headers, ["광고id", "소재id", "adid"])
     camp_idx = _get_col_idx(headers, ["캠페인id", "campaignid"])
@@ -232,8 +278,21 @@ def parse_ad_device_report(
     sales_idx = _get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
     rank_idx = _get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
 
+    if ad_idx == -1:
+        ad_idx = _detect_column_by_values(data_df, _looks_like_ad_id, min_hits=2)
+    if device_idx == -1:
+        exclude = {x for x in [ad_idx, camp_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx, rank_idx] if x != -1}
+        device_idx = _detect_column_by_values(data_df, lambda v: bool(normalize_device_name(v)), exclude=exclude, min_hits=2)
+
     if ad_idx == -1 or device_idx == -1:
-        return {}, {}, {"status": "missing_required_columns", "ad_idx": ad_idx, "device_idx": device_idx}
+        sample_headers = [h for h in raw_headers if str(h).strip()][:12]
+        return {}, {}, {
+            "status": "missing_required_columns",
+            "ad_idx": ad_idx,
+            "device_idx": device_idx,
+            "header_idx": header_idx,
+            "sample_headers": sample_headers,
+        }
 
     ad_stats: Dict[Tuple[str, str], dict] = {}
     for _, row in data_df.iterrows():
