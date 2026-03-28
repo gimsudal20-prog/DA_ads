@@ -1822,7 +1822,22 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             f"{miss_msg}"
                         )
                     else:
-                        log(f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. status={device_meta.get('status')}")
+                        debug_keys = [
+                            "header_idx", "ad_idx", "camp_idx", "device_idx", "imp_idx", "clk_idx", "cost_idx",
+                            "conv_idx", "sales_idx", "rank_idx", "scan_rows", "reject_short", "reject_empty_ad",
+                            "reject_empty_device", "reject_zero_metrics", "sample_headers", "preview_rows"
+                        ]
+                        extra_parts = []
+                        for _k in debug_keys:
+                            _v = device_meta.get(_k)
+                            if _v in (None, "", [], {}):
+                                continue
+                            extra_parts.append(f"{_k}={_v}")
+                        extra_msg = f" | {' | '.join(extra_parts)}" if extra_parts else ""
+                        log(
+                            f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. "
+                            f"status={device_meta.get('status')}{extra_msg}"
+                        )
                 else:
                     log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
                     a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
