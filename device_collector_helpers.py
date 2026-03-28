@@ -11,10 +11,31 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 
+DEVICE_PARSER_VERSION = "pcm_v20260328_final2"
+
 DEVICE_HEADER_CANDIDATES = [
     "pc mobile type", "pc_mobile_type", "pc/mobile type", "pcmobiletype",
-    "device", "device_name", "devicename", "기기", "디바이스", "노출기기", "노출 기기", "단말기",
+    "device", "device_name", "devicename", "platform", "platform type",
+    "기기", "디바이스", "노출기기", "노출 기기", "단말기", "플랫폼",
 ]
+AD_HEADER_CANDIDATES = ["광고id", "소재id", "adid"]
+CAMPAIGN_HEADER_CANDIDATES = ["캠페인id", "campaignid"]
+IMP_HEADER_CANDIDATES = ["노출수", "impressions", "impcnt"]
+CLK_HEADER_CANDIDATES = ["클릭수", "clicks", "clkcnt"]
+COST_HEADER_CANDIDATES = ["총비용", "cost", "salesamt"]
+CONV_HEADER_CANDIDATES = ["전환수", "conversions", "ccnt"]
+SALES_HEADER_CANDIDATES = ["전환매출액", "conversionvalue", "sales", "convamt"]
+RANK_HEADER_CANDIDATES = ["평균노출순위", "averageposition", "avgrnk"]
+
+DEFAULT_AD_IDX = 5
+DEFAULT_CAMP_IDX = 1
+DEFAULT_DEVICE_IDX = 7
+DEFAULT_IMP_IDX = 8
+DEFAULT_CLK_IDX = 9
+DEFAULT_COST_IDX = 10
+DEFAULT_CONV_IDX = 11
+DEFAULT_SALES_IDX = 12
+DEFAULT_RANK_IDX = 14
 
 
 def _normalize_header(v: str) -> str:
@@ -58,11 +79,110 @@ def normalize_device_name(v: Any) -> str:
         return "PC"
     if raw_upper in {"M", "MO", "MOBILE"} or norm in {"m", "mo", "mobile"}:
         return "MOBILE"
-    if "모바일" in raw or "mobile" in norm or "phone" in norm or "app" in norm:
+    if any(k in raw for k in ["모바일", "휴대폰"]) or any(k in norm for k in ["mobile", "phone", "app", "mobileweb"]):
         return "MOBILE"
     if "pc" in norm:
         return "PC"
     return ""
+
+
+def _looks_like_ad_id(v: Any) -> bool:
+    s = str(v or "").strip().lower()
+    return s.startswith("nad-")
+
+
+def _looks_like_campaign_id(v: Any) -> bool:
+    s = str(v or "").strip().lower()
+    return s.startswith("cmp-")
+
+
+def _looks_like_metric_value(v: Any) -> bool:
+    s = str(v or "").replace(",", "").strip()
+    if not s or s == "-":
+        return False
+    try:
+        float(s)
+        return True
+    except Exception:
+        return False
+
+
+def _nonempty_headers(row: pd.Series) -> List[str]:
+    return [str(x) for x in row.fillna("").tolist() if str(x).strip()]
+
+
+def _score_header_row(row_vals: List[str]) -> int:
+    pk_score = 2 if any(x in row_vals for x in [_normalize_header(x) for x in AD_HEADER_CANDIDATES]) else 0
+    device_score = 2 if any(x in row_vals for x in [_normalize_header(x) for x in DEVICE_HEADER_CANDIDATES]) else 0
+    metric_hits = sum(1 for x in [_normalize_header(x) for x in IMP_HEADER_CANDIDATES + CLK_HEADER_CANDIDATES + COST_HEADER_CANDIDATES] if x in row_vals)
+    metric_score = min(metric_hits, 3)
+    return pk_score + device_score + metric_score
+
+
+def _detect_header_idx(df: pd.DataFrame) -> int:
+    best_idx = -1
+    best_score = -1
+    scan_limit = min(60, len(df))
+    for i in range(scan_limit):
+        row_vals = [_normalize_header(str(x)) for x in df.iloc[i].fillna("")]
+        score = _score_header_row(row_vals)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+        if score >= 4:
+            return i
+    return best_idx if best_score >= 2 else -1
+
+
+def _infer_value_based_indices(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {}
+    sample = df.head(min(120, len(df))).copy()
+    ncols = len(sample.columns)
+    ad_idx = -1
+    ad_hits = -1
+    device_idx = -1
+    device_hits = -1
+    camp_idx = -1
+    camp_hits = -1
+
+    for idx in range(ncols):
+        col = sample.iloc[:, idx].fillna("")
+        a_hits = int(sum(1 for v in col if _looks_like_ad_id(v)))
+        d_hits = int(sum(1 for v in col if normalize_device_name(v)))
+        c_hits = int(sum(1 for v in col if _looks_like_campaign_id(v)))
+        if a_hits > ad_hits:
+            ad_hits, ad_idx = a_hits, idx
+        if d_hits > device_hits:
+            device_hits, device_idx = d_hits, idx
+        if c_hits > camp_hits:
+            camp_hits, camp_idx = c_hits, idx
+
+    metrics = {
+        "imp_idx": DEFAULT_IMP_IDX if ncols > DEFAULT_IMP_IDX else -1,
+        "clk_idx": DEFAULT_CLK_IDX if ncols > DEFAULT_CLK_IDX else -1,
+        "cost_idx": DEFAULT_COST_IDX if ncols > DEFAULT_COST_IDX else -1,
+        "conv_idx": DEFAULT_CONV_IDX if ncols > DEFAULT_CONV_IDX else -1,
+        "sales_idx": DEFAULT_SALES_IDX if ncols > DEFAULT_SALES_IDX else -1,
+        "rank_idx": DEFAULT_RANK_IDX if ncols > DEFAULT_RANK_IDX else -1,
+    }
+
+    if ad_hits <= 0:
+        ad_idx = DEFAULT_AD_IDX if ncols > DEFAULT_AD_IDX else -1
+    if device_hits <= 0:
+        device_idx = DEFAULT_DEVICE_IDX if ncols > DEFAULT_DEVICE_IDX else -1
+    if camp_hits <= 0:
+        camp_idx = DEFAULT_CAMP_IDX if ncols > DEFAULT_CAMP_IDX else -1
+
+    return {
+        "ad_idx": ad_idx,
+        "device_idx": device_idx,
+        "camp_idx": camp_idx,
+        "ad_hits": ad_hits,
+        "device_hits": device_hits,
+        "camp_hits": camp_hits,
+        **metrics,
+    }
 
 
 def _ensure_column(engine: Engine, table: str, column: str, datatype: str):
@@ -143,7 +263,7 @@ def build_ad_to_campaign_map(engine: Engine, customer_id: str) -> Dict[str, str]
 
 def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk_name: str):
     pk_cols = ["dt", "customer_id", pk_name, "device_name"]
-    for attempt in range(3):
+    for _ in range(3):
         try:
             with engine.begin() as conn:
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt"), {"cid": str(customer_id), "dt": d1})
@@ -166,7 +286,7 @@ def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, A
     sql = f"INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}"
     tuples = list(df.itertuples(index=False, name=None))
 
-    for attempt in range(3):
+    for _ in range(3):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
@@ -199,41 +319,62 @@ def parse_ad_device_report(
     ad_to_campaign: Dict[str, str] | None = None,
 ) -> Tuple[Dict[Tuple[str, str], dict], Dict[Tuple[str, str], dict], dict]:
     if df is None or df.empty:
-        return {}, {}, {"status": "empty"}
+        return {}, {}, {"status": "empty", "parser": DEVICE_PARSER_VERSION}
 
     ad_to_campaign = ad_to_campaign or {}
-    header_idx = -1
-    pk_needles = [_normalize_header(x) for x in ["광고id", "소재id", "adid"]]
-    device_needles = [_normalize_header(x) for x in DEVICE_HEADER_CANDIDATES]
-    metric_needles = [_normalize_header(x) for x in ["노출수", "impressions", "impcnt", "클릭수", "clicks", "clkcnt"]]
+    raw_df = df.reset_index(drop=True).copy()
+    header_idx = _detect_header_idx(raw_df)
+    raw_headers: List[str] = []
 
-    for i in range(min(25, len(df))):
-        row_vals = [_normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        has_pk = any(x in row_vals for x in pk_needles)
-        has_device = any(x in row_vals for x in device_needles)
-        has_metric = any(x in row_vals for x in metric_needles)
-        if has_pk and has_device and has_metric:
-            header_idx = i
-            break
+    if header_idx != -1:
+        raw_headers = _nonempty_headers(raw_df.iloc[header_idx])
+        headers = [_normalize_header(str(x)) for x in raw_df.iloc[header_idx].fillna("")]
+        data_df = raw_df.iloc[header_idx + 1:].reset_index(drop=True)
+        ad_idx = _get_col_idx(headers, AD_HEADER_CANDIDATES)
+        camp_idx = _get_col_idx(headers, CAMPAIGN_HEADER_CANDIDATES)
+        device_idx = _get_col_idx(headers, DEVICE_HEADER_CANDIDATES)
+        imp_idx = _get_col_idx(headers, IMP_HEADER_CANDIDATES)
+        clk_idx = _get_col_idx(headers, CLK_HEADER_CANDIDATES)
+        cost_idx = _get_col_idx(headers, COST_HEADER_CANDIDATES)
+        conv_idx = _get_col_idx(headers, CONV_HEADER_CANDIDATES)
+        sales_idx = _get_col_idx(headers, SALES_HEADER_CANDIDATES)
+        rank_idx = _get_col_idx(headers, RANK_HEADER_CANDIDATES)
+    else:
+        data_df = raw_df
+        ad_idx = camp_idx = device_idx = imp_idx = clk_idx = cost_idx = conv_idx = sales_idx = rank_idx = -1
 
-    if header_idx == -1:
-        return {}, {}, {"status": "no_header"}
-
-    headers = [_normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-    data_df = df.iloc[header_idx + 1:]
-
-    ad_idx = _get_col_idx(headers, ["광고id", "소재id", "adid"])
-    camp_idx = _get_col_idx(headers, ["캠페인id", "campaignid"])
-    device_idx = _get_col_idx(headers, DEVICE_HEADER_CANDIDATES)
-    imp_idx = _get_col_idx(headers, ["노출수", "impressions", "impcnt"])
-    clk_idx = _get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
-    cost_idx = _get_col_idx(headers, ["총비용", "cost", "salesamt"])
-    conv_idx = _get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-    sales_idx = _get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
-    rank_idx = _get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
+    inferred = _infer_value_based_indices(data_df if not data_df.empty else raw_df)
+    if ad_idx == -1:
+        ad_idx = inferred.get("ad_idx", -1)
+    if device_idx == -1:
+        device_idx = inferred.get("device_idx", -1)
+    if camp_idx == -1:
+        camp_idx = inferred.get("camp_idx", -1)
+    if imp_idx == -1:
+        imp_idx = inferred.get("imp_idx", -1)
+    if clk_idx == -1:
+        clk_idx = inferred.get("clk_idx", -1)
+    if cost_idx == -1:
+        cost_idx = inferred.get("cost_idx", -1)
+    if conv_idx == -1:
+        conv_idx = inferred.get("conv_idx", -1)
+    if sales_idx == -1:
+        sales_idx = inferred.get("sales_idx", -1)
+    if rank_idx == -1:
+        rank_idx = inferred.get("rank_idx", -1)
 
     if ad_idx == -1 or device_idx == -1:
-        return {}, {}, {"status": "missing_required_columns", "ad_idx": ad_idx, "device_idx": device_idx}
+        return {}, {}, {
+            "status": "missing_required_columns" if header_idx != -1 else "no_header",
+            "parser": DEVICE_PARSER_VERSION,
+            "header_idx": header_idx,
+            "ad_idx": ad_idx,
+            "device_idx": device_idx,
+            "camp_idx": camp_idx,
+            "sample_headers": raw_headers[:16],
+            "infer_ad_hits": inferred.get("ad_hits"),
+            "infer_device_hits": inferred.get("device_hits"),
+        }
 
     ad_stats: Dict[Tuple[str, str], dict] = {}
     scan_rows = 0
@@ -252,9 +393,9 @@ def parse_ad_device_report(
         raw_ad_id = row.iloc[ad_idx] if ad_idx != -1 and len(row) > ad_idx else ""
         raw_device = row.iloc[device_idx] if device_idx != -1 and len(row) > device_idx else ""
         ad_id = str(raw_ad_id).strip()
-        if not ad_id or ad_id == "-" or ad_id.lower() in {"adid", "광고id", "소재id"}:
+        if not _looks_like_ad_id(ad_id):
             reject_empty_ad += 1
-            if len(preview_rows) < 3 and str(raw_device).strip():
+            if len(preview_rows) < 3 and (str(raw_ad_id).strip() or str(raw_device).strip()):
                 preview_rows.append({
                     "row_no": row_no,
                     "raw_ad": str(raw_ad_id),
@@ -317,11 +458,11 @@ def parse_ad_device_report(
                 bucket["rank_cnt"] += imp
 
     if not ad_stats:
-        sample_headers = [h for h in raw_headers if str(h).strip()][:16]
         return {}, {}, {
             "status": "no_rows",
+            "parser": DEVICE_PARSER_VERSION,
             "header_idx": header_idx,
-            "sample_headers": sample_headers,
+            "sample_headers": raw_headers[:16],
             "ad_idx": ad_idx,
             "camp_idx": camp_idx,
             "device_idx": device_idx,
@@ -337,6 +478,9 @@ def parse_ad_device_report(
             "reject_empty_device": reject_empty_device,
             "reject_zero_metrics": reject_zero_metrics,
             "preview_rows": preview_rows,
+            "infer_ad_hits": inferred.get("ad_hits"),
+            "infer_device_hits": inferred.get("device_hits"),
+            "infer_camp_hits": inferred.get("camp_hits"),
         }
 
     campaign_stats: Dict[Tuple[str, str], dict] = {}
@@ -366,9 +510,11 @@ def parse_ad_device_report(
 
     return ad_stats, campaign_stats, {
         "status": "ok",
+        "parser": DEVICE_PARSER_VERSION,
         "ad_rows": len(ad_stats),
         "campaign_rows": len(campaign_stats),
         "missing_campaign_rows": missing_campaign_count,
+        "header_idx": header_idx,
     }
 
 
