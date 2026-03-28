@@ -185,5 +185,3 @@ def page_settings(engine) -> None:
                         st.cache_data.clear()
                     except Exception as e:
                         st.error(f"오류: {e}")
-
-}
