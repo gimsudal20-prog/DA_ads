@@ -8,10 +8,11 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
+from sqlalchemy.pool import NullPool  # ✨ DB 연결 끊김 방지를 위한 NullPool 임포트 추가
 from datetime import date
 
 # ==========================================
-# 1. Database Connection
+# 1. Database Connection (NullPool 적용)
 # ==========================================
 @st.cache_resource
 def get_engine():
@@ -28,14 +29,10 @@ def get_engine():
         "keepalives_count": 5
     }
 
-    # ✨ pool_recycle을 3600(1시간)으로 설정하여 포트 고갈 방지 및 유휴 커넥션 안정적 유지
-    # pool_pre_ping=True 적용으로 쿼리 전 끊긴 연결 자동 갱신
+    # ✨ 수정됨: NullPool 적용 (사용하지 않는 커넥션을 쥐고 있지 않도록 하여 밤새 끊기는 현상 차단)
     return create_engine(
         db_url,
-        pool_size=20,
-        max_overflow=40,
-        pool_pre_ping=True,
-        pool_recycle=3600,
+        poolclass=NullPool,
         connect_args=connect_args,
         future=True
     )
@@ -77,35 +74,32 @@ def get_table_columns(_engine, table_name: str) -> list:
 
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
+    last_error = None
     for attempt in range(3):
         try:
             with _engine.connect() as conn:
                 return pd.read_sql(text(query), conn, params=params)
-        except (OperationalError, StatementError, InterfaceError):
-            if attempt == 2:
-                st.cache_resource.clear()
-                st.error("밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
-                st.stop()
-            _engine.dispose()
-            time.sleep(1.0)
         except Exception as e:
-            st.error(f"데이터 로드 오류 발생: {e}")
-            st.stop()
+            last_error = e
+            time.sleep(1.0)
+            
+    st.cache_resource.clear()
+    st.error(f"DB 연결이 지연되고 있습니다. 잠시 후 새로고침(F5) 해주세요. (사유: {last_error})")
+    st.stop()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
+    last_error = None
     for attempt in range(3):
         try:
             with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
-            break
-        except (OperationalError, StatementError, InterfaceError) as e:
-            if attempt == 2:
-                st.cache_resource.clear()
-                raise e
-            _engine.dispose()
-            time.sleep(1.0)
+            return
         except Exception as e:
-            raise e
+            last_error = e
+            time.sleep(1.0)
+            
+    st.cache_resource.clear()
+    raise RuntimeError(f"쿼리 실행 실패 (사유: {last_error})")
 
 def _sql_in_str_list(lst) -> str:
     if not lst:
