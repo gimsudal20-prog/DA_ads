@@ -231,24 +231,70 @@ def _detect_column_by_values(data_df: pd.DataFrame, checker, exclude: set[int] |
 
 
 def _find_header_idx(df: pd.DataFrame) -> int:
-    pk_needles = [_normalize_header(x) for x in ["광고id", "소재id", "adid"]]
+    pk_needles = [_normalize_header(x) for x in ["광고id", "소재id", "adid", "nccadid"]]
     metric_needles = [_normalize_header(x) for x in [
         "노출수", "impressions", "impcnt", "클릭수", "clicks", "clkcnt",
-        "총비용", "cost", "salesamt", "전환수", "conversions", "ccnt"
+        "총비용", "cost", "salesamt", "전환수", "conversions", "ccnt",
+        "전환매출액", "conversionvalue", "sales", "convamt", "평균노출순위", "averageposition", "avgrnk"
     ]]
-    for i in range(min(120, len(df))):
+    loose_header_needles = [_normalize_header(x) for x in [
+        "캠페인id", "campaignid", "광고그룹id", "adgroupid", "일자", "date",
+        "광고명", "소재명", "광고", "adname", "creative", "소재"
+    ]]
+
+    def metric_hits(vals: list[str]) -> int:
+        return sum(1 for x in vals if x in metric_needles)
+
+    best_idx = -1
+    best_score = -1
+    scan_n = min(150, len(df))
+
+    for i in range(scan_n):
         row_vals = [_normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        if not any(row_vals):
+        row_vals = [x for x in row_vals if x]
+        if not row_vals:
             continue
-        has_pk = any(x in row_vals for x in pk_needles)
-        has_metric = any(x in row_vals for x in metric_needles)
-        if has_pk and has_metric:
+
+        joined = "|".join(row_vals)
+        has_pk = any(x in row_vals for x in pk_needles) or any(x in joined for x in pk_needles)
+        hits = metric_hits(row_vals)
+        has_loose = any(x in row_vals for x in loose_header_needles) or any(x in joined for x in loose_header_needles)
+
+        if has_pk and hits >= 1:
             return i
-        if has_pk and any("campaignid" == x or "광고그룹id" == x or "adgroupid" == x for x in row_vals):
+        if has_pk and has_loose:
             return i
-        if has_pk and any("date" == x or "일자" == x for x in row_vals):
+
+        # parse_base_report() 수준으로 완화: 핵심 메트릭만 있어도 헤더 후보로 인정
+        if hits >= 1:
+            score = hits * 10 + (3 if has_loose else 0) + min(len(row_vals), 8)
+            if score > best_score:
+                best_idx = i
+                best_score = score
+            if hits >= 3:
+                return i
+            if hits >= 2 and has_loose:
+                return i
+
+    # 2차 추정: 상단 행 중 하나를 헤더로 가정했을 때, 바로 아래 데이터에서 ad id / device 패턴이 보이면 채택
+    probe_n = min(20, max(0, len(df) - 1))
+    for i in range(probe_n):
+        raw_headers = [str(x) for x in df.iloc[i].fillna("")]
+        headers = [_normalize_header(x) for x in raw_headers]
+        if not any(headers):
+            continue
+        data_df = df.iloc[i + 1:i + 60].reset_index(drop=True)
+        ad_idx = _get_col_idx(headers, ["광고id", "소재id", "adid", "nccadid"])
+        if ad_idx == -1:
+            ad_idx = _detect_column_by_values(data_df, _looks_like_ad_id, min_hits=2)
+        device_idx = _get_col_idx(headers, DEVICE_HEADER_CANDIDATES)
+        if device_idx == -1:
+            exclude = {x for x in [ad_idx] if x != -1}
+            device_idx = _detect_column_by_values(data_df, lambda v: bool(normalize_device_name(v)), exclude=exclude, min_hits=2)
+        if ad_idx != -1 and device_idx != -1:
             return i
-    return -1
+
+    return best_idx
 
 
 def parse_ad_device_report(
