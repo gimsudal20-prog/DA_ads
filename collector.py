@@ -30,6 +30,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
 from device_collector_helpers import (
+    DEVICE_PARSER_VERSION,
     ensure_device_tables,
     build_ad_to_campaign_map,
     parse_ad_device_report,
@@ -1841,7 +1842,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         miss_msg = f", 캠페인 매핑누락={miss}건" if miss else ""
                         log(
                             f"   ✅ [ {account_name} ] PC/M 분리 저장 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})"
-                            f"{miss_msg}"
+                            f"{miss_msg} | parser={DEVICE_PARSER_VERSION}"
                         )
                     else:
                         debug_keys = [
@@ -1858,7 +1859,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         extra_msg = f" | {' | '.join(extra_parts)}" if extra_parts else ""
                         log(
                             f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. "
-                            f"status={device_meta.get('status')}{extra_msg}"
+                            f"status={device_meta.get('status')} | parser={DEVICE_PARSER_VERSION}{extra_msg}"
                         )
                 else:
                     log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
