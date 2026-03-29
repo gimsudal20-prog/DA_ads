@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         help="첫날만 구조 동기화, 이후 날짜는 --skip_dim",
     )
     p.add_argument("--with_gfa", action="store_true", help="collector_gfa.py도 함께 실행")
+    p.add_argument("--collect_mode", default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="collector.py 수집 모드")
     args = p.parse_args()
     args.start = clean(args.start)
     args.end = clean(args.end)
@@ -63,8 +64,9 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
     ]
     if args.account_name:
         cmd += ["--account_name", args.account_name]
-    if args.account_names:
+    if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
+    cmd += ["--collect_mode", args.collect_mode]
     skip_dim_this_run = False
     if args.fast:
         skip_dim_this_run = True
@@ -82,8 +84,9 @@ def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     cmd: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]
     if args.account_name:
         cmd += ["--account_name", args.account_name]
-    if args.account_names:
+    if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
+    cmd += ["--collect_mode", args.collect_mode]
     return cmd
 
 
@@ -112,10 +115,13 @@ def main() -> None:
         print(f"🎯 복수 업체 필터: {args.account_names}", flush=True)
     if args.fast:
         print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
+    print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
     if args.sync_dim_first_day:
         print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
     else:
         print("⚡ 전 기간 skip_dim 모드", flush=True)
+    if args.fast and args.collect_mode != "sa_only":
+        print("⚠️ fast + device 수집 조합입니다. PC/M 문제 분석 시에는 fast=false 를 권장합니다.", flush=True)
     if args.with_gfa:
         print("📺 GFA 수집 포함", flush=True)
     print("=" * 60, flush=True)

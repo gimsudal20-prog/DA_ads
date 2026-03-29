@@ -1570,7 +1570,7 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
     replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device"):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
     job_lock = acquire_job_lock(engine, customer_id, target_date)
@@ -1579,6 +1579,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         return
 
     try:
+        collect_mode = (collect_mode or "sa_with_device").strip().lower()
+        collect_sa = collect_mode in {"sa_only", "sa_with_device"}
+        collect_device = collect_mode in {"device_only", "sa_with_device"}
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
 
@@ -1613,7 +1616,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         "status": str(g.get("status", "")),
                     })
 
-                    if not SKIP_KEYWORD_DIM:
+                    if collect_sa and not SKIP_KEYWORD_DIM:
                         kws = list_keywords(customer_id, gid)
                         for k in kws:
                             kid = str(k.get("nccKeywordId"))
@@ -1626,7 +1629,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                                 "status": str(k.get("status", "")),
                             })
 
-                    if not SKIP_AD_DIM:
+                    if (collect_sa or collect_device) and not SKIP_AD_DIM:
                         ads = list_ads(customer_id, gid)
                         for ad in ads:
                             adid = str(ad.get("nccAdId"))
@@ -1659,7 +1662,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         else:
             with engine.connect() as conn:
                 target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
+                target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})] if collect_sa else []
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
                 shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
 
@@ -1719,17 +1722,24 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 use_realtime_fallback = True
 
         if use_realtime_fallback:
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
-            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
-            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
-            log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            if collect_sa:
+                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
+                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
+                a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
+                log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            else:
+                log(f"   ℹ️ [ {account_name} ] 당일/실시간 모드에서는 PC/M 전용 수집을 수행하지 않습니다.")
+            device_ad_cnt = 0
+            device_campaign_cnt = 0
         else:
             split_report_ok = False
             camp_map, kw_map, ad_map = {}, {}, {}
             shop_query_rows: List[Dict[str, Any]] = []
             ad_report_df = dfs.get("AD")
 
-            if not split_enabled_for_date(target_date):
+            if not collect_sa:
+                pass
+            elif not split_enabled_for_date(target_date):
                 log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart/wishlist 분리 수집을 시도하지 않습니다.")
             elif not shopping_campaign_ids:
                 log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
@@ -1798,8 +1808,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
 
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map)
-            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if not SKIP_KEYWORD_STATS else 0
+            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map) if collect_sa else 0
+            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
 
             device_ad_cnt = 0
             device_campaign_cnt = 0
@@ -1807,12 +1817,19 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             if not SKIP_AD_STATS:
                 if ad_report_df is not None and not ad_report_df.empty:
-                    ad_data_source = "report_split" if split_report_ok else "report_total_only"
-                    ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
-                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+                    if collect_sa:
+                        ad_data_source = "report_split" if split_report_ok else "report_total_only"
+                        ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
+                        a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+                    else:
+                        a_cnt = 0
+                        ad_stat = {}
 
-                    ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
-                    if device_meta.get("status") == "ok":
+                    if collect_device:
+                        ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
+                    else:
+                        ad_device_stat, camp_device_stat, device_meta = {}, {}, {"status": "disabled", "reason": "collect_mode=sa_only"}
+                    if collect_device and device_meta.get("status") == "ok":
                         device_ad_cnt = save_device_stats(
                             engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
                             data_source="report_device_total_only", source_report="AD"
@@ -1844,7 +1861,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             f"   ✅ [ {account_name} ] PC/M 분리 저장 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})"
                             f"{miss_msg} | parser={DEVICE_PARSER_VERSION}"
                         )
-                    else:
+                    elif collect_device:
                         debug_keys = [
                             "header_idx", "ad_idx", "camp_idx", "device_idx", "imp_idx", "clk_idx", "cost_idx",
                             "conv_idx", "sales_idx", "rank_idx", "scan_rows", "reject_short", "reject_empty_ad",
@@ -1862,20 +1879,30 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             f"status={device_meta.get('status')} | parser={DEVICE_PARSER_VERSION}{extra_msg}"
                         )
                 else:
-                    log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
-                    a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
+                    if collect_sa:
+                        log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
+                        a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
+                    else:
+                        log(f"   ℹ️ [ {account_name} ] AD 리포트가 없어 PC/M 전용 적재를 건너뜁니다.")
+                        a_cnt = 0
             else:
                 a_cnt = 0
 
-            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
-            if shop_query_rows:
-                log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
+            if collect_sa:
+                replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
+                if shop_query_rows:
+                    log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
-            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0:
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else:
-                mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
-                log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                if collect_mode == "device_only":
+                    log(f"   ✅ [ {account_name} ] PC/M 전용 수집 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})")
+                else:
+                    mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
+                    if collect_device:
+                        mode_msg += " + PC/M"
+                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
@@ -1894,6 +1921,7 @@ def main():
     parser.add_argument("--skip_dim", action="store_true")
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
+    parser.add_argument("--collect_mode", type=str, default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="sa_only=기존 SA만, device_only=PC/M만, sa_with_device=둘 다")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
     args = parser.parse_args()
 
@@ -1909,6 +1937,7 @@ def main():
     print("="*50, flush=True)
     if FAST_MODE:
         print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
+    print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []
@@ -1993,7 +2022,7 @@ def main():
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast) for acc in accounts_info]
+        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast, args.collect_mode) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
             except Exception: pass
