@@ -5,8 +5,6 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
 from typing import Dict
 from datetime import date
 
@@ -186,51 +184,33 @@ def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int =
         return max(min_height, min(40 + rows * 34, max_height))
     except: return min_height
 
-def _normalize_device_breakdown_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["device_name", "cost", "share_pct"])
-    out = df.copy()
-    out["device_name"] = out["device_name"].astype(str).str.strip().replace({"MOBILE": "MO", "mobile": "MO", "모바일": "MO", "PC": "PC"})
-    out["device_name"] = out["device_name"].apply(lambda x: "PC" if str(x).upper()=="PC" else ("MO" if str(x).upper() in {"MO","MOBILE"} else "기타"))
-    out["cost"] = pd.to_numeric(out.get("cost", 0), errors="coerce").fillna(0)
-    out = out.groupby("device_name", as_index=False)["cost"].sum()
-    out = out[out["cost"] > 0].copy()
-    if out.empty:
-        return pd.DataFrame(columns=["device_name", "cost", "share_pct"])
-    total_cost = float(out["cost"].sum())
-    out["share_pct"] = np.where(total_cost > 0, (out["cost"] / total_cost) * 100.0, 0.0)
-    order = {"PC": 0, "MO": 1, "기타": 2}
-    out["__ord"] = out["device_name"].map(order).fillna(99)
-    out = out.sort_values(["__ord", "cost"], ascending=[True, False]).drop(columns=["__ord"]).reset_index(drop=True)
-    return out
-
-
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    cid_filter = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+    params = {"d1": str(d1), "d2": str(d2)}
 
     if table_exists(engine, "fact_campaign_device_daily"):
-        cp_col = _campaign_type_column(engine) if table_exists(engine, "dim_campaign") else None
-        type_filter = f"AND dc.{cp_col} IN ({_sql_in_str_list(list(type_sel))})" if type_sel and cp_col else ""
+        where_cid = ""
+        if cids:
+            where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})"
+        type_join = ""
+        type_filter = ""
+        if type_sel and table_exists(engine, "dim_campaign"):
+            cp_col = _campaign_type_column(engine)
+            type_join = "LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text"
+            type_filter = f"AND c.{cp_col} IN ({_sql_in_str_list(list(type_sel))})"
         sql = f"""
-            SELECT
-                CASE
-                    WHEN UPPER(TRIM(COALESCE(f.device_name,''))) IN ('PC','P') THEN 'PC'
-                    WHEN UPPER(TRIM(COALESCE(f.device_name,''))) IN ('MO','M','MOBILE') THEN 'MO'
-                    ELSE '기타'
-                END AS device_name,
-                SUM(COALESCE(f.cost,0)) AS cost
+            SELECT COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류') AS device_name,
+                   SUM(COALESCE(f.cost, 0)) AS cost
             FROM fact_campaign_device_daily f
-            LEFT JOIN dim_campaign dc
-              ON f.customer_id::text = dc.customer_id::text
-             AND f.campaign_id::text = dc.campaign_id::text
-            WHERE f.dt BETWEEN :d1 AND :d2 {cid_filter} {type_filter}
-            GROUP BY 1
-            HAVING SUM(COALESCE(f.cost,0)) > 0
-            ORDER BY SUM(COALESCE(f.cost,0)) DESC
+            {type_join}
+            WHERE f.dt BETWEEN :d1 AND :d2
+              {where_cid}
+              {type_filter}
+            GROUP BY COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류')
+            HAVING SUM(COALESCE(f.cost, 0)) > 0
+            ORDER BY SUM(COALESCE(f.cost, 0)) DESC
         """
         try:
-            df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
-            df = _normalize_device_breakdown_df(df)
+            df = sql_read(engine, sql, params)
             if not df.empty:
                 return df
         except Exception:
@@ -242,68 +222,106 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     if "device_name" not in cols:
         return pd.DataFrame()
 
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     type_filter = f"AND campaign_type IN ({_sql_in_str_list(list(type_sel))})" if type_sel and "campaign_type" in cols else ""
-    sql = f"""
-        SELECT
-            CASE
-                WHEN UPPER(TRIM(COALESCE(device_name,''))) IN ('PC','P') THEN 'PC'
-                WHEN UPPER(TRIM(COALESCE(device_name,''))) IN ('MO','M','MOBILE') THEN 'MO'
-                ELSE '기타'
-            END AS device_name,
-            SUM(COALESCE(cost,0)) AS cost
-        FROM fact_media_daily f
-        WHERE dt BETWEEN :d1 AND :d2 {cid_filter} {type_filter}
-        GROUP BY 1
-        HAVING SUM(COALESCE(cost,0)) > 0
-        ORDER BY SUM(COALESCE(cost,0)) DESC
-    """
+    sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '미분류') AS device_name, SUM(cost) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '미분류') HAVING SUM(cost) > 0 ORDER BY SUM(cost) DESC"
     try:
-        return _normalize_device_breakdown_df(sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)}))
+        return sql_read(engine, sql, params)
     except Exception:
         return pd.DataFrame()
 
 
-def _render_device_spend_breakdown(device_df: pd.DataFrame) -> None:
-    device_df = _normalize_device_breakdown_df(device_df)
-    if device_df.empty:
+def _normalize_device_label(v: str) -> str:
+    raw = str(v or "").strip()
+    norm = raw.upper().replace(" ", "")
+    if not raw or raw == "-":
+        return "기타"
+    if norm in {"PC", "P"} or "PC" in norm:
+        return "PC"
+    if norm in {"MOBILE", "MO", "M"} or "MOBILE" in norm or "모바일" in raw:
+        return "MO"
+    return "기타"
+
+
+def _format_money_short(v: float) -> str:
+    try:
+        n = float(v)
+    except Exception:
+        n = 0.0
+    if n >= 100000000:
+        return f"{n/100000000:.1f}억 원"
+    if n >= 10000:
+        return f"{n/10000:.0f}만 원"
+    return f"{n:,.0f}원"
+
+
+def _prep_device_breakdown(device_df: pd.DataFrame) -> pd.DataFrame:
+    if device_df is None or device_df.empty:
+        return pd.DataFrame(columns=["device_name", "cost", "share"])
+    df = device_df.copy()
+    df["device_name"] = df["device_name"].map(_normalize_device_label)
+    df["cost"] = pd.to_numeric(df.get("cost", 0), errors="coerce").fillna(0)
+    df = df.groupby("device_name", as_index=False)["cost"].sum()
+    order_map = {"PC": 0, "MO": 1, "기타": 2}
+    df["_ord"] = df["device_name"].map(order_map).fillna(9)
+    df = df.sort_values(["_ord", "cost"], ascending=[True, False]).drop(columns=["_ord"])
+    total = float(df["cost"].sum())
+    df["share"] = np.where(total > 0, (df["cost"] / total) * 100.0, 0.0)
+    return df
+
+
+def _render_device_breakdown_card(device_df: pd.DataFrame):
+    df = _prep_device_breakdown(device_df)
+    if df.empty or float(df["cost"].sum()) <= 0:
         st.info("기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.")
         return
 
-    total_cost = int(device_df["cost"].sum())
-    top_row = device_df.sort_values("cost", ascending=False).iloc[0]
-    top_device = str(top_row["device_name"])
-    top_share = float(top_row["share_pct"])
-    ratio_text = " / ".join([f"{r.device_name} {r.share_pct:.1f}%" for r in device_df.itertuples(index=False)])
-
-    info_cols = st.columns([1, 1, 1.2])
-    info_cols[0].metric("총 광고비", f"{total_cost:,.0f}원")
-    info_cols[1].metric("우세 기기", top_device, f"{top_share:.1f}%")
-    info_cols[2].metric("기기 비중", ratio_text)
-
-    color_map = {"PC": "#2F80ED", "MO": "#03C75A", "기타": "#8B95A1"}
-    fig = go.Figure()
-    cumulative = 0.0
-    for row in device_df.itertuples(index=False):
-        pct = float(row.share_pct)
-        fig.add_trace(go.Bar(
-            x=[pct], y=["광고비 비중"], orientation="h", name=str(row.device_name),
-            marker=dict(color=color_map.get(str(row.device_name), "#8B95A1")),
-            text=[f"{row.device_name} {pct:.1f}%" if pct >= 12 else f"{pct:.1f}%"],
-            textposition="inside" if pct >= 8 else "outside",
-            insidetextanchor="middle",
-            hovertemplate=f"{row.device_name}<br>광고비: {int(row.cost):,}원<br>비중: {pct:.1f}%<extra></extra>",
-            offsetgroup=0, base=[cumulative]
-        ))
-        cumulative += pct
-
-    fig.update_layout(
-        barmode="stack", height=150, margin=dict(t=6, b=10, l=10, r=10),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1.0, title_text="")
+    total_cost = float(df["cost"].sum())
+    leader = df.sort_values("cost", ascending=False).iloc[0]
+    leader_label = str(leader["device_name"])
+    leader_share = float(leader["share"])
+    palette = {"PC": "#0528F2", "MO": "#8EA2FF", "기타": "#CBD5E1"}
+    bar_html = "".join(
+        f"<div style='height:100%; width:{row.share:.2f}%; background:{palette.get(row.device_name, '#CBD5E1')};'></div>"
+        for row in df.itertuples(index=False)
     )
-    fig.update_xaxes(range=[0, 100], showgrid=False, visible=False, fixedrange=True)
-    fig.update_yaxes(showgrid=False, visible=False, fixedrange=True)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    stat_html = "".join(
+        f"""
+        <div style='flex:1; min-width:0; background:#F8FAFC; border:1px solid #E2E8F0; border-radius:12px; padding:12px 14px;'>
+          <div style='display:flex; align-items:center; gap:8px; margin-bottom:6px;'>
+            <span style='display:inline-block; width:8px; height:8px; border-radius:999px; background:{palette.get(row.device_name, '#CBD5E1')};'></span>
+            <span style='font-size:12px; color:#64748B; font-weight:700;'>{row.device_name}</span>
+          </div>
+          <div style='font-size:18px; color:#0F172A; font-weight:800; line-height:1.1;'>{row.share:.1f}%</div>
+          <div style='font-size:12px; color:#64748B; margin-top:4px;'>{_format_money_short(row.cost)}</div>
+        </div>
+        """
+        for row in df.itertuples(index=False)
+    )
+    st.markdown(
+        f"""
+        <div style='border:1px solid #E2E8F0; border-radius:16px; background:#FFFFFF; padding:16px 16px 14px 16px; height:100%;'>
+          <div style='display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;'>
+            <div>
+              <div style='font-size:13px; color:#64748B; font-weight:700; margin-bottom:4px;'>기기별 광고비 지출 비중</div>
+              <div style='font-size:22px; color:#0F172A; font-weight:800; line-height:1.2;'>{_format_money_short(total_cost)}</div>
+            </div>
+            <div style='text-align:right;'>
+              <div style='font-size:12px; color:#64748B; margin-bottom:4px;'>우세 기기</div>
+              <div style='font-size:14px; color:#0F172A; font-weight:800;'>{leader_label} · {leader_share:.1f}%</div>
+            </div>
+          </div>
+          <div style='width:100%; height:14px; display:flex; overflow:hidden; border-radius:999px; background:#EEF2FF; margin-bottom:12px;'>
+            {bar_html}
+          </div>
+          <div style='display:flex; gap:8px; flex-wrap:wrap;'>
+            {stat_html}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def _campaign_type_column(engine) -> str:
     cols = get_table_columns(engine, "dim_campaign")
@@ -531,9 +549,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형"), "광고비": st.column_config.NumberColumn("총 광고비", format="%d 원"), sales_col: st.column_config.NumberColumn(sales_col, format="%d 원"), "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100), roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f %%")}
             )
         with col_device:
-            st.markdown("<div style='font-size:13px; font-weight:600; color:#374151; margin: 0 0 6px 2px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
             device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel)
-            _render_device_spend_breakdown(device_df)
+            _render_device_breakdown_card(device_df)
 
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
