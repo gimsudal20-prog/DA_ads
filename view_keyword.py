@@ -160,14 +160,14 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
 
 
 FAST_KW_CONFIG = {
-    "노출": st.column_config.NumberColumn("노출", format="%d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
+    "노출": st.column_config.NumberColumn("노출", format="%,d"),
+    "클릭": st.column_config.NumberColumn("클릭", format="%,d"),
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
-    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
-    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
-    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
-    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
+    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%,d원"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%,d원"),
+    "전환": st.column_config.NumberColumn("전환", format="%,.1f"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%,d원"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%,d원"),
     "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
 }
 

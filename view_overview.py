@@ -562,11 +562,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         column_config={
                             "달성 상태": st.column_config.TextColumn("상태", width="small"),
                             "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
-                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
+                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%,d"),
                             "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS(%)", format="%.1f%%"),
-                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%d%%"),
-                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%d%%"),
-                            "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
+                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%,d%%"),
+                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%,d%%"),
+                            "광고비": st.column_config.NumberColumn("광고비", format="%,d원")
                         }
                     )
                 else: st.info("조건에 맞는 캠페인이 없습니다.")
