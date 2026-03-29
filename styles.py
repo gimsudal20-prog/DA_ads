@@ -73,8 +73,8 @@ h1, h2, h3, h4, h5, h6 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 32px;
-  padding: 24px 32px;
+  margin-bottom: 28px;
+  padding: 22px 28px;
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
   border-radius: var(--nv-radius-lg);
@@ -83,16 +83,16 @@ h1, h2, h3, h4, h5, h6 {
 .nv-page-head-left { min-width: 0; }
 .nv-h1 {
   font-size: 28px;
-  line-height: 1.2;
+  line-height: 1.18;
   font-weight: 800;
   letter-spacing: -0.03em;
   color: var(--nv-text);
-  margin: 0 0 4px 0;
+  margin: 0 0 6px 0;
 }
 .nv-page-sub {
   color: var(--nv-muted);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0;
 }
 
@@ -113,17 +113,51 @@ h1, h2, h3, h4, h5, h6 {
   align-items:flex-start;
   justify-content:space-between;
   gap:16px;
-  margin-bottom:20px;
+  margin-bottom:16px;
+}
+.nv-sec-eyebrow {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  margin:0 0 6px 0;
+  color: var(--nv-muted-light);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .nv-sec-title {
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 750;
   margin: 0;
   color: var(--nv-text);
   display: flex;
   align-items: center;
   gap: 8px;
+  letter-spacing: -0.015em;
+}
+.nv-sec-sub {
+  margin: 6px 0 0 0;
+  color: var(--nv-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 500;
+}
+.nv-card-title {
+  margin: 0 0 10px 0;
+  color: var(--nv-text);
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 700;
   letter-spacing: -0.01em;
+}
+.nv-card-sub {
+  margin: 4px 0 0 0;
+  color: var(--nv-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 500;
 }
 
 /* =========================================
@@ -164,6 +198,28 @@ h1, h2, h3, h4, h5, h6 {
   display: inline-block;
   padding: 6px 12px;
   border-radius: 8px;
+}
+
+
+/* Typography alignment for Streamlit markdown headings inside sections */
+.element-container h2, .element-container h3, .element-container h4 {
+  color: var(--nv-text);
+  letter-spacing: -0.02em;
+}
+.element-container h2 {
+  font-size: 22px !important;
+  line-height: 1.28 !important;
+  margin: 0 0 12px 0 !important;
+}
+.element-container h3 {
+  font-size: 18px !important;
+  line-height: 1.35 !important;
+  margin: 0 0 10px 0 !important;
+}
+.element-container h4 {
+  font-size: 15px !important;
+  line-height: 1.4 !important;
+  margin: 0 0 8px 0 !important;
 }
 
 /* =========================================
@@ -321,96 +377,6 @@ div[data-baseweb="select"] > div:focus-within {
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
 
-/* =========================================
-   Cards & Containers Unification
-   ========================================= */
-[data-testid="metric-container"],
-[data-testid="stMetric"] {
-  background: var(--nv-bg) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius-lg) !important;
-  box-shadow: var(--nv-shadow-soft) !important;
-  padding: 18px 20px !important;
-  min-height: 126px;
-}
-
-[data-testid="metric-container"] > label,
-[data-testid="stMetricLabel"] {
-  color: var(--nv-muted) !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
-  letter-spacing: -0.01em !important;
-  margin-bottom: 10px !important;
-}
-
-[data-testid="metric-container"] [data-testid="stMetricValue"],
-[data-testid="stMetricValue"] {
-  color: var(--nv-text) !important;
-  font-size: 30px !important;
-  line-height: 1.15 !important;
-  font-weight: 800 !important;
-  letter-spacing: -0.03em !important;
-  margin-bottom: 8px !important;
-}
-
-[data-testid="metric-container"] [data-testid="stMetricDelta"],
-[data-testid="stMetricDelta"] {
-  font-size: 12px !important;
-  font-weight: 700 !important;
-  margin-top: 8px !important;
-}
-
-[data-testid="metric-container"] [data-testid="stMetricDelta"] svg,
-[data-testid="stMetricDelta"] svg {
-  width: 0.9rem !important;
-  height: 0.9rem !important;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] {
-  background: var(--nv-bg) !important;
-  border: 1px solid var(--nv-line) !important;
-  border-radius: var(--nv-radius-lg) !important;
-  box-shadow: var(--nv-shadow-soft) !important;
-  padding: 6px 8px !important;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] > div {
-  gap: 0.55rem !important;
-}
-
-[data-testid="stAlert"] {
-  border-radius: var(--nv-radius) !important;
-  border: 1px solid var(--nv-line) !important;
-  box-shadow: none !important;
-  padding-top: 12px !important;
-  padding-bottom: 12px !important;
-}
-
-[data-testid="stAlert"] p {
-  font-size: 13px !important;
-  line-height: 1.55 !important;
-}
-
-[data-testid="stHorizontalBlock"] > div:has([data-testid="metric-container"]),
-[data-testid="stHorizontalBlock"] > div:has([data-testid="stMetric"]) {
-  align-self: stretch !important;
-}
-
-.nv-card-title,
-.nv-sec-sub {
-  color: var(--nv-muted);
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 600;
-  margin: 0 0 10px 0;
-}
-
-.nv-card-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 @media (max-width: 1100px) {
   div.block-container {
     padding-left: 1.5rem !important;
@@ -422,6 +388,9 @@ div[data-baseweb="select"] > div:focus-within {
   }
   .nv-h1 {
     font-size: 24px;
+  }
+  .nv-sec-title {
+    font-size: 17px;
   }
 }
 </style>
