@@ -8,7 +8,8 @@ import textwrap
 import numpy as np
 import pandas as pd
 import streamlit as st
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List
 
 from data import *
@@ -79,8 +80,14 @@ def _shift_period(direction: str):
     st.session_state["f_d1"] = new_d1
     st.session_state["f_d2"] = new_d2
 
+def _today_kst() -> date:
+    try:
+        return datetime.now(ZoneInfo("Asia/Seoul")).date()
+    except Exception:
+        return date.today()
+
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
-    today = date.today()
+    today = _today_kst()
     default_end = today - timedelta(days=1)
     default_start = default_end
 
@@ -98,7 +105,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     with st.sidebar:
         st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
 
-        st.markdown("<div class='nv-filter-title'>기간 선택</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
         
         period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
         sv_period = sv.get("period_mode", "어제")
@@ -151,7 +158,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         st.divider()
 
-        st.markdown("<div class='nv-filter-title'>담당자 및 계정</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
         manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체 담당자")
 
         accounts_by_mgr = accounts
@@ -172,12 +179,12 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 입력")
             type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
-            st.markdown("<div class='nv-filter-title' style='font-size:12px;margin-top:12px;margin-bottom:6px;'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
             top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
             top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
             top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
 
-        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         
         if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
             st.rerun()
