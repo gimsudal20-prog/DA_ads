@@ -195,6 +195,67 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* =========================================
+   DataFrame & Table Header Tone
+   ========================================= */
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--nv-line) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  background: var(--nv-bg) !important;
+  box-shadow: none !important;
+}
+[data-testid="stDataFrame"] [class*="gdg"],
+[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+  --gdg-font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
+  --gdg-bg-header: #F7F9FC;
+  --gdg-header-font-style: 600 13px Pretendard;
+  --gdg-header-text-color: #475569;
+  --gdg-border-color: #E2E8F0;
+  --gdg-bg-cell: #FFFFFF;
+  --gdg-bg-cell-medium: #F8FAFC;
+  --gdg-text-dark: #0F172A;
+  --gdg-accent-color: #0528F2;
+}
+[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+  border: none !important;
+}
+[data-testid="stDataFrame"] canvas {
+  border-radius: 14px !important;
+}
+[data-testid="stTable"] table,
+.stTable table,
+.nv-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  width: 100%;
+  border: 1px solid var(--nv-line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--nv-bg);
+}
+[data-testid="stTable"] thead th,
+.stTable thead th,
+.nv-table thead th {
+  background: #F7F9FC !important;
+  color: #475569 !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  padding: 12px 14px !important;
+  border-bottom: 1px solid var(--nv-line) !important;
+}
+[data-testid="stTable"] tbody td,
+.stTable tbody td,
+.nv-table tbody td {
+  padding: 12px 14px !important;
+  border-bottom: 1px solid #EEF2F7;
+}
+[data-testid="stTable"] tbody tr:last-child td,
+.stTable tbody tr:last-child td,
+.nv-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* =========================================
    Sidebar & Navigation (Minimalist Radio)
    ========================================= */
 [data-testid="stSidebar"] {
@@ -247,86 +308,6 @@ h1, h2, h3, h4, h5, h6 {
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
   color: var(--nv-primary) !important;
   font-weight: 800 !important;
-}
-
-
-/* =========================================
-   Sidebar Filter Rhythm & Spacing
-   ========================================= */
-.nv-filter-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--nv-muted);
-  margin: 0 0 8px 0;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
-}
-.nv-filter-help {
-  font-size: 11px;
-  color: var(--nv-muted-light);
-  margin: 2px 0 0 0;
-  line-height: 1.45;
-}
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {
-  margin-bottom: 6px;
-}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-  margin-bottom: 0;
-}
-[data-testid="stSidebar"] [data-testid="stSelectbox"],
-[data-testid="stSidebar"] [data-testid="stMultiSelect"],
-[data-testid="stSidebar"] [data-testid="stDateInput"],
-[data-testid="stSidebar"] [data-testid="stTextInput"],
-[data-testid="stSidebar"] [data-testid="stNumberInput"] {
-  margin-bottom: 8px;
-}
-[data-testid="stSidebar"] [data-testid="stSelectbox"] label,
-[data-testid="stSidebar"] [data-testid="stMultiSelect"] label,
-[data-testid="stSidebar"] [data-testid="stDateInput"] label,
-[data-testid="stSidebar"] [data-testid="stTextInput"] label,
-[data-testid="stSidebar"] [data-testid="stNumberInput"] label {
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  color: var(--nv-muted) !important;
-  margin-bottom: 6px !important;
-}
-[data-testid="stSidebar"] div[data-baseweb="select"] > div,
-[data-testid="stSidebar"] [data-testid="stDateInput"] > div,
-[data-testid="stSidebar"] [data-testid="stNumberInput"] > div,
-[data-testid="stSidebar"] [data-testid="stTextInput"] > div,
-[data-testid="stSidebar"] [data-testid="stSelectbox"] > div {
-  min-height: 42px !important;
-}
-[data-testid="stSidebar"] div[data-baseweb="tag"] {
-  border-radius: 999px !important;
-  min-height: 26px !important;
-  padding-inline: 8px !important;
-  background: var(--nv-surface-2) !important;
-  border: 1px solid var(--nv-line) !important;
-}
-[data-testid="stSidebar"] div[data-baseweb="tag"] span {
-  font-size: 12px !important;
-  color: var(--nv-text) !important;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] {
-  margin-top: 2px;
-}
-[data-testid="stSidebar"] [data-testid="stExpanderDetails"] {
-  padding-top: 2px !important;
-}
-[data-testid="stSidebar"] [data-testid="stExpanderDetails"] > div {
-  padding-top: 6px !important;
-}
-[data-testid="stSidebar"] hr {
-  margin: 18px 0 !important;
-  border-color: var(--nv-line) !important;
-}
-[data-testid="stSidebar"] [data-testid="baseButton-primary"],
-[data-testid="stSidebar"] [data-testid="baseButton-secondary"] {
-  min-height: 42px !important;
-}
-[data-testid="stSidebar"] [data-testid="stButton"] {
-  margin-top: 4px;
 }
 
 /* =========================================
