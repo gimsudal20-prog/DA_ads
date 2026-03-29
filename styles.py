@@ -195,67 +195,6 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* =========================================
-   DataFrame & Table Header Tone
-   ========================================= */
-[data-testid="stDataFrame"] {
-  border: 1px solid var(--nv-line) !important;
-  border-radius: 14px !important;
-  overflow: hidden !important;
-  background: var(--nv-bg) !important;
-  box-shadow: none !important;
-}
-[data-testid="stDataFrame"] [class*="gdg"],
-[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
-  --gdg-font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
-  --gdg-bg-header: #F7F9FC;
-  --gdg-header-font-style: 600 13px Pretendard;
-  --gdg-header-text-color: #475569;
-  --gdg-border-color: #E2E8F0;
-  --gdg-bg-cell: #FFFFFF;
-  --gdg-bg-cell-medium: #F8FAFC;
-  --gdg-text-dark: #0F172A;
-  --gdg-accent-color: #0528F2;
-}
-[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
-  border: none !important;
-}
-[data-testid="stDataFrame"] canvas {
-  border-radius: 14px !important;
-}
-[data-testid="stTable"] table,
-.stTable table,
-.nv-table {
-  border-collapse: separate !important;
-  border-spacing: 0 !important;
-  width: 100%;
-  border: 1px solid var(--nv-line);
-  border-radius: 14px;
-  overflow: hidden;
-  background: var(--nv-bg);
-}
-[data-testid="stTable"] thead th,
-.stTable thead th,
-.nv-table thead th {
-  background: #F7F9FC !important;
-  color: #475569 !important;
-  font-weight: 700 !important;
-  font-size: 13px !important;
-  padding: 12px 14px !important;
-  border-bottom: 1px solid var(--nv-line) !important;
-}
-[data-testid="stTable"] tbody td,
-.stTable tbody td,
-.nv-table tbody td {
-  padding: 12px 14px !important;
-  border-bottom: 1px solid #EEF2F7;
-}
-[data-testid="stTable"] tbody tr:last-child td,
-.stTable tbody tr:last-child td,
-.nv-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-/* =========================================
    Sidebar & Navigation (Minimalist Radio)
    ========================================= */
 [data-testid="stSidebar"] {
@@ -381,6 +320,96 @@ div[data-baseweb="select"] > div:focus-within {
   color: var(--nv-text);
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
+
+/* =========================================
+   Cards & Containers Unification
+   ========================================= */
+[data-testid="metric-container"],
+[data-testid="stMetric"] {
+  background: var(--nv-bg) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius-lg) !important;
+  box-shadow: var(--nv-shadow-soft) !important;
+  padding: 18px 20px !important;
+  min-height: 126px;
+}
+
+[data-testid="metric-container"] > label,
+[data-testid="stMetricLabel"] {
+  color: var(--nv-muted) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  margin-bottom: 10px !important;
+}
+
+[data-testid="metric-container"] [data-testid="stMetricValue"],
+[data-testid="stMetricValue"] {
+  color: var(--nv-text) !important;
+  font-size: 30px !important;
+  line-height: 1.15 !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em !important;
+  margin-bottom: 8px !important;
+}
+
+[data-testid="metric-container"] [data-testid="stMetricDelta"],
+[data-testid="stMetricDelta"] {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  margin-top: 8px !important;
+}
+
+[data-testid="metric-container"] [data-testid="stMetricDelta"] svg,
+[data-testid="stMetricDelta"] svg {
+  width: 0.9rem !important;
+  height: 0.9rem !important;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background: var(--nv-bg) !important;
+  border: 1px solid var(--nv-line) !important;
+  border-radius: var(--nv-radius-lg) !important;
+  box-shadow: var(--nv-shadow-soft) !important;
+  padding: 6px 8px !important;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+  gap: 0.55rem !important;
+}
+
+[data-testid="stAlert"] {
+  border-radius: var(--nv-radius) !important;
+  border: 1px solid var(--nv-line) !important;
+  box-shadow: none !important;
+  padding-top: 12px !important;
+  padding-bottom: 12px !important;
+}
+
+[data-testid="stAlert"] p {
+  font-size: 13px !important;
+  line-height: 1.55 !important;
+}
+
+[data-testid="stHorizontalBlock"] > div:has([data-testid="metric-container"]),
+[data-testid="stHorizontalBlock"] > div:has([data-testid="stMetric"]) {
+  align-self: stretch !important;
+}
+
+.nv-card-title,
+.nv-sec-sub {
+  color: var(--nv-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+}
+
+.nv-card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
 
 @media (max-width: 1100px) {
   div.block-container {
