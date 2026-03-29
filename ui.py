@@ -52,7 +52,7 @@ def render_empty_state(message: str = "조회된 데이터가 없습니다.", he
     safe_msg = html.escape(message)
     empty_html = f"""
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: {height}px; width: 100%; background-color: {THEME['bg']}; border: 1px dashed {THEME['line']}; border-radius: 12px; color: {THEME['muted']}; text-align: center;">
-        <div style="font-size: 32px; margin-bottom: 12px;">📭</div>
+        
         <div style="font-size: 14px; font-weight: 600;">{safe_msg}</div>
         <div style="font-size: 12px; margin-top: 4px; opacity: 0.7;">조건을 변경하거나 동기화를 확인해주세요.</div>
     </div>

@@ -515,7 +515,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("선택한 기간의 일자별 트렌드 데이터가 존재하지 않습니다.")
 
-    with st.expander("🎯 캠페인별 목표 달성 현황", expanded=False):
+    with st.expander("캠페인별 목표 달성 현황", expanded=False):
         st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
         
         if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
@@ -562,11 +562,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                         column_config={
                             "달성 상태": st.column_config.TextColumn("상태", width="small"),
                             "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
-                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%,d"),
+                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
                             "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS(%)", format="%.1f%%"),
-                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%,d%%"),
-                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%,d%%"),
-                            "광고비": st.column_config.NumberColumn("광고비", format="%,d원")
+                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%d%%"),
+                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%d%%"),
+                            "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
                         }
                     )
                 else: st.info("조건에 맞는 캠페인이 없습니다.")
@@ -636,7 +636,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     # ⚡ 토글 버튼 왼쪽 배치 및 명칭 수정, 기본값 표출 축소(Base Only)
     st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
-    show_deltas = st.toggle("📊 증감율 보기", value=False, key="ov_abs_toggle")
+    show_deltas = st.toggle("증감률 보기", value=False, key="ov_abs_toggle")
 
     def get_funnel_cols(show_deltas):
         cols = []
@@ -659,13 +659,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     detail_panel = st.segmented_control(
         "세부 성과 보기",
-        ["🏢 업체별 요약", "🏷️ 매체/유형별 요약", "📅 기간별 상세", "🔍 캠페인 상세 분석"],
-        default="🏢 업체별 요약",
+        ["업체별 요약", "매체·유형별 요약", "기간별 상세", "캠페인 상세 분석"],
+        default="업체별 요약",
         key="overview_detail_panel",
         label_visibility="collapsed",
     )
 
-    if detail_panel == "🏢 업체별 요약":
+    if detail_panel == "업체별 요약":
         if not df_display.empty:
             view_cols = ["계정명"] + [c for c in get_funnel_cols(show_deltas) if c in df_display.columns]
             disp_df = df_display[view_cols].copy()
@@ -675,7 +675,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    elif detail_panel == "🏷️ 매체/유형별 요약":
+    elif detail_panel == "매체·유형별 요약":
         if not df_type_display.empty:
             view_cols = ["캠페인 유형"] + [c for c in get_funnel_cols(show_deltas) if c in df_type_display.columns]
             disp_type_df = df_type_display[view_cols].copy()
@@ -685,7 +685,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    elif detail_panel == "📅 기간별 상세":
+    elif detail_panel == "기간별 상세":
         if any(not df.empty for df in [daily_disp, dow_disp, weekly_disp]):
             period_panel = st.segmented_control(
                 "기간 세부 보기",
@@ -747,7 +747,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if not weekly_disp.empty: format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
             st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
-    with st.expander("📝 텍스트 보고서 생성", expanded=False):
+    with st.expander("텍스트 보고서 생성", expanded=False):
         top_kw_str = "없음"
         if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
             kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()

@@ -13,7 +13,7 @@ from data import sql_read, sql_exec, db_ping, seed_from_accounts_xlsx
 @st.fragment
 def page_settings(engine) -> None:
     # 🍎 헤더 부분
-    st.markdown("## ⚙️ 설정 및 데이터 관리")
+    st.markdown("## 설정 및 데이터 관리")
     try: 
         db_ping(engine)
     except Exception as e: 
@@ -46,7 +46,7 @@ def page_settings(engine) -> None:
     # 🎯 탭 1: 캠페인별 목표 ROAS 설정
     # ====================================================
     if selected_tab == '목표 ROAS 설정':
-        st.markdown("### 🎯 캠페인별 목표 ROAS 설정")
+        st.markdown("### 캠페인별 목표 ROAS 설정")
         st.caption("담당자 및 업체를 선택하고 캠페인별 최소/목표 ROAS를 입력하세요.")
 
         try:
@@ -76,7 +76,7 @@ def page_settings(engine) -> None:
                 col_m, col_a = st.columns(2)
                 with col_m:
                     managers = ["전체"] + list(camp_df['manager'].dropna().unique())
-                    sel_manager = st.selectbox("👤 담당자 선택", managers)
+                    sel_manager = st.selectbox("담당자 선택", managers)
                 
                 temp_df = camp_df.copy()
                 if sel_manager != "전체":
@@ -84,7 +84,7 @@ def page_settings(engine) -> None:
                 
                 with col_a:
                     accounts = ["전체"] + list(temp_df['account_name'].dropna().unique())
-                    sel_acc = st.selectbox("🏢 업체 선택", accounts)
+                    sel_acc = st.selectbox("업체 선택", accounts)
                 
                 if sel_acc != "전체":
                     temp_df = temp_df[temp_df['account_name'] == sel_acc]
@@ -135,7 +135,7 @@ def page_settings(engine) -> None:
     # ⚙️ 탭 2: 대시보드 관리 기능
     # ====================================================
     elif selected_tab == '대시보드 관리':
-        st.markdown("### ☁️ accounts.xlsx → DB 동기화")
+        st.markdown("### accounts.xlsx → DB 동기화")
         
         with st.container():
             st.markdown("<div style='background-color:#F8FAFC; padding:16px; border-radius:12px; border:1px solid #E2E8F0; margin-bottom:24px;'>", unsafe_allow_html=True)
@@ -162,7 +162,7 @@ def page_settings(engine) -> None:
         # ✨ 중복 에러 해결: 모든 divider에 고유 key 추가
         sac.divider(align='center', color='gray', key='div_1')
 
-        st.markdown("### ⚡ 대시보드 속도 최적화")
+        st.markdown("### 대시보드 속도 최적화")
         if st.button("초고속 DB 목차 만들기", type="secondary", icon=":material/bolt:"):
             with st.spinner("진행 중..."):
                 try:
@@ -175,7 +175,7 @@ def page_settings(engine) -> None:
 
         sac.divider(align='center', color='gray', key='div_2')
 
-        st.markdown("### 🧹 DB 찌꺼기 대청소")
+        st.markdown("### DB 찌꺼기 정리")
         if st.button("DB 대청소 실행", type="secondary", icon=":material/delete_sweep:"):
             with st.spinner("청소 중..."):
                 try:
@@ -187,7 +187,7 @@ def page_settings(engine) -> None:
 
         sac.divider(align='center', color='gray', key='div_3')
 
-        st.markdown("### ⚠️ Danger Zone")
+        st.markdown("### Danger Zone")
         with st.container():
             col_del1, col_del2 = st.columns([2, 1])
             with col_del1:

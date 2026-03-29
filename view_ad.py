@@ -164,14 +164,14 @@ def compute_ad_view(bundle, meta):
     return view
 
 FAST_AD_CONFIG = {
-    "노출": st.column_config.NumberColumn("노출", format="%,d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%,d"),
+    "노출": st.column_config.NumberColumn("노출", format="%d"),
+    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
-    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%,d원"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%,d원"),
-    "전환": st.column_config.NumberColumn("전환", format="%,.1f"),
-    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%,d원"),
-    "전환매출": st.column_config.NumberColumn("전환매출", format="%,d원"),
+    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
+    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
     "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
     "CVR(%)": st.column_config.NumberColumn("CVR(%)", format="%.2f %%"),
 }
@@ -248,7 +248,7 @@ def render_landing_tab(view):
 def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     # ⚡ 왼쪽 정렬 및 "증감율 보기" 토글 적용
     st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
-    show_deltas = st.toggle("📊 증감율 보기", value=False, key="ad_abs_toggle")
+    show_deltas = st.toggle("증감률 보기", value=False, key="ad_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='ad-toolbar'><div class='ad-toolbar-title'>기간 비교 설정</div>", unsafe_allow_html=True)

@@ -48,8 +48,8 @@ def page_media(engine, f):
     )
     meta = get_meta(engine)
 
-    with st.expander("📁 다차원보고서(CSV) 덮어쓰기 적재 엔진 열기", expanded=False):
-        st.info("💡 겹치는 기간의 데이터를 올리면 기존 데이터는 지워지고 덮어씌워집니다. 기기 컬럼이 포함되어 있으면 기기 분석에도 바로 반영됩니다.")
+    with st.expander("다차원보고서(CSV) 덮어쓰기 적재", expanded=False):
+        st.info("겹치는 기간의 데이터를 올리면 기존 데이터는 지워지고 덮어씌워집니다. 기기 컬럼이 포함되어 있으면 기기 분석에도 바로 반영됩니다.")
 
         if meta.empty:
             st.warning("먼저 '설정' 메뉴에서 업체를 동기화해주세요.")
@@ -90,14 +90,14 @@ def page_media(engine, f):
                             default_idx = i
                             break
 
-                sel_label = st.selectbox("🏢 데이터를 덮어씌울 업체 선택", labels, index=default_idx)
+                sel_label = st.selectbox("데이터를 덮어씌울 업체 선택", labels, index=default_idx)
 
         if sel_label:
             target_cid = label_to_cid[sel_label]
             uploaded_file = st.file_uploader(f"[{sel_label}] 다차원보고서 CSV 파일 업로드", type=["csv"])
 
             if uploaded_file is not None:
-                if st.button("🚀 데이터 덮어쓰기 시작", type="primary", use_container_width=True):
+                if st.button("데이터 덮어쓰기 시작", type="primary", use_container_width=True):
                     with st.spinner("데이터를 분석하고 기존 기간 데이터를 교체하는 중입니다..."):
                         try:
                             df_csv = pd.read_csv(uploaded_file, skiprows=1)
@@ -197,7 +197,7 @@ def page_media(engine, f):
                             if "_table_names_cache" in st.session_state:
                                 del st.session_state["_table_names_cache"]
 
-                            st.success(f"🎉 '{sel_label}' 업체의 {min_dt} ~ {max_dt} 기간 데이터가 완벽하게 교체(덮어쓰기) 되었습니다! 1.2초 뒤 새로고침됩니다.")
+                            st.success(f"'{sel_label}' 업체의 {min_dt} ~ {max_dt} 기간 데이터가 교체되었습니다. 1.2초 뒤 새로고침됩니다.")
                             time.sleep(1.2)
                             st.rerun()
 
@@ -205,7 +205,7 @@ def page_media(engine, f):
                             st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
     if not table_exists(engine, "fact_media_daily"):
-        st.warning("🚨 데이터베이스에 매체/지역 데이터가 없습니다. 위의 업로드 창을 통해 CSV 파일을 적재해주세요.")
+        st.warning("데이터베이스에 매체·지역 데이터가 없습니다. 위의 업로드 창을 통해 CSV 파일을 적재해주세요.")
         return
 
     d1, d2 = f["start"], f["end"]
@@ -240,8 +240,8 @@ def page_media(engine, f):
             minmax = sql_read(engine, "SELECT MIN(dt) as min_dt, MAX(dt) as max_dt FROM fact_media_daily")
             min_dt = minmax.iloc[0]["min_dt"]
             max_dt = minmax.iloc[0]["max_dt"]
-            st.error(f"⚠️ 선택하신 업체/광고유형 및 조회 기간({d1} ~ {d2}) 에는 데이터가 없습니다.")
-            st.info(f"💡 현재 DB에는 **{min_dt} ~ {max_dt}** 기간의 다차원 데이터가 적재되어 있습니다. 좌측 필터를 변경해주세요!")
+            st.error(f"선택한 업체·광고유형 및 조회 기간({d1} ~ {d2})에는 데이터가 없습니다.")
+            st.info(f"현재 DB에는 **{min_dt} ~ {max_dt}** 기간의 다차원 데이터가 적재되어 있습니다. 좌측 필터를 변경해주세요.")
         except Exception:
             st.info("조건에 맞는 데이터가 없습니다.")
         return
@@ -280,7 +280,7 @@ def page_media(engine, f):
         "CTR(%)": "{:,.2f}%"
     }
 
-    tab_media, tab_region, tab_device, tab_bad = st.tabs(["🌐 지면(매체)", "📍 지역", "💻 기기", "🚨 비용 누수 항목"])
+    tab_media, tab_region, tab_device, tab_bad = st.tabs(["지면(매체)", "지역", "기기", "비용 누수 항목"])
 
     with tab_media:
         st.markdown("<div class='nv-section-head'><div><div class='nv-sec-title'>조회 기간 내 전체 매체(지면) 효율 리스트</div><div class='nv-sec-sub'>매체 기준으로 비용, 전환, ROAS 흐름을 빠르게 확인합니다.</div></div></div>", unsafe_allow_html=True)
@@ -325,7 +325,7 @@ def page_media(engine, f):
     with tab_bad:
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>❌ 1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
             bad_m = df_media[(df_media["전환수"] == 0) & (df_media["광고비"] >= 10000)].sort_values("광고비", ascending=False)
             if not bad_m.empty:
                 st.dataframe(bad_m[["매체이름", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, use_container_width=True)
@@ -333,7 +333,7 @@ def page_media(engine, f):
                 st.success("비용 누수 매체가 없습니다!")
 
         with col2:
-            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>❌ 1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
             bad_r = df_region[(df_region["전환수"] == 0) & (df_region["광고비"] >= 10000) & (~df_region["지역명"].isin(["전체", "-", "알수없음"]))].sort_values("광고비", ascending=False)
             if not bad_r.empty:
                 st.dataframe(bad_r[["지역명", "광고비", "클릭수", "CTR(%)"]].style.format(fmt), hide_index=True, use_container_width=True)

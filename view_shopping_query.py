@@ -23,9 +23,9 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     has_pre_patch_cur = (f["start"] < patch_date)
     
     if has_pre_patch_cur:
-        st.info("💡 3월 11일 이전 데이터는 네이버의 퍼널 분리 패치 이전이므로 '통합 전환' 지표만 존재할 수 있습니다.")
+        st.info("3월 11일 이전 데이터는 네이버 퍼널 분리 패치 이전이므로 '통합 전환' 지표만 존재할 수 있습니다.")
 
-    with st.spinner("🔄 쇼핑 검색어 데이터를 불러오는 중입니다..."):
+    with st.spinner("쇼핑 검색어 데이터를 불러오는 중입니다..."):
         df = query_shopping_search_terms(engine, f["start"], f["end"], cids)
         
         if df.empty:
@@ -61,10 +61,10 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     # 포맷 지정 (소수점 1자리 통일)
     fmt = {
-        "구매완료수": "{:,.0f}", "구매완료 매출": "{:,.0f}원",
-        "장바구니수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원",
-        "위시리스트수": "{:,.0f}", "위시리스트 매출액": "{:,.0f}원",
-        "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원"
+        "구매완료수": "{:,.1f}", "구매완료 매출": "{:,.0f}원",
+        "장바구니수": "{:,.1f}", "장바구니 매출액": "{:,.0f}원",
+        "위시리스트수": "{:,.1f}", "위시리스트 매출액": "{:,.0f}원",
+        "총 전환수": "{:,.1f}", "총 전환매출": "{:,.0f}원"
     }
 
     display_cols = [
@@ -82,7 +82,7 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     with pd.ExcelWriter(excel_buffer) as writer:
         disp.to_excel(writer, sheet_name='쇼핑_검색어_성과', index=False)
     st.download_button(
-        label="📥 검색어 리포트 다운로드 (Excel)", 
+        label="검색어 리포트 다운로드 (Excel)", 
         data=excel_buffer.getvalue(), 
         file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx", 
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

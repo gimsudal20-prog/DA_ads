@@ -160,14 +160,14 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
 
 
 FAST_KW_CONFIG = {
-    "노출": st.column_config.NumberColumn("노출", format="%,d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%,d"),
+    "노출": st.column_config.NumberColumn("노출", format="%d"),
+    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
-    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%,d원"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%,d원"),
-    "전환": st.column_config.NumberColumn("전환", format="%,.1f"),
-    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%,d원"),
-    "전환매출": st.column_config.NumberColumn("전환매출", format="%,d원"),
+    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
+    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
     "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
 }
 
@@ -200,11 +200,11 @@ def render_keyword_main(view, top_n):
     sel_grp = col2.selectbox("광고그룹 필터", grps, key="kw_grp_filter_main")
 
     col3, col4 = st.columns([3, 1])
-    search_kw = col3.text_input("🔍 키워드 검색", key="kw_search_main")
-    exact_match_main = col3.checkbox("☑️ 완전 일치", key="kw_exact_main")
+    search_kw = col3.text_input("키워드 검색", key="kw_search_main")
+    exact_match_main = col3.checkbox("완전 일치", key="kw_exact_main")
     
     col4.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
-    agg_kw = col4.checkbox("🎯 동일 키워드 합산 (PC/MO 통합)", key="kw_agg_main", help="캠페인/광고그룹이 달라도 이름이 같은 키워드의 성과를 하나로 합산합니다.")
+    agg_kw = col4.checkbox("동일 키워드 합산 (PC/MO 통합)", key="kw_agg_main", help="캠페인·광고그룹이 달라도 이름이 같은 키워드의 성과를 하나로 합산합니다.")
     
     disp = filtered_for_grp.copy()
     if sel_grp != "전체": disp = disp[disp["광고그룹"] == sel_grp]
@@ -238,7 +238,7 @@ def render_keyword_main(view, top_n):
 @st.fragment
 def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
-    show_deltas = st.toggle("📊 증감율 보기", value=False, key="kw_abs_toggle")
+    show_deltas = st.toggle("증감률 보기", value=False, key="kw_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
     opts = get_dynamic_cmp_options(start_dt, end_dt)
@@ -260,11 +260,11 @@ def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     sel_grp_cmp = col_grp_cmp.selectbox("광고그룹 필터", grps_cmp, key="kw_grp_filter_cmp")
 
     col_search_cmp, col_agg_cmp = st.columns([3, 1])
-    search_kw_cmp = col_search_cmp.text_input("🔍 키워드 검색", key="kw_search_cmp")
-    exact_match_cmp = col_search_cmp.checkbox("☑️ 완전 일치", key="kw_exact_cmp")
+    search_kw_cmp = col_search_cmp.text_input("키워드 검색", key="kw_search_cmp")
+    exact_match_cmp = col_search_cmp.checkbox("완전 일치", key="kw_exact_cmp")
     
     col_agg_cmp.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
-    agg_kw_cmp = col_agg_cmp.checkbox("🎯 동일 키워드 합산", key="kw_agg_cmp", help="PC/MO 등 그룹으로 나뉜 동일 키워드 성과를 하나로 합산합니다.")
+    agg_kw_cmp = col_agg_cmp.checkbox("동일 키워드 합산", key="kw_agg_cmp", help="PC·MO 등 그룹으로 나뉜 동일 키워드 성과를 하나로 합산합니다.")
 
     disp = filtered_cmp.copy()
     if sel_grp_cmp != "전체": disp = disp[disp["광고그룹"] == sel_grp_cmp]
