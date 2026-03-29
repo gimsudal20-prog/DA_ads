@@ -25,9 +25,18 @@ on:
         required: false
         default: '3'
       fast:
-        description: '빠른 백필 모드: 전 날짜 skip_dim 사용 (true/false)'
+        description: '빠른 백필 모드 (문제 분석/구매완료 확인 시 false 권장)'
         required: false
-        default: 'true'
+        default: 'false'
+      collect_mode:
+        description: '수집 모드'
+        required: false
+        default: 'sa_with_device'
+        type: choice
+        options:
+          - sa_with_device
+          - sa_only
+          - device_only
       sync_dim_first_day:
         description: '첫날만 구조수집 수행 (true/false)'
         required: false
@@ -69,7 +78,7 @@ jobs:
 
       - name: Run fast backfill
         run: |
-          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}")
+          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
             CMD+=(--account_name "${{ github.event.inputs.account_name }}")
