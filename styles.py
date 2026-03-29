@@ -46,11 +46,11 @@ header[data-testid="stHeader"] { background-color: transparent !important; }
 [data-testid="stSidebarNav"] { display: none !important; }
 
 div.block-container {
-  padding-top: 2rem !important;
-  padding-bottom: 4rem !important;
+  padding-top: 1.75rem !important;
+  padding-bottom: 3.5rem !important;
   max-width: 1520px;
-  padding-left: 2.5rem;
-  padding-right: 2.5rem;
+  padding-left: 2.25rem;
+  padding-right: 2.25rem;
 }
 
 html, body, [class*="css"] {
@@ -73,21 +73,21 @@ h1, h2, h3, h4, h5, h6 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 32px;
-  padding: 24px 32px;
+  margin-bottom: 24px;
+  padding: 20px 28px;
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
-  border-radius: var(--nv-radius-lg);
-  box-shadow: var(--nv-shadow-soft);
+  border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .nv-page-head-left { min-width: 0; }
 .nv-h1 {
-  font-size: 28px;
+  font-size: 26px;
   line-height: 1.2;
   font-weight: 800;
   letter-spacing: -0.03em;
   color: var(--nv-text);
-  margin: 0 0 4px 0;
+  margin: 0;
 }
 .nv-page-sub {
   color: var(--nv-muted);
@@ -99,10 +99,10 @@ h1, h2, h3, h4, h5, h6 {
 .nv-section {
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
-  border-radius: var(--nv-radius-lg);
-  padding: 24px 28px;
-  margin-top: 24px;
-  box-shadow: var(--nv-shadow-soft);
+  border-radius: 18px;
+  padding: 20px 24px;
+  margin-top: 20px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .nv-section-muted {
   background: var(--nv-surface);
@@ -113,17 +113,24 @@ h1, h2, h3, h4, h5, h6 {
   align-items:flex-start;
   justify-content:space-between;
   gap:16px;
-  margin-bottom:20px;
+  margin-bottom:14px;
 }
 .nv-sec-title {
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.35;
   margin: 0;
   color: var(--nv-text);
   display: flex;
   align-items: center;
-  gap: 8px;
-  letter-spacing: -0.01em;
+  gap: 6px;
+  letter-spacing: -0.015em;
+}
+.nv-sec-sub {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--nv-muted);
+  margin-top: 4px;
 }
 
 /* =========================================
@@ -131,12 +138,12 @@ h1, h2, h3, h4, h5, h6 {
    ========================================= */
 .nv-metric-card {
   background: var(--nv-bg);
-  padding: 24px;
-  border-radius: var(--nv-radius-lg);
+  padding: 20px 22px;
+  border-radius: 16px;
   border: 1px solid var(--nv-line);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   transition: all 0.2s ease;
-  box-shadow: var(--nv-shadow-soft);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .nv-metric-card:hover {
   border-color: var(--nv-primary);
@@ -145,25 +152,27 @@ h1, h2, h3, h4, h5, h6 {
 }
 .nv-metric-card-title {
   color: var(--nv-muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .nv-metric-card-value {
   color: var(--nv-text);
-  font-size: 32px;
+  font-size: 30px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
 }
 .nv-metric-card-desc {
   color: var(--nv-primary);
-  font-size: 13px;
-  font-weight: 600;
-  margin-top: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 10px;
   background: var(--nv-primary-soft);
-  display: inline-block;
-  padding: 6px 12px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
 }
 
 /* =========================================
@@ -321,17 +330,83 @@ div[data-baseweb="select"] > div:focus-within {
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
 
+
+/* =========================================
+   Card Rhythm & Table Tone
+   ========================================= */
+[data-testid="stVerticalBlockBorderWrapper"] {
+  border-color: var(--nv-line) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  padding: 4px 2px !important;
+}
+
+div[data-testid="stDataFrame"] {
+  border: 1px solid var(--nv-line) !important;
+  border-radius: 16px !important;
+  overflow: hidden !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) !important;
+  --gdg-font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
+  --gdg-bg-header: #F8FAFC;
+  --gdg-bg-cell: #FFFFFF;
+  --gdg-bg-cell-medium: #FFFFFF;
+  --gdg-bg-header-has-focus: #F1F5F9;
+  --gdg-fg-color: #111827;
+  --gdg-fg-header: #475569;
+  --gdg-border-color: #E2E8F0;
+  --gdg-header-font-style: 600 12px Pretendard;
+  --gdg-cell-horizontal-padding: 12px;
+}
+
+div[data-testid="stDataFrame"] [role="grid"] {
+  border: none !important;
+}
+
+.nv-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--nv-bg);
+}
+.nv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #F8FAFC;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--nv-line);
+}
+.nv-table tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #EEF2F7;
+  font-size: 13px;
+  color: var(--nv-text);
+}
+.nv-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.nv-table tbody tr:hover td {
+  background: #FBFCFE;
+}
+
 @media (max-width: 1100px) {
   div.block-container {
     padding-left: 1.5rem !important;
     padding-right: 1.5rem !important;
   }
   .nv-page-head {
-    padding: 20px;
-    margin-bottom: 24px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
   }
   .nv-h1 {
-    font-size: 24px;
+    font-size: 23px;
+  }
+  .nv-section {
+    padding: 18px 18px;
   }
 }
 </style>
