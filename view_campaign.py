@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 from typing import Dict
 from datetime import date
 
@@ -185,45 +186,55 @@ def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int =
         return max(min_height, min(40 + rows * 34, max_height))
     except: return min_height
 
-def _build_campaign_type_join_sql(engine, fact_alias: str, type_sel: tuple) -> tuple[str, str]:
-    join_sql = ""
-    type_filter = ""
-    if not type_sel or not table_exists(engine, "dim_campaign"):
-        return join_sql, type_filter
-
-    dim_cols = get_table_columns(engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
-    rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-    db_types = [rev_map.get(t, t) for t in type_sel]
-    join_sql = f" LEFT JOIN dim_campaign dc ON {fact_alias}.customer_id::text = dc.customer_id::text AND {fact_alias}.campaign_id::text = dc.campaign_id::text "
-    type_filter = f"AND dc.{cp_col} IN ({_sql_in_str_list(list(db_types))})"
-    return join_sql, type_filter
+def _normalize_device_breakdown_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["device_name", "cost", "share_pct"])
+    out = df.copy()
+    out["device_name"] = out["device_name"].astype(str).str.strip().replace({"MOBILE": "MO", "mobile": "MO", "모바일": "MO", "PC": "PC"})
+    out["device_name"] = out["device_name"].apply(lambda x: "PC" if str(x).upper()=="PC" else ("MO" if str(x).upper() in {"MO","MOBILE"} else "기타"))
+    out["cost"] = pd.to_numeric(out.get("cost", 0), errors="coerce").fillna(0)
+    out = out.groupby("device_name", as_index=False)["cost"].sum()
+    out = out[out["cost"] > 0].copy()
+    if out.empty:
+        return pd.DataFrame(columns=["device_name", "cost", "share_pct"])
+    total_cost = float(out["cost"].sum())
+    out["share_pct"] = np.where(total_cost > 0, (out["cost"] / total_cost) * 100.0, 0.0)
+    order = {"PC": 0, "MO": 1, "기타": 2}
+    out["__ord"] = out["device_name"].map(order).fillna(99)
+    out = out.sort_values(["__ord", "cost"], ascending=[True, False]).drop(columns=["__ord"]).reset_index(drop=True)
+    return out
 
 
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    cid_filter = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+
     if table_exists(engine, "fact_campaign_device_daily"):
-        fact_cols = get_table_columns(engine, "fact_campaign_device_daily")
-        if "device_name" in fact_cols:
-            where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-            join_sql, type_filter = _build_campaign_type_join_sql(engine, "f", type_sel)
-            sql = f"""
-                SELECT COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류') AS device_name,
-                       SUM(f.cost) AS cost
-                FROM fact_campaign_device_daily f
-                {join_sql}
-                WHERE f.dt BETWEEN :d1 AND :d2
-                  {where_cid}
-                  {type_filter}
-                GROUP BY COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류')
-                HAVING SUM(f.cost) > 0
-                ORDER BY SUM(f.cost) DESC
-            """
-            try:
-                df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
-                if df is not None and not df.empty:
-                    return df
-            except Exception:
-                pass
+        cp_col = _campaign_type_column(engine) if table_exists(engine, "dim_campaign") else None
+        type_filter = f"AND dc.{cp_col} IN ({_sql_in_str_list(list(type_sel))})" if type_sel and cp_col else ""
+        sql = f"""
+            SELECT
+                CASE
+                    WHEN UPPER(TRIM(COALESCE(f.device_name,''))) IN ('PC','P') THEN 'PC'
+                    WHEN UPPER(TRIM(COALESCE(f.device_name,''))) IN ('MO','M','MOBILE') THEN 'MO'
+                    ELSE '기타'
+                END AS device_name,
+                SUM(COALESCE(f.cost,0)) AS cost
+            FROM fact_campaign_device_daily f
+            LEFT JOIN dim_campaign dc
+              ON f.customer_id::text = dc.customer_id::text
+             AND f.campaign_id::text = dc.campaign_id::text
+            WHERE f.dt BETWEEN :d1 AND :d2 {cid_filter} {type_filter}
+            GROUP BY 1
+            HAVING SUM(COALESCE(f.cost,0)) > 0
+            ORDER BY SUM(COALESCE(f.cost,0)) DESC
+        """
+        try:
+            df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+            df = _normalize_device_breakdown_df(df)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
 
     if not table_exists(engine, "fact_media_daily"):
         return pd.DataFrame()
@@ -231,135 +242,68 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     if "device_name" not in cols:
         return pd.DataFrame()
 
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     type_filter = f"AND campaign_type IN ({_sql_in_str_list(list(type_sel))})" if type_sel and "campaign_type" in cols else ""
-    sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '미분류') AS device_name, SUM(cost) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '미분류') HAVING SUM(cost) > 0 ORDER BY SUM(cost) DESC"
-    try:
-        return sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
-    except Exception:
-        return pd.DataFrame()
-
-
-def _query_campaign_device_metrics(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    if not table_exists(engine, "fact_campaign_device_daily"):
-        return pd.DataFrame()
-
-    fact_cols = get_table_columns(engine, "fact_campaign_device_daily")
-    required_cols = {"customer_id", "campaign_id", "device_name", "clk", "cost", "conv", "sales"}
-    if not required_cols.issubset(set(fact_cols)):
-        return pd.DataFrame()
-
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
-    join_sql, type_filter = _build_campaign_type_join_sql(engine, "f", type_sel)
     sql = f"""
         SELECT
-            f.customer_id::text AS customer_id,
-            f.campaign_id::text AS campaign_id,
-            UPPER(COALESCE(NULLIF(TRIM(f.device_name), ''), '미분류')) AS device_name,
-            SUM(COALESCE(f.imp, 0)) AS imp,
-            SUM(COALESCE(f.clk, 0)) AS clk,
-            SUM(COALESCE(f.cost, 0)) AS cost,
-            SUM(COALESCE(f.conv, 0)) AS conv,
-            SUM(COALESCE(f.sales, 0)) AS sales
-        FROM fact_campaign_device_daily f
-        {join_sql}
-        WHERE f.dt BETWEEN :d1 AND :d2
-          {where_cid}
-          {type_filter}
-        GROUP BY 1, 2, 3
+            CASE
+                WHEN UPPER(TRIM(COALESCE(device_name,''))) IN ('PC','P') THEN 'PC'
+                WHEN UPPER(TRIM(COALESCE(device_name,''))) IN ('MO','M','MOBILE') THEN 'MO'
+                ELSE '기타'
+            END AS device_name,
+            SUM(COALESCE(cost,0)) AS cost
+        FROM fact_media_daily f
+        WHERE dt BETWEEN :d1 AND :d2 {cid_filter} {type_filter}
+        GROUP BY 1
+        HAVING SUM(COALESCE(cost,0)) > 0
+        ORDER BY SUM(COALESCE(cost,0)) DESC
     """
     try:
-        df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+        return _normalize_device_breakdown_df(sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)}))
     except Exception:
         return pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
 
-    df = df.copy()
-    df["device_name"] = df["device_name"].astype(str).str.upper().replace({"MO": "MOBILE", "M": "MOBILE"})
-    df = df[df["device_name"].isin(["PC", "MOBILE"])]
-    if df.empty:
-        return pd.DataFrame()
 
-    num_cols = ["imp", "clk", "cost", "conv", "sales"]
-    for col in num_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+def _render_device_spend_breakdown(device_df: pd.DataFrame) -> None:
+    device_df = _normalize_device_breakdown_df(device_df)
+    if device_df.empty:
+        st.info("기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.")
+        return
 
-    base_keys = ["customer_id", "campaign_id"]
-    wide = df[base_keys].drop_duplicates().reset_index(drop=True)
-    total = df.groupby(base_keys, as_index=False)[["cost", "clk", "conv", "sales"]].sum().rename(columns={
-        "cost": "기기합 광고비",
-        "clk": "기기합 클릭",
-        "conv": "기기합 전환수",
-        "sales": "기기합 전환매출",
-    })
-    wide = wide.merge(total, on=base_keys, how="left")
+    total_cost = int(device_df["cost"].sum())
+    top_row = device_df.sort_values("cost", ascending=False).iloc[0]
+    top_device = str(top_row["device_name"])
+    top_share = float(top_row["share_pct"])
+    ratio_text = " / ".join([f"{r.device_name} {r.share_pct:.1f}%" for r in device_df.itertuples(index=False)])
 
-    device_prefix_map = {"PC": "PC", "MOBILE": "MO"}
-    for device_name, prefix in device_prefix_map.items():
-        part = df[df["device_name"] == device_name].groupby(base_keys, as_index=False)[["clk", "cost", "conv", "sales"]].sum()
-        if part.empty:
-            continue
-        part[f"{prefix} CPC(원)"] = np.where(part["clk"] > 0, part["cost"] / part["clk"], np.nan)
-        part[f"{prefix} 전환율(%)"] = np.where(part["clk"] > 0, (part["conv"] / part["clk"]) * 100, np.nan)
-        part[f"{prefix} ROAS(%)"] = np.where(part["cost"] > 0, (part["sales"] / part["cost"]) * 100, np.nan)
-        part[f"{prefix} 광고비"] = part["cost"]
-        part = part[base_keys + [f"{prefix} 광고비", f"{prefix} CPC(원)", f"{prefix} 전환율(%)", f"{prefix} ROAS(%)"]]
-        wide = wide.merge(part, on=base_keys, how="left")
+    info_cols = st.columns([1, 1, 1.2])
+    info_cols[0].metric("총 광고비", f"{total_cost:,.0f}원")
+    info_cols[1].metric("우세 기기", top_device, f"{top_share:.1f}%")
+    info_cols[2].metric("기기 비중", ratio_text)
 
-    wide["PC 광고비"] = pd.to_numeric(wide.get("PC 광고비", 0), errors="coerce").fillna(0)
-    wide["MO 광고비"] = pd.to_numeric(wide.get("MO 광고비", 0), errors="coerce").fillna(0)
-    total_cost = pd.to_numeric(wide.get("기기합 광고비", 0), errors="coerce").fillna(0)
-    wide["PC 비용비중(%)"] = np.where(total_cost > 0, (wide["PC 광고비"] / total_cost) * 100, np.nan)
-    wide["MO 비용비중(%)"] = np.where(total_cost > 0, (wide["MO 광고비"] / total_cost) * 100, np.nan)
+    color_map = {"PC": "#2F80ED", "MO": "#03C75A", "기타": "#8B95A1"}
+    fig = go.Figure()
+    cumulative = 0.0
+    for row in device_df.itertuples(index=False):
+        pct = float(row.share_pct)
+        fig.add_trace(go.Bar(
+            x=[pct], y=["광고비 비중"], orientation="h", name=str(row.device_name),
+            marker=dict(color=color_map.get(str(row.device_name), "#8B95A1")),
+            text=[f"{row.device_name} {pct:.1f}%" if pct >= 12 else f"{pct:.1f}%"],
+            textposition="inside" if pct >= 8 else "outside",
+            insidetextanchor="middle",
+            hovertemplate=f"{row.device_name}<br>광고비: {int(row.cost):,}원<br>비중: {pct:.1f}%<extra></extra>",
+            offsetgroup=0, base=[cumulative]
+        ))
+        cumulative += pct
 
-    for col in ["PC CPC(원)", "MO CPC(원)", "PC 전환율(%)", "MO 전환율(%)", "PC ROAS(%)", "MO ROAS(%)", "PC 비용비중(%)", "MO 비용비중(%)"]:
-        if col in wide.columns:
-            wide[col] = pd.to_numeric(wide[col], errors="coerce")
-
-    def _pick_device_tag(row: pd.Series) -> str:
-        pc_cost = float(row.get("PC 광고비", 0) or 0)
-        mo_cost = float(row.get("MO 광고비", 0) or 0)
-        total_cost = float(row.get("기기합 광고비", 0) or 0)
-        pc_roas = float(row.get("PC ROAS(%)", np.nan)) if pd.notna(row.get("PC ROAS(%)", np.nan)) else np.nan
-        mo_roas = float(row.get("MO ROAS(%)", np.nan)) if pd.notna(row.get("MO ROAS(%)", np.nan)) else np.nan
-        pc_cvr = float(row.get("PC 전환율(%)", np.nan)) if pd.notna(row.get("PC 전환율(%)", np.nan)) else np.nan
-        mo_cvr = float(row.get("MO 전환율(%)", np.nan)) if pd.notna(row.get("MO 전환율(%)", np.nan)) else np.nan
-        pc_share = float(row.get("PC 비용비중(%)", np.nan)) if pd.notna(row.get("PC 비용비중(%)", np.nan)) else np.nan
-        mo_share = float(row.get("MO 비용비중(%)", np.nan)) if pd.notna(row.get("MO 비용비중(%)", np.nan)) else np.nan
-
-        if total_cost < 10000 or (pc_cost <= 0 and mo_cost <= 0):
-            return "데이터 부족"
-        if pc_cost <= 0 and mo_cost > 0:
-            return "MO 집중"
-        if mo_cost <= 0 and pc_cost > 0:
-            return "PC 집중"
-        if pd.notna(mo_share) and mo_share >= 70 and pd.notna(pc_roas) and pd.notna(mo_roas) and pc_roas > 0 and mo_roas <= pc_roas * 0.7:
-            return "모바일 과소비"
-        if pd.notna(pc_share) and pc_share <= 35 and pd.notna(pc_roas) and pd.notna(mo_roas) and mo_roas > 0 and pc_roas >= mo_roas * 1.5:
-            return "PC 저비용 고효율"
-        if pd.notna(mo_roas) and pd.notna(pc_roas) and pd.notna(mo_cvr) and pd.notna(pc_cvr):
-            if mo_roas >= pc_roas * 1.2 and mo_cvr >= pc_cvr * 1.1:
-                return "MO 강세"
-            if pc_roas >= mo_roas * 1.2 and pc_cvr >= mo_cvr * 1.1:
-                return "PC 강세"
-        if pd.notna(pc_roas) and pd.notna(mo_roas):
-            hi = max(pc_roas, mo_roas)
-            lo = min(pc_roas, mo_roas)
-            if hi > 0 and lo >= 0 and ((lo == 0 and hi >= 100) or (lo > 0 and hi / lo >= 1.5)):
-                return "기기 편차 큼"
-        return "균형"
-
-    wide["기기 태그"] = wide.apply(_pick_device_tag, axis=1)
-    keep_cols = [
-        "customer_id", "campaign_id",
-        "PC CPC(원)", "MO CPC(원)",
-        "PC 전환율(%)", "MO 전환율(%)",
-        "PC ROAS(%)", "MO ROAS(%)",
-        "기기 태그",
-    ]
-    return wide[[c for c in keep_cols if c in wide.columns]]
-
+    fig.update_layout(
+        barmode="stack", height=150, margin=dict(t=6, b=10, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1.0, title_text="")
+    )
+    fig.update_xaxes(range=[0, 100], showgrid=False, visible=False, fixedrange=True)
+    fig.update_yaxes(showgrid=False, visible=False, fixedrange=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 def _campaign_type_column(engine) -> str:
     cols = get_table_columns(engine, "dim_campaign")
@@ -519,13 +463,6 @@ FAST_COL_CONFIG = {
     "총 전환수": st.column_config.NumberColumn("총 전환수", format="%d"),
     "총 전환매출": st.column_config.NumberColumn("총 전환매출", format="%d 원"),
     "통합 ROAS(%)": st.column_config.NumberColumn("통합 ROAS(%)", format="%.1f %%"),
-    "PC CPC(원)": st.column_config.NumberColumn("PC CPC", format="%.0f 원"),
-    "MO CPC(원)": st.column_config.NumberColumn("MO CPC", format="%.0f 원"),
-    "PC 전환율(%)": st.column_config.NumberColumn("PC 전환율", format="%.1f %%"),
-    "MO 전환율(%)": st.column_config.NumberColumn("MO 전환율", format="%.1f %%"),
-    "PC ROAS(%)": st.column_config.NumberColumn("PC ROAS", format="%.1f %%"),
-    "MO ROAS(%)": st.column_config.NumberColumn("MO ROAS", format="%.1f %%"),
-    "기기 태그": st.column_config.TextColumn("기기 태그"),
 }
 
 @st.fragment
@@ -559,14 +496,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         view = _add_perf_metrics(view)
         if "avg_rank" in view.columns:
             view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
-        device_metrics = _query_campaign_device_metrics(engine, f["start"], f["end"], cids, type_sel)
-        if device_metrics is not None and not device_metrics.empty and {"customer_id", "campaign_id"}.issubset(set(view.columns)):
-            device_metrics = device_metrics.copy()
-            device_metrics["customer_id"] = device_metrics["customer_id"].astype(str)
-            device_metrics["campaign_id"] = device_metrics["campaign_id"].astype(str)
-            view["customer_id"] = view["customer_id"].astype(str)
-            view["campaign_id"] = view["campaign_id"].astype(str)
-            view = view.merge(device_metrics, on=["customer_id", "campaign_id"], how="left")
 
     selected_tab = st.pills("분석 탭 선택", ["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"], default="종합 성과")
 
@@ -580,14 +509,14 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         if "평균순위" in disp_main.columns: base_cols.append("평균순위")
 
         if has_pre_patch_cur:
-            all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)", "PC ROAS(%)", "MO ROAS(%)", "PC CPC(원)", "MO CPC(원)", "PC 전환율(%)", "MO 전환율(%)", "기기 태그"]
+            all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
             roas_col, sales_col = "통합 ROAS(%)", "총 전환매출"
         else:
             if not funnel_toggle:
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "PC ROAS(%)", "MO ROAS(%)", "PC CPC(원)", "MO CPC(원)", "PC 전환율(%)", "MO 전환율(%)", "기기 태그"]
+                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
                 roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
             else:
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)", "PC ROAS(%)", "MO ROAS(%)", "PC CPC(원)", "MO CPC(원)", "PC 전환율(%)", "MO 전환율(%)", "기기 태그"]
+                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
                 roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
 
         col_type, col_device = st.columns([1.5, 1])
@@ -602,14 +531,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형"), "광고비": st.column_config.NumberColumn("총 광고비", format="%d 원"), sales_col: st.column_config.NumberColumn(sales_col, format="%d 원"), "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100), roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f %%")}
             )
         with col_device:
+            st.markdown("<div style='font-size:13px; font-weight:600; color:#374151; margin: 0 0 6px 2px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
             device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel)
-            if not device_df.empty:
-                st.markdown("<div style='font-size:13px; color:#555; text-align:center; margin-bottom:5px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
-                fig = px.pie(device_df, values="cost", names="device_name", hole=0.55)
-                fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=180, showlegend=True)
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            else: st.info("기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.")
+            _render_device_spend_breakdown(device_df)
 
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
@@ -627,22 +551,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             with st.container(border=True):
                 st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 8px;'>[{selected_campaign}] 하위 그룹/상세 성과</h5>", unsafe_allow_html=True)
-                if {"PC ROAS(%)", "MO ROAS(%)", "기기 태그"}.intersection(set(disp_main_src.columns)):
-                    sel_row = disp_main_src.iloc[selected_idx]
-                    tag = str(sel_row.get("기기 태그", "") or "데이터 부족")
-                    pc_roas = pd.to_numeric(sel_row.get("PC ROAS(%)", np.nan), errors="coerce")
-                    mo_roas = pd.to_numeric(sel_row.get("MO ROAS(%)", np.nan), errors="coerce")
-                    pc_cpc = pd.to_numeric(sel_row.get("PC CPC(원)", np.nan), errors="coerce")
-                    mo_cpc = pd.to_numeric(sel_row.get("MO CPC(원)", np.nan), errors="coerce")
-                    pc_cvr = pd.to_numeric(sel_row.get("PC 전환율(%)", np.nan), errors="coerce")
-                    mo_cvr = pd.to_numeric(sel_row.get("MO 전환율(%)", np.nan), errors="coerce")
-                    def _fmt_num(v, suffix="", digits=1):
-                        return "-" if pd.isna(v) else f"{float(v):,.{digits}f}{suffix}"
-                    st.caption(
-                        f"기기 태그: {tag} | PC ROAS {_fmt_num(pc_roas, '%')} · MO ROAS {_fmt_num(mo_roas, '%')} | "
-                        f"PC CPC {_fmt_num(pc_cpc, '원', 0)} · MO CPC {_fmt_num(mo_cpc, '원', 0)} | "
-                        f"PC 전환율 {_fmt_num(pc_cvr, '%')} · MO 전환율 {_fmt_num(mo_cvr, '%')}"
-                    )
                 if not kw_detail.empty:
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in kw_detail.columns:
