@@ -186,15 +186,70 @@ def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int =
     except: return min_height
 
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    if not table_exists(engine, "fact_media_daily"): return pd.DataFrame()
+    # 1) Prefer the new campaign-device fact collected by the PC/M parser.
+    if table_exists(engine, "fact_campaign_device_daily"):
+        dev_cols = get_table_columns(engine, "fact_campaign_device_daily")
+        if "device_name" in dev_cols and "cost" in dev_cols:
+            where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
+            join_sql = ""
+            type_filter = ""
+            if type_sel:
+                cp_col = _campaign_type_column(engine)
+                join_sql = " LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text "
+                type_filter = f"AND COALESCE(c.{cp_col}::text, '') IN ({_sql_in_str_list(list(type_sel))})"
+            sql = f"""
+                SELECT
+                    CASE
+                        WHEN UPPER(TRIM(COALESCE(f.device_name, ''))) IN ('MOBILE','MO','M') OR COALESCE(f.device_name, '') LIKE '%모바일%' THEN 'MO'
+                        WHEN UPPER(TRIM(COALESCE(f.device_name, ''))) IN ('PC','P') THEN 'PC'
+                        ELSE '기타'
+                    END AS device_name,
+                    SUM(COALESCE(f.cost, 0)) AS cost
+                FROM fact_campaign_device_daily f
+                {join_sql}
+                WHERE f.dt BETWEEN :d1 AND :d2
+                  {where_cid}
+                  {type_filter}
+                GROUP BY 1
+                HAVING SUM(COALESCE(f.cost, 0)) > 0
+                ORDER BY SUM(COALESCE(f.cost, 0)) DESC
+            """
+            try:
+                df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+                if not df.empty:
+                    return df
+            except Exception:
+                pass
+
+    # 2) Fallback to legacy media daily if device fact is unavailable.
+    if not table_exists(engine, "fact_media_daily"):
+        return pd.DataFrame()
     cols = get_table_columns(engine, "fact_media_daily")
-    if "device_name" not in cols: return pd.DataFrame()
+    if "device_name" not in cols:
+        return pd.DataFrame()
 
     where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ""
     type_filter = f"AND campaign_type IN ({_sql_in_str_list(list(type_sel))})" if type_sel and "campaign_type" in cols else ""
-    sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '미분류') AS device_name, SUM(cost) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '미분류') HAVING SUM(cost) > 0 ORDER BY SUM(cost) DESC"
-    try: return sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
-    except: return pd.DataFrame()
+    sql = f"""
+        SELECT
+            CASE
+                WHEN UPPER(TRIM(COALESCE(device_name, ''))) IN ('MOBILE','MO','M') OR COALESCE(device_name, '') LIKE '%모바일%' THEN 'MO'
+                WHEN UPPER(TRIM(COALESCE(device_name, ''))) IN ('PC','P') THEN 'PC'
+                ELSE '기타'
+            END AS device_name,
+            SUM(COALESCE(cost, 0)) AS cost
+        FROM fact_media_daily
+        WHERE dt BETWEEN :d1 AND :d2
+          {where_cid}
+          {type_filter}
+        GROUP BY 1
+        HAVING SUM(COALESCE(cost, 0)) > 0
+        ORDER BY SUM(COALESCE(cost, 0)) DESC
+    """
+    try:
+        return sql_read(engine, sql, {"d1": str(d1), "d2": str(d2)})
+    except Exception:
+        return pd.DataFrame()
 
 
 def _campaign_type_column(engine) -> str:
@@ -369,10 +424,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     has_pre_patch_cur = (f["start"] < patch_date)
 
     if has_pre_patch_cur:
-        st.info("3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
     funnel_toggle = False
 
-    with st.spinner("최신 필터 조건에 맞춰 데이터를 집계하고 있습니다..."):
+    with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
         bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
         if bundle is None or bundle.empty:
             return
@@ -443,7 +498,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             selected_campaign = disp_main_src.iloc[selected_idx]["캠페인"]
             selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
             selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
-            with st.spinner("선택한 캠페인의 하위 키워드·소재 성과를 불러오는 중입니다..."):
+            with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
                 kw_detail = _query_detail_bundle_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -477,7 +532,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
 
     elif selected_tab == "그룹 성과":
-        with st.spinner("광고그룹 성과를 불러오는 중입니다..."):
+        with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
             kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
             ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
             kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
@@ -521,7 +576,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
         # ⚡ 토글 명칭 변경 (왼쪽 정렬)
-        show_deltas = st.toggle("증감률 보기", value=False, key="camp_abs_toggle")
+        show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
         opts = get_dynamic_cmp_options(f["start"], f["end"])
@@ -529,7 +584,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-        with st.spinner("이전 기간 데이터를 불러오는 중입니다..."):
+        with st.spinner("🔄 이전 기간의 데이터를 불러오는 중입니다..."):
             base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
 
         view_cmp = view.copy()
@@ -539,7 +594,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         has_pre_patch_base = (b1 < patch_date) if b1 else False
         show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
-        if show_mode == "integrated_only": st.warning("비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
+        if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
 
         # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 및 "순위 변화" 조건 완벽 적용
         metrics_cols_cmp = []
