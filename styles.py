@@ -46,11 +46,11 @@ header[data-testid="stHeader"] { background-color: transparent !important; }
 [data-testid="stSidebarNav"] { display: none !important; }
 
 div.block-container {
-  padding-top: 1.75rem !important;
-  padding-bottom: 3.5rem !important;
+  padding-top: 2rem !important;
+  padding-bottom: 4rem !important;
   max-width: 1520px;
-  padding-left: 2.25rem;
-  padding-right: 2.25rem;
+  padding-left: 2.5rem;
+  padding-right: 2.5rem;
 }
 
 html, body, [class*="css"] {
@@ -73,21 +73,21 @@ h1, h2, h3, h4, h5, h6 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 24px;
-  padding: 20px 28px;
+  margin-bottom: 32px;
+  padding: 24px 32px;
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
-  border-radius: 18px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-radius: var(--nv-radius-lg);
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-page-head-left { min-width: 0; }
 .nv-h1 {
-  font-size: 26px;
+  font-size: 28px;
   line-height: 1.2;
   font-weight: 800;
   letter-spacing: -0.03em;
   color: var(--nv-text);
-  margin: 0;
+  margin: 0 0 4px 0;
 }
 .nv-page-sub {
   color: var(--nv-muted);
@@ -99,10 +99,10 @@ h1, h2, h3, h4, h5, h6 {
 .nv-section {
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
-  border-radius: 18px;
-  padding: 20px 24px;
-  margin-top: 20px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-radius: var(--nv-radius-lg);
+  padding: 24px 28px;
+  margin-top: 24px;
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-section-muted {
   background: var(--nv-surface);
@@ -113,24 +113,17 @@ h1, h2, h3, h4, h5, h6 {
   align-items:flex-start;
   justify-content:space-between;
   gap:16px;
-  margin-bottom:14px;
+  margin-bottom:20px;
 }
 .nv-sec-title {
-  font-size: 15px;
-  font-weight: 750;
-  line-height: 1.35;
+  font-size: 17px;
+  font-weight: 700;
   margin: 0;
   color: var(--nv-text);
   display: flex;
   align-items: center;
-  gap: 6px;
-  letter-spacing: -0.015em;
-}
-.nv-sec-sub {
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--nv-muted);
-  margin-top: 4px;
+  gap: 8px;
+  letter-spacing: -0.01em;
 }
 
 /* =========================================
@@ -138,12 +131,12 @@ h1, h2, h3, h4, h5, h6 {
    ========================================= */
 .nv-metric-card {
   background: var(--nv-bg);
-  padding: 20px 22px;
-  border-radius: 16px;
+  padding: 24px;
+  border-radius: var(--nv-radius-lg);
   border: 1px solid var(--nv-line);
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   transition: all 0.2s ease;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-metric-card:hover {
   border-color: var(--nv-primary);
@@ -152,27 +145,25 @@ h1, h2, h3, h4, h5, h6 {
 }
 .nv-metric-card-title {
   color: var(--nv-muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .nv-metric-card-value {
   color: var(--nv-text);
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.02em;
 }
 .nv-metric-card-desc {
   color: var(--nv-primary);
-  font-size: 12px;
-  font-weight: 700;
-  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 12px;
   background: var(--nv-primary-soft);
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 8px;
 }
 
 /* =========================================
@@ -258,6 +249,86 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 800 !important;
 }
 
+
+/* =========================================
+   Sidebar Filter Rhythm & Spacing
+   ========================================= */
+.nv-filter-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--nv-muted);
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.nv-filter-help {
+  font-size: 11px;
+  color: var(--nv-muted-light);
+  margin: 2px 0 0 0;
+  line-height: 1.45;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {
+  margin-bottom: 6px;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+  margin-bottom: 0;
+}
+[data-testid="stSidebar"] [data-testid="stSelectbox"],
+[data-testid="stSidebar"] [data-testid="stMultiSelect"],
+[data-testid="stSidebar"] [data-testid="stDateInput"],
+[data-testid="stSidebar"] [data-testid="stTextInput"],
+[data-testid="stSidebar"] [data-testid="stNumberInput"] {
+  margin-bottom: 8px;
+}
+[data-testid="stSidebar"] [data-testid="stSelectbox"] label,
+[data-testid="stSidebar"] [data-testid="stMultiSelect"] label,
+[data-testid="stSidebar"] [data-testid="stDateInput"] label,
+[data-testid="stSidebar"] [data-testid="stTextInput"] label,
+[data-testid="stSidebar"] [data-testid="stNumberInput"] label {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--nv-muted) !important;
+  margin-bottom: 6px !important;
+}
+[data-testid="stSidebar"] div[data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-testid="stDateInput"] > div,
+[data-testid="stSidebar"] [data-testid="stNumberInput"] > div,
+[data-testid="stSidebar"] [data-testid="stTextInput"] > div,
+[data-testid="stSidebar"] [data-testid="stSelectbox"] > div {
+  min-height: 42px !important;
+}
+[data-testid="stSidebar"] div[data-baseweb="tag"] {
+  border-radius: 999px !important;
+  min-height: 26px !important;
+  padding-inline: 8px !important;
+  background: var(--nv-surface-2) !important;
+  border: 1px solid var(--nv-line) !important;
+}
+[data-testid="stSidebar"] div[data-baseweb="tag"] span {
+  font-size: 12px !important;
+  color: var(--nv-text) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  margin-top: 2px;
+}
+[data-testid="stSidebar"] [data-testid="stExpanderDetails"] {
+  padding-top: 2px !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpanderDetails"] > div {
+  padding-top: 6px !important;
+}
+[data-testid="stSidebar"] hr {
+  margin: 18px 0 !important;
+  border-color: var(--nv-line) !important;
+}
+[data-testid="stSidebar"] [data-testid="baseButton-primary"],
+[data-testid="stSidebar"] [data-testid="baseButton-secondary"] {
+  min-height: 42px !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] {
+  margin-top: 4px;
+}
+
 /* =========================================
    Inputs & Controls
    ========================================= */
@@ -330,83 +401,17 @@ div[data-baseweb="select"] > div:focus-within {
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
 
-
-/* =========================================
-   Card Rhythm & Table Tone
-   ========================================= */
-[data-testid="stVerticalBlockBorderWrapper"] {
-  border-color: var(--nv-line) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
-  padding: 4px 2px !important;
-}
-
-div[data-testid="stDataFrame"] {
-  border: 1px solid var(--nv-line) !important;
-  border-radius: 16px !important;
-  overflow: hidden !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) !important;
-  --gdg-font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
-  --gdg-bg-header: #F8FAFC;
-  --gdg-bg-cell: #FFFFFF;
-  --gdg-bg-cell-medium: #FFFFFF;
-  --gdg-bg-header-has-focus: #F1F5F9;
-  --gdg-fg-color: #111827;
-  --gdg-fg-header: #475569;
-  --gdg-border-color: #E2E8F0;
-  --gdg-header-font-style: 600 12px Pretendard;
-  --gdg-cell-horizontal-padding: 12px;
-}
-
-div[data-testid="stDataFrame"] [role="grid"] {
-  border: none !important;
-}
-
-.nv-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  background: var(--nv-bg);
-}
-.nv-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: #F8FAFC;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-  text-align: left;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--nv-line);
-}
-.nv-table tbody td {
-  padding: 12px 14px;
-  border-bottom: 1px solid #EEF2F7;
-  font-size: 13px;
-  color: var(--nv-text);
-}
-.nv-table tbody tr:last-child td {
-  border-bottom: none;
-}
-.nv-table tbody tr:hover td {
-  background: #FBFCFE;
-}
-
 @media (max-width: 1100px) {
   div.block-container {
     padding-left: 1.5rem !important;
     padding-right: 1.5rem !important;
   }
   .nv-page-head {
-    padding: 18px 20px;
-    margin-bottom: 20px;
+    padding: 20px;
+    margin-bottom: 24px;
   }
   .nv-h1 {
-    font-size: 23px;
-  }
-  .nv-section {
-    padding: 18px 18px;
+    font-size: 24px;
   }
 }
 </style>
