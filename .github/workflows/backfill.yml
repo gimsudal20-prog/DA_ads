@@ -40,7 +40,11 @@ on:
       sync_dim_first_day:
         description: '첫날만 구조수집 수행 (true/false)'
         required: false
-        default: 'false'
+        default: 'true'
+      sync_dim_every:
+        description: 'N일마다 구조수집 (0=사용안함, 예: 7)'
+        required: false
+        default: '7'
       with_gfa:
         description: 'GFA 포함 실행 (true/false, 현재 collector_gfa.py가 있을 때만 동작)'
         required: false
@@ -74,7 +78,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run fast backfill
         run: |
@@ -91,6 +94,9 @@ jobs:
           fi
           if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
             CMD+=(--sync_dim_first_day)
+          fi
+          if [ -n "${{ github.event.inputs.sync_dim_every }}" ] && [ "${{ github.event.inputs.sync_dim_every }}" != "0" ]; then
+            CMD+=(--sync_dim_every "${{ github.event.inputs.sync_dim_every }}")
           fi
           if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
             CMD+=(--with_gfa)

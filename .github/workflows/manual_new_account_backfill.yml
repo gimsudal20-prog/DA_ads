@@ -26,8 +26,13 @@ on:
       sync_dim_first_day:
         description: "첫날만 구조 동기화"
         required: true
-        default: false
+        default: true
         type: boolean
+      sync_dim_every:
+        description: "N일마다 구조 동기화 (0=사용안함, 예: 7)"
+        required: true
+        default: "7"
+        type: string
 
 concurrency:
   group: manual-new-account-backfill-${{ github.event.inputs.account_name }}
@@ -57,7 +62,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run legacy single-account backfill
         run: |
@@ -69,6 +73,9 @@ jobs:
 
           if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
             CMD+=(--sync_dim_first_day)
+          fi
+          if [ -n "${{ github.event.inputs.sync_dim_every }}" ] && [ "${{ github.event.inputs.sync_dim_every }}" != "0" ]; then
+            CMD+=(--sync_dim_every "${{ github.event.inputs.sync_dim_every }}")
           fi
 
           printf '실행 명령어: %q ' "${CMD[@]}"; echo
