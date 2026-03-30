@@ -8,11 +8,10 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import NullPool  # ✨ DB 연결 끊김 방지를 위한 NullPool 임포트 추가
 from datetime import date
 
 # ==========================================
-# 1. Database Connection (NullPool 적용)
+# 1. Database Connection
 # ==========================================
 @st.cache_resource
 def get_engine():
@@ -29,10 +28,14 @@ def get_engine():
         "keepalives_count": 5
     }
 
-    # ✨ 수정됨: NullPool 적용 (사용하지 않는 커넥션을 쥐고 있지 않도록 하여 밤새 끊기는 현상 차단)
+    # ✨ pool_recycle을 3600(1시간)으로 설정하여 포트 고갈 방지 및 유휴 커넥션 안정적 유지
+    # pool_pre_ping=True 적용으로 쿼리 전 끊긴 연결 자동 갱신
     return create_engine(
         db_url,
-        poolclass=NullPool,
+        pool_size=20,
+        max_overflow=40,
+        pool_pre_ping=True,
+        pool_recycle=3600,
         connect_args=connect_args,
         future=True
     )
@@ -74,32 +77,35 @@ def get_table_columns(_engine, table_name: str) -> list:
 
 @st.cache_data(ttl=600, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
-    last_error = None
     for attempt in range(3):
         try:
             with _engine.connect() as conn:
                 return pd.read_sql(text(query), conn, params=params)
-        except Exception as e:
-            last_error = e
+        except (OperationalError, StatementError, InterfaceError):
+            if attempt == 2:
+                st.cache_resource.clear()
+                st.error("밤새 DB 연결이 유휴 상태로 인해 끊어졌습니다. F5(새로고침)를 눌러 연결을 재개해주세요.")
+                st.stop()
+            _engine.dispose()
             time.sleep(1.0)
-            
-    st.cache_resource.clear()
-    st.error(f"DB 연결이 지연되고 있습니다. 잠시 후 새로고침(F5) 해주세요. (사유: {last_error})")
-    st.stop()
+        except Exception as e:
+            st.error(f"데이터 로드 오류 발생: {e}")
+            st.stop()
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
-    last_error = None
     for attempt in range(3):
         try:
             with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
-            return
-        except Exception as e:
-            last_error = e
+            break
+        except (OperationalError, StatementError, InterfaceError) as e:
+            if attempt == 2:
+                st.cache_resource.clear()
+                raise e
+            _engine.dispose()
             time.sleep(1.0)
-            
-    st.cache_resource.clear()
-    raise RuntimeError(f"쿼리 실행 실패 (사유: {last_error})")
+        except Exception as e:
+            raise e
 
 def _sql_in_str_list(lst) -> str:
     if not lst:
@@ -640,70 +646,6 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
     df = _map_campaign_types(df, "campaign_type")
-    return df
-
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_adgroup_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_adgroup_daily"):
-        return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-
-    cols = get_table_columns(_engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
-
-    rank_col = None
-    adg_fact_cols = get_table_columns(_engine, "fact_adgroup_daily")
-    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
-        if candidate in adg_fact_cols:
-            rank_col = candidate
-            break
-
-    rank_agg_sql = ""
-    rank_select_sql = ""
-    if rank_col:
-        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
-        rank_select_sql = ", agg.avg_rank"
-
-    expr = _strict_conv_selects(adg_fact_cols)
-    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
-    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
-    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
-
-    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
-    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
-
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, adgroup_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
-            FROM fact_adgroup_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, adgroup_id
-        )
-        SELECT
-            agg.customer_id, a.campaign_id, agg.adgroup_id,
-            c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name,
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
-        FROM agg
-        JOIN dim_adgroup a ON agg.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
-    if topn_cost > 0:
-        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-    df = _map_campaign_types(df, "campaign_type_label")
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
