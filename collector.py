@@ -1716,6 +1716,24 @@ def _m_safe_text(v: Any, default: str = '전체') -> str:
         return default
     return s
 
+
+def normalize_device_name(v: Any) -> str:
+    s = str(v or '').strip()
+    if not s or s.lower() in {'nan', 'none'} or s == '-':
+        return '전체'
+    n = _m_normalize_header(s)
+    if n in {'pc','desktop','windows','web','computer'} or 'pc' == n or 'desktop' in n:
+        return 'PC'
+    if n in {'mo','mobile','mobileweb','app','android','ios','iphone','ipad','tablet'} or 'mobile' in n or 'mo' == n:
+        return 'MO'
+    if s.upper() in {'PC','MO'}:
+        return s.upper()
+    if '모바일' in s or '앱' in s:
+        return 'MO'
+    if 'PC' in s.upper() or '데스크' in s:
+        return 'PC'
+    return s
+
 def _map_campaign_type_label(v: Any) -> str:
     s = str(v or '').strip()
     if not s:
