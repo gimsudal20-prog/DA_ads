@@ -12,7 +12,48 @@ import streamlit as st
 
 from data import query_shopping_search_terms
 from page_helpers import _perf_common_merge_meta, period_compare_range
-from ui import render_big_table, ui_metric_or_stmetric, render_empty_state
+from ui import render_big_table, render_empty_state
+
+
+
+
+def _inject_minimal_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .mq-hero{padding:10px 2px 0 2px;margin-bottom:6px;}
+        .mq-title{font-size:19px;font-weight:800;letter-spacing:-0.02em;color:#111827;margin:0;}
+        .mq-sub{font-size:12px;color:#6b7280;margin-top:4px;line-height:1.45;}
+        .mq-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:8px 0 12px 0;}
+        .mq-card{border:1px solid rgba(17,24,39,.08);border-radius:12px;padding:12px 14px;background:#fff;}
+        .mq-label{font-size:11px;color:#6b7280;margin-bottom:5px;}
+        .mq-value{font-size:20px;line-height:1.05;font-weight:800;color:#111827;letter-spacing:-0.03em;}
+        .mq-desc{font-size:11px;color:#9ca3af;margin-top:4px;}
+        .mq-sec{margin:8px 0 6px 0;}
+        .mq-sec-title{font-size:14px;font-weight:800;color:#111827;letter-spacing:-0.02em;}
+        .mq-sec-sub{font-size:11px;color:#6b7280;margin-top:3px;}
+        div[data-testid="stExpander"]{border:1px solid rgba(17,24,39,.08);border-radius:12px;overflow:hidden;}
+        @media (max-width: 900px){ .mq-grid{grid-template-columns:repeat(2,minmax(0,1fr));} }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_compact_header() -> None:
+    st.markdown(
+        """
+        <div class='mq-hero'>
+            <div class='mq-title'>쇼핑검색어 분석</div>
+            <div class='mq-sub'>카드는 작게, 표는 넓게. 실제 검색어 퍼널을 핵심 수치와 표 중심으로 봅니다.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_compact_section(title: str, sub: str) -> None:
+    st.markdown(f"<div class='mq-sec'><div class='mq-sec-title'>{title}</div><div class='mq-sec-sub'>{sub}</div></div>", unsafe_allow_html=True)
 
 
 FMT_DICT = {
@@ -157,34 +198,24 @@ def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
     expand_cnt = int((view["액션 라벨"] == "확대 후보").sum()) if "액션 라벨" in view.columns else 0
     observe_cnt = int((view["액션 라벨"] == "관찰 필요").sum()) if "액션 라벨" in view.columns else 0
     purchase_cnt = int((pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0) > 0).sum())
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ui_metric_or_stmetric("검색어 수", f"{q_cnt:,}개", "조회 기간 내 실제 검색어")
-    with c2:
-        ui_metric_or_stmetric("확대 후보", f"{expand_cnt:,}개", "매출/전환 기여가 높은 검색어")
-    with c3:
-        ui_metric_or_stmetric("관찰 필요", f"{observe_cnt:,}개", "장바구니 반응 중심 검색어")
-    with c4:
-        ui_metric_or_stmetric("구매 발생", f"{purchase_cnt:,}개", f"{cmp_mode} 기준 증감 태그 포함")
-
-
-def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
+    total_sales = float(pd.to_numeric(view.get("구매완료 매출", 0), errors="coerce").fillna(0).sum()) if "구매완료 매출" in view.columns else 0.0
     st.markdown(
-        """
-        <div class='nv-section nv-section-muted'>
-            <div class='nv-section-head'>
-                <div>
-                    <div class='nv-sec-title'>쇼핑 검색어 필터</div>
-                    <div class='nv-sec-sub'>다른 상세 페이지와 동일하게 캠페인/광고그룹/액션 라벨 기준으로 빠르게 좁힐 수 있습니다.</div>
-                </div>
-            </div>
+        f"""
+        <div class="mq-grid">
+          <div class="mq-card"><div class="mq-label">검색어 수</div><div class="mq-value">{q_cnt:,}</div><div class="mq-desc">조회 기간 실제 검색어</div></div>
+          <div class="mq-card"><div class="mq-label">구매 발생</div><div class="mq-value">{purchase_cnt:,}</div><div class="mq-desc">구매 전환 발생 검색어</div></div>
+          <div class="mq-card"><div class="mq-label">확대 후보</div><div class="mq-value">{expand_cnt:,}</div><div class="mq-desc">매출 기여가 높은 검색어</div></div>
+          <div class="mq-card"><div class="mq-label">구매 매출</div><div class="mq-value">{total_sales:,.0f}</div><div class="mq-desc">{cmp_mode} 기준 비교 가능</div></div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
+
+def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
     filtered = view.copy()
-    r1c1, r1c2, r1c3 = st.columns(3)
+    with st.expander("필터", expanded=False):
+        r1c1, r1c2, r1c3 = st.columns(3)
     camps = ["전체"] + sorted([str(x) for x in filtered["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered.columns else ["전체"]
     sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_unified")
     if sel_camp != "전체":
@@ -220,7 +251,6 @@ def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
     if min_total_conv > 0:
         filtered = filtered[pd.to_numeric(filtered["총 전환수"], errors="coerce").fillna(0) >= float(min_total_conv)]
 
-    st.markdown("</div>", unsafe_allow_html=True)
     return filtered
 
 
@@ -228,19 +258,8 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
 
-    st.markdown(
-        """
-        <div class='nv-section nv-section-muted' style='margin-top:0;'>
-            <div class='nv-section-head'>
-                <div>
-                    <div class='nv-sec-title'>쇼핑 검색어 분석</div>
-                    <div class='nv-sec-sub'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _inject_minimal_css()
+    _render_compact_header()
 
     cids = tuple(f.get("selected_customer_ids", []))
     patch_date = date(2026, 3, 11)
@@ -302,42 +321,27 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     tabs = st.tabs(["전체 검색어", "확대 후보", "관찰 필요"])
 
     with tabs[0]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>검색어별 퍼널 성과</div><div class='nv-sec-sub'>다른 상세 분석과 동일하게 표 중심으로 상위 500개를 보여줍니다.</div></div></div>",
-            unsafe_allow_html=True,
-        )
+        _render_compact_section('검색어별 퍼널 성과', '필터 기준 상위 500개를 표 중심으로 정리합니다.')
         if disp.empty:
             render_empty_state("조건에 맞는 검색어가 없습니다.", height=240)
         else:
             render_big_table(disp.style.format(FMT_DICT), "shopping_query_table_unified", 620)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with tabs[1]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>확대 후보</div><div class='nv-sec-sub'>구매 발생 + 매출/전환 기여가 높은 검색어만 모아봅니다.</div></div></div>",
-            unsafe_allow_html=True,
-        )
+        _render_compact_section('확대 후보', '구매 발생과 매출 기여가 높은 검색어만 모았습니다.')
         if top_expand.empty:
             render_empty_state("확대 후보 검색어가 없습니다.", height=220)
         else:
             render_big_table(top_expand.style.format(FMT_DICT), "shopping_query_expand_unified", 420)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with tabs[2]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>관찰 필요</div><div class='nv-sec-sub'>장바구니 반응은 있지만 구매로 이어지지 않은 검색어입니다.</div></div></div>",
-            unsafe_allow_html=True,
-        )
+        _render_compact_section('관찰 필요', '장바구니 반응은 있지만 구매로 이어지지 않은 검색어입니다.')
         if top_observe.empty:
             render_empty_state("관찰 필요 검색어가 없습니다.", height=220)
         else:
             render_big_table(top_observe.style.format(FMT_DICT), "shopping_query_observe_unified", 420)
-        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>리포트 다운로드</div><div class='nv-sec-sub'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div></div></div>",
-        unsafe_allow_html=True,
-    )
+    _render_compact_section('리포트 다운로드', '현재 필터 기준 결과를 엑셀로 내려받습니다.')
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer) as writer:
         disp.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
@@ -348,4 +352,3 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    st.markdown("</div>", unsafe_allow_html=True)
