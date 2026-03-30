@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="첫날만 구조 동기화, 이후 날짜는 --skip_dim (기본은 전 기간 skip_dim)",
     )
+    p.add_argument(
+        "--sync_dim_every",
+        type=int,
+        default=0,
+        help="N일마다 구조 동기화 (0=사용안함, 예: 7)",
+    )
     args = p.parse_args()
     args.start = clean(args.start)
     args.end = clean(args.end)
@@ -83,7 +89,11 @@ def main() -> None:
     print(f"- 기간: {start_date} ~ {end_date}", flush=True)
     print(f"- 업체: {args.account_name}", flush=True)
     print(f"- workers: {args.workers}", flush=True)
-    print(f"- 구조 동기화: {'첫날만 수행' if args.sync_dim_first_day else '전 기간 skip_dim (가장 빠름)'}", flush=True)
+    if args.sync_dim_every and args.sync_dim_every > 0:
+        sync_msg = f"{args.sync_dim_every}일마다 수행"
+    else:
+        sync_msg = '첫날만 수행' if args.sync_dim_first_day else '전 기간 skip_dim (가장 빠름)'
+    print(f"- 구조 동기화: {sync_msg}", flush=True)
     print("- purchase/cart/wishlist 분리: collector.py 로직상 2026-03-11 이전 날짜는 자동 미시도", flush=True)
     print("=" * 64, flush=True)
 
@@ -101,7 +111,12 @@ def main() -> None:
             args.account_name,
         ]
 
-        use_skip_dim = (not args.sync_dim_first_day) or (not first)
+        sync_this_run = False
+        if args.sync_dim_every and args.sync_dim_every > 0:
+            sync_this_run = ((d - start_date).days % args.sync_dim_every == 0)
+        elif args.sync_dim_first_day:
+            sync_this_run = first
+        use_skip_dim = not sync_this_run
         if use_skip_dim:
             cmd.append("--skip_dim")
             mode = "stats only / skip_dim"

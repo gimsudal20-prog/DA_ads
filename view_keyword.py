@@ -69,57 +69,6 @@ def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = Fa
         return work[mask].copy()
     return work
 
-def _is_shopping_campaign_type(series: pd.Series) -> pd.Series:
-    if series is None:
-        return pd.Series(dtype=bool)
-    return series.astype(str).str.contains(r"쇼핑|SHOPPING", case=False, na=False)
-
-
-def _prefer_keyword_source_by_campaign(view_kw: pd.DataFrame, view_ad: pd.DataFrame) -> pd.DataFrame:
-    view_kw = view_kw.copy() if view_kw is not None and not view_kw.empty else pd.DataFrame()
-    view_ad = view_ad.copy() if view_ad is not None and not view_ad.empty else pd.DataFrame()
-
-    if view_kw.empty and view_ad.empty:
-        return pd.DataFrame()
-    if view_kw.empty:
-        return view_ad.reset_index(drop=True)
-    if view_ad.empty:
-        return view_kw.reset_index(drop=True)
-
-    for df in (view_kw, view_ad):
-        if "캠페인" in df.columns:
-            df["캠페인"] = df["캠페인"].astype(str)
-
-    pref = {}
-    campaign_ids = set(view_kw.get("캠페인", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-    campaign_ids.update(view_ad.get("캠페인", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
-
-    for camp in campaign_ids:
-        kw_rows = view_kw[view_kw["캠페인"] == camp] if "캠페인" in view_kw.columns else pd.DataFrame()
-        ad_rows = view_ad[view_ad["캠페인"] == camp] if "캠페인" in view_ad.columns else pd.DataFrame()
-        kw_shop = (not kw_rows.empty and "캠페인유형" in kw_rows.columns and _is_shopping_campaign_type(kw_rows["캠페인유형"]).any())
-        ad_shop = (not ad_rows.empty and "캠페인유형" in ad_rows.columns and _is_shopping_campaign_type(ad_rows["캠페인유형"]).any())
-
-        if kw_shop or ad_shop:
-            pref[camp] = "ad"
-        elif not kw_rows.empty:
-            pref[camp] = "kw"
-        elif not ad_rows.empty:
-            pref[camp] = "ad"
-
-    kept = []
-    kw_keep = view_kw[view_kw["캠페인"].map(lambda x: pref.get(str(x), "kw") == "kw")].copy() if "캠페인" in view_kw.columns else pd.DataFrame()
-    ad_keep = view_ad[view_ad["캠페인"].map(lambda x: pref.get(str(x), "ad") == "ad")].copy() if "캠페인" in view_ad.columns else pd.DataFrame()
-    if not kw_keep.empty:
-        kept.append(kw_keep)
-    if not ad_keep.empty:
-        kept.append(ad_keep)
-
-    if kept:
-        return pd.concat(kept, ignore_index=True)
-    return view_kw.reset_index(drop=True) if not view_kw.empty else view_ad.reset_index(drop=True)
-
-
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     for c in ["광고비", "전환매출", "노출", "클릭", "전환"]:
         if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
@@ -194,7 +143,9 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
         
     if view_kw.empty and view_ad.empty: return pd.DataFrame()
-    view = _prefer_keyword_source_by_campaign(view_kw, view_ad)
+    elif view_kw.empty: view = view_ad.copy()
+    elif view_ad.empty: view = view_kw.copy()
+    else: view = pd.concat([view_kw, view_ad], ignore_index=True)
     
     view = _add_perf_metrics(view)
     if "avg_rank" in view.columns: view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)

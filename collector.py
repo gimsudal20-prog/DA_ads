@@ -338,68 +338,16 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
         except Exception:
             time.sleep(3)
 
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    clear_fact_range(engine, table, customer_id, d1)
-    if not rows:
-        return
 
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
-
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    
-    if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
-
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
-    tuples = list(df.itertuples(index=False, name=None))
-
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            break
-        except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
-
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
-def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    table = "fact_shopping_query_daily"
-    clear_fact_range(engine, table, customer_id, d1)
-    if not rows:
-        return
-
-    pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-
+def _delete_then_upsert(engine: Engine, table: str, delete_sql: str, delete_params, df: pd.DataFrame, pk_cols: List[str]):
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in pk_cols]
     col_names = ", ".join([f'"{c}"' for c in cols])
-    
+    pk_str = ", ".join([f'"{c}"' for c in pk_cols])
     if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
     else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO NOTHING'
-
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO NOTHING'
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
@@ -408,22 +356,72 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
+            cur.execute(delete_sql, delete_params)
+            if tuples:
+                psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
-            break
+            return
         except Exception as e:
             if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+                try:
+                    raw_conn.rollback()
+                except Exception:
+                    pass
             time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
+            if attempt == 2:
+                log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
             if cur:
-                try: cur.close()
-                except Exception: pass
+                try:
+                    cur.close()
+                except Exception:
+                    pass
             if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+                try:
+                    raw_conn.close()
+                except Exception:
+                    pass
+
+
+# [수정됨] 동일 날짜/계정 삭제 + UPSERT 를 같은 트랜잭션으로 처리하여 중간 실패 시 데이터 공백을 방지
+# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    pk_cols = ['dt', 'customer_id', pk]
+    if rows:
+        df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+    else:
+        df = pd.DataFrame(columns=pk_cols)
+
+    _delete_then_upsert(
+        engine,
+        table,
+        f"DELETE FROM {table} WHERE customer_id=%s AND dt=%s",
+        (str(customer_id), d1),
+        df,
+        pk_cols,
+    )
+
+
+# [수정됨] 동일 날짜/계정 삭제 + UPSERT 를 같은 트랜잭션으로 처리하여 중간 실패 시 데이터 공백을 방지
+# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
+def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    table = "fact_shopping_query_daily"
+    pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
+    if rows:
+        df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+    else:
+        df = pd.DataFrame(columns=pk_cols)
+
+    _delete_then_upsert(
+        engine,
+        table,
+        f"DELETE FROM {table} WHERE customer_id=%s AND dt=%s",
+        (str(customer_id), d1),
+        df,
+        pk_cols,
+    )
+
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -1790,7 +1788,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                kw_map = dict(ad_kw_map) if ad_kw_map else {}
+                kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
@@ -1798,7 +1796,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
-                    kw_src = 'AD_CONVERSION' if ad_kw_map else ('none' if shop_kw_map else 'none')
+                    kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
                     query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
                     log(
@@ -1807,8 +1805,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     )
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
-                    if shop_kw_map and not ad_kw_map:
-                        log(f"   ℹ️ [ {account_name} ] 쇼핑 키워드 split은 fact_keyword_daily에 병합하지 않고 ad/query 경로만 사용합니다.")
 
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map) if collect_sa else 0
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
