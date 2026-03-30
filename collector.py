@@ -1666,25 +1666,42 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
 
 
 MEDIA_HEADER_CANDIDATES = [
-    "매체이름", "매체명", "매체", "노출매체", "지면", "노출지면", "media", "medianame", "mediatype", "placement", "network"
+    "매체이름", "매체명", "매체", "매체구분", "매체유형",
+    "노출매체", "노출매체명", "노출매체유형",
+    "지면", "지면명", "지면구분", "노출지면", "노출위치", "게재위치",
+    "광고노출매체", "광고노출지면", "광고노출위치",
+    "media", "medianame", "mediatype", "placement", "network", "inventory"
 ]
 REGION_HEADER_CANDIDATES = [
-    "지역", "지역명", "노출지역", "시도", "시군구", "행정구역", "region", "regionname", "location"
+    "지역", "지역명", "노출지역", "지역구분", "지역유형", "지역타입",
+    "시도", "시군구", "행정구역", "행정구역명",
+    "region", "regionname", "location", "geo"
 ]
 DEVICE_HEADER_CANDIDATES_LOCAL = [
     "pc mobile type", "pc_mobile_type", "pc/mobile type", "pcmobiletype",
-    "device", "device_name", "devicename", "platform", "platform type",
-    "기기", "디바이스", "노출기기", "노출 기기", "단말기", "플랫폼",
+    "pc/mo", "pc mo", "pc_mobile", "device", "device_name", "devicename",
+    "platform", "platform type", "platformtype", "device type", "devicetype",
+    "기기", "기기구분", "기기유형", "디바이스", "노출기기", "노출 기기",
+    "노출기기유형", "단말기", "단말기유형", "플랫폼", "플랫폼유형",
 ]
-AD_HEADER_CANDIDATES_LOCAL = ["광고id", "소재id", "adid"]
-IMP_HEADER_CANDIDATES_LOCAL = ["노출수", "impressions", "impcnt"]
-CLK_HEADER_CANDIDATES_LOCAL = ["클릭수", "clicks", "clkcnt"]
-COST_HEADER_CANDIDATES_LOCAL = ["총비용", "비용", "cost", "salesamt"]
-CONV_HEADER_CANDIDATES_LOCAL = ["전환수", "conversions", "ccnt"]
-SALES_HEADER_CANDIDATES_LOCAL = ["전환매출액", "전환매출", "conversionvalue", "sales", "convamt"]
+AD_HEADER_CANDIDATES_LOCAL = [
+    "광고id", "광고 id", "광고번호", "광고번호id",
+    "소재id", "소재 id", "소재번호", "광고소재id",
+    "adid", "ad id", "creativeid", "creative id"
+]
+ADGROUP_HEADER_CANDIDATES_LOCAL = ["광고그룹id", "광고그룹 id", "adgroupid", "grp id", "ad group id"]
+CAMPAIGN_HEADER_CANDIDATES_LOCAL = ["캠페인id", "캠페인 id", "campaignid", "cmp id", "campaign id"]
+IMP_HEADER_CANDIDATES_LOCAL = ["노출수", "노출", "impressions", "imp", "impcnt"]
+CLK_HEADER_CANDIDATES_LOCAL = ["클릭수", "클릭", "clicks", "clk", "clkcnt"]
+COST_HEADER_CANDIDATES_LOCAL = ["총비용", "비용", "광고비", "cost", "salesamt"]
+CONV_HEADER_CANDIDATES_LOCAL = ["전환수", "전환", "conversions", "ccnt"]
+SALES_HEADER_CANDIDATES_LOCAL = ["전환매출액", "전환매출", "매출", "conversionvalue", "sales", "convamt"]
 
 def _m_normalize_header(v: Any) -> str:
-    return str(v or '').lower().replace(' ', '').replace('_', '').replace('-', '').replace('"', '').replace("'", '')
+    s = str(v or '').lower()
+    for ch in [' ', '_', '-', '"', "'", '/', '(', ')', '[', ']', '{', '}', '.', ':', '\n', '\r', '\t']:
+        s = s.replace(ch, '')
+    return s
 
 def _m_get_col_idx(headers: List[str], candidates: List[str]) -> int:
     norm_headers = [_m_normalize_header(h) for h in headers]
@@ -1714,24 +1731,6 @@ def _m_safe_text(v: Any, default: str = '전체') -> str:
     s = str(v or '').strip()
     if not s or s.lower() in {'nan', 'none'} or s == '-':
         return default
-    return s
-
-
-def normalize_device_name(v: Any) -> str:
-    s = str(v or '').strip()
-    if not s or s.lower() in {'nan', 'none'} or s == '-':
-        return '전체'
-    n = _m_normalize_header(s)
-    if n in {'pc','desktop','windows','web','computer'} or 'pc' == n or 'desktop' in n:
-        return 'PC'
-    if n in {'mo','mobile','mobileweb','app','android','ios','iphone','ipad','tablet'} or 'mobile' in n or 'mo' == n:
-        return 'MO'
-    if s.upper() in {'PC','MO'}:
-        return s.upper()
-    if '모바일' in s or '앱' in s:
-        return 'MO'
-    if 'PC' in s.upper() or '데스크' in s:
-        return 'PC'
     return s
 
 def _map_campaign_type_label(v: Any) -> str:
@@ -1811,22 +1810,26 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
 def _detect_media_header_idx(df: pd.DataFrame) -> int:
     if df is None or df.empty:
         return -1
-    scan_limit = min(60, len(df))
+    scan_limit = min(80, len(df))
     best_idx = -1
     best_score = -1
+    id_candidates = AD_HEADER_CANDIDATES_LOCAL + ADGROUP_HEADER_CANDIDATES_LOCAL + CAMPAIGN_HEADER_CANDIDATES_LOCAL
+    dim_candidates = MEDIA_HEADER_CANDIDATES + REGION_HEADER_CANDIDATES + DEVICE_HEADER_CANDIDATES_LOCAL
+    metric_candidates = IMP_HEADER_CANDIDATES_LOCAL + CLK_HEADER_CANDIDATES_LOCAL + COST_HEADER_CANDIDATES_LOCAL + CONV_HEADER_CANDIDATES_LOCAL + SALES_HEADER_CANDIDATES_LOCAL
+    norm_ids = [_m_normalize_header(x) for x in id_candidates]
+    norm_dims = [_m_normalize_header(x) for x in dim_candidates]
+    norm_metrics = [_m_normalize_header(x) for x in metric_candidates]
     for i in range(scan_limit):
         row_vals = [_m_normalize_header(x) for x in df.iloc[i].fillna('').tolist()]
-        score = 0
-        if any(c in row_vals for c in [_m_normalize_header(x) for x in AD_HEADER_CANDIDATES_LOCAL]):
-            score += 2
-        if any(c in row_vals for c in [_m_normalize_header(x) for x in MEDIA_HEADER_CANDIDATES + REGION_HEADER_CANDIDATES + DEVICE_HEADER_CANDIDATES_LOCAL]):
-            score += 2
-        metric_hits = sum(1 for x in [_m_normalize_header(x) for x in IMP_HEADER_CANDIDATES_LOCAL + CLK_HEADER_CANDIDATES_LOCAL + COST_HEADER_CANDIDATES_LOCAL] if x in row_vals)
-        score += min(metric_hits, 3)
+        row_set = {v for v in row_vals if v}
+        id_hits = sum(1 for x in norm_ids if x in row_set)
+        dim_hits = sum(1 for x in norm_dims if x in row_set)
+        metric_hits = sum(1 for x in norm_metrics if x in row_set)
+        score = min(id_hits, 2) * 2 + min(dim_hits, 2) * 2 + min(metric_hits, 4)
         if score > best_score:
             best_score = score
             best_idx = i
-        if score >= 5:
+        if (id_hits >= 1 and metric_hits >= 2 and dim_hits >= 1) or score >= 6:
             return i
     return best_idx if best_score >= 3 else -1
 
@@ -1844,6 +1847,8 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     data_df = raw_df.iloc[header_idx + 1:].reset_index(drop=True)
 
     ad_idx = _m_get_col_idx(headers, AD_HEADER_CANDIDATES_LOCAL)
+    adgroup_idx = _m_get_col_idx(headers, ADGROUP_HEADER_CANDIDATES_LOCAL)
+    campaign_idx = _m_get_col_idx(headers, CAMPAIGN_HEADER_CANDIDATES_LOCAL)
     media_idx = _m_get_col_idx(headers, MEDIA_HEADER_CANDIDATES)
     region_idx = _m_get_col_idx(headers, REGION_HEADER_CANDIDATES)
     device_idx = _m_get_col_idx(headers, DEVICE_HEADER_CANDIDATES_LOCAL)
@@ -1853,11 +1858,11 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     conv_idx = _m_get_col_idx(headers, CONV_HEADER_CANDIDATES_LOCAL)
     sales_idx = _m_get_col_idx(headers, SALES_HEADER_CANDIDATES_LOCAL)
 
-    if ad_idx == -1:
-        return [], {'status': 'no_ad_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+    if ad_idx == -1 and adgroup_idx == -1 and campaign_idx == -1:
+        return [], {'status': 'no_id_key', 'header_idx': header_idx, 'headers': headers_raw[:30]}
 
     if media_idx == -1 and region_idx == -1 and device_idx == -1:
-        return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:30]}
 
     agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
     row_count = 0
@@ -1868,9 +1873,10 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
         if len(row) <= max_idx:
             continue
         ad_id = str(row.iloc[ad_idx] if ad_idx != -1 and len(row) > ad_idx else '').strip()
-        if not ad_id:
-            continue
-        campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
+        adgroup_id = str(row.iloc[adgroup_idx] if adgroup_idx != -1 and len(row) > adgroup_idx else '').strip()
+        campaign_id = str(row.iloc[campaign_idx] if campaign_idx != -1 and len(row) > campaign_idx else '').strip()
+        if not campaign_id and ad_id:
+            campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
         if not campaign_id:
             continue
         if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
@@ -1906,7 +1912,7 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
             'data_source': 'ad_report_dimension',
             'source_report': 'AD',
         })
-    return rows, {'status': 'ok' if rows else 'no_rows', 'header_idx': header_idx, 'row_count': row_count, 'mapped_rows': mapped_rows, 'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx}}
+    return rows, {'status': 'ok' if rows else 'no_rows', 'header_idx': header_idx, 'row_count': row_count, 'mapped_rows': mapped_rows, 'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx}, 'headers': headers_raw[:30]}
 
 def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
     agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
@@ -2387,7 +2393,9 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if media_cnt:
                 log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
             else:
-                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}")
+                hdr = media_meta.get('headers') or []
+                hdr_msg = f" | headers={hdr[:12]}" if hdr else ''
+                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}{hdr_msg}")
 
             if collect_sa:
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
