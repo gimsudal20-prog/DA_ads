@@ -15,7 +15,6 @@ from view_campaign import page_perf_campaign
 from view_keyword import page_perf_keyword
 from view_ad import page_perf_ad
 from view_settings import page_settings
-from view_trend import page_trend
 from view_media import page_media
 from view_shopping_query import page_perf_shopping_query
 
@@ -49,7 +48,7 @@ def main():
         nav_items = [
             "요약",
             "예산 및 잔액",
-            "시장 및 매체 분석",
+            "매체(지면) 분석",
             "성과 분석 · 캠페인",
             "성과 분석 · 키워드",
             "성과 분석 · 소재",
@@ -81,18 +80,8 @@ def main():
         page_overview(meta, engine, f)
     elif nav == "예산 및 잔액":
         page_budget(meta, engine, f)
-    elif nav == "시장 및 매체 분석":
-        analysis_view = st.segmented_control(
-            "분석 보기",
-            ["시장 트렌드", "매체(지면) 분석"],
-            default="시장 트렌드",
-            key="market_media_view",
-            label_visibility="collapsed",
-        )
-        if analysis_view == "매체(지면) 분석":
-            page_media(engine, f)
-        else:
-            page_trend(meta, engine, f)
+    elif nav == "매체(지면) 분석":
+        page_media(engine, f)
     elif nav == "성과 분석 · 캠페인":
         page_perf_campaign(meta, engine, f)
     elif nav in ["성과 분석 · 키워드", "성과 분석 · 소재", "쇼핑 검색어 분석"]:
