@@ -40,13 +40,17 @@ on:
       sync_dim_first_day:
         description: '첫날만 구조수집 수행 (true/false)'
         required: false
-        default: 'true'
-      sync_dim_every:
-        description: 'N일마다 구조수집 (0=사용안함, 예: 7)'
-        required: false
-        default: '7'
+        default: 'false'
       with_gfa:
         description: 'GFA 포함 실행 (true/false, 현재 collector_gfa.py가 있을 때만 동작)'
+        required: false
+        default: 'false'
+      shopping_only:
+        description: '쇼핑검색 캠페인만 재수집 (true/false)'
+        required: false
+        default: 'false'
+      with_shop_ext:
+        description: '쇼핑 확장소재도 함께 수집 (true/false)'
         required: false
         default: 'false'
 
@@ -78,6 +82,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
 
       - name: Run fast backfill
         run: |
@@ -95,11 +100,14 @@ jobs:
           if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
             CMD+=(--sync_dim_first_day)
           fi
-          if [ -n "${{ github.event.inputs.sync_dim_every }}" ] && [ "${{ github.event.inputs.sync_dim_every }}" != "0" ]; then
-            CMD+=(--sync_dim_every "${{ github.event.inputs.sync_dim_every }}")
-          fi
           if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
             CMD+=(--with_gfa)
+          fi
+          if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+            CMD+=(--shopping_only)
+          fi
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ] || [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+            CMD+=(--with_shop_ext)
           fi
 
           printf '실행 명령어: %q ' "${CMD[@]}"; echo
