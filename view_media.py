@@ -313,9 +313,29 @@ def page_media(engine, f):
                 with c2:
                     try:
                         import plotly.express as px
-                        fig = px.pie(pie_source, values="광고비", names="기기명", hole=0.58)
-                        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300, legend=dict(orientation="h", y=-0.15))
-                        fig.update_traces(textposition="inside", textinfo="percent+label")
+                        fig = px.pie(
+                            pie_source,
+                            values="광고비",
+                            names="기기명",
+                            hole=0.64,
+                            color_discrete_sequence=["#4F7BFF", "#7FA8FF", "#D7DCE5", "#AAB4C4", "#E5E7EB"],
+                        )
+                        fig.update_traces(
+                            textposition="inside",
+                            texttemplate="%{percent}",
+                            insidetextfont=dict(color="#FFFFFF", size=11),
+                            marker=dict(line=dict(color="#FFFFFF", width=2)),
+                            hovertemplate="<b>%{label}</b><br>광고비: %{value:,.0f}원<br>비중: %{percent}<extra></extra>",
+                        )
+                        fig.update_layout(
+                            margin=dict(t=8, b=8, l=8, r=8),
+                            height=300,
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            showlegend=True,
+                            legend=dict(orientation="h", y=-0.12, x=0, font=dict(size=11, color="#6B7280")),
+                            font=dict(family="sans-serif", color="#111827"),
+                        )
                         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     except Exception:
                         pass

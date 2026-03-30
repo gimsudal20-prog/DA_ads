@@ -310,43 +310,6 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     )
 
 
-
-
-def _format_display_table(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    int_cols = [
-        "노출", "클릭", "구매완료수", "총 전환수", "장바구니수", "위시리스트수",
-        "노출 차이", "클릭 차이", "구매 차이", "총 전환 차이", "장바구니 차이", "위시리스트 차이",
-    ]
-    money_cols = [
-        "광고비", "CPC(원)", "구매완료 매출", "총 전환매출", "장바구니 매출액", "위시리스트 매출액",
-        "광고비 차이", "CPC 차이", "구매 매출 차이", "총 매출 차이",
-    ]
-    pct1_cols = [
-        "노출 증감", "클릭 증감", "광고비 증감", "CPC 증감", "구매 증감", "구매 매출 증감",
-        "총 전환 증감", "총 매출 증감", "장바구니 증감", "위시리스트 증감",
-        "구매 ROAS 증감", "통합 ROAS 증감", "CTR(%)", "구매 ROAS(%)", "통합 ROAS(%)",
-    ]
-    for c in int_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{int(round(x)):,}")
-    for c in money_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{int(round(x)):,}원")
-    for c in pct1_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            if "증감" in c:
-                out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{x:+.1f}%")
-            else:
-                out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{x:.1f}%")
-    if "순위 변화" in out.columns:
-        s = pd.to_numeric(out["순위 변화"], errors="coerce")
-        out["순위 변화"] = s.map(lambda x: "-" if pd.isna(x) else f"{x:+.0f}")
-    return out
-
 def _campaign_type_column(engine) -> str:
     cols = get_table_columns(engine, "dim_campaign")
     return "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -572,17 +535,18 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
                 type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
                 type_grp = type_grp.sort_values("광고비", ascending=False)
-                type_grp_disp = type_grp.copy()
-                type_grp_disp["광고비"] = pd.to_numeric(type_grp_disp["광고비"], errors="coerce").fillna(0).map(lambda x: f"{int(round(x)):,}원")
-                type_grp_disp[sales_col] = pd.to_numeric(type_grp_disp[sales_col], errors="coerce").fillna(0).map(lambda x: f"{int(round(x)):,}원")
-                type_grp_disp["지출 비중(%)"] = pd.to_numeric(type_grp_disp["지출 비중(%)"], errors="coerce").fillna(0).map(lambda x: f"{x:.1f}%")
-                type_grp_disp[roas_col] = pd.to_numeric(type_grp_disp[roas_col], errors="coerce").fillna(0).map(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    type_grp_disp,
+                    type_grp,
                     width="stretch",
-                    height=_compact_df_height(type_grp_disp, min_height=74, max_height=220),
+                    height=_compact_df_height(type_grp, min_height=74, max_height=220),
                     hide_index=True,
-                    column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형")},
+                    column_config={
+                        "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
+                        "광고비": st.column_config.NumberColumn("총 광고비", format="%,d원"),
+                        sales_col: st.column_config.NumberColumn(sales_col, format="%,d원"),
+                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
+                        roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f%%"),
+                    },
                 )
             with col_device:
                 st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
@@ -593,8 +557,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
         disp_main = disp_main_src[final_cols].copy()
-        disp_main_fmt = _format_display_table(disp_main)
-        event = st.dataframe(disp_main_fmt, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
+        event = st.dataframe(disp_main, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun", column_config=FAST_COL_CONFIG)
 
         selected_rows = event.selection.rows
         if selected_rows:
@@ -621,18 +584,39 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if not scatter_df.empty:
                         scatter_df['짧은이름'] = scatter_df['키워드/상품명'].apply(lambda x: str(x)[:12] + "...")
                         scatter_df['클릭_size'] = scatter_df['클릭'].apply(lambda x: max(x, 1))
-                        fig_scatter = px.scatter(scatter_df, x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름', hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'})
-                        fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
-                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444")
-                        fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
+                        fig_scatter = px.scatter(
+                            scatter_df,
+                            x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름',
+                            hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'},
+                            color_discrete_sequence=px.colors.qualitative.Set2,
+                        )
+                        fig_scatter.update_traces(
+                            textposition='top center',
+                            textfont_size=11,
+                            marker=dict(line=dict(width=1, color='white'), opacity=0.9),
+                            hovertemplate='<b>%{customdata[0]}</b><br>광고비: %{x:,.0f}원<br>' + f'{roas_col}: ' + '%{y:.1f}%<br>클릭: %{customdata[1]:,.0f}<extra></extra>'
+                        )
+                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#F04438", line_width=1.2)
+                        fig_scatter.update_layout(
+                            margin=dict(t=18, l=8, r=8, b=8),
+                            height=440,
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            xaxis_title="광고 소진액 (원)",
+                            yaxis_title=f"{roas_col}",
+                            legend_title="광고그룹",
+                            legend=dict(orientation='h', y=1.08, x=0, font=dict(size=11, color='#6B7280')),
+                            font=dict(color='#111827'),
+                        )
+                        fig_scatter.update_xaxes(showgrid=True, gridcolor='#EEF2F7', zeroline=False, linecolor='#D7DCE5', tickfont=dict(size=11, color='#6B7280'))
+                        fig_scatter.update_yaxes(showgrid=True, gridcolor='#EEF2F7', zeroline=False, linecolor='#D7DCE5', tickfont=dict(size=11, color='#6B7280'))
                         st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
 
                     sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
                     if has_pre_patch_cur:
                         sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
-                    kw_disp_fmt = _format_display_table(kw_disp)
-                    st.dataframe(kw_disp_fmt, width="stretch", hide_index=True)
+                    st.dataframe(kw_disp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
 
@@ -676,8 +660,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
-                disp_grp_fmt = _format_display_table(disp_grp)
-                st.dataframe(disp_grp_fmt, width="stretch", hide_index=True)
+                st.dataframe(disp_grp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
@@ -767,6 +750,4 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 cols.insert(2, cols.pop(cols.index('통합 ROAS(%)')))
                 pivot_df = pivot_df[cols]
 
-            if "통합 ROAS(%)" in pivot_df.columns:
-                pivot_df["통합 ROAS(%)"] = pd.to_numeric(pivot_df["통합 ROAS(%)"], errors="coerce").map(lambda x: "-" if pd.isna(x) else f"{x:.1f}%")
             st.dataframe(pivot_df, width="stretch", hide_index=True)

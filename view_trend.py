@@ -102,17 +102,25 @@ def render_trend_chart(df: pd.DataFrame, datalab_name: str, ad_type_label: str):
         trend_data = df["트렌드지수(%)"].fillna(0).round(1).tolist()
         
         options = {
-            "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
-            "legend": {"data": [legend_name, f"네이버 트렌드 ('{datalab_name}')"], "bottom": 0},
-            "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-            "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#E4E4E4"}}}],
+            "tooltip": {
+                "trigger": "axis",
+                "axisPointer": {"type": "cross", "crossStyle": {"color": "#D7DCE5"}},
+                "backgroundColor": "#FFFFFF",
+                "borderColor": "#D7DCE5",
+                "borderWidth": 1,
+                "textStyle": {"color": "#111827", "fontSize": 12},
+                "padding": [8, 10],
+            },
+            "legend": {"data": [legend_name, f"네이버 트렌드 ('{datalab_name}')"], "top": 6, "right": 0, "itemWidth": 10, "itemHeight": 10, "textStyle": {"color": "#6B7280", "fontSize": 11}},
+            "grid": {"left": "1%", "right": "1%", "bottom": "10%", "top": 56, "containLabel": True},
+            "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": "#D7DCE5"}}, "axisTick": {"show": False}, "axisLabel": {"color": "#6B7280", "fontSize": 11}}],
             "yAxis": [
-                {"type": "value", "name": "내부 노출수", "splitLine": {"lineStyle": {"type": "solid", "color": "#F4F4F4"}}},
-                {"type": "value", "name": "트렌드 지수", "min": 0, "max": 100, "splitLine": {"show": False}}
+                {"type": "value", "name": "내부 노출수", "nameTextStyle": {"color": "#6B7280", "fontSize": 11}, "axisLabel": {"color": "#6B7280", "fontSize": 11}, "splitLine": {"lineStyle": {"type": "solid", "color": "#EEF2F7"}}},
+                {"type": "value", "name": "트렌드 지수", "min": 0, "max": 100, "nameTextStyle": {"color": "#6B7280", "fontSize": 11}, "axisLabel": {"color": "#6B7280", "fontSize": 11}, "splitLine": {"show": False}}
             ],
             "series": [
-                {"name": legend_name, "type": "bar", "data": imp_data, "itemStyle": {"color": "#375FFF", "borderRadius": [2,2,0,0]}},
-                {"name": f"네이버 트렌드 ('{datalab_name}')", "type": "line", "yAxisIndex": 1, "data": trend_data, "itemStyle": {"color": "#19191A"}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+                {"name": legend_name, "type": "bar", "data": imp_data, "barMaxWidth": 24, "itemStyle": {"color": "#DDE6FF", "borderRadius": [6,6,0,0]}},
+                {"name": f"네이버 트렌드 ('{datalab_name}')", "type": "line", "yAxisIndex": 1, "data": trend_data, "smooth": True, "itemStyle": {"color": "#375FFF"}, "lineStyle": {"width": 2.5}, "symbol": "circle", "symbolSize": 6}
             ]
         }
         st_echarts(options=options, height="400px")

@@ -181,18 +181,40 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 14, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 0},
-        "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
-        "legend": {"data": [y1_name, y2_name], "bottom": 0},
-        "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisPointer": {"type": "shadow"}, "axisLine": {"lineStyle": {"color": THEME['line']}}}],
+        "title": {"text": title, "textStyle": {"fontSize": 13, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 4},
+        "color": [THEME['primary_soft'], THEME['primary']],
+        "tooltip": {
+            "trigger": "axis",
+            "axisPointer": {"type": "cross", "crossStyle": {"color": THEME['line']}},
+            "backgroundColor": "#FFFFFF",
+            "borderColor": THEME['line'],
+            "borderWidth": 1,
+            "textStyle": {"color": THEME['text'], "fontSize": 12},
+            "padding": [8, 10],
+        },
+        "legend": {"data": [y1_name, y2_name], "top": 6, "right": 0, "itemWidth": 10, "itemHeight": 10, "textStyle": {"color": THEME['muted'], "fontSize": 11}},
+        "grid": {"left": "1%", "right": "1%", "bottom": "10%", "top": 56, "containLabel": True},
+        "xAxis": [{
+            "type": "category", "data": x_data, "axisPointer": {"type": "shadow"},
+            "axisLine": {"lineStyle": {"color": THEME['line']}},
+            "axisTick": {"show": False},
+            "axisLabel": {"color": THEME['muted'], "fontSize": 11}
+        }],
         "yAxis": [
-            {"type": "value", "name": y1_name, "splitLine": {"lineStyle": {"type": "solid", "color": THEME['surface']}}},
-            {"type": "value", "name": y2_name, "splitLine": {"show": False}}
+            {
+                "type": "value", "name": y1_name, "nameTextStyle": {"color": THEME['muted'], "fontSize": 11, "padding": [0,0,0,4]},
+                "axisLabel": {"color": THEME['muted'], "fontSize": 11},
+                "splitLine": {"lineStyle": {"type": "solid", "color": "#EEF2F7"}}
+            },
+            {
+                "type": "value", "name": y2_name, "nameTextStyle": {"color": THEME['muted'], "fontSize": 11, "padding": [0,0,0,4]},
+                "axisLabel": {"color": THEME['muted'], "fontSize": 11},
+                "splitLine": {"show": False}
+            }
         ],
         "series": [
-            {"name": y1_name, "type": "bar", "data": y1_data, "itemStyle": {"color": THEME['primary_soft'], "borderRadius": [4,4,0,0]}},
-            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y1_name, "type": "bar", "data": y1_data, "barMaxWidth": 24, "itemStyle": {"color": THEME['primary_soft'], "borderRadius": [6,6,0,0]}},
+            {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "smooth": True, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 2.5}, "symbol": "circle", "symbolSize": 6}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
@@ -206,14 +228,23 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
-        "title": {"text": title, "textStyle": {"fontSize": 14, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 0},
-        "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
-        "legend": {"data": [y_name], "bottom": 0},
-        "grid": {"left": "0%", "right": "0%", "bottom": "15%", "top": "15%", "containLabel": True},
-        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": THEME['line']}}}],
-        "yAxis": [{"type": "value", "name": y_name, "splitLine": {"lineStyle": {"type": "solid", "color": THEME['surface']}}}],
+        "title": {"text": title, "textStyle": {"fontSize": 13, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 4},
+        "color": [THEME['primary']],
+        "tooltip": {
+            "trigger": "axis",
+            "axisPointer": {"type": "line", "lineStyle": {"color": THEME['line']}},
+            "backgroundColor": "#FFFFFF",
+            "borderColor": THEME['line'],
+            "borderWidth": 1,
+            "textStyle": {"color": THEME['text'], "fontSize": 12},
+            "padding": [8, 10],
+        },
+        "legend": {"data": [y_name], "top": 6, "right": 0, "itemWidth": 10, "itemHeight": 10, "textStyle": {"color": THEME['muted'], "fontSize": 11}},
+        "grid": {"left": "1%", "right": "1%", "bottom": "10%", "top": 56, "containLabel": True},
+        "xAxis": [{"type": "category", "data": x_data, "axisLine": {"lineStyle": {"color": THEME['line']}}, "axisTick": {"show": False}, "axisLabel": {"color": THEME['muted'], "fontSize": 11}}],
+        "yAxis": [{"type": "value", "name": y_name, "nameTextStyle": {"color": THEME['muted'], "fontSize": 11, "padding": [0,0,0,4]}, "axisLabel": {"color": THEME['muted'], "fontSize": 11}, "splitLine": {"lineStyle": {"type": "solid", "color": "#EEF2F7"}}}],
         "series": [
-            {"name": y_name, "type": "line", "data": y_data, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 3}, "symbol": "circle", "symbolSize": 8}
+            {"name": y_name, "type": "line", "data": y_data, "smooth": True, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 2.5}, "symbol": "circle", "symbolSize": 6}
         ]
     }
     st_echarts(options=options, height=f"{height}px")
