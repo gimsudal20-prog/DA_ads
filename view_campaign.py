@@ -584,32 +584,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if not scatter_df.empty:
                         scatter_df['짧은이름'] = scatter_df['키워드/상품명'].apply(lambda x: str(x)[:12] + "...")
                         scatter_df['클릭_size'] = scatter_df['클릭'].apply(lambda x: max(x, 1))
-                        fig_scatter = px.scatter(
-                            scatter_df,
-                            x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름',
-                            hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'},
-                            color_discrete_sequence=px.colors.qualitative.Set2,
-                        )
-                        fig_scatter.update_traces(
-                            textposition='top center',
-                            textfont_size=11,
-                            marker=dict(line=dict(width=1, color='white'), opacity=0.9),
-                            hovertemplate='<b>%{customdata[0]}</b><br>광고비: %{x:,.0f}원<br>' + f'{roas_col}: ' + '%{y:.1f}%<br>클릭: %{customdata[1]:,.0f}<extra></extra>'
-                        )
-                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#F04438", line_width=1.2)
-                        fig_scatter.update_layout(
-                            margin=dict(t=18, l=8, r=8, b=8),
-                            height=440,
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            xaxis_title="광고 소진액 (원)",
-                            yaxis_title=f"{roas_col}",
-                            legend_title="광고그룹",
-                            legend=dict(orientation='h', y=1.08, x=0, font=dict(size=11, color='#6B7280')),
-                            font=dict(color='#111827'),
-                        )
-                        fig_scatter.update_xaxes(showgrid=True, gridcolor='#EEF2F7', zeroline=False, linecolor='#D7DCE5', tickfont=dict(size=11, color='#6B7280'))
-                        fig_scatter.update_yaxes(showgrid=True, gridcolor='#EEF2F7', zeroline=False, linecolor='#D7DCE5', tickfont=dict(size=11, color='#6B7280'))
+                        fig_scatter = px.scatter(scatter_df, x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름', hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'})
+                        fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
+                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444")
+                        fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
                         st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
 
                     sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
@@ -656,7 +634,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if sel_camp != "전체":
                     grouped = grouped[grouped["캠페인"] == sel_camp]
 
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"] if not has_pre_patch_cur else ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "총 전환수", "총 전환매출", "통합 ROAS(%)"] if not has_pre_patch_cur else ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
