@@ -1790,7 +1790,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
+                kw_map = dict(ad_kw_map) if ad_kw_map else {}
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
@@ -1798,7 +1798,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
-                    kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
+                    kw_src = 'AD_CONVERSION' if ad_kw_map else ('none' if shop_kw_map else 'none')
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
                     query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
                     log(
@@ -1807,6 +1807,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     )
                     if split_summary_has_values(final_split_summary):
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
+                    if shop_kw_map and not ad_kw_map:
+                        log(f"   ℹ️ [ {account_name} ] 쇼핑 키워드 split은 fact_keyword_daily에 병합하지 않고 ad/query 경로만 사용합니다.")
 
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map) if collect_sa else 0
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
