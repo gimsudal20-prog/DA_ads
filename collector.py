@@ -289,6 +289,26 @@ def ensure_tables(engine: Engine):
                 ensure_column(engine, table, "split_available", "BOOLEAN")
                 ensure_column(engine, table, "data_source", "TEXT")
 
+            with engine.begin() as conn:
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_media_daily (
+                    dt DATE,
+                    customer_id TEXT,
+                    campaign_type TEXT,
+                    media_name TEXT,
+                    region_name TEXT,
+                    device_name TEXT DEFAULT '전체',
+                    imp BIGINT,
+                    clk BIGINT,
+                    cost BIGINT,
+                    conv DOUBLE PRECISION,
+                    sales BIGINT DEFAULT 0,
+                    data_source TEXT,
+                    source_report TEXT,
+                    PRIMARY KEY(dt, customer_id, campaign_type, media_name, region_name, device_name)
+                )"""))
+            ensure_column(engine, "fact_media_daily", "data_source", "TEXT")
+            ensure_column(engine, "fact_media_daily", "source_report", "TEXT")
+
             ensure_device_tables(engine)
             break
         except Exception as e:
@@ -1643,6 +1663,328 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
         replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
+
+
+MEDIA_HEADER_CANDIDATES = [
+    "매체이름", "매체명", "매체", "노출매체", "지면", "노출지면", "media", "medianame", "mediatype", "placement", "network"
+]
+REGION_HEADER_CANDIDATES = [
+    "지역", "지역명", "노출지역", "시도", "시군구", "행정구역", "region", "regionname", "location"
+]
+DEVICE_HEADER_CANDIDATES_LOCAL = [
+    "pc mobile type", "pc_mobile_type", "pc/mobile type", "pcmobiletype",
+    "device", "device_name", "devicename", "platform", "platform type",
+    "기기", "디바이스", "노출기기", "노출 기기", "단말기", "플랫폼",
+]
+AD_HEADER_CANDIDATES_LOCAL = ["광고id", "소재id", "adid"]
+IMP_HEADER_CANDIDATES_LOCAL = ["노출수", "impressions", "impcnt"]
+CLK_HEADER_CANDIDATES_LOCAL = ["클릭수", "clicks", "clkcnt"]
+COST_HEADER_CANDIDATES_LOCAL = ["총비용", "비용", "cost", "salesamt"]
+CONV_HEADER_CANDIDATES_LOCAL = ["전환수", "conversions", "ccnt"]
+SALES_HEADER_CANDIDATES_LOCAL = ["전환매출액", "전환매출", "conversionvalue", "sales", "convamt"]
+
+def _m_normalize_header(v: Any) -> str:
+    return str(v or '').lower().replace(' ', '').replace('_', '').replace('-', '').replace('"', '').replace("'", '')
+
+def _m_get_col_idx(headers: List[str], candidates: List[str]) -> int:
+    norm_headers = [_m_normalize_header(h) for h in headers]
+    norm_candidates = [_m_normalize_header(c) for c in candidates]
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c == h:
+                return i
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c and c in h:
+                return i
+    return -1
+
+def _m_safe_float(v: Any) -> float:
+    if pd.isna(v):
+        return 0.0
+    s = str(v).replace(',', '').strip()
+    if not s or s == '-':
+        return 0.0
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+def _m_safe_text(v: Any, default: str = '전체') -> str:
+    s = str(v or '').strip()
+    if not s or s.lower() in {'nan', 'none'} or s == '-':
+        return default
+    return s
+
+def _map_campaign_type_label(v: Any) -> str:
+    s = str(v or '').strip()
+    if not s:
+        return '기타'
+    up = s.upper()
+    if up in {'WEB_SITE', 'WEBSITE', 'POWER_LINK'} or s == '파워링크':
+        return '파워링크'
+    if 'SHOPPING' in up or s == '쇼핑검색':
+        return '쇼핑검색'
+    if up in {'POWER_CONTENTS'} or s == '파워컨텐츠':
+        return '파워컨텐츠'
+    if up in {'BRAND_SEARCH'} or s == '브랜드검색':
+        return '브랜드검색'
+    if up in {'PLACE'} or s == '플레이스':
+        return '플레이스'
+    return s
+
+def build_campaign_type_map(engine: Engine, customer_id: str) -> Dict[str, str]:
+    sql = "SELECT campaign_id, campaign_tp FROM dim_campaign WHERE customer_id = :cid"
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), {'cid': str(customer_id)}).fetchall()
+        return {str(r[0]).strip(): _map_campaign_type_label(r[1]) for r in rows if str(r[0]).strip()}
+    except Exception:
+        return {}
+
+def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_campaign_types: List[str] | None = None):
+    table = 'fact_media_daily'
+    pk_cols = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name', 'device_name']
+    for _ in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt" + (" AND campaign_type = ANY(:types)" if scoped_campaign_types else "")), {'cid': str(customer_id), 'dt': d1, 'types': scoped_campaign_types or []})
+            break
+        except Exception:
+            time.sleep(2)
+    if not rows:
+        return 0
+
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    conflict_clause = (
+        'ON CONFLICT (dt, customer_id, campaign_type, media_name, region_name, device_name) DO UPDATE SET ' +
+        ', '.join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+        if update_cols else
+        'ON CONFLICT (dt, customer_id, campaign_type, media_name, region_name, device_name) DO NOTHING'
+    )
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    tuples = list(df.itertuples(index=False, name=None))
+
+    for _ in range(3):
+        raw_conn, cur = None, None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
+            raw_conn.commit()
+            return len(df)
+        except Exception:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except Exception: pass
+            time.sleep(2)
+        finally:
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
+    return 0
+
+def _detect_media_header_idx(df: pd.DataFrame) -> int:
+    if df is None or df.empty:
+        return -1
+    scan_limit = min(60, len(df))
+    best_idx = -1
+    best_score = -1
+    for i in range(scan_limit):
+        row_vals = [_m_normalize_header(x) for x in df.iloc[i].fillna('').tolist()]
+        score = 0
+        if any(c in row_vals for c in [_m_normalize_header(x) for x in AD_HEADER_CANDIDATES_LOCAL]):
+            score += 2
+        if any(c in row_vals for c in [_m_normalize_header(x) for x in MEDIA_HEADER_CANDIDATES + REGION_HEADER_CANDIDATES + DEVICE_HEADER_CANDIDATES_LOCAL]):
+            score += 2
+        metric_hits = sum(1 for x in [_m_normalize_header(x) for x in IMP_HEADER_CANDIDATES_LOCAL + CLK_HEADER_CANDIDATES_LOCAL + COST_HEADER_CANDIDATES_LOCAL] if x in row_vals)
+        score += min(metric_hits, 3)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+        if score >= 5:
+            return i
+    return best_idx if best_score >= 3 else -1
+
+def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if df is None or df.empty:
+        return [], {'status': 'empty'}
+
+    raw_df = df.reset_index(drop=True).copy()
+    header_idx = _detect_media_header_idx(raw_df)
+    if header_idx == -1:
+        return [], {'status': 'no_header'}
+
+    headers_raw = [str(x) for x in raw_df.iloc[header_idx].fillna('').tolist()]
+    headers = [_m_normalize_header(x) for x in headers_raw]
+    data_df = raw_df.iloc[header_idx + 1:].reset_index(drop=True)
+
+    ad_idx = _m_get_col_idx(headers, AD_HEADER_CANDIDATES_LOCAL)
+    media_idx = _m_get_col_idx(headers, MEDIA_HEADER_CANDIDATES)
+    region_idx = _m_get_col_idx(headers, REGION_HEADER_CANDIDATES)
+    device_idx = _m_get_col_idx(headers, DEVICE_HEADER_CANDIDATES_LOCAL)
+    imp_idx = _m_get_col_idx(headers, IMP_HEADER_CANDIDATES_LOCAL)
+    clk_idx = _m_get_col_idx(headers, CLK_HEADER_CANDIDATES_LOCAL)
+    cost_idx = _m_get_col_idx(headers, COST_HEADER_CANDIDATES_LOCAL)
+    conv_idx = _m_get_col_idx(headers, CONV_HEADER_CANDIDATES_LOCAL)
+    sales_idx = _m_get_col_idx(headers, SALES_HEADER_CANDIDATES_LOCAL)
+
+    if ad_idx == -1:
+        return [], {'status': 'no_ad_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+
+    if media_idx == -1 and region_idx == -1 and device_idx == -1:
+        return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    row_count = 0
+    mapped_rows = 0
+    for _, row in data_df.iterrows():
+        row_count += 1
+        max_idx = max([x for x in [ad_idx, media_idx, region_idx, device_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx] if x != -1], default=0)
+        if len(row) <= max_idx:
+            continue
+        ad_id = str(row.iloc[ad_idx] if ad_idx != -1 and len(row) > ad_idx else '').strip()
+        if not ad_id:
+            continue
+        campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
+        if not campaign_id:
+            continue
+        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            continue
+        mapped_rows += 1
+        campaign_type = campaign_type_map.get(campaign_id, '기타')
+        media_name = _m_safe_text(row.iloc[media_idx] if media_idx != -1 and len(row) > media_idx else '', '전체')
+        region_name = _m_safe_text(row.iloc[region_idx] if region_idx != -1 and len(row) > region_idx else '', '전체')
+        raw_device = row.iloc[device_idx] if device_idx != -1 and len(row) > device_idx else ''
+        device_name = normalize_device_name(raw_device) or _m_safe_text(raw_device, '전체')
+        key = (campaign_type, media_name, region_name, device_name)
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(_m_safe_float(row.iloc[imp_idx]) if imp_idx != -1 and len(row) > imp_idx else 0))
+        bucket['clk'] += int(round(_m_safe_float(row.iloc[clk_idx]) if clk_idx != -1 and len(row) > clk_idx else 0))
+        bucket['cost'] += int(round(_m_safe_float(row.iloc[cost_idx]) if cost_idx != -1 and len(row) > cost_idx else 0))
+        bucket['conv'] += float(_m_safe_float(row.iloc[conv_idx]) if conv_idx != -1 and len(row) > conv_idx else 0)
+        bucket['sales'] += int(round(_m_safe_float(row.iloc[sales_idx]) if sales_idx != -1 and len(row) > sales_idx else 0))
+
+    rows = []
+    for (campaign_type, media_name, region_name, device_name), s in agg.items():
+        rows.append({
+            'dt': target_date,
+            'customer_id': str(customer_id),
+            'campaign_type': campaign_type,
+            'media_name': media_name,
+            'region_name': region_name,
+            'device_name': device_name or '전체',
+            'imp': int(s['imp']),
+            'clk': int(s['clk']),
+            'cost': int(s['cost']),
+            'conv': float(round(s['conv'], 4)),
+            'sales': int(s['sales']),
+            'data_source': 'ad_report_dimension',
+            'source_report': 'AD',
+        })
+    return rows, {'status': 'ok' if rows else 'no_rows', 'header_idx': header_idx, 'row_count': row_count, 'mapped_rows': mapped_rows, 'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx}}
+
+def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    for (campaign_id, device_name), s in (camp_device_stat or {}).items():
+        campaign_id = str(campaign_id or '').strip()
+        if not campaign_id:
+            continue
+        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            continue
+        campaign_type = campaign_type_map.get(campaign_id, '기타')
+        device_label = normalize_device_name(device_name) or _m_safe_text(device_name, '전체')
+        key = (campaign_type, '전체', '전체', device_label)
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(s.get('imp', 0) or 0)
+        bucket['clk'] += int(s.get('clk', 0) or 0)
+        bucket['cost'] += int(s.get('cost', 0) or 0)
+        bucket['conv'] += float(s.get('conv', 0.0) or 0.0)
+        bucket['sales'] += int(s.get('sales', 0) or 0)
+    rows = []
+    for (campaign_type, media_name, region_name, device_name), s in agg.items():
+        rows.append({
+            'dt': target_date,
+            'customer_id': str(customer_id),
+            'campaign_type': campaign_type,
+            'media_name': media_name,
+            'region_name': region_name,
+            'device_name': device_name,
+            'imp': int(s['imp']),
+            'clk': int(s['clk']),
+            'cost': int(s['cost']),
+            'conv': float(round(s['conv'], 4)),
+            'sales': int(s['sales']),
+            'data_source': 'campaign_device_fallback',
+            'source_report': 'AD',
+        })
+    return rows
+
+def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, target_date: date, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    sql = "SELECT campaign_id, imp, clk, cost, conv, sales FROM fact_campaign_daily WHERE customer_id = :cid AND dt = :dt"
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), {'cid': str(customer_id), 'dt': target_date}).fetchall()
+    except Exception:
+        rows = []
+    for campaign_id, imp, clk, cost, conv, sales in rows:
+        camp_id = str(campaign_id or '').strip()
+        if not camp_id:
+            continue
+        if allowed_campaign_ids is not None and camp_id not in allowed_campaign_ids:
+            continue
+        campaign_type = campaign_type_map.get(camp_id, '기타')
+        key = (campaign_type, '전체', '전체', '전체')
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(imp or 0)
+        bucket['clk'] += int(clk or 0)
+        bucket['cost'] += int(cost or 0)
+        bucket['conv'] += float(conv or 0.0)
+        bucket['sales'] += int(sales or 0)
+    out = []
+    for (campaign_type, media_name, region_name, device_name), s in agg.items():
+        out.append({
+            'dt': target_date,
+            'customer_id': str(customer_id),
+            'campaign_type': campaign_type,
+            'media_name': media_name,
+            'region_name': region_name,
+            'device_name': device_name,
+            'imp': int(s['imp']),
+            'clk': int(s['clk']),
+            'cost': int(s['cost']),
+            'conv': float(round(s['conv'], 4)),
+            'sales': int(s['sales']),
+            'data_source': 'campaign_total_fallback',
+            'source_report': 'STATS',
+        })
+    return out
+
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        return replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            meta = {'status': 'fallback_device', **(meta or {})}
+            return replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        meta = {'status': 'fallback_total', **(meta or {})}
+        return replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+
+    return replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types), {'status': 'empty'}
+
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
@@ -1807,6 +2149,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         live_keyword_resolver = None if fast_mode else make_live_keyword_resolver(customer_id)
 
         ad_to_campaign_map = build_ad_to_campaign_map(engine, customer_id)
+        campaign_type_map = build_campaign_type_map(engine, customer_id)
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
@@ -1842,6 +2185,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   ℹ️ [ {account_name} ] 당일/실시간 모드에서는 PC/M 전용 수집을 수행하지 않습니다.")
             device_ad_cnt = 0
             device_campaign_cnt = 0
+            media_cnt, media_meta = collect_media_fact(
+                engine, customer_id, target_date, None, ad_to_campaign_map, campaign_type_map, None,
+                allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
+                scoped_campaign_types=['쇼핑검색'] if shopping_only else None,
+            )
+            if media_cnt:
+                log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
         else:
             split_report_ok = False
             camp_map, kw_map, ad_map = {}, {}, {}
@@ -1929,6 +2279,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             device_ad_cnt = 0
             device_campaign_cnt = 0
             ad_stat = {}
+            camp_device_stat = {}
 
             if not SKIP_AD_STATS:
                 if ad_report_df is not None and not ad_report_df.empty:
@@ -2009,6 +2360,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         a_cnt = 0
             else:
                 a_cnt = 0
+
+            media_cnt, media_meta = collect_media_fact(
+                engine, customer_id, target_date, ad_report_df, ad_to_campaign_map, campaign_type_map, camp_device_stat,
+                allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
+                scoped_campaign_types=['쇼핑검색'] if shopping_only else None,
+            )
+            if media_cnt:
+                log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
+            else:
+                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}")
 
             if collect_sa:
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
