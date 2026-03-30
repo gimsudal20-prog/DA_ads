@@ -1716,6 +1716,19 @@ def _m_safe_text(v: Any, default: str = '전체') -> str:
         return default
     return s
 
+def normalize_device_name(v: Any) -> str:
+    s = str(v or '').strip()
+    if not s or s.lower() in {'nan', 'none'} or s == '-':
+        return '전체'
+    low = s.lower().replace(' ', '')
+    mapping = {
+        'pc': 'PC', 'desktop': 'PC', 'desktops': 'PC', '컴퓨터': 'PC', '피시': 'PC',
+        'mobile': 'MO', 'm': 'MO', 'mo': 'MO', 'mobileweb': 'MO', 'mobileapp': 'MO', '모바일': 'MO',
+        'tablet': '태블릿', 'tab': '태블릿', '태블릿': '태블릿',
+        'all': '전체', '전체': '전체'
+    }
+    return mapping.get(low, s)
+
 def _map_campaign_type_label(v: Any) -> str:
     s = str(v or '').strip()
     if not s:
