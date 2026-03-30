@@ -29,13 +29,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="첫날만 구조 동기화, 이후 날짜는 --skip_dim",
     )
-    p.add_argument(
-        "--sync_dim_every",
-        type=int,
-        default=0,
-        help="N일마다 구조 동기화 (0=사용안함, 예: 7)",
-    )
     p.add_argument("--with_gfa", action="store_true", help="collector_gfa.py도 함께 실행")
+    p.add_argument("--with_shop_ext", action="store_true", help="collector_shop_ext.py도 함께 실행")
+    p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/백필")
     p.add_argument("--collect_mode", default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="collector.py 수집 모드")
     args = p.parse_args()
     args.start = clean(args.start)
@@ -59,7 +55,7 @@ def run_cmd(cmd: List[str], label: str, day: str) -> None:
     print(f"   ✅ [{label}] {day} 완료", flush=True)
 
 
-def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool, day_index: int) -> List[str]:
+def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]:
     cmd: List[str] = [
         sys.executable,
         "collector.py",
@@ -73,19 +69,18 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool, day_index: i
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
     cmd += ["--collect_mode", args.collect_mode]
-    sync_this_run = False
-    if args.sync_dim_every and args.sync_dim_every > 0:
-        sync_this_run = (day_index % args.sync_dim_every == 0)
-    elif args.sync_dim_first_day:
-        sync_this_run = first
-
-    skip_dim_this_run = not sync_this_run
+    if args.shopping_only:
+        cmd.append("--shopping_only")
+    skip_dim_this_run = False
+    if args.fast:
+        skip_dim_this_run = True
+        cmd.append("--fast")
+    if args.sync_dim_first_day:
+        skip_dim_this_run = not first
+    else:
+        skip_dim_this_run = True
     if skip_dim_this_run:
         cmd.append("--skip_dim")
-        if args.fast:
-            cmd.append("--fast")
-    elif args.fast:
-        print(f"   ℹ️ [{d_str}] 구조 동기화일에는 --fast 를 붙이지 않습니다.", flush=True)
     return cmd
 
 
@@ -96,6 +91,8 @@ def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
     cmd += ["--collect_mode", args.collect_mode]
+    if args.shopping_only:
+        cmd.append("--shopping_only")
     return cmd
 
 
@@ -125,9 +122,7 @@ def main() -> None:
     if args.fast:
         print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
     print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
-    if args.sync_dim_every and args.sync_dim_every > 0:
-        print(f"🧱 {args.sync_dim_every}일마다 구조 동기화, 나머지는 --skip_dim", flush=True)
-    elif args.sync_dim_first_day:
+    if args.sync_dim_first_day:
         print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
     else:
         print("⚡ 전 기간 skip_dim 모드", flush=True)
@@ -135,6 +130,10 @@ def main() -> None:
         print("⚠️ fast + device 수집 조합입니다. PC/M 문제 분석 시에는 fast=false 를 권장합니다.", flush=True)
     if args.with_gfa:
         print("📺 GFA 수집 포함", flush=True)
+    if args.shopping_only:
+        print("🛍️ 쇼핑검색 전용 수집", flush=True)
+    if args.with_shop_ext or args.shopping_only:
+        print("🧩 쇼핑 확장소재 수집 포함", flush=True)
     print("=" * 60, flush=True)
 
     first = True
@@ -142,8 +141,15 @@ def main() -> None:
         d_str = d.strftime("%Y-%m-%d")
         print(f"\n📅 [ {d_str} ]", flush=True)
 
-        cmd_sa = build_sa_cmd(args, d_str, first, day_index=(d - start_date).days)
+        cmd_sa = build_sa_cmd(args, d_str, first)
         run_cmd(cmd_sa, "SA", d_str)
+
+        if args.with_shop_ext or args.shopping_only:
+            if os.path.exists("collector_shop_ext.py"):
+                cmd_shop_ext = build_shop_ext_cmd(args, d_str)
+                run_cmd(cmd_shop_ext, "SHOP_EXT", d_str)
+            else:
+                print("   ⏭️ [SHOP_EXT] collector_shop_ext.py 파일이 없어 스킵합니다.", flush=True)
 
         if args.with_gfa:
             if os.path.exists("collector_gfa.py"):
