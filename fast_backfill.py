@@ -84,6 +84,15 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
     return cmd
 
 
+
+def build_shop_ext_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
+    cmd: List[str] = [sys.executable, "collector_shop_ext.py", "--date", d_str]
+    if args.account_name:
+        cmd += ["--account_name", args.account_name]
+    if args.account_names and args.account_names != args.account_name:
+        cmd += ["--account_names", args.account_names]
+    return cmd
+
 def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     cmd: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]
     if args.account_name:
@@ -91,8 +100,6 @@ def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
     cmd += ["--collect_mode", args.collect_mode]
-    if args.shopping_only:
-        cmd.append("--shopping_only")
     return cmd
 
 
