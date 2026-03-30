@@ -643,6 +643,70 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def query_adgroup_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+    if not table_exists(_engine, "fact_adgroup_daily"):
+        return pd.DataFrame()
+    cids_tuple = tuple(cids) if cids else ()
+    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+
+    cols = get_table_columns(_engine, "dim_campaign")
+    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
+
+    type_filter_sql = ""
+    if type_sel:
+        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
+        db_types = [rev_map.get(t, t) for t in type_sel]
+        type_list_str = ",".join([f"'{x}'" for x in db_types])
+        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
+
+    rank_col = None
+    adg_fact_cols = get_table_columns(_engine, "fact_adgroup_daily")
+    for candidate in ["avg_rank", "avg_rnk", "averageposition", "average_position", "avgrnk"]:
+        if candidate in adg_fact_cols:
+            rank_col = candidate
+            break
+
+    rank_agg_sql = ""
+    rank_select_sql = ""
+    if rank_col:
+        rank_agg_sql = f", CASE WHEN SUM(imp) > 0 THEN SUM(COALESCE({rank_col}, 0) * imp) / SUM(imp) ELSE NULL END as avg_rank"
+        rank_select_sql = ", agg.avg_rank"
+
+    expr = _strict_conv_selects(adg_fact_cols)
+    conv_agg_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
+    cart_agg_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
+    wish_agg_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+
+    cart_select_sql = ", agg.cart_conv, agg.cart_sales"
+    wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
+
+    sql = f"""
+        WITH agg AS (
+            SELECT customer_id, adgroup_id,
+                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                   {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
+            FROM fact_adgroup_daily
+            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+            GROUP BY customer_id, adgroup_id
+        )
+        SELECT
+            agg.customer_id, a.campaign_id, agg.adgroup_id,
+            c.campaign_name, c.{cp_col} as campaign_type_label,
+            a.adgroup_name,
+            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
+        FROM agg
+        JOIN dim_adgroup a ON agg.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
+        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+        WHERE 1=1 {type_filter_sql}
+    """
+    if topn_cost > 0:
+        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
+
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = _map_campaign_types(df, "campaign_type_label")
+    return df
+
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
