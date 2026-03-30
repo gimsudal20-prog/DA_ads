@@ -504,7 +504,8 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
     return pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
 
 
-def _aggregate_to_adgroup_level(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+
+def _aggregate_to_adgroup_level(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -513,22 +514,35 @@ def _aggregate_to_adgroup_level(df: pd.DataFrame, source_name: str) -> pd.DataFr
     if not group_keys or not value_cols:
         return pd.DataFrame()
 
-    agg_map = {c: "sum" for c in value_cols}
-    grouped = df.groupby(group_keys, as_index=False).agg(agg_map)
-    grouped["perf_source"] = source_name
-    return grouped
+    out = df.groupby(group_keys, as_index=False)[value_cols].sum()
+    for c in value_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+    return out
+
+
+def _normalize_campaign_type_for_group_perf(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "campaign_type_label" not in df.columns:
+        return df
+    out = df.copy()
+    out["campaign_type_label"] = out["campaign_type_label"].astype(str).str.strip()
+    out["campaign_type_label"] = out["campaign_type_label"].replace({
+        "SHOPPING": "쇼핑검색",
+        "WEB_SITE": "파워링크",
+    })
+    return out
 
 
 def _resolve_group_performance_bundle(kw_bundle: pd.DataFrame, ad_bundle: pd.DataFrame) -> pd.DataFrame:
-    """광고그룹 성과는 키워드/소재 데이터를 합산하면 동일 그룹이 이중 집계될 수 있어
-    광고유형별 대표 소스 하나만 선택한다.
+    """광고그룹 성과 이중집계 방지.
 
+    같은 광고그룹에서 키워드 성과와 소재 성과를 합산하지 않고,
+    광고유형별로 대표 소스 하나만 사용한다.
     - 쇼핑검색: 소재(상품) 성과 우선
     - 그 외: 키워드 성과 우선
-    - 한쪽만 존재하면 존재하는 소스 사용
+    - 선호 소스가 비어 있으면 다른 소스로 대체
     """
-    kw_grp = _aggregate_to_adgroup_level(kw_bundle, "keyword")
-    ad_grp = _aggregate_to_adgroup_level(ad_bundle, "ad")
+    kw_grp = _normalize_campaign_type_for_group_perf(_aggregate_to_adgroup_level(kw_bundle))
+    ad_grp = _normalize_campaign_type_for_group_perf(_aggregate_to_adgroup_level(ad_bundle))
 
     if kw_grp.empty and ad_grp.empty:
         return pd.DataFrame()
@@ -541,53 +555,43 @@ def _resolve_group_performance_bundle(kw_bundle: pd.DataFrame, ad_bundle: pd.Dat
     if not key_cols:
         return kw_grp
 
-    merged = kw_grp.merge(
-        ad_grp,
-        on=key_cols,
-        how="outer",
-        suffixes=("_kw", "_ad"),
-        indicator=True,
-    )
+    kw_idx = kw_grp.set_index(key_cols, drop=False)
+    ad_idx = ad_grp.set_index(key_cols, drop=False)
+    all_keys = kw_idx.index.union(ad_idx.index)
 
-    metric_cols = ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"]
-    label_cols = ["campaign_type_label", "campaign_name", "adgroup_name"]
+    rows = []
+    for key in all_keys:
+        kw_row = kw_idx.loc[key] if key in kw_idx.index else None
+        ad_row = ad_idx.loc[key] if key in ad_idx.index else None
 
-    def _norm_type(v) -> str:
-        s = str(v or "").strip().upper()
-        if s in ["SHOPPING", "쇼핑검색"]:
-            return "SHOPPING"
-        return s
+        if isinstance(kw_row, pd.DataFrame):
+            kw_row = kw_row.iloc[0]
+        if isinstance(ad_row, pd.DataFrame):
+            ad_row = ad_row.iloc[0]
 
-    out_rows = []
-    for _, row in merged.iterrows():
-        merged_type = _norm_type(row.get("campaign_type_label_kw") or row.get("campaign_type_label_ad"))
-        prefer_ad = merged_type == "SHOPPING"
-        source_prefix = "ad" if prefer_ad else "kw"
-        fallback_prefix = "kw" if prefer_ad else "ad"
+        camp_type = None
+        for candidate in [ad_row, kw_row]:
+            if candidate is not None and "campaign_type_label" in candidate.index:
+                value = str(candidate.get("campaign_type_label", "")).strip()
+                if value:
+                    camp_type = value
+                    break
 
-        chosen = {}
-        for k in key_cols:
-            chosen[k] = row.get(k)
+        prefer_ad = camp_type == "쇼핑검색"
+        chosen = ad_row if prefer_ad and ad_row is not None else kw_row if (not prefer_ad and kw_row is not None) else ad_row if ad_row is not None else kw_row
+        if chosen is None:
+            continue
 
-        for col in label_cols:
-            chosen[col] = row.get(f"{col}_{source_prefix}")
-            if pd.isna(chosen[col]) or str(chosen[col]).strip() == "":
-                chosen[col] = row.get(f"{col}_{fallback_prefix}")
+        rows.append(chosen.to_dict())
 
-        has_primary = any(pd.notna(row.get(f"{m}_{source_prefix}")) for m in metric_cols if f"{m}_{source_prefix}" in merged.columns)
-        has_fallback = any(pd.notna(row.get(f"{m}_{fallback_prefix}")) for m in metric_cols if f"{m}_{fallback_prefix}" in merged.columns)
-        actual_prefix = source_prefix if has_primary else fallback_prefix if has_fallback else source_prefix
+    if not rows:
+        return pd.DataFrame()
 
-        for col in metric_cols:
-            candidate = row.get(f"{col}_{actual_prefix}")
-            chosen[col] = 0 if pd.isna(candidate) else candidate
-
-        chosen["perf_source"] = actual_prefix
-        out_rows.append(chosen)
-
-    out = pd.DataFrame(out_rows)
-    if not out.empty and "campaign_type_label" in out.columns:
-        out["campaign_type_label"] = out["campaign_type_label"].replace({"SHOPPING": "쇼핑검색", "WEB_SITE": "파워링크"})
+    out = pd.DataFrame(rows)
+    group_keys = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in out.columns]
+    value_cols = [c for c in ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"] if c in out.columns]
+    if group_keys and value_cols:
+        out = out.groupby(group_keys, as_index=False)[value_cols].sum()
     return out
 
 FAST_COL_CONFIG = {
@@ -745,9 +749,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
             else:
-                grp = detail_bundle_grp.copy()
+                grp = detail_bundle_grp.groupby(grp_cols, as_index=False)[val_cols].sum()
                 grp = _perf_common_merge_meta(grp, meta)
                 grouped = grp.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"}).copy()
+                for num_col in ["노출", "클릭", "광고비", "장바구니수", "장바구니 매출액", "위시리스트수", "위시리스트 매출액", "구매완료수", "구매완료 매출", "tot_conv", "tot_sales"]:
+                    if num_col in grouped.columns:
+                        grouped[num_col] = pd.to_numeric(grouped[num_col], errors="coerce").fillna(0)
                 grouped = _add_perf_metrics(grouped)
 
                 camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
