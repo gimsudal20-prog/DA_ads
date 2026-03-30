@@ -106,7 +106,7 @@ jobs:
           if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
             CMD+=(--shopping_only)
           fi
-          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ] || [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
             CMD+=(--with_shop_ext)
           fi
 

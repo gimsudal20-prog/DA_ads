@@ -29,13 +29,13 @@ on:
         default: false
         type: boolean
       shopping_only:
-        description: "쇼핑검색 캠페인만 재수집"
-        required: true
+        description: "쇼핑검색 캠페인만 백필"
+        required: false
         default: false
         type: boolean
       with_shop_ext:
         description: "쇼핑 확장소재도 함께 수집"
-        required: true
+        required: false
         default: false
         type: boolean
 
@@ -83,7 +83,7 @@ jobs:
           if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
             CMD+=(--shopping_only)
           fi
-          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ] || [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
             CMD+=(--with_shop_ext)
           fi
 
