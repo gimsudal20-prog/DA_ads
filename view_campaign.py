@@ -68,41 +68,16 @@ def _format_avg_rank(value):
     if pd.isna(num) or num <= 0: return "미수집"
     return f"{num:.0f}위"
 
-
-def _is_shopping_series(view: pd.DataFrame) -> pd.Series:
-    for c in ["캠페인유형", "campaign_type", "campaign_type_label"]:
-        if c in view.columns:
-            s = view[c].fillna("").astype(str)
-            return s.str.contains("쇼핑검색|SHOPPING", case=False, regex=True)
-    return pd.Series(False, index=view.index)
-
-
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
-    numeric_cols = [
-        "광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액",
-        "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수",
-        "tot_conv", "tot_sales"
-    ]
-    for c in numeric_cols:
-        if c in view.columns:
-            view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+    for c in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "tot_conv", "tot_sales"]:
+        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
 
-    split_conv = (
-        pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0)
-        + pd.to_numeric(view.get("장바구니수", 0), errors="coerce").fillna(0)
-        + pd.to_numeric(view.get("위시리스트수", 0), errors="coerce").fillna(0)
-    )
-    split_sales = (
-        pd.to_numeric(view.get("구매완료 매출", 0), errors="coerce").fillna(0)
-        + pd.to_numeric(view.get("장바구니 매출액", 0), errors="coerce").fillna(0)
-        + pd.to_numeric(view.get("위시리스트 매출액", 0), errors="coerce").fillna(0)
-    )
-    raw_tot_conv = pd.to_numeric(view.get("tot_conv", 0), errors="coerce").fillna(0)
-    raw_tot_sales = pd.to_numeric(view.get("tot_sales", 0), errors="coerce").fillna(0)
-
-    is_shopping = _is_shopping_series(view)
-    view["총 전환수"] = np.where(is_shopping, split_conv, np.where(raw_tot_conv > 0, raw_tot_conv, split_conv))
-    view["총 전환매출"] = np.where(is_shopping, split_sales, np.where(raw_tot_sales > 0, raw_tot_sales, split_sales))
+    if "tot_conv" in view.columns:
+        view["총 전환수"] = view["tot_conv"]
+        view["총 전환매출"] = view["tot_sales"]
+    else:
+        view["총 전환수"] = view.get("구매완료수", 0) + view.get("장바구니수", 0) + view.get("위시리스트수", 0)
+        view["총 전환매출"] = view.get("구매완료 매출", 0) + view.get("장바구니 매출액", 0) + view.get("위시리스트 매출액", 0)
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
@@ -220,17 +195,64 @@ def _normalize_device_label(v: str) -> str:
     return '기타'
 
 
+
+
+def _expand_campaign_type_values(type_sel: tuple) -> list[str]:
+    mapping = {
+        "파워링크": ["파워링크", "WEB_SITE"],
+        "쇼핑검색": ["쇼핑검색", "SHOPPING"],
+        "파워컨텐츠": ["파워컨텐츠", "POWER_CONTENTS"],
+        "브랜드검색": ["브랜드검색", "BRAND_SEARCH"],
+        "플레이스": ["플레이스", "PLACE"],
+        "WEB_SITE": ["WEB_SITE", "파워링크"],
+        "SHOPPING": ["SHOPPING", "쇼핑검색"],
+        "POWER_CONTENTS": ["POWER_CONTENTS", "파워컨텐츠"],
+        "BRAND_SEARCH": ["BRAND_SEARCH", "브랜드검색"],
+        "PLACE": ["PLACE", "플레이스"],
+    }
+    out: list[str] = []
+    for v in type_sel or ():
+        s = str(v).strip()
+        if not s:
+            continue
+        out.append(s)
+        out.extend(mapping.get(s, []))
+    # dedupe keep order
+    seen = set()
+    deduped = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
 def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     params = {'d1': str(d1), 'd2': str(d2)}
+    type_vals = _expand_campaign_type_values(type_sel)
 
     if table_exists(engine, 'fact_campaign_device_daily'):
-        where_cid = f"AND f.customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ''
+        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ''
         join_sql = ''
         type_filter = ''
-        if type_sel:
+        if type_vals:
             cp_col = _campaign_type_column(engine)
             join_sql = ' LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text '
-            type_filter = f"AND c.{cp_col} IN ({_sql_in_str_list(list(type_sel))})"
+            type_list = _sql_in_str_list(type_vals)
+            type_filter = f"""
+                AND (
+                    COALESCE(c.{cp_col}::text, '') IN ({type_list})
+                    OR (
+                        CASE
+                            WHEN COALESCE(c.{cp_col}::text, '') = 'WEB_SITE' THEN '파워링크'
+                            WHEN COALESCE(c.{cp_col}::text, '') = 'SHOPPING' THEN '쇼핑검색'
+                            WHEN COALESCE(c.{cp_col}::text, '') = 'POWER_CONTENTS' THEN '파워컨텐츠'
+                            WHEN COALESCE(c.{cp_col}::text, '') = 'BRAND_SEARCH' THEN '브랜드검색'
+                            WHEN COALESCE(c.{cp_col}::text, '') = 'PLACE' THEN '플레이스'
+                            ELSE COALESCE(c.{cp_col}::text, '')
+                        END
+                    ) IN ({type_list})
+                )
+            """
         sql = f"""
             SELECT COALESCE(NULLIF(TRIM(f.device_name), ''), '기타') AS device_name,
                    SUM(COALESCE(f.cost,0)) AS cost
@@ -254,8 +276,8 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     if table_exists(engine, 'fact_media_daily'):
         cols = get_table_columns(engine, 'fact_media_daily')
         if 'device_name' in cols:
-            where_cid = f"AND customer_id IN ({_sql_in_str_list(list(cids))})" if cids else ''
-            type_filter = f"AND campaign_type IN ({_sql_in_str_list(list(type_sel))})" if type_sel and 'campaign_type' in cols else ''
+            where_cid = f"AND customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ''
+            type_filter = f"AND campaign_type IN ({_sql_in_str_list(type_vals)})" if type_vals and 'campaign_type' in cols else ''
             sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '기타') AS device_name, SUM(cost) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '기타') HAVING SUM(cost) > 0 ORDER BY SUM(cost) DESC"
             try:
                 df = sql_read(engine, sql, params)
@@ -334,43 +356,6 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-
-
-
-def _format_display_table(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    int_cols = [
-        "노출", "클릭", "구매완료수", "총 전환수", "장바구니수", "위시리스트수",
-        "노출 차이", "클릭 차이", "구매 차이", "총 전환 차이", "장바구니 차이", "위시리스트 차이",
-    ]
-    money_cols = [
-        "광고비", "CPC(원)", "구매완료 매출", "총 전환매출", "장바구니 매출액", "위시리스트 매출액",
-        "광고비 차이", "CPC 차이", "구매 매출 차이", "총 매출 차이",
-    ]
-    pct1_cols = [
-        "노출 증감", "클릭 증감", "광고비 증감", "CPC 증감", "구매 증감", "구매 매출 증감",
-        "총 전환 증감", "총 매출 증감", "장바구니 증감", "위시리스트 증감",
-        "구매 ROAS 증감", "통합 ROAS 증감", "CTR(%)", "구매 ROAS(%)", "통합 ROAS(%)",
-    ]
-    for c in int_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{int(round(x)):,}")
-    for c in money_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{int(round(x)):,}원")
-    for c in pct1_cols:
-        if c in out.columns:
-            s = pd.to_numeric(out[c], errors="coerce")
-            if "증감" in c:
-                out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{x:+.1f}%")
-            else:
-                out[c] = s.map(lambda x: "-" if pd.isna(x) else f"{x:.1f}%")
-    if "순위 변화" in out.columns:
-        s = pd.to_numeric(out["순위 변화"], errors="coerce")
-        out["순위 변화"] = s.map(lambda x: "-" if pd.isna(x) else f"{x:+.0f}")
-    return out
 
 def _campaign_type_column(engine) -> str:
     cols = get_table_columns(engine, "dim_campaign")
@@ -518,43 +503,6 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
     valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
     return pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
 
-
-
-def _build_group_perf_base(kw_bundle: pd.DataFrame, ad_bundle: pd.DataFrame) -> pd.DataFrame:
-    """광고그룹 성과는 키워드 기준을 우선 사용하고, 키워드가 없는 그룹만 소재 기준으로 보완한다."""
-    grp_keys = ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"]
-    val_cols = ["imp", "clk", "cost", "conv", "sales", "tot_conv", "tot_sales", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales"]
-
-    def _agg(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame(columns=grp_keys + val_cols)
-        use_grp = [c for c in grp_keys if c in df.columns]
-        use_val = [c for c in val_cols if c in df.columns]
-        if not use_grp or not use_val:
-            return pd.DataFrame(columns=grp_keys + val_cols)
-        out = df.groupby(use_grp, as_index=False)[use_val].sum()
-        for c in grp_keys:
-            if c not in out.columns:
-                out[c] = ""
-        for c in val_cols:
-            if c not in out.columns:
-                out[c] = 0
-        return out[grp_keys + val_cols]
-
-    kw_agg = _agg(kw_bundle)
-    ad_agg = _agg(ad_bundle)
-    if kw_agg.empty:
-        return ad_agg
-    if ad_agg.empty:
-        return kw_agg
-
-    kw_keys = set(zip(kw_agg["customer_id"].astype(str), kw_agg["campaign_id"].astype(str), kw_agg["adgroup_id"].astype(str)))
-    ad_only = ad_agg[
-        ~ad_agg.apply(lambda r: (str(r["customer_id"]), str(r["campaign_id"]), str(r["adgroup_id"])) in kw_keys, axis=1)
-    ].copy()
-    return pd.concat([kw_agg, ad_only], ignore_index=True)
-
-
 FAST_COL_CONFIG = {
     "노출": st.column_config.NumberColumn("노출", format="%d"),
     "클릭": st.column_config.NumberColumn("클릭", format="%d"),
@@ -617,7 +565,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             roas_col, sales_col = "통합 ROAS(%)", "총 전환매출"
         else:
             if not funnel_toggle:
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
                 roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
             else:
                 all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
@@ -634,29 +582,29 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
                 type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
                 type_grp = type_grp.sort_values("광고비", ascending=False)
-                type_grp_disp = type_grp.copy()
-                type_grp_disp["광고비"] = pd.to_numeric(type_grp_disp["광고비"], errors="coerce").fillna(0).map(lambda x: f"{int(round(x)):,}원")
-                type_grp_disp[sales_col] = pd.to_numeric(type_grp_disp[sales_col], errors="coerce").fillna(0).map(lambda x: f"{int(round(x)):,}원")
-                type_grp_disp["지출 비중(%)"] = pd.to_numeric(type_grp_disp["지출 비중(%)"], errors="coerce").fillna(0).map(lambda x: f"{x:.1f}%")
-                type_grp_disp[roas_col] = pd.to_numeric(type_grp_disp[roas_col], errors="coerce").fillna(0).map(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    type_grp_disp,
+                    type_grp,
                     width="stretch",
-                    height=_compact_df_height(type_grp_disp, min_height=74, max_height=220),
+                    height=_compact_df_height(type_grp, min_height=74, max_height=220),
                     hide_index=True,
-                    column_config={"캠페인유형": st.column_config.TextColumn("캠페인 유형")},
+                    column_config={
+                        "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
+                        "광고비": st.column_config.NumberColumn("총 광고비", format="%,d원"),
+                        sales_col: st.column_config.NumberColumn(sales_col, format="%,d원"),
+                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
+                        roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f%%"),
+                    },
                 )
             with col_device:
                 st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
                 device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel)
                 _render_device_share_panel(device_df)
-        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
         disp_main = disp_main_src[final_cols].copy()
-        disp_main_fmt = _format_display_table(disp_main)
-        event = st.dataframe(disp_main_fmt, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
+        event = st.dataframe(disp_main, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun", column_config=FAST_COL_CONFIG)
 
         selected_rows = event.selection.rows
         if selected_rows:
@@ -693,8 +641,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     if has_pre_patch_cur:
                         sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
-                    kw_disp_fmt = _format_display_table(kw_disp)
-                    st.dataframe(kw_disp_fmt, width="stretch", hide_index=True)
+                    st.dataframe(kw_disp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
 
@@ -738,8 +685,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
-                disp_grp_fmt = _format_display_table(disp_grp)
-                st.dataframe(disp_grp_fmt, width="stretch", hide_index=True)
+                st.dataframe(disp_grp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
@@ -829,6 +775,4 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 cols.insert(2, cols.pop(cols.index('통합 ROAS(%)')))
                 pivot_df = pivot_df[cols]
 
-            if "통합 ROAS(%)" in pivot_df.columns:
-                pivot_df["통합 ROAS(%)"] = pd.to_numeric(pivot_df["통합 ROAS(%)"], errors="coerce").map(lambda x: "-" if pd.isna(x) else f"{x:.1f}%")
             st.dataframe(pivot_df, width="stretch", hide_index=True)
