@@ -503,6 +503,93 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
     valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
     return pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
 
+
+def _aggregate_to_adgroup_level(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    group_keys = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in df.columns]
+    value_cols = [c for c in ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"] if c in df.columns]
+    if not group_keys or not value_cols:
+        return pd.DataFrame()
+
+    agg_map = {c: "sum" for c in value_cols}
+    grouped = df.groupby(group_keys, as_index=False).agg(agg_map)
+    grouped["perf_source"] = source_name
+    return grouped
+
+
+def _resolve_group_performance_bundle(kw_bundle: pd.DataFrame, ad_bundle: pd.DataFrame) -> pd.DataFrame:
+    """광고그룹 성과는 키워드/소재 데이터를 합산하면 동일 그룹이 이중 집계될 수 있어
+    광고유형별 대표 소스 하나만 선택한다.
+
+    - 쇼핑검색: 소재(상품) 성과 우선
+    - 그 외: 키워드 성과 우선
+    - 한쪽만 존재하면 존재하는 소스 사용
+    """
+    kw_grp = _aggregate_to_adgroup_level(kw_bundle, "keyword")
+    ad_grp = _aggregate_to_adgroup_level(ad_bundle, "ad")
+
+    if kw_grp.empty and ad_grp.empty:
+        return pd.DataFrame()
+    if kw_grp.empty:
+        return ad_grp
+    if ad_grp.empty:
+        return kw_grp
+
+    key_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id"] if c in kw_grp.columns and c in ad_grp.columns]
+    if not key_cols:
+        return kw_grp
+
+    merged = kw_grp.merge(
+        ad_grp,
+        on=key_cols,
+        how="outer",
+        suffixes=("_kw", "_ad"),
+        indicator=True,
+    )
+
+    metric_cols = ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"]
+    label_cols = ["campaign_type_label", "campaign_name", "adgroup_name"]
+
+    def _norm_type(v) -> str:
+        s = str(v or "").strip().upper()
+        if s in ["SHOPPING", "쇼핑검색"]:
+            return "SHOPPING"
+        return s
+
+    out_rows = []
+    for _, row in merged.iterrows():
+        merged_type = _norm_type(row.get("campaign_type_label_kw") or row.get("campaign_type_label_ad"))
+        prefer_ad = merged_type == "SHOPPING"
+        source_prefix = "ad" if prefer_ad else "kw"
+        fallback_prefix = "kw" if prefer_ad else "ad"
+
+        chosen = {}
+        for k in key_cols:
+            chosen[k] = row.get(k)
+
+        for col in label_cols:
+            chosen[col] = row.get(f"{col}_{source_prefix}")
+            if pd.isna(chosen[col]) or str(chosen[col]).strip() == "":
+                chosen[col] = row.get(f"{col}_{fallback_prefix}")
+
+        has_primary = any(pd.notna(row.get(f"{m}_{source_prefix}")) for m in metric_cols if f"{m}_{source_prefix}" in merged.columns)
+        has_fallback = any(pd.notna(row.get(f"{m}_{fallback_prefix}")) for m in metric_cols if f"{m}_{fallback_prefix}" in merged.columns)
+        actual_prefix = source_prefix if has_primary else fallback_prefix if has_fallback else source_prefix
+
+        for col in metric_cols:
+            candidate = row.get(f"{col}_{actual_prefix}")
+            chosen[col] = 0 if pd.isna(candidate) else candidate
+
+        chosen["perf_source"] = actual_prefix
+        out_rows.append(chosen)
+
+    out = pd.DataFrame(out_rows)
+    if not out.empty and "campaign_type_label" in out.columns:
+        out["campaign_type_label"] = out["campaign_type_label"].replace({"SHOPPING": "쇼핑검색", "WEB_SITE": "파워링크"})
+    return out
+
 FAST_COL_CONFIG = {
     "노출": st.column_config.NumberColumn("노출", format="%d"),
     "클릭": st.column_config.NumberColumn("클릭", format="%d"),
@@ -649,20 +736,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
             kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
             ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
-            kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
-            if not ad_bundle_grp.empty:
-                ad_tmp = ad_bundle_grp.copy()
-                if "ad_title" in ad_tmp.columns:
-                    ad_tmp["final_ad_name"] = ad_tmp["ad_title"].fillna("").astype(str).str.strip()
-                    mask_empty = ad_tmp["final_ad_name"].isin(["", "nan", "None"])
-                    ad_tmp.loc[mask_empty, "final_ad_name"] = ad_tmp.loc[mask_empty, "ad_name"].astype(str)
-                else:
-                    ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
-                ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
-            else:
-                ad_tmp = pd.DataFrame()
-            valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
-            detail_bundle_grp = pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
+            detail_bundle_grp = _resolve_group_performance_bundle(kw_bundle_grp, ad_bundle_grp)
         if detail_bundle_grp is None or detail_bundle_grp.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
@@ -671,7 +745,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             if not grp_cols or not val_cols:
                 st.info("광고그룹 성과 데이터가 없습니다.")
             else:
-                grp = detail_bundle_grp.groupby(grp_cols, as_index=False)[val_cols].sum()
+                grp = detail_bundle_grp.copy()
                 grp = _perf_common_merge_meta(grp, meta)
                 grouped = grp.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"}).copy()
                 grouped = _add_perf_metrics(grouped)
