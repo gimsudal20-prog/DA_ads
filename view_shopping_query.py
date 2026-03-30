@@ -2,188 +2,280 @@
 """view_shopping_query.py - Shopping Search Term (Query Text) performance view."""
 
 from __future__ import annotations
-import pandas as pd
-import numpy as np
-import streamlit as st
 import io
-from typing import Dict
 from datetime import date
+from typing import Dict
+
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 from data import query_shopping_search_terms
-from page_helpers import _perf_common_merge_meta
+from page_helpers import _perf_common_merge_meta, period_compare_range
 
 
-def _safe_num(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce").fillna(0)
+FMT_DICT = {
+    "구매완료수": "{:,.0f}",
+    "구매완료 매출": "{:,.0f}원",
+    "장바구니수": "{:,.0f}",
+    "장바구니 매출액": "{:,.0f}원",
+    "위시리스트수": "{:,.0f}",
+    "위시리스트 매출액": "{:,.0f}원",
+    "총 전환수": "{:,.0f}",
+    "총 전환매출": "{:,.0f}원",
+    "구매기여율(%)": "{:,.1f}%",
+    "장바구니기여율(%)": "{:,.1f}%",
+    "구매완료수 증감": "{:+.1f}%",
+    "구매완료 매출 증감": "{:+.1f}%",
+    "총 전환수 증감": "{:+.1f}%",
+    "총 전환매출 증감": "{:+.1f}%",
+}
 
 
-def _build_action_labels(view: pd.DataFrame) -> pd.DataFrame:
-    out = view.copy()
-    numeric_cols = [
-        "구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액",
-        "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출"
-    ]
-    for c in numeric_cols:
+def _to_num(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
         if c in out.columns:
-            out[c] = _safe_num(out[c])
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+    return out
 
-    pos_purchase = out.loc[out["구매완료수"] > 0, "구매완료수"] if "구매완료수" in out.columns else pd.Series(dtype=float)
-    pos_sales = out.loc[out["구매완료 매출"] > 0, "구매완료 매출"] if "구매완료 매출" in out.columns else pd.Series(dtype=float)
-    purchase_thr = max(float(pos_purchase.median()) if not pos_purchase.empty else 1, 1)
-    sales_thr = max(float(pos_sales.median()) if not pos_sales.empty else 1, 1)
 
+def _pct_change(cur, base):
+    cur = pd.to_numeric(cur, errors="coerce").fillna(0)
+    base = pd.to_numeric(base, errors="coerce").fillna(0)
+    diff = cur - base
+    safe_base = np.where(base == 0, 1, base)
+    pct = np.where(base == 0, np.where(cur > 0, 100.0, 0.0), (diff / safe_base) * 100.0)
+    return pct, diff
+
+
+def _merge_compare(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+    keys = [c for c in ["customer_id", "campaign_name", "adgroup_name", "query_text"] if c in cur.columns and c in prev.columns]
+    if not keys:
+        return cur.copy()
+
+    c = cur.copy()
+    p = prev.copy()
+    for k in keys:
+        c[k] = c[k].astype(str)
+        p[k] = p[k].astype(str)
+
+    val_cols = [
+        "purchase_conv", "purchase_sales", "cart_conv", "cart_sales",
+        "wishlist_conv", "wishlist_sales", "total_conv", "total_sales",
+    ]
+    p = _to_num(p, val_cols)
+    p = p[keys + [x for x in val_cols if x in p.columns]].copy()
+    p = p.rename(columns={x: f"b_{x}" for x in val_cols if x in p.columns})
+    out = c.merge(p, on=keys, how="left")
+    for x in val_cols:
+        bx = f"b_{x}"
+        if bx not in out.columns:
+            out[bx] = 0
+        out[bx] = pd.to_numeric(out[bx], errors="coerce").fillna(0)
+
+    out["구매완료수 증감"], out["구매완료수 차이"] = _pct_change(out.get("purchase_conv", 0), out.get("b_purchase_conv", 0))
+    out["구매완료 매출 증감"], out["구매완료 매출 차이"] = _pct_change(out.get("purchase_sales", 0), out.get("b_purchase_sales", 0))
+    out["총 전환수 증감"], out["총 전환수 차이"] = _pct_change(out.get("total_conv", 0), out.get("b_total_conv", 0))
+    out["총 전환매출 증감"], out["총 전환매출 차이"] = _pct_change(out.get("total_sales", 0), out.get("b_total_sales", 0))
+
+    def _compare_tag(row):
+        cur_p = float(row.get("purchase_conv", 0) or 0)
+        base_p = float(row.get("b_purchase_conv", 0) or 0)
+        cur_sales = float(row.get("purchase_sales", 0) or 0)
+        base_sales = float(row.get("b_purchase_sales", 0) or 0)
+        sales_delta = float(row.get("구매완료 매출 증감", 0) or 0)
+        if base_p == 0 and cur_p > 0:
+            return "전환 회복"
+        if cur_sales > 0 and sales_delta >= 50:
+            return "급상승"
+        if base_sales > 0 and cur_sales == 0:
+            return "효율 악화"
+        if sales_delta <= -50:
+            return "하락"
+        return "유지"
+
+    out["변화 태그"] = out.apply(_compare_tag, axis=1)
+    return out
+
+
+def _add_funnel_metrics(view: pd.DataFrame) -> pd.DataFrame:
+    out = view.copy()
+    out = _to_num(out, [
+        "구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액",
+        "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출",
+    ])
     out["구매기여율(%)"] = np.where(out["총 전환수"] > 0, (out["구매완료수"] / out["총 전환수"]) * 100, 0.0)
     out["장바구니기여율(%)"] = np.where(out["총 전환수"] > 0, (out["장바구니수"] / out["총 전환수"]) * 100, 0.0)
-    out["위시리스트기여율(%)"] = np.where(out["총 전환수"] > 0, (out["위시리스트수"] / out["총 전환수"]) * 100, 0.0)
+    return out
 
-    conditions = [
-        (out["구매완료수"] >= purchase_thr) & (out["구매완료 매출"] >= sales_thr),
-        (out["구매완료수"] >= 1),
-        (out["구매완료수"] == 0) & (out["장바구니수"] >= 1),
-        (out["구매완료수"] == 0) & (out["장바구니수"] == 0) & (out["위시리스트수"] >= 1),
-    ]
-    choices = ["확대 후보", "유지", "관찰", "저의도 의심"]
-    out["액션 라벨"] = np.select(conditions, choices, default="유지")
 
+def _add_action_labels(view: pd.DataFrame) -> pd.DataFrame:
+    out = view.copy()
+    sales_pos = pd.to_numeric(out.get("구매완료 매출", 0), errors="coerce").fillna(0)
+    conv_pos = pd.to_numeric(out.get("구매완료수", 0), errors="coerce").fillna(0)
+    total_conv = pd.to_numeric(out.get("총 전환수", 0), errors="coerce").fillna(0)
+    cart_conv = pd.to_numeric(out.get("장바구니수", 0), errors="coerce").fillna(0)
+    wish_conv = pd.to_numeric(out.get("위시리스트수", 0), errors="coerce").fillna(0)
+
+    positive_sales = sales_pos[sales_pos > 0]
+    sales_cut = float(positive_sales.quantile(0.6)) if not positive_sales.empty else 0.0
+    sales_cut = max(sales_cut, 1.0)
+
+    labels = []
     reasons = []
     for _, row in out.iterrows():
-        purchase = float(row.get("구매완료수", 0) or 0)
-        cart = float(row.get("장바구니수", 0) or 0)
-        wish = float(row.get("위시리스트수", 0) or 0)
-        sales = float(row.get("구매완료 매출", 0) or 0)
-        label = str(row.get("액션 라벨", "유지"))
-        if label == "확대 후보":
-            reasons.append(f"구매 {purchase:,.0f}건 · 매출 {sales:,.0f}원")
-        elif label == "유지":
-            reasons.append(f"구매 {purchase:,.0f}건 발생")
-        elif label == "관찰":
-            reasons.append(f"장바구니 {cart:,.0f}건 · 구매 0건")
-        elif label == "저의도 의심":
-            reasons.append(f"위시리스트 {wish:,.0f}건 · 구매/장바구니 없음")
+        p = float(row.get("구매완료수", 0) or 0)
+        s = float(row.get("구매완료 매출", 0) or 0)
+        c = float(row.get("장바구니수", 0) or 0)
+        w = float(row.get("위시리스트수", 0) or 0)
+        t = float(row.get("총 전환수", 0) or 0)
+        q = str(row.get("실제 검색어", "") or "")
+
+        if p >= 1 and (s >= sales_cut or t >= 2):
+            labels.append("확대 후보")
+            reasons.append("구매 발생 + 매출/전환 기여가 높음")
+        elif p == 0 and c >= 1:
+            labels.append("관찰 필요")
+            reasons.append("장바구니 반응은 있으나 구매 전환 미발생")
+        elif p == 0 and c == 0 and w >= 1:
+            labels.append("저의도 의심")
+            reasons.append("위시리스트 중심 반응으로 구매 의도 약함")
+        elif p >= 1:
+            labels.append("유지")
+            reasons.append("구매는 발생하나 확대 판단 전 추가 관찰 필요")
+        elif len(q.strip()) <= 2 and t > 0:
+            labels.append("관찰 필요")
+            reasons.append("짧은 일반 검색어로 의도 확인 필요")
         else:
-            reasons.append("추가 확인 필요")
+            labels.append("유지")
+            reasons.append("즉시 확대/제외보다 누적 데이터 관찰 권장")
+
+    out["액션 라벨"] = labels
     out["추천 사유"] = reasons
     return out
 
 
-def _render_summary_cards(view: pd.DataFrame) -> None:
-    if view.empty:
-        return
-    total_terms = int(view["실제 검색어"].nunique()) if "실제 검색어" in view.columns else int(len(view))
-    scale_terms = int((view["액션 라벨"] == "확대 후보").sum()) if "액션 라벨" in view.columns else 0
-    observe_terms = int((view["액션 라벨"] == "관찰").sum()) if "액션 라벨" in view.columns else 0
-    purchase_terms = int((view["구매완료수"] > 0).sum()) if "구매완료수" in view.columns else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("검색어 수", f"{total_terms:,}")
-    c2.metric("확대 후보", f"{scale_terms:,}")
-    c3.metric("관찰 필요", f"{observe_terms:,}")
-    c4.metric("구매 발생 검색어", f"{purchase_terms:,}")
+def _summary_metric_card(label: str, value: str, help_text: str | None = None):
+    with st.container(border=True):
+        st.markdown(f"<div class='nv-card-title'>{label}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:22px;font-weight:800;line-height:1.2;'>{value}</div>", unsafe_allow_html=True)
+        if help_text:
+            st.markdown(f"<div class='nv-card-sub'>{help_text}</div>", unsafe_allow_html=True)
 
 
 def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
 
-    st.markdown("<div class='nv-sec-title'>쇼핑 검색어 상세 분석 (Query Text)</div>", unsafe_allow_html=True)
-    st.caption("고객이 네이버 쇼핑에서 실제로 검색한 단어 기준의 전환 성과를 분석합니다. 비용/클릭 지표 없이 퍼널 전환 데이터 중심으로 해석합니다.")
+    st.markdown("<div class='nv-sec-title'>쇼핑 검색어 상세 분석</div>", unsafe_allow_html=True)
+    st.caption("고객이 네이버 쇼핑에서 실제로 검색한 단어 기준의 퍼널 성과를 분석하고, 확대/관찰 후보를 빠르게 식별합니다.")
 
     cids = tuple(f.get("selected_customer_ids", []))
     patch_date = date(2026, 3, 11)
     has_pre_patch_cur = (f["start"] < patch_date)
-
     if has_pre_patch_cur:
-        st.info("3월 11일 이전 데이터는 네이버 퍼널 분리 패치 이전이므로 통합 전환 지표만 존재할 수 있습니다.")
+        st.info("3월 11일 이전 데이터가 포함되어 있어 퍼널 분리값 일부가 비어 있을 수 있습니다.")
+
+    cmp_mode = st.radio("비교 기준", ["이전 같은 기간 대비", "전주대비", "전일대비"], horizontal=True, key="sq_cmp_mode")
+    b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
     with st.spinner("쇼핑 검색어 데이터를 불러오는 중입니다..."):
-        df = query_shopping_search_terms(engine, f["start"], f["end"], cids)
-        if df.empty:
+        df_cur = query_shopping_search_terms(engine, f["start"], f["end"], cids)
+        if df_cur.empty:
             st.warning("해당 기간에 수집된 쇼핑 검색어 전환 데이터가 없습니다.")
             return
+        df_prev = query_shopping_search_terms(engine, b1, b2, cids)
+        df_cur = _perf_common_merge_meta(df_cur, meta)
+        if not df_prev.empty:
+            df_prev = _perf_common_merge_meta(df_prev, meta)
+        df = _merge_compare(df_cur, df_prev)
 
-        df = _perf_common_merge_meta(df, meta)
-        view = df.rename(columns={
-            "account_name": "업체명", "manager": "담당자",
-            "campaign_name": "캠페인", "adgroup_name": "광고그룹", "query_text": "실제 검색어",
-            "purchase_conv": "구매완료수", "purchase_sales": "구매완료 매출",
-            "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
-            "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액",
-            "total_conv": "총 전환수", "total_sales": "총 전환매출"
-        }).copy()
+    view = df.rename(columns={
+        "account_name": "업체명",
+        "manager": "담당자",
+        "campaign_name": "캠페인",
+        "adgroup_name": "광고그룹",
+        "query_text": "실제 검색어",
+        "purchase_conv": "구매완료수",
+        "purchase_sales": "구매완료 매출",
+        "cart_conv": "장바구니수",
+        "cart_sales": "장바구니 매출액",
+        "wishlist_conv": "위시리스트수",
+        "wishlist_sales": "위시리스트 매출액",
+        "total_conv": "총 전환수",
+        "total_sales": "총 전환매출",
+    }).copy()
 
-        for c in ["구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액", "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출"]:
-            if c in view.columns:
-                view[c] = _safe_num(view[c])
+    numeric_cols = [
+        "구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액",
+        "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출",
+        "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감", "총 전환매출 증감",
+    ]
+    view = _to_num(view, numeric_cols)
+    view = _add_funnel_metrics(view)
+    view = _add_action_labels(view)
 
-        view = _build_action_labels(view)
+    # summary cards
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        _summary_metric_card("검색어 수", f"{len(view):,}개")
+    with c2:
+        _summary_metric_card("확대 후보", f"{int((view['액션 라벨'] == '확대 후보').sum()):,}개")
+    with c3:
+        _summary_metric_card("관찰 필요", f"{int((view['액션 라벨'] == '관찰 필요').sum()):,}개")
+    with c4:
+        _summary_metric_card("구매 발생", f"{int((pd.to_numeric(view['구매완료수'], errors='coerce').fillna(0) > 0).sum()):,}개", f"{cmp_mode} 기준 변화 태그 포함")
 
-    _render_summary_cards(view)
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     with st.container(border=True):
-        st.markdown("<div class='nv-card-title'>쇼핑 검색어 액션 필터</div>", unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
+        st.markdown("<div class='nv-card-title'>쇼핑 검색어 전용 필터</div>", unsafe_allow_html=True)
+        r1c1, r1c2, r1c3 = st.columns(3)
         camps = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
-        sel_camp = c1.selectbox("캠페인 필터", camps, key="sq_camp_filter")
+        sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_v2")
         if sel_camp != "전체":
             view = view[view["캠페인"] == sel_camp]
 
         grps = ["전체"] + sorted([str(x) for x in view["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in view.columns else ["전체"]
-        sel_grp = c2.selectbox("광고그룹 필터", grps, key="sq_grp_filter")
+        sel_grp = r1c2.selectbox("광고그룹", grps, key="sq_grp_filter_v2")
         if sel_grp != "전체":
             view = view[view["광고그룹"] == sel_grp]
 
-        c3, c4, c5 = st.columns([1.2, 1, 1])
-        labels = ["전체"] + [x for x in ["확대 후보", "유지", "관찰", "저의도 의심"] if x in set(view["액션 라벨"].dropna())]
-        sel_label = c3.selectbox("액션 라벨", labels, key="sq_action_label_filter")
+        labels = ["전체"] + [x for x in ["확대 후보", "유지", "관찰 필요", "저의도 의심"] if x in view["액션 라벨"].unique().tolist()]
+        sel_label = r1c3.selectbox("액션 라벨", labels, key="sq_label_filter_v2")
         if sel_label != "전체":
             view = view[view["액션 라벨"] == sel_label]
 
-        zero_purchase_only = c4.checkbox("구매 0건만", value=False, key="sq_zero_purchase_only")
-        if zero_purchase_only:
-            view = view[view["구매완료수"] <= 0]
+        r2c1, r2c2, r2c3 = st.columns(3)
+        only_zero_purchase = r2c1.checkbox("구매 0건만", key="sq_only_zero_purchase")
+        only_cart = r2c2.checkbox("장바구니 발생만", key="sq_only_cart")
+        q_text = r2c3.text_input("검색어 포함", value="", key="sq_query_contains", placeholder="예: 의자")
 
-        cart_only = c5.checkbox("장바구니 발생만", value=False, key="sq_cart_only")
-        if cart_only:
-            view = view[view["장바구니수"] > 0]
+        r3c1, r3c2 = st.columns(2)
+        min_purchase_sales = r3c1.number_input("최소 구매매출", min_value=0, value=0, step=10000, key="sq_min_purchase_sales")
+        min_total_conv = r3c2.number_input("최소 총 전환수", min_value=0, value=0, step=1, key="sq_min_total_conv")
 
-        c6, c7, c8 = st.columns([1.5, 1, 1])
-        term_kw = c6.text_input("검색어 포함", value="", key="sq_term_kw", placeholder="예: 원목, 거실, 수납")
-        if term_kw.strip():
-            view = view[view["실제 검색어"].astype(str).str.contains(term_kw.strip(), case=False, na=False)]
-
-        min_sales = c7.number_input("최소 구매매출", min_value=0, value=0, step=10000, key="sq_min_purchase_sales")
-        if min_sales > 0:
-            view = view[view["구매완료 매출"] >= float(min_sales)]
-
-        min_total_conv = c8.number_input("최소 총전환수", min_value=0.0, value=0.0, step=1.0, key="sq_min_total_conv")
-        if min_total_conv > 0:
-            view = view[view["총 전환수"] >= float(min_total_conv)]
-
-    if view.empty:
-        st.warning("현재 필터 조건에 맞는 쇼핑 검색어 데이터가 없습니다.")
-        return
-
-    fmt = {
-        "구매완료수": "{:,.0f}", "구매완료 매출": "{:,.0f}원",
-        "장바구니수": "{:,.0f}", "장바구니 매출액": "{:,.0f}원",
-        "위시리스트수": "{:,.0f}", "위시리스트 매출액": "{:,.0f}원",
-        "총 전환수": "{:,.0f}", "총 전환매출": "{:,.0f}원",
-        "구매기여율(%)": "{:,.1f}%", "장바구니기여율(%)": "{:,.1f}%", "위시리스트기여율(%)": "{:,.1f}%",
-    }
+    if only_zero_purchase:
+        view = view[pd.to_numeric(view["구매완료수"], errors="coerce").fillna(0) == 0]
+    if only_cart:
+        view = view[pd.to_numeric(view["장바구니수"], errors="coerce").fillna(0) > 0]
+    if q_text.strip():
+        view = view[view["실제 검색어"].astype(str).str.contains(q_text.strip(), case=False, na=False)]
+    if min_purchase_sales > 0:
+        view = view[pd.to_numeric(view["구매완료 매출"], errors="coerce").fillna(0) >= float(min_purchase_sales)]
+    if min_total_conv > 0:
+        view = view[pd.to_numeric(view["총 전환수"], errors="coerce").fillna(0) >= float(min_total_conv)]
 
     display_cols = [
-        "업체명", "캠페인", "광고그룹", "실제 검색어",
-        "액션 라벨", "추천 사유",
-        "구매완료수", "구매완료 매출", "장바구니수", "위시리스트수",
-        "총 전환수", "총 전환매출", "구매기여율(%)", "장바구니기여율(%)"
+        "업체명", "캠페인", "광고그룹", "실제 검색어", "액션 라벨", "변화 태그", "추천 사유",
+        "구매완료수", "구매완료 매출", "장바구니수", "위시리스트수", "총 전환수", "총 전환매출",
+        "구매기여율(%)", "장바구니기여율(%)", "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감",
     ]
+    disp = view[[c for c in display_cols if c in view.columns]].sort_values(["구매완료 매출", "총 전환매출"], ascending=False).head(500).copy()
 
-    sort_col = "구매완료 매출" if (view["구매완료 매출"] > 0).any() else "총 전환매출"
-    disp = view[[c for c in display_cols if c in view.columns]].sort_values(sort_col, ascending=False).head(500).copy()
-
-    st.markdown("<div class='nv-card-title' style='margin-top:20px;'>검색어별 퍼널 성과 · 액션센터</div>", unsafe_allow_html=True)
-    st.dataframe(disp.style.format(fmt), use_container_width=True, height=640, hide_index=True)
+    st.markdown("<div class='nv-sec-sub' style='margin-top:16px;margin-bottom:10px;'>검색어별 퍼널 성과와 비교 기간 증감을 함께 확인합니다.</div>", unsafe_allow_html=True)
+    styled = disp.style.format(FMT_DICT)
+    st.dataframe(styled, width="stretch", height=640, hide_index=True)
 
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer) as writer:
@@ -192,5 +284,5 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         label="검색어 리포트 다운로드 (Excel)",
         data=excel_buffer.getvalue(),
         file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
