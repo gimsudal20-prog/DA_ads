@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="첫날만 구조 동기화, 이후 날짜는 --skip_dim (기본은 전 기간 skip_dim)",
     )
-    p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/백필")
+    p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 백필")
     p.add_argument("--with_shop_ext", action="store_true", help="collector_shop_ext.py도 함께 실행")
     args = p.parse_args()
     args.start = clean(args.start)
@@ -87,9 +87,9 @@ def main() -> None:
     print(f"- workers: {args.workers}", flush=True)
     print(f"- 구조 동기화: {'첫날만 수행' if args.sync_dim_first_day else '전 기간 skip_dim (가장 빠름)'}", flush=True)
     if args.shopping_only:
-        print("- 쇼핑검색 전용 수집", flush=True)
+        print("- 쇼핑검색 전용 백필", flush=True)
     if args.with_shop_ext or args.shopping_only:
-        print("- 쇼핑 확장소재 수집 포함", flush=True)
+        print("- 쇼핑 확장소재 포함", flush=True)
     print("- purchase/cart/wishlist 분리: collector.py 로직상 2026-03-11 이전 날짜는 자동 미시도", flush=True)
     print("=" * 64, flush=True)
 
@@ -120,8 +120,8 @@ def main() -> None:
         print(f"📅 {d_str} | mode={mode}", flush=True)
         run_cmd(cmd, "collector", d_str)
         if args.with_shop_ext or args.shopping_only:
-            cmd_shop = [sys.executable, "collector_shop_ext.py", "--date", d_str, "--account_name", args.account_name]
-            run_cmd(cmd_shop, "shop_ext", d_str)
+            ext_cmd = [sys.executable, "collector_shop_ext.py", "--date", d_str, "--account_name", args.account_name]
+            run_cmd(ext_cmd, "shop_ext", d_str)
         first = False
 
     print("\n" + "★" * 32, flush=True)

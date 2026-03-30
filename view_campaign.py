@@ -485,6 +485,63 @@ def _query_ad_detail_for_campaign(engine, d1, d2, customer_id: str, campaign_id:
     return df
 
 
+def _is_shopping_campaign_type(series: pd.Series) -> pd.Series:
+    if series is None:
+        return pd.Series(dtype=bool)
+    return series.astype(str).str.contains(r"쇼핑|SHOPPING", case=False, na=False)
+
+
+def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) -> pd.DataFrame:
+    kw_df = kw_df.copy() if kw_df is not None and not kw_df.empty else pd.DataFrame()
+    ad_df = ad_df.copy() if ad_df is not None and not ad_df.empty else pd.DataFrame()
+
+    if kw_df.empty and ad_df.empty:
+        return pd.DataFrame()
+    if kw_df.empty:
+        return ad_df.reset_index(drop=True)
+    if ad_df.empty:
+        return kw_df.reset_index(drop=True)
+
+    for df in (kw_df, ad_df):
+        if "campaign_id" in df.columns:
+            df["campaign_id"] = df["campaign_id"].astype(str)
+
+    pref = {}
+    campaign_ids = set()
+    if "campaign_id" in kw_df.columns:
+        campaign_ids.update(kw_df["campaign_id"].dropna().astype(str).unique().tolist())
+    if "campaign_id" in ad_df.columns:
+        campaign_ids.update(ad_df["campaign_id"].dropna().astype(str).unique().tolist())
+
+    for cid in campaign_ids:
+        kw_rows = kw_df[kw_df["campaign_id"] == cid] if "campaign_id" in kw_df.columns else pd.DataFrame()
+        ad_rows = ad_df[ad_df["campaign_id"] == cid] if "campaign_id" in ad_df.columns else pd.DataFrame()
+
+        kw_shop = (not kw_rows.empty and "campaign_type_label" in kw_rows.columns and _is_shopping_campaign_type(kw_rows["campaign_type_label"]).any())
+        ad_shop = (not ad_rows.empty and "campaign_type_label" in ad_rows.columns and _is_shopping_campaign_type(ad_rows["campaign_type_label"]).any())
+
+        if kw_shop or ad_shop:
+            pref[cid] = "ad"
+        elif not kw_rows.empty:
+            pref[cid] = "kw"
+        elif not ad_rows.empty:
+            pref[cid] = "ad"
+
+    kept = []
+    if not kw_df.empty and "campaign_id" in kw_df.columns:
+        kw_keep = kw_df[kw_df["campaign_id"].map(lambda x: pref.get(str(x), "kw") == "kw")].copy()
+        if not kw_keep.empty:
+            kept.append(kw_keep)
+    if not ad_df.empty and "campaign_id" in ad_df.columns:
+        ad_keep = ad_df[ad_df["campaign_id"].map(lambda x: pref.get(str(x), "ad") == "ad")].copy()
+        if not ad_keep.empty:
+            kept.append(ad_keep)
+
+    if kept:
+        return pd.concat(kept, ignore_index=True)
+    return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
+
+
 def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> pd.DataFrame:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
@@ -500,8 +557,7 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
         ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
     else:
         ad_tmp = pd.DataFrame()
-    valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
-    return pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
+    return _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
 
 FAST_COL_CONFIG = {
     "노출": st.column_config.NumberColumn("노출", format="%d"),
@@ -661,8 +717,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
             else:
                 ad_tmp = pd.DataFrame()
-            valid_detail = [df for df in [kw_tmp, ad_tmp] if not df.empty]
-            detail_bundle_grp = pd.concat(valid_detail, ignore_index=True) if valid_detail else pd.DataFrame()
+            detail_bundle_grp = _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
         if detail_bundle_grp is None or detail_bundle_grp.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:

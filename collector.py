@@ -338,6 +338,7 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
         except Exception:
             time.sleep(3)
 
+# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]):
     ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
     if not ids:
@@ -346,14 +347,14 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk:
         try:
             with engine.begin() as conn:
                 conn.execute(
-                    text(f'DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt AND {pk} = ANY(:ids)'),
+                    text(f'DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
                     {"cid": str(customer_id), "dt": d1, "ids": ids},
                 )
             return
         except Exception:
             time.sleep(3)
 
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
+
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     clear_fact_range(engine, table, customer_id, d1)
     if not rows:
@@ -446,13 +447,16 @@ def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], c
         return
 
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
     col_names = ", ".join([f'"{c}"' for c in cols])
+
     if update_cols:
         conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
     else:
         conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
+
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
@@ -478,11 +482,13 @@ def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 try: raw_conn.close()
                 except Exception: pass
 
+
 def filter_stat_result(stat_res: dict, allowed_ids: set[str] | None) -> dict:
     if not stat_res or not allowed_ids:
         return stat_res or {}
     allowed = {str(x).strip() for x in allowed_ids if str(x).strip()}
     return {str(k): v for k, v in (stat_res or {}).items() if str(k).strip() in allowed}
+
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -1747,13 +1753,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     } if target_camp_ids else set()
                     target_kw_ids = [
                         str(r[0]) for r in conn.execute(
-                            text("SELECT k.keyword_id FROM dim_keyword k WHERE k.customer_id = :cid AND k.adgroup_id = ANY(:gids)"),
+                            text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
                             {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
                         )
                     ] if (collect_sa and shopping_adgroup_ids) else []
                     target_ad_ids = [
                         str(r[0]) for r in conn.execute(
-                            text("SELECT a.ad_id FROM dim_ad a WHERE a.customer_id = :cid AND a.adgroup_id = ANY(:gids)"),
+                            text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
                             {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
                         )
                     ] if shopping_adgroup_ids else []
@@ -1825,7 +1831,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if use_realtime_fallback:
             if collect_sa:
                 c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", scoped_replace=shopping_only)
-                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", scoped_replace=shopping_only) if not SKIP_KEYWORD_STATS else 0
+                if shopping_only and target_kw_ids:
+                    clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
+                    k_cnt = 0
+                else:
+                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", scoped_replace=shopping_only) if not SKIP_KEYWORD_STATS else 0
                 a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", scoped_replace=shopping_only) if not SKIP_AD_STATS else 0
                 log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
             else:
@@ -1891,7 +1901,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
+                kw_map = {} if shopping_only else merge_split_maps(ad_kw_map, shop_kw_map)
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
@@ -1910,7 +1920,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
 
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map, scoped_replace=shopping_only) if collect_sa else 0
-            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
+            if shopping_only and target_kw_ids:
+                clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
+                k_cnt = 0
+            else:
+                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
 
             device_ad_cnt = 0
             device_campaign_cnt = 0
@@ -1919,11 +1933,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if not SKIP_AD_STATS:
                 if ad_report_df is not None and not ad_report_df.empty:
                     if collect_sa:
-                        ad_data_source = "report_split" if split_report_ok else "report_total_only"
-                        ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
                         if shopping_only:
-                            ad_stat = filter_stat_result(ad_stat, set(target_ad_ids))
-                        a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source, scoped_ids=target_ad_ids if shopping_only else None) if ad_stat or shopping_only else 0
+                            a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map, scoped_replace=True)
+                            ad_stat = {}
+                        else:
+                            ad_data_source = "report_split" if split_report_ok else "report_total_only"
+                            ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
+                            a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
                     else:
                         a_cnt = 0
                         ad_stat = {}
@@ -2045,6 +2061,8 @@ def main():
     if FAST_MODE:
         print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
     print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
+    if args.shopping_only:
+        print("🛍️ 쇼핑검색 전용 수집", flush=True)
     print("="*50 + "\n", flush=True)
 
     accounts_info = []

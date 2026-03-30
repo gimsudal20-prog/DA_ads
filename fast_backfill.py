@@ -71,18 +71,20 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
     cmd += ["--collect_mode", args.collect_mode]
     if args.shopping_only:
         cmd.append("--shopping_only")
-    skip_dim_this_run = False
-    if args.fast:
-        skip_dim_this_run = True
-        cmd.append("--fast")
+
     if args.sync_dim_first_day:
         skip_dim_this_run = not first
     else:
         skip_dim_this_run = True
+
+    if args.fast and skip_dim_this_run:
+        cmd.append("--fast")
+    elif args.fast and not skip_dim_this_run:
+        print("   ℹ️ 첫날 구조 동기화 구간이라 --fast는 붙이지 않습니다.", flush=True)
+
     if skip_dim_this_run:
         cmd.append("--skip_dim")
     return cmd
-
 
 
 def build_shop_ext_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
@@ -92,6 +94,7 @@ def build_shop_ext_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
     return cmd
+
 
 def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
     cmd: List[str] = [sys.executable, "collector_gfa.py", "--date", d_str]
