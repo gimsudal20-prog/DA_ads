@@ -1717,17 +1717,30 @@ def _m_safe_text(v: Any, default: str = '전체') -> str:
     return s
 
 def normalize_device_name(v: Any) -> str:
-    s = str(v or '').strip()
-    if not s or s.lower() in {'nan', 'none'} or s == '-':
+    s = _m_safe_text(v, '')
+    if not s:
         return '전체'
-    low = s.lower().replace(' ', '')
+    ns = str(s).strip().lower().replace(' ', '').replace('_', '').replace('-', '')
     mapping = {
-        'pc': 'PC', 'desktop': 'PC', 'desktops': 'PC', '컴퓨터': 'PC', '피시': 'PC',
-        'mobile': 'MO', 'm': 'MO', 'mo': 'MO', 'mobileweb': 'MO', 'mobileapp': 'MO', '모바일': 'MO',
+        'pc': 'PC', 'desktop': 'PC', '데스크탑': 'PC', '컴퓨터': 'PC',
+        'mobile': 'MO', 'mo': 'MO', 'm': 'MO', '모바일': 'MO', '스마트폰': 'MO',
         'tablet': '태블릿', 'tab': '태블릿', '태블릿': '태블릿',
         'all': '전체', '전체': '전체'
     }
-    return mapping.get(low, s)
+    return mapping.get(ns, str(s).strip())
+
+
+def _preview_media_header_rows(df: pd.DataFrame, scan_limit: int = 5, col_limit: int = 25) -> List[List[str]]:
+    if df is None or df.empty:
+        return []
+    out: List[List[str]] = []
+    for i in range(min(scan_limit, len(df))):
+        vals = []
+        for x in df.iloc[i].tolist()[:col_limit]:
+            sx = str(x if x is not None else '').strip()
+            vals.append(sx[:60])
+        out.append(vals)
+    return out
 
 def _map_campaign_type_label(v: Any) -> str:
     s = str(v or '').strip()
@@ -1832,7 +1845,11 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     raw_df = df.reset_index(drop=True).copy()
     header_idx = _detect_media_header_idx(raw_df)
     if header_idx == -1:
-        return [], {'status': 'no_header'}
+        return [], {
+            'status': 'no_header',
+            'header_preview': _preview_media_header_rows(raw_df),
+            'scan_limit': min(60, len(raw_df)),
+        }
 
     headers_raw = [str(x) for x in raw_df.iloc[header_idx].fillna('').tolist()]
     headers = [_m_normalize_header(x) for x in headers_raw]
@@ -1849,10 +1866,20 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     sales_idx = _m_get_col_idx(headers, SALES_HEADER_CANDIDATES_LOCAL)
 
     if ad_idx == -1:
-        return [], {'status': 'no_ad_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        return [], {
+            'status': 'no_ad_id',
+            'header_idx': header_idx,
+            'headers': headers_raw[:25],
+            'header_preview': _preview_media_header_rows(raw_df),
+        }
 
     if media_idx == -1 and region_idx == -1 and device_idx == -1:
-        return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        return [], {
+            'status': 'no_dimension',
+            'header_idx': header_idx,
+            'headers': headers_raw[:25],
+            'header_preview': _preview_media_header_rows(raw_df),
+        }
 
     agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
     row_count = 0
@@ -2382,7 +2409,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if media_cnt:
                 log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
             else:
-                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}")
+                extra_parts = []
+                for _k in ['header_idx', 'headers', 'header_preview', 'scan_limit', 'dim_cols', 'mapped_rows', 'row_count']:
+                    _v = media_meta.get(_k)
+                    if _v in (None, '', [], {}):
+                        continue
+                    extra_parts.append(f"{_k}={_v}")
+                extra_msg = f" | {' | '.join(extra_parts)}" if extra_parts else ''
+                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}{extra_msg}")
 
             if collect_sa:
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
