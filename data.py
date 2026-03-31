@@ -643,7 +643,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
@@ -680,19 +680,22 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
     wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
+    dt_group = ", dt" if include_dt else ""
+    dt_select = ", agg.dt" if include_dt else ""
+
     sql = f"""
         WITH agg AS (
-            SELECT customer_id, keyword_id,
+            SELECT customer_id, keyword_id{dt_group},
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
                    {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_keyword_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, keyword_id
+            GROUP BY customer_id, keyword_id{dt_group}
         )
         SELECT
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, k.keyword,
+            a.adgroup_name, k.keyword{dt_select},
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM agg
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
@@ -708,7 +711,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     return df
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50) -> pd.DataFrame:
+def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
@@ -750,19 +753,22 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     cart_select_sql = ", agg.cart_conv, agg.cart_sales"
     wish_select_sql = ", agg.wishlist_conv, agg.wishlist_sales"
 
+    dt_group = ", dt" if include_dt else ""
+    dt_select = ", agg.dt" if include_dt else ""
+
     sql = f"""
         WITH agg AS (
-            SELECT customer_id, ad_id,
+            SELECT customer_id, ad_id{dt_group},
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
                    {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_ad_daily
             WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, ad_id
+            GROUP BY customer_id, ad_id{dt_group}
         )
         SELECT
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
             c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
+            a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select}{dt_select},
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
