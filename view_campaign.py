@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_campaign.py - Campaign performance page view (Minimal Device Share UI)."""
+"""view_campaign.py - Campaign performance page view (Minimal Device Share UI & Comma Formatting)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -307,7 +307,6 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
 
     df['share'] = (df['cost'] / total) * 100.0
     order = ['PC', 'MO', '기타']
-    # 미니멀 디자인을 위한 플랫한 컬러톤
     color_map = {'PC': '#3B82F6', 'MO': '#93C5FD', '기타': '#E5E7EB'}
     df['ord'] = df['device_name'].map({k: i for i, k in enumerate(order)}).fillna(99)
     df = df.sort_values(['ord', 'cost'], ascending=[True, False]).reset_index(drop=True)
@@ -316,42 +315,43 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     dominant = str(top['device_name'])
     dominant_share = float(top['share'])
 
-    # 심플한 원형 도트 범례
     legends = []
     for _, row in df.iterrows():
         name = str(row['device_name'])
         color = color_map.get(name, '#E5E7EB')
         legends.append(
-            f"<div style='display:flex; align-items:center; gap:6px;'>"
+            "<div style='display:flex; align-items:center; gap:6px;'>"
             f"<div style='width:8px; height:8px; border-radius:50%; background-color:{color};'></div>"
             f"<div style='font-size:13px; font-weight:500; color:#4B5563;'>{escape(name)} <span style='font-weight:700; color:#111827; margin-left:4px;'>{row['share']:.1f}%</span></div>"
-            f"</div>"
+            "</div>"
         )
 
-    # 그림자 없는 슬림한 진행바
     bar_segments = ''.join(
         f"<div style='height:100%; background-color:{color_map.get(str(row['device_name']), '#E5E7EB')}; width:{max(float(row['share']), 0):.4f}%;'></div>"
         for _, row in df.iterrows()
     )
 
-    html_str = f"""<div style='display: flex; flex-direction: column; gap: 14px; padding: 4px 0;'>
-<div style='display: flex; justify-content: space-between; align-items: flex-end;'>
-<div>
-<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>총 광고비</div>
-<div style='font-size: 20px; font-weight: 700; color: #111827; line-height: 1;'>{int(total):,}원</div>
-</div>
-<div style='text-align: right;'>
-<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>우세 기기</div>
-<div style='font-size: 14px; font-weight: 600; color: #111827; line-height: 1;'>{escape(dominant)}</div>
-</div>
-</div>
-<div style='width: 100%; background-color: #F3F4F6; border-radius: 999px; overflow: hidden; display: flex; height: 8px;'>
-{bar_segments}
-</div>
-<div style='display: flex; gap: 16px; margin-top: 4px;'>
-{''.join(legends)}
-</div>
-</div>"""
+    # 마크다운 코드 블록으로 파싱되지 않도록 들여쓰기 및 줄바꿈을 완벽히 제거한 HTML 문자열
+    html_str = (
+        "<div style='display: flex; flex-direction: column; gap: 14px; padding: 4px 0;'>"
+        "<div style='display: flex; justify-content: space-between; align-items: flex-end;'>"
+        "<div>"
+        "<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>총 광고비</div>"
+        f"<div style='font-size: 20px; font-weight: 700; color: #111827; line-height: 1;'>{int(total):,}원</div>"
+        "</div>"
+        "<div style='text-align: right;'>"
+        "<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>우세 기기</div>"
+        f"<div style='font-size: 14px; font-weight: 600; color: #111827; line-height: 1;'>{escape(dominant)}</div>"
+        "</div>"
+        "</div>"
+        "<div style='width: 100%; background-color: #F3F4F6; border-radius: 999px; overflow: hidden; display: flex; height: 8px;'>"
+        f"{bar_segments}"
+        "</div>"
+        "<div style='display: flex; gap: 16px; margin-top: 4px;'>"
+        f"{''.join(legends)}"
+        "</div>"
+        "</div>"
+    )
 
     st.markdown(html_str, unsafe_allow_html=True)
 
@@ -557,23 +557,6 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
         ad_tmp = pd.DataFrame()
     return _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
 
-FAST_COL_CONFIG = {
-    "노출": st.column_config.NumberColumn("노출", format="%d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
-    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
-    "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.1f %%"),
-    "장바구니수": st.column_config.NumberColumn("장바구니수", format="%d"),
-    "장바구니 매출액": st.column_config.NumberColumn("장바구니 매출액", format="%d 원"),
-    "장바구니 ROAS(%)": st.column_config.NumberColumn("장바구니 ROAS(%)", format="%.1f %%"),
-    "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
-    "구매완료 매출": st.column_config.NumberColumn("구매완료 매출", format="%d 원"),
-    "구매 ROAS(%)": st.column_config.NumberColumn("구매 ROAS(%)", format="%.1f %%"),
-    "총 전환수": st.column_config.NumberColumn("총 전환수", format="%d"),
-    "총 전환매출": st.column_config.NumberColumn("총 전환매출", format="%d 원"),
-    "통합 ROAS(%)": st.column_config.NumberColumn("통합 ROAS(%)", format="%.1f %%"),
-}
-
 @st.fragment
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -587,7 +570,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if has_pre_patch_cur:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
-    funnel_toggle = False
 
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
         bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
@@ -640,6 +622,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
                 type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
                 type_grp = type_grp.sort_values("광고비", ascending=False)
+                
+                # 강제 string 포맷팅 시 ProgressColumn 이 깨지지 않도록 기본 NumberColumn 적용 후 (원) 명시
                 st.dataframe(
                     type_grp,
                     width="stretch",
@@ -647,9 +631,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     hide_index=True,
                     column_config={
                         "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
-                        "광고비": st.column_config.NumberColumn("총 광고비", format="%,d원"),
-                        sales_col: st.column_config.NumberColumn(sales_col, format="%,d원"),
-                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중", format="%.1f%%", min_value=0, max_value=100),
+                        "광고비": st.column_config.NumberColumn("총 광고비 (원)"),
+                        sales_col: st.column_config.NumberColumn(f"{sales_col} (원)"),
+                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100),
                         roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f%%"),
                     },
                 )
@@ -661,8 +645,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
-        disp_main = disp_main_src[final_cols].copy()
-        event = st.dataframe(disp_main, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun", column_config=FAST_COL_CONFIG)
+        
+        # 콤마 강제 포맷팅 적용 (style.format)
+        safe_fmt_main = {k: v for k, v in FMT_DICT.items() if k in disp_main_src.columns}
+        event = st.dataframe(disp_main_src[final_cols].style.format(safe_fmt_main), width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
 
         selected_rows = event.selection.rows
         if selected_rows:
@@ -703,8 +689,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     ]
                     if has_pre_patch_cur:
                         sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                    
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
-                    st.dataframe(kw_disp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
+                    safe_fmt_kw = {k: v for k, v in FMT_DICT.items() if k in kw_disp.columns}
+                    st.dataframe(kw_disp.style.format(safe_fmt_kw), width="stretch", hide_index=True)
                 else:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
 
@@ -755,7 +743,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
-                st.dataframe(disp_grp, width="stretch", hide_index=True, column_config=FAST_COL_CONFIG)
+                
+                safe_fmt_grp = {k: v for k, v in FMT_DICT.items() if k in disp_grp.columns}
+                st.dataframe(disp_grp.style.format(safe_fmt_grp), width="stretch", hide_index=True)
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
@@ -803,7 +793,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
         disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-        styled_cmp = disp_cmp.style.format(FMT_DICT)
+        safe_fmt_cmp = {k: v for k, v in FMT_DICT.items() if k in disp_cmp.columns}
+        styled_cmp = disp_cmp.style.format(safe_fmt_cmp)
         styled_cmp = _apply_delta_styles(styled_cmp, disp_cmp)
 
         st.dataframe(styled_cmp, width="stretch", height=560, hide_index=True, column_config={
