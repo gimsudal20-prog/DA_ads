@@ -42,37 +42,39 @@ NAVER_MEDIA_MAP = {
     "8769": "네이버 쇼핑 (PC)",
 }
 
+
 def _map_media_name(name_or_code: object) -> str:
     """매체 코드(숫자)를 한글 지면명으로 변환. 딕셔너리에 없으면 코드 그대로 반환"""
     s = str(name_or_code or "").strip()
     if not s or s.lower() in {"nan", "none", "전체"}:
         return "전체"
-    
-    # 딕셔너리에 매핑된 코드가 있다면 변환
+
     if s in NAVER_MEDIA_MAP:
         return NAVER_MEDIA_MAP[s]
-        
-    # 만약 순수 숫자(미등록 매체코드)라면 쉽게 추가할 수 있도록 코드 표출
+
     if s.isdigit():
         return f"알수없는 지면 (코드: {s})"
-        
+
     return s
+
 
 def _normalize_device_value(v: object) -> str:
     s = str(v or "").strip()
     if not s or s.lower() in {"nan", "none", "전체"}:
         return "기타"
     us = s.upper()
-    if s in {"모바일", "MOBILE"} or "MOBILE" in us or "APP" in us or "PHONE" in us or s == "MO":
+    if s in {"모바일", "MOBILE"} or "MOBILE" in us or "APP" in us or "PHONE" in us or s == "MO" or s == "M":
         return "MO"
-    if s == "PC" or "DESKTOP" in us or "WEB" in us or "웹" in s:
+    if s == "PC" or s == "P" or "DESKTOP" in us or "WEB" in us or "웹" in s:
         return "PC"
     return s
+
 
 def _type_filter_sql(type_vals: list[str], col_name: str = "campaign_type") -> str:
     if not type_vals:
         return ""
     return f"AND COALESCE(CAST({col_name} AS TEXT), '') IN ({_sql_in_str_list(type_vals)})"
+
 
 def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
     out: list[str] = []
@@ -83,7 +85,7 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
         '브랜드검색': ['브랜드검색', 'BRAND_SEARCH', 'brand_search'],
         '플레이스': ['플레이스', 'PLACE', 'place'],
     }
-    for x in (type_sel or ()): 
+    for x in (type_sel or ()):
         x = str(x).strip()
         if not x:
             continue
@@ -97,26 +99,33 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
     return dedup
 
 
-
-def _coalesce_text_expr(cols: list[str], candidates: list[str], default: str) -> str:
-    exprs = []
+def _first_existing(cols: list[str], candidates: list[str]) -> str | None:
     for c in candidates:
         if c in cols:
-            exprs.append(f"NULLIF(TRIM(CAST({c} AS TEXT)), '')")
-    if not exprs:
-        return default
-    return f"COALESCE({', '.join(exprs)}, {default})"
+            return c
+    return None
+
+
+def _coalesce_text_expr(cols: list[str], candidates: list[str], default: str) -> str:
+    parts = []
+    for c in candidates:
+        if c in cols:
+            parts.append(f"NULLIF(TRIM(CAST({c} AS TEXT)), '')")
+    if not parts:
+        return f"'{default}'"
+    return f"COALESCE({', '.join(parts)}, '{default}')"
+
 
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
-    
+
     cols = get_table_columns(engine, 'fact_media_daily')
-    
+
     imp_expr = "COALESCE(imp, 0)" if "imp" in cols else "0"
     clk_expr = "COALESCE(clk, 0)" if "clk" in cols else "0"
     cost_expr = "COALESCE(cost, 0)" if "cost" in cols else "0"
-    
+
     if "tot_conv" in cols and "tot_sales" in cols:
         conv_expr, sales_expr = "COALESCE(tot_conv, 0)", "COALESCE(tot_sales, 0)"
     elif "purchase_conv" in cols and "purchase_sales" in cols:
@@ -129,31 +138,34 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
     cids = tuple(f.get('selected_customer_ids', []) or ())
     where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
-    
+
     cp_col = "campaign_type"
-    if "campaign_tp" in cols: cp_col = "campaign_tp"
-    elif "campaign_type_label" in cols: cp_col = "campaign_type_label"
-    
+    if "campaign_tp" in cols:
+        cp_col = "campaign_tp"
+    elif "campaign_type_label" in cols:
+        cp_col = "campaign_type_label"
+
     type_sql = _type_filter_sql(type_vals, cp_col) if cp_col in cols else ''
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
-    
-    # no_header 파서로 적재된 행은 media_name/device_name 대신 media_code/media_tp/device 등에 값이 들어갈 수 있으므로
-    # 표시용 라벨은 가능한 후보 컬럼을 모두 fallback 하여 조회한다.
+
     media_expr = _coalesce_text_expr(
         cols,
-        ['media_name', 'media_code', 'media_tp', 'placement_name', 'placement_code'],
-        "'전체'",
+        [
+            "media_name", "placement_name", "media_label", "placement_label",
+            "media_code", "placement_code", "media_tp", "placement_tp", "media"
+        ],
+        "전체",
     )
     device_expr = _coalesce_text_expr(
         cols,
-        ['device_name', 'device', 'device_tp', 'device_type'],
-        "'기타'",
+        ["device_name", "device_type", "device_tp", "device", "device_code"],
+        "기타",
     )
 
     sql = f"""
         SELECT
-            {media_expr} AS "매체이름",
-            {device_expr} AS "기기명",
+            {media_expr} AS "매체이름_raw",
+            {device_expr} AS "기기명_raw",
             SUM({imp_expr}) AS "노출수",
             SUM({clk_expr}) AS "클릭수",
             SUM({cost_expr}) AS "광고비",
@@ -165,14 +177,21 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     """
     try:
         df = sql_read(engine, sql, params)
-        if not df.empty:
-            df['매체이름'] = df['매체이름'].apply(_map_media_name)
-            df['기기명'] = df['기기명'].apply(_normalize_device_value)
-            # 동일 지면이 코드/이름 혼재로 중복 표기되는 것을 방지
-            df = df.groupby(['매체이름', '기기명'], as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        df["매체이름"] = df["매체이름_raw"].apply(_map_media_name)
+        df["기기명"] = df["기기명_raw"].apply(_normalize_device_value)
+
+        # no-header 적재로 media_name/media_code가 섞여 들어올 수 있어 한번 더 정규화 후 합산
+        df = (
+            df.groupby(["매체이름", "기기명"], as_index=False)[["노출수", "클릭수", "광고비", "전환수", "전환매출"]]
+            .sum()
+        )
         return df
     except Exception:
         return pd.DataFrame()
+
 
 def _query_device(engine, f) -> pd.DataFrame:
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
@@ -181,7 +200,7 @@ def _query_device(engine, f) -> pd.DataFrame:
 
     if table_exists(engine, 'fact_campaign_device_daily'):
         cols = get_table_columns(engine, 'fact_campaign_device_daily')
-        
+
         imp_expr = "COALESCE(f.imp, 0)" if "imp" in cols else "0"
         clk_expr = "COALESCE(f.clk, 0)" if "clk" in cols else "0"
         cost_expr = "COALESCE(f.cost, 0)" if "cost" in cols else "0"
@@ -201,10 +220,13 @@ def _query_device(engine, f) -> pd.DataFrame:
         if type_vals:
             join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
             type_sql = f"AND (COALESCE(CAST(c.campaign_tp AS TEXT),'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'PLACE' THEN '플레이스' ELSE COALESCE(CAST(c.campaign_tp AS TEXT),'') END) IN ({_sql_in_str_list(type_vals)}))"
-        
+
+        device_col = _first_existing(cols, ["device_name", "device_type", "device_tp", "device", "device_code"])
+        device_expr = f"COALESCE(NULLIF(TRIM(CAST(f.{device_col} AS TEXT)), ''), '기타')" if device_col else "'기타'"
+
         sql = f"""
             SELECT
-                COALESCE(NULLIF(TRIM(f.device_name), ''), '기타') AS "기기명",
+                {device_expr} AS "기기명",
                 SUM({imp_expr}) AS "노출수",
                 SUM({clk_expr}) AS "클릭수",
                 SUM({cost_expr}) AS "광고비",
@@ -227,6 +249,7 @@ def _query_device(engine, f) -> pd.DataFrame:
         return pd.DataFrame()
     return media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
 
+
 def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -238,9 +261,11 @@ def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out['CTR(%)'] = np.where(out['노출수'] > 0, (out['클릭수'] / out['노출수']) * 100, 0.0)
     return out.sort_values('광고비', ascending=False).reset_index(drop=True)
 
+
 @st.fragment
 def page_media(engine, f):
-    if not f.get("ready", False): return
+    if not f.get("ready", False):
+        return
 
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
     st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 자동으로 한글 지면명으로 변환되어 합산 표출됩니다.</div>", unsafe_allow_html=True)
@@ -254,7 +279,7 @@ def page_media(engine, f):
         return
 
     df_media = _calc_metrics(media_region_df.groupby('매체이름', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()) if media_region_df is not None and not media_region_df.empty else pd.DataFrame()
-    
+
     if device_df is not None and not device_df.empty:
         device_df['기기명'] = device_df['기기명'].apply(_normalize_device_value)
         device_df = device_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
