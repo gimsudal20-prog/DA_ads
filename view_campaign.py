@@ -319,39 +319,41 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     for _, row in df.iterrows():
         name = str(row['device_name'])
         pills.append(
-            f"<div style='display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #E8ECF4;border-radius:999px;background:#fff;'>"
-            f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:{color_map.get(name, '#D7DCE5')};'></span>"
-            f"<span style='font-size:12px;color:#4B5563;'>{escape(name)}</span>"
-            f"<span style='font-size:12px;font-weight:700;color:#111827;'>{row['share']:.1f}%</span>"
-            f"<span style='font-size:12px;color:#6B7280;'>({int(row['cost']):,}원)</span>"
+            f"<div style='display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid #E5E7EB; border-radius:12px; background:#F9FAFB; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'>"
+            f"<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:{color_map.get(name, '#D7DCE5')};'></span>"
+            f"<span style='font-size:13px; font-weight:600; color:#374151;'>{escape(name)}</span>"
+            f"<span style='font-size:13px; font-weight:800; color:#111827;'>{row['share']:.1f}%</span>"
+            f"<span style='font-size:12px; color:#9CA3AF;'>|</span>"
+            f"<span style='font-size:12px; color:#6B7280;'>{int(row['cost']):,}원</span>"
             f"</div>"
         )
 
     bar_segments = ''.join(
-        f"<div style='height:14px;background:{color_map.get(str(row['device_name']), '#D7DCE5')};width:{max(float(row['share']), 0):.4f}%;'></div>"
+        f"<div style='height:100%; background:{color_map.get(str(row['device_name']), '#D7DCE5')}; width:{max(float(row['share']), 0):.4f}%;'></div>"
         for _, row in df.iterrows()
     )
 
     st.markdown(
         f"""
-        <div style='padding:4px 2px 2px 2px;'>
-          <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;'>
-            <div>
-              <div style='font-size:12px;color:#6B7280;margin-bottom:4px;'>총 광고비</div>
-              <div style='font-size:20px;font-weight:800;color:#111827;line-height:1.2;'>{int(total):,}원</div>
+        <div style='padding: 12px 8px; display: flex; flex-direction: column; gap: 20px;'>
+            <div style='display: flex; justify-content: space-between; align-items: flex-end;'>
+                <div>
+                    <div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>총 광고비</div>
+                    <div style='font-size: 24px; font-weight: 800; color: #111827; line-height: 1;'>{int(total):,}원</div>
+                </div>
+                <div style='text-align: right;'>
+                    <div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>우세 기기</div>
+                    <div style='font-size: 16px; font-weight: 700; color: #111827; line-height: 1;'>{escape(dominant)} <span style='font-size:14px; font-weight: 500; color: #4B5563; margin-left: 4px;'>({dominant_share:.1f}%)</span></div>
+                </div>
             </div>
-            <div style='text-align:right;'>
-              <div style='font-size:12px;color:#6B7280;margin-bottom:4px;'>우세 기기</div>
-              <div style='font-size:15px;font-weight:700;color:#111827;line-height:1.2;'>{escape(dominant)}</div>
-              <div style='font-size:12px;color:#4B5563;'>{dominant_share:.1f}% 비중</div>
+
+            <div style='width: 100%; background: #EEF2F7; border-radius: 12px; overflow: hidden; display: flex; height: 24px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);'>
+                {bar_segments}
             </div>
-          </div>
-          <div style='width:100%;background:#EEF2F7;border-radius:999px;overflow:hidden;display:flex;height:14px;margin-bottom:12px;border:1px solid #E6EBF2;'>
-            {bar_segments}
-          </div>
-          <div style='display:flex;flex-wrap:wrap;gap:8px;'>
-            {''.join(pills)}
-          </div>
+
+            <div style='display: flex; flex-wrap: wrap; gap: 10px;'>
+                {''.join(pills)}
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
