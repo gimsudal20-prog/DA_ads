@@ -96,6 +96,17 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
             dedup.append(x)
     return dedup
 
+
+
+def _coalesce_text_expr(cols: list[str], candidates: list[str], default: str) -> str:
+    exprs = []
+    for c in candidates:
+        if c in cols:
+            exprs.append(f"NULLIF(TRIM(CAST({c} AS TEXT)), '')")
+    if not exprs:
+        return default
+    return f"COALESCE({', '.join(exprs)}, {default})"
+
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
@@ -126,11 +137,23 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     type_sql = _type_filter_sql(type_vals, cp_col) if cp_col in cols else ''
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
     
-    # 지역 관련 컬럼 제외 (퍼포먼스 향상)
+    # no_header 파서로 적재된 행은 media_name/device_name 대신 media_code/media_tp/device 등에 값이 들어갈 수 있으므로
+    # 표시용 라벨은 가능한 후보 컬럼을 모두 fallback 하여 조회한다.
+    media_expr = _coalesce_text_expr(
+        cols,
+        ['media_name', 'media_code', 'media_tp', 'placement_name', 'placement_code'],
+        "'전체'",
+    )
+    device_expr = _coalesce_text_expr(
+        cols,
+        ['device_name', 'device', 'device_tp', 'device_type'],
+        "'기타'",
+    )
+
     sql = f"""
         SELECT
-            COALESCE(NULLIF(TRIM(media_name), ''), '전체') AS "매체이름",
-            COALESCE(NULLIF(TRIM(device_name), ''), '기타') AS "기기명",
+            {media_expr} AS "매체이름",
+            {device_expr} AS "기기명",
             SUM({imp_expr}) AS "노출수",
             SUM({clk_expr}) AS "클릭수",
             SUM({cost_expr}) AS "광고비",
@@ -144,6 +167,9 @@ def _query_media_region(engine, f) -> pd.DataFrame:
         df = sql_read(engine, sql, params)
         if not df.empty:
             df['매체이름'] = df['매체이름'].apply(_map_media_name)
+            df['기기명'] = df['기기명'].apply(_normalize_device_value)
+            # 동일 지면이 코드/이름 혼재로 중복 표기되는 것을 방지
+            df = df.groupby(['매체이름', '기기명'], as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
         return df
     except Exception:
         return pd.DataFrame()
