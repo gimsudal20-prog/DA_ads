@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_campaign.py - Campaign performance page view (Rank Delta Toggle & Integer Format Fixed)."""
+"""view_campaign.py - Campaign performance page view (Minimal Device Share UI)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -294,7 +294,7 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
 
 def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     if device_df is None or device_df.empty:
-        st.info('기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.')
+        st.info('기기별 데이터가 없어 지출 비중을 표시할 수 없습니다.')
         return
 
     df = device_df.copy()
@@ -302,12 +302,13 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     df = df.groupby('device_name', as_index=False)['cost'].sum()
     total = float(df['cost'].sum())
     if total <= 0:
-        st.info('기기별 다차원 데이터가 없어 지출 비중을 표시할 수 없습니다.')
+        st.info('기기별 데이터가 없어 지출 비중을 표시할 수 없습니다.')
         return
 
     df['share'] = (df['cost'] / total) * 100.0
     order = ['PC', 'MO', '기타']
-    color_map = {'PC': '#4F7BFF', 'MO': '#7FA8FF', '기타': '#D7DCE5'}
+    # 미니멀 디자인을 위한 플랫한 컬러톤
+    color_map = {'PC': '#3B82F6', 'MO': '#93C5FD', '기타': '#E5E7EB'}
     df['ord'] = df['device_name'].map({k: i for i, k in enumerate(order)}).fillna(99)
     df = df.sort_values(['ord', 'cost'], ascending=[True, False]).reset_index(drop=True)
 
@@ -315,41 +316,40 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
     dominant = str(top['device_name'])
     dominant_share = float(top['share'])
 
-    pills = []
+    # 심플한 원형 도트 범례
+    legends = []
     for _, row in df.iterrows():
         name = str(row['device_name'])
-        pills.append(
-            f"<div style='display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid #E5E7EB; border-radius:12px; background:#F9FAFB; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'>"
-            f"<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:{color_map.get(name, '#D7DCE5')};'></span>"
-            f"<span style='font-size:13px; font-weight:600; color:#374151;'>{escape(name)}</span>"
-            f"<span style='font-size:13px; font-weight:800; color:#111827;'>{row['share']:.1f}%</span>"
-            f"<span style='font-size:12px; color:#9CA3AF;'>|</span>"
-            f"<span style='font-size:12px; color:#6B7280;'>{int(row['cost']):,}원</span>"
+        color = color_map.get(name, '#E5E7EB')
+        legends.append(
+            f"<div style='display:flex; align-items:center; gap:6px;'>"
+            f"<div style='width:8px; height:8px; border-radius:50%; background-color:{color};'></div>"
+            f"<div style='font-size:13px; font-weight:500; color:#4B5563;'>{escape(name)} <span style='font-weight:700; color:#111827; margin-left:4px;'>{row['share']:.1f}%</span></div>"
             f"</div>"
         )
 
+    # 그림자 없는 슬림한 진행바
     bar_segments = ''.join(
-        f"<div style='height:100%; background:{color_map.get(str(row['device_name']), '#D7DCE5')}; width:{max(float(row['share']), 0):.4f}%;'></div>"
+        f"<div style='height:100%; background-color:{color_map.get(str(row['device_name']), '#E5E7EB')}; width:{max(float(row['share']), 0):.4f}%;'></div>"
         for _, row in df.iterrows()
     )
 
-    # HTML 마크다운이 코드로 표시되지 않도록 들여쓰기 제거
-    html_str = f"""<div style='padding: 12px 8px; display: flex; flex-direction: column; gap: 20px;'>
+    html_str = f"""<div style='display: flex; flex-direction: column; gap: 14px; padding: 4px 0;'>
 <div style='display: flex; justify-content: space-between; align-items: flex-end;'>
 <div>
-<div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>총 광고비</div>
-<div style='font-size: 24px; font-weight: 800; color: #111827; line-height: 1;'>{int(total):,}원</div>
+<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>총 광고비</div>
+<div style='font-size: 20px; font-weight: 700; color: #111827; line-height: 1;'>{int(total):,}원</div>
 </div>
 <div style='text-align: right;'>
-<div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>우세 기기</div>
-<div style='font-size: 16px; font-weight: 700; color: #111827; line-height: 1;'>{escape(dominant)} <span style='font-size:14px; font-weight: 500; color: #4B5563; margin-left: 4px;'>({dominant_share:.1f}%)</span></div>
+<div style='font-size: 12px; font-weight: 500; color: #6B7280; margin-bottom: 4px;'>우세 기기</div>
+<div style='font-size: 14px; font-weight: 600; color: #111827; line-height: 1;'>{escape(dominant)}</div>
 </div>
 </div>
-<div style='width: 100%; background: #EEF2F7; border-radius: 12px; overflow: hidden; display: flex; height: 24px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);'>
+<div style='width: 100%; background-color: #F3F4F6; border-radius: 999px; overflow: hidden; display: flex; height: 8px;'>
 {bar_segments}
 </div>
-<div style='display: flex; flex-wrap: wrap; gap: 10px;'>
-{''.join(pills)}
+<div style='display: flex; gap: 16px; margin-top: 4px;'>
+{''.join(legends)}
 </div>
 </div>"""
 
