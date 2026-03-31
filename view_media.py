@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_media.py - collected media/device analysis (unified UI/UX)."""
+"""view_media.py - collected media/device analysis (unified UI/UX & robust schema tracking)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _normalize_device_value(v: object) -> str:
 def _type_filter_sql(type_vals: list[str], col_name: str = "campaign_type") -> str:
     if not type_vals:
         return ""
-    return f"AND COALESCE({col_name}, '') IN ({_sql_in_str_list(type_vals)})"
+    return f"AND COALESCE(CAST({col_name} AS TEXT), '') IN ({_sql_in_str_list(type_vals)})"
 
 def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
     out: list[str] = []
@@ -63,21 +63,44 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
+    
     cols = get_table_columns(engine, 'fact_media_daily')
+    
+    # DB 패치로 인한 컬럼명 동적 추적 (오류 방지)
+    imp_expr = "COALESCE(imp, 0)" if "imp" in cols else "0"
+    clk_expr = "COALESCE(clk, 0)" if "clk" in cols else "0"
+    cost_expr = "COALESCE(cost, 0)" if "cost" in cols else "0"
+    
+    if "tot_conv" in cols and "tot_sales" in cols:
+        conv_expr, sales_expr = "COALESCE(tot_conv, 0)", "COALESCE(tot_sales, 0)"
+    elif "purchase_conv" in cols and "purchase_sales" in cols:
+        conv_expr, sales_expr = "COALESCE(purchase_conv, 0)", "COALESCE(purchase_sales, 0)"
+    elif "conv" in cols and "sales" in cols:
+        conv_expr, sales_expr = "COALESCE(conv, 0)", "COALESCE(sales, 0)"
+    else:
+        conv_expr, sales_expr = "0", "0"
+
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
-    where_cid = f"AND customer_id::text IN ({_sql_in_str_list(list(tuple(f.get('selected_customer_ids', []) or ())))})" if tuple(f.get('selected_customer_ids', []) or ()) else ''
-    type_sql = _type_filter_sql(type_vals) if 'campaign_type' in cols else ''
+    cids = tuple(f.get('selected_customer_ids', []) or ())
+    where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
+    
+    cp_col = "campaign_type"
+    if "campaign_tp" in cols: cp_col = "campaign_tp"
+    elif "campaign_type_label" in cols: cp_col = "campaign_type_label"
+    
+    type_sql = _type_filter_sql(type_vals, cp_col) if cp_col in cols else ''
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
+    
     sql = f"""
         SELECT
             COALESCE(NULLIF(TRIM(media_name), ''), '전체') AS "매체이름",
             COALESCE(NULLIF(TRIM(region_name), ''), '전체') AS "지역명",
             COALESCE(NULLIF(TRIM(device_name), ''), '기타') AS "기기명",
-            SUM(COALESCE(imp,0)) AS "노출수",
-            SUM(COALESCE(clk,0)) AS "클릭수",
-            SUM(COALESCE(cost,0)) AS "광고비",
-            SUM(COALESCE(conv,0)) AS "전환수",
-            SUM(COALESCE(sales,0)) AS "전환매출"
+            SUM({imp_expr}) AS "노출수",
+            SUM({clk_expr}) AS "클릭수",
+            SUM({cost_expr}) AS "광고비",
+            SUM({conv_expr}) AS "전환수",
+            SUM({sales_expr}) AS "전환매출"
         FROM fact_media_daily
         WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_sql}
         GROUP BY 1,2,3
@@ -93,20 +116,36 @@ def _query_device(engine, f) -> pd.DataFrame:
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
 
     if table_exists(engine, 'fact_campaign_device_daily'):
-        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ''
+        cols = get_table_columns(engine, 'fact_campaign_device_daily')
+        
+        imp_expr = "COALESCE(f.imp, 0)" if "imp" in cols else "0"
+        clk_expr = "COALESCE(f.clk, 0)" if "clk" in cols else "0"
+        cost_expr = "COALESCE(f.cost, 0)" if "cost" in cols else "0"
+
+        if "tot_conv" in cols and "tot_sales" in cols:
+            conv_expr, sales_expr = "COALESCE(f.tot_conv, 0)", "COALESCE(f.tot_sales, 0)"
+        elif "purchase_conv" in cols and "purchase_sales" in cols:
+            conv_expr, sales_expr = "COALESCE(f.purchase_conv, 0)", "COALESCE(f.purchase_sales, 0)"
+        elif "conv" in cols and "sales" in cols:
+            conv_expr, sales_expr = "COALESCE(f.conv, 0)", "COALESCE(f.sales, 0)"
+        else:
+            conv_expr, sales_expr = "0", "0"
+
+        where_cid = f"AND CAST(f.customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
         join_sql = ''
         type_sql = ''
         if type_vals:
-            join_sql = ' LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text '
-            type_sql = f"AND (COALESCE(c.campaign_tp::text,'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(c.campaign_tp::text,'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(c.campaign_tp::text,'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(c.campaign_tp::text,'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(c.campaign_tp::text,'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(c.campaign_tp::text,'') = 'PLACE' THEN '플레이스' ELSE COALESCE(c.campaign_tp::text,'') END) IN ({_sql_in_str_list(type_vals)}))"
+            join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
+            type_sql = f"AND (COALESCE(CAST(c.campaign_tp AS TEXT),'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'PLACE' THEN '플레이스' ELSE COALESCE(CAST(c.campaign_tp AS TEXT),'') END) IN ({_sql_in_str_list(type_vals)}))"
+        
         sql = f"""
             SELECT
                 COALESCE(NULLIF(TRIM(f.device_name), ''), '기타') AS "기기명",
-                SUM(COALESCE(f.imp,0)) AS "노출수",
-                SUM(COALESCE(f.clk,0)) AS "클릭수",
-                SUM(COALESCE(f.cost,0)) AS "광고비",
-                SUM(COALESCE(f.conv,0)) AS "전환수",
-                SUM(COALESCE(f.sales,0)) AS "전환매출"
+                SUM({imp_expr}) AS "노출수",
+                SUM({clk_expr}) AS "클릭수",
+                SUM({cost_expr}) AS "광고비",
+                SUM({conv_expr}) AS "전환수",
+                SUM({sales_expr}) AS "전환매출"
             FROM fact_campaign_device_daily f
             {join_sql}
             WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_sql}
@@ -119,6 +158,7 @@ def _query_device(engine, f) -> pd.DataFrame:
         except Exception:
             pass
 
+    # fallback
     media_df = _query_media_region(engine, f)
     if media_df.empty:
         return pd.DataFrame()
