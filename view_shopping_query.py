@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_shopping_query.py - Shopping Search Term performance view (dashboard-styled)."""
+"""view_shopping_query.py - Shopping Search Term performance view (unified UI/UX)."""
 
 from __future__ import annotations
 import io
@@ -12,24 +12,23 @@ import streamlit as st
 
 from data import query_shopping_search_terms
 from page_helpers import _perf_common_merge_meta, period_compare_range
-from ui import render_big_table, ui_metric_or_stmetric
 
 
-FMT_DICT = {
-    "구매완료수": "{:,.0f}",
-    "구매완료 매출": "{:,.0f}원",
-    "장바구니수": "{:,.0f}",
-    "장바구니 매출액": "{:,.0f}원",
-    "위시리스트수": "{:,.0f}",
-    "위시리스트 매출액": "{:,.0f}원",
-    "총 전환수": "{:,.0f}",
-    "총 전환매출": "{:,.0f}원",
-    "구매기여율(%)": "{:,.1f}%",
-    "장바구니기여율(%)": "{:,.1f}%",
-    "구매완료수 증감": "{:+.1f}%",
-    "구매완료 매출 증감": "{:+.1f}%",
-    "총 전환수 증감": "{:+.1f}%",
-    "총 전환매출 증감": "{:+.1f}%",
+FAST_COL_CONFIG = {
+    "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
+    "구매완료 매출": st.column_config.NumberColumn("구매완료 매출", format="%d 원"),
+    "장바구니수": st.column_config.NumberColumn("장바구니수", format="%d"),
+    "장바구니 매출액": st.column_config.NumberColumn("장바구니 매출액", format="%d 원"),
+    "위시리스트수": st.column_config.NumberColumn("위시리스트수", format="%d"),
+    "위시리스트 매출액": st.column_config.NumberColumn("위시리스트 매출액", format="%d 원"),
+    "총 전환수": st.column_config.NumberColumn("총 전환수", format="%d"),
+    "총 전환매출": st.column_config.NumberColumn("총 전환매출", format="%d 원"),
+    "구매기여율(%)": st.column_config.NumberColumn("구매기여율(%)", format="%.1f %%"),
+    "장바구니기여율(%)": st.column_config.NumberColumn("장바구니기여율(%)", format="%.1f %%"),
+    "구매완료수 증감": st.column_config.NumberColumn("구매완료수 증감", format="%+.1f %%"),
+    "구매완료 매출 증감": st.column_config.NumberColumn("구매완료 매출 증감", format="%+.1f %%"),
+    "총 전환수 증감": st.column_config.NumberColumn("총 전환수 증감", format="%+.1f %%"),
+    "총 전환매출 증감": st.column_config.NumberColumn("총 전환매출 증감", format="%+.1f %%"),
 }
 
 
@@ -162,99 +161,79 @@ def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
     observe_cnt = int((view["액션 라벨"] == "관찰 필요").sum()) if "액션 라벨" in view.columns else 0
     purchase_cnt = int((pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0) > 0).sum())
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ui_metric_or_stmetric("검색어 수", f"{q_cnt:,}개", "조회 기간 내 실제 검색어")
-    with c2:
-        ui_metric_or_stmetric("확대 후보", f"{expand_cnt:,}개", "매출/전환 기여가 높은 검색어")
-    with c3:
-        ui_metric_or_stmetric("관찰 필요", f"{observe_cnt:,}개", "장바구니 반응 중심 검색어")
-    with c4:
-        ui_metric_or_stmetric("구매 발생", f"{purchase_cnt:,}개", f"{cmp_mode} 기준 증감 태그 포함")
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.metric("검색어 수", f"{q_cnt:,}개", help="조회 기간 내 실제 검색어")
+        with c2: st.metric("확대 후보", f"{expand_cnt:,}개", help="매출/전환 기여가 높은 검색어")
+        with c3: st.metric("관찰 필요", f"{observe_cnt:,}개", help="장바구니 반응 중심 검색어")
+        with c4: st.metric("구매 발생", f"{purchase_cnt:,}개", help=f"{cmp_mode} 기준 증감 태그 포함")
 
 
 def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
-    st.markdown(
-        """
-        <div class='nv-section nv-section-muted'>
-            <div class='nv-section-head'>
-                <div>
-                    <div class='nv-sec-title'>쇼핑 검색어 필터</div>
-                    <div class='nv-sec-sub'>다른 상세 페이지와 동일하게 캠페인/광고그룹/액션 라벨 기준으로 빠르게 좁힐 수 있습니다.</div>
-                </div>
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.markdown("<div style='font-size:15px;font-weight:700;color:#1F2937;margin-bottom:12px;'>쇼핑 검색어 필터</div>", unsafe_allow_html=True)
+        filtered = view.copy()
+        
+        r1c1, r1c2, r1c3 = st.columns(3)
+        camps = ["전체"] + sorted([str(x) for x in filtered["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered.columns else ["전체"]
+        sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_unified")
+        if sel_camp != "전체":
+            filtered = filtered[filtered["캠페인"] == sel_camp]
 
-    filtered = view.copy()
-    r1c1, r1c2, r1c3 = st.columns(3)
-    camps = ["전체"] + sorted([str(x) for x in filtered["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered.columns else ["전체"]
-    sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_unified")
-    if sel_camp != "전체":
-        filtered = filtered[filtered["캠페인"] == sel_camp]
+        grps = ["전체"] + sorted([str(x) for x in filtered["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered.columns else ["전체"]
+        sel_grp = r1c2.selectbox("광고그룹", grps, key="sq_grp_filter_unified")
+        if sel_grp != "전체":
+            filtered = filtered[filtered["광고그룹"] == sel_grp]
 
-    grps = ["전체"] + sorted([str(x) for x in filtered["광고그룹"].dropna().unique() if str(x).strip()]) if "광고그룹" in filtered.columns else ["전체"]
-    sel_grp = r1c2.selectbox("광고그룹", grps, key="sq_grp_filter_unified")
-    if sel_grp != "전체":
-        filtered = filtered[filtered["광고그룹"] == sel_grp]
+        labels = ["전체"] + [x for x in ["확대 후보", "유지", "관찰 필요", "저의도 의심"] if x in filtered["액션 라벨"].unique().tolist()]
+        sel_label = r1c3.selectbox("액션 라벨", labels, key="sq_label_filter_unified")
+        if sel_label != "전체":
+            filtered = filtered[filtered["액션 라벨"] == sel_label]
 
-    labels = ["전체"] + [x for x in ["확대 후보", "유지", "관찰 필요", "저의도 의심"] if x in filtered["액션 라벨"].unique().tolist()]
-    sel_label = r1c3.selectbox("액션 라벨", labels, key="sq_label_filter_unified")
-    if sel_label != "전체":
-        filtered = filtered[filtered["액션 라벨"] == sel_label]
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        r2c1, r2c2, r2c3 = st.columns(3)
+        only_zero_purchase = r2c1.checkbox("구매 0건만", key="sq_only_zero_purchase_unified")
+        only_cart = r2c2.checkbox("장바구니 발생만", key="sq_only_cart_unified")
+        q_text = r2c3.text_input("검색어 포함", value="", key="sq_query_contains_unified", placeholder="예: 의자")
 
-    r2c1, r2c2, r2c3 = st.columns(3)
-    only_zero_purchase = r2c1.checkbox("구매 0건만", key="sq_only_zero_purchase_unified")
-    only_cart = r2c2.checkbox("장바구니 발생만", key="sq_only_cart_unified")
-    q_text = r2c3.text_input("검색어 포함", value="", key="sq_query_contains_unified", placeholder="예: 의자")
+        r3c1, r3c2 = st.columns(2)
+        min_purchase_sales = r3c1.number_input("최소 구매매출", min_value=0, value=0, step=10000, key="sq_min_purchase_sales_unified")
+        min_total_conv = r3c2.number_input("최소 총 전환수", min_value=0, value=0, step=1, key="sq_min_total_conv_unified")
 
-    r3c1, r3c2 = st.columns(2)
-    min_purchase_sales = r3c1.number_input("최소 구매매출", min_value=0, value=0, step=10000, key="sq_min_purchase_sales_unified")
-    min_total_conv = r3c2.number_input("최소 총 전환수", min_value=0, value=0, step=1, key="sq_min_total_conv_unified")
+        if only_zero_purchase:
+            filtered = filtered[pd.to_numeric(filtered["구매완료수"], errors="coerce").fillna(0) == 0]
+        if only_cart:
+            filtered = filtered[pd.to_numeric(filtered["장바구니수"], errors="coerce").fillna(0) > 0]
+        if q_text.strip():
+            filtered = filtered[filtered["실제 검색어"].astype(str).str.contains(q_text.strip(), case=False, na=False)]
+        if min_purchase_sales > 0:
+            filtered = filtered[pd.to_numeric(filtered["구매완료 매출"], errors="coerce").fillna(0) >= float(min_purchase_sales)]
+        if min_total_conv > 0:
+            filtered = filtered[pd.to_numeric(filtered["총 전환수"], errors="coerce").fillna(0) >= float(min_total_conv)]
 
-    if only_zero_purchase:
-        filtered = filtered[pd.to_numeric(filtered["구매완료수"], errors="coerce").fillna(0) == 0]
-    if only_cart:
-        filtered = filtered[pd.to_numeric(filtered["장바구니수"], errors="coerce").fillna(0) > 0]
-    if q_text.strip():
-        filtered = filtered[filtered["실제 검색어"].astype(str).str.contains(q_text.strip(), case=False, na=False)]
-    if min_purchase_sales > 0:
-        filtered = filtered[pd.to_numeric(filtered["구매완료 매출"], errors="coerce").fillna(0) >= float(min_purchase_sales)]
-    if min_total_conv > 0:
-        filtered = filtered[pd.to_numeric(filtered["총 전환수"], errors="coerce").fillna(0) >= float(min_total_conv)]
-
-    st.markdown("</div>", unsafe_allow_html=True)
     return filtered
 
 
+@st.fragment
 def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
 
-    st.markdown(
-        """
-        <div class='nv-section nv-section-muted' style='margin-top:0;'>
-            <div class='nv-section-head'>
-                <div>
-                    <div class='nv-sec-title'>쇼핑 검색어 분석</div>
-                    <div class='nv-sec-sub'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='nv-sec-title'>쇼핑 검색어 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []))
     patch_date = date(2026, 3, 11)
     if f["start"] < patch_date:
-        st.info("3월 11일 이전 데이터가 포함되어 있어 퍼널 분리값 일부가 비어 있을 수 있습니다.")
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 퍼널 분리값 일부가 비어 있을 수 있습니다.")
 
+    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
     cmp_mode = st.radio("비교 기준", ["이전 같은 기간 대비", "전주대비", "전일대비"], horizontal=True, key="sq_cmp_mode_unified")
+    st.markdown("</div>", unsafe_allow_html=True)
+    
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-    with st.spinner("쇼핑 검색어 데이터를 불러오는 중입니다..."):
+    with st.spinner("🔄 쇼핑 검색어 데이터를 불러오는 중입니다..."):
         df_cur = query_shopping_search_terms(engine, f["start"], f["end"], cids)
         if df_cur.empty:
             _empty_notice("해당 기간에 수집된 쇼핑 검색어 전환 데이터가 없습니다.")
@@ -303,53 +282,43 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     top_expand = disp[disp.get("액션 라벨", "") == "확대 후보"].head(100).copy() if "액션 라벨" in disp.columns else pd.DataFrame()
     top_observe = disp[disp.get("액션 라벨", "") == "관찰 필요"].head(100).copy() if "액션 라벨" in disp.columns else pd.DataFrame()
 
-    tabs = st.tabs(["전체 검색어", "확대 후보", "관찰 필요"])
+    selected_tab = st.pills("분석 탭 선택", ["전체 검색어", "확대 후보", "관찰 필요"], default="전체 검색어")
 
-    with tabs[0]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>검색어별 퍼널 성과</div><div class='nv-sec-sub'>다른 상세 분석과 동일하게 표 중심으로 상위 500개를 보여줍니다.</div></div></div>",
-            unsafe_allow_html=True,
+    if selected_tab == "전체 검색어":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>검색어별 퍼널 성과 (상위 500개)</div>", unsafe_allow_html=True)
+            if disp.empty:
+                _empty_notice("조건에 맞는 검색어가 없습니다.")
+            else:
+                st.dataframe(disp, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+
+    elif selected_tab == "확대 후보":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>확대 후보 (구매 발생 + 기여 높음)</div>", unsafe_allow_html=True)
+            if top_expand.empty:
+                _empty_notice("확대 후보 검색어가 없습니다.")
+            else:
+                st.dataframe(top_expand, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+
+    elif selected_tab == "관찰 필요":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>관찰 필요 (장바구니 반응 위주)</div>", unsafe_allow_html=True)
+            if top_observe.empty:
+                _empty_notice("관찰 필요 검색어가 없습니다.")
+            else:
+                st.dataframe(top_observe, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+
+    st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:8px;'>리포트 다운로드</div><div style='font-size:13px;color:#6B7280;margin-bottom:12px;'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer) as writer:
+            disp.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
+        st.download_button(
+            label="검색어 리포트 다운로드 (Excel)",
+            data=excel_buffer.getvalue(),
+            file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
-        if disp.empty:
-            _empty_notice("조건에 맞는 검색어가 없습니다.")
-        else:
-            render_big_table(disp.style.format(FMT_DICT), "shopping_query_table_unified", 620)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with tabs[1]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>확대 후보</div><div class='nv-sec-sub'>구매 발생 + 매출/전환 기여가 높은 검색어만 모아봅니다.</div></div></div>",
-            unsafe_allow_html=True,
-        )
-        if top_expand.empty:
-            _empty_notice("확대 후보 검색어가 없습니다.")
-        else:
-            render_big_table(top_expand.style.format(FMT_DICT), "shopping_query_expand_unified", 420)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with tabs[2]:
-        st.markdown(
-            "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>관찰 필요</div><div class='nv-sec-sub'>장바구니 반응은 있지만 구매로 이어지지 않은 검색어입니다.</div></div></div>",
-            unsafe_allow_html=True,
-        )
-        if top_observe.empty:
-            _empty_notice("관찰 필요 검색어가 없습니다.")
-        else:
-            render_big_table(top_observe.style.format(FMT_DICT), "shopping_query_observe_unified", 420)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown(
-        "<div class='nv-section'><div class='nv-section-head'><div><div class='nv-sec-title'>리포트 다운로드</div><div class='nv-sec-sub'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div></div></div>",
-        unsafe_allow_html=True,
-    )
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer) as writer:
-        disp.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
-    st.download_button(
-        label="검색어 리포트 다운로드 (Excel)",
-        data=excel_buffer.getvalue(),
-        file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
