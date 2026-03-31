@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_media.py - collected media/device analysis (no manual CSV upload)."""
+"""view_media.py - collected media/device analysis (unified UI/UX)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from data import sql_read, table_exists, get_meta, get_table_columns, _sql_in_str_list
-from ui import render_big_table
-
+from data import sql_read, table_exists, get_table_columns, _sql_in_str_list
 
 _DEVICE_ORDER = ["PC", "MO", "기타"]
 
+FAST_COL_CONFIG = {
+    "노출수": st.column_config.NumberColumn("노출수", format="%d"),
+    "클릭수": st.column_config.NumberColumn("클릭수", format="%d"),
+    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
+    "전환수": st.column_config.NumberColumn("전환수", format="%.1f"),
+    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
+    "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
+    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
+    "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
+}
 
 def _normalize_device_value(v: object) -> str:
     s = str(v or "").strip()
@@ -25,12 +33,10 @@ def _normalize_device_value(v: object) -> str:
         return "PC"
     return s
 
-
 def _type_filter_sql(type_vals: list[str], col_name: str = "campaign_type") -> str:
     if not type_vals:
         return ""
     return f"AND COALESCE({col_name}, '') IN ({_sql_in_str_list(type_vals)})"
-
 
 def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
     out: list[str] = []
@@ -53,7 +59,6 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
             seen.add(x)
             dedup.append(x)
     return dedup
-
 
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
@@ -81,7 +86,6 @@ def _query_media_region(engine, f) -> pd.DataFrame:
         return sql_read(engine, sql, params)
     except Exception:
         return pd.DataFrame()
-
 
 def _query_device(engine, f) -> pd.DataFrame:
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
@@ -120,7 +124,6 @@ def _query_device(engine, f) -> pd.DataFrame:
         return pd.DataFrame()
     return media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
 
-
 def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -132,20 +135,16 @@ def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out['CTR(%)'] = np.where(out['노출수'] > 0, (out['클릭수'] / out['노출수']) * 100, 0.0)
     return out.sort_values('광고비', ascending=False).reset_index(drop=True)
 
-
+@st.fragment
 def page_media(engine, f):
-    st.markdown(
-        """
-        <div class='nv-section nv-section-muted' style='margin-top:0;'>
-            <div class='nv-sec-title'>매체 / 지역 / 기기 효율 분석</div>
-            <div class='nv-sec-sub'>수집된 성과 테이블 기준으로 조회합니다. 기기는 자동 수집 데이터를 우선 사용하고, 매체/지역은 적재된 fact_media_daily가 있을 때 표시합니다.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if not f.get("ready", False): return
 
-    media_region_df = _query_media_region(engine, f)
-    device_df = _query_device(engine, f)
+    st.markdown("<div class='nv-sec-title'>매체 / 지역 / 기기 효율 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. 기기는 자동 수집 데이터를 우선 사용하고, 매체/지역은 적재된 원천 데이터가 있을 때 표시합니다.</div>", unsafe_allow_html=True)
+
+    with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
+        media_region_df = _query_media_region(engine, f)
+        device_df = _query_device(engine, f)
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
@@ -161,72 +160,59 @@ def page_media(engine, f):
     else:
         df_device = pd.DataFrame()
 
-    fmt = {
-        '노출수': '{:,.0f}',
-        '클릭수': '{:,.0f}',
-        '광고비': '{:,.0f}',
-        '전환수': '{:,.1f}',
-        '전환매출': '{:,.0f}',
-        'ROAS(%)': '{:,.2f}%',
-        'CPA(원)': '{:,.0f}',
-        'CTR(%)': '{:,.2f}%',
-    }
+    selected_tab = st.pills("분석 탭 선택", ["지면(매체)", "지역", "기기", "비용 누수 항목"], default="지면(매체)")
 
-    tabs = st.tabs(['지면(매체)', '지역', '기기', '비용 누수 항목'])
-
-    with tabs[0]:
-        st.markdown("<div class='nv-section-head'><div><div class='nv-sec-title'>조회 기간 내 전체 매체(지면) 효율 리스트</div><div class='nv-sec-sub'>자동 적재된 fact_media_daily가 있을 때 표시됩니다.</div></div></div>", unsafe_allow_html=True)
-        if not df_media.empty:
-            render_big_table(df_media.style.format(fmt), 'media_table_main', 600)
-        else:
-            st.info('현재 자동 수집 경로에는 지면/지역 원천이 없어서 매체 리스트가 비어 있습니다. 기기 데이터는 아래 탭에서 확인할 수 있습니다.')
-
-    with tabs[1]:
-        st.markdown("<div class='nv-section-head'><div><div class='nv-sec-title'>조회 기간 내 지역별 성과 리스트</div><div class='nv-sec-sub'>자동 적재된 fact_media_daily가 있을 때 표시됩니다.</div></div></div>", unsafe_allow_html=True)
-        if not df_region.empty:
-            df_region_clean = df_region[~df_region['지역명'].isin(['전체', '-', '알수없음'])].copy()
-            if not df_region_clean.empty:
-                render_big_table(df_region_clean.style.format(fmt), 'region_table_main', 600)
+    if selected_tab == "지면(매체)":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>조회 기간 내 전체 매체(지면) 효율 리스트</div>", unsafe_allow_html=True)
+            if not df_media.empty:
+                st.dataframe(df_media, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
             else:
-                st.info('지역 구분 데이터가 없습니다.')
-        else:
-            st.info('현재 자동 수집 경로에는 지역 원천이 없습니다.')
+                st.info('현재 자동 수집 경로에는 지면 원천이 없어서 매체 리스트가 비어 있습니다. 기기 데이터 탭을 확인해 주세요.')
 
-    with tabs[2]:
-        st.markdown("<div class='nv-section-head'><div><div class='nv-sec-title'>기기별 성과 리스트</div><div class='nv-sec-sub'>fact_campaign_device_daily 자동 수집 데이터를 우선 사용합니다.</div></div></div>", unsafe_allow_html=True)
-        if not df_device.empty:
-            render_big_table(df_device.style.format(fmt), 'device_table_main', 520)
-        else:
-            st.info('기기 자동 수집 데이터가 없습니다.')
+    elif selected_tab == "지역":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>조회 기간 내 지역별 성과 리스트</div>", unsafe_allow_html=True)
+            if not df_region.empty:
+                df_region_clean = df_region[~df_region['지역명'].isin(['전체', '-', '알수없음'])].copy()
+                if not df_region_clean.empty:
+                    st.dataframe(df_region_clean, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+                else:
+                    st.info('의미 있는 지역 구분 데이터가 없습니다.')
+            else:
+                st.info('현재 자동 수집 경로에는 지역 원천이 없습니다.')
 
-    with tabs[3]:
+    elif selected_tab == "기기":
+        with st.container(border=True):
+            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>기기별 성과 리스트</div>", unsafe_allow_html=True)
+            if not df_device.empty:
+                st.dataframe(df_device, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+            else:
+                st.info('기기 자동 수집 데이터가 없습니다.')
+
+    elif selected_tab == "비용 누수 항목":
+        st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
-            if not df_media.empty:
-                bad_m = df_media[(df_media['전환수'] == 0) & (df_media['광고비'] >= 10000)].sort_values('광고비', ascending=False)
-                if not bad_m.empty:
-                    render_big_table(
-                        bad_m[['매체이름', '광고비', '클릭수', 'CTR(%)']].style.format(fmt),
-                        'media_leak_table_main',
-                        360,
-                    )
+            with st.container(border=True):
+                st.markdown("<div style='font-size:14px;font-weight:700;margin-bottom:12px;'>1만 원 이상 소진 매체 (전환 0건)</div>", unsafe_allow_html=True)
+                if not df_media.empty:
+                    bad_m = df_media[(df_media['전환수'] == 0) & (df_media['광고비'] >= 10000)].sort_values('광고비', ascending=False)
+                    if not bad_m.empty:
+                        st.dataframe(bad_m[['매체이름', '광고비', '클릭수', 'CTR(%)']], use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+                    else:
+                        st.success('비용 누수 매체가 없습니다!')
                 else:
-                    st.success('비용 누수 매체가 없습니다!')
-            else:
-                st.info('매체 자동 수집 데이터가 없어 계산할 수 없습니다.')
+                    st.info('매체 수집 데이터가 없어 계산할 수 없습니다.')
 
         with col2:
-            st.markdown("<div class='nv-sec-title' style='font-size:14px;'>1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
-            if not df_region.empty:
-                bad_r = df_region[(df_region['전환수'] == 0) & (df_region['광고비'] >= 10000) & (~df_region['지역명'].isin(['전체', '-', '알수없음']))].sort_values('광고비', ascending=False)
-                if not bad_r.empty:
-                    render_big_table(
-                        bad_r[['지역명', '광고비', '클릭수', 'CTR(%)']].style.format(fmt),
-                        'region_leak_table_main',
-                        360,
-                    )
+            with st.container(border=True):
+                st.markdown("<div style='font-size:14px;font-weight:700;margin-bottom:12px;'>1만 원 이상 소진 지역 (전환 0건)</div>", unsafe_allow_html=True)
+                if not df_region.empty:
+                    bad_r = df_region[(df_region['전환수'] == 0) & (df_region['광고비'] >= 10000) & (~df_region['지역명'].isin(['전체', '-', '알수없음']))].sort_values('광고비', ascending=False)
+                    if not bad_r.empty:
+                        st.dataframe(bad_r[['지역명', '광고비', '클릭수', 'CTR(%)']], use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+                    else:
+                        st.success('비용 누수 지역이 없습니다!')
                 else:
-                    st.success('비용 누수 지역이 없습니다!')
-            else:
-                st.info('지역 자동 수집 데이터가 없어 계산할 수 없습니다.')
+                    st.info('지역 수집 데이터가 없어 계산할 수 없습니다.')
