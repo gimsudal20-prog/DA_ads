@@ -1876,7 +1876,19 @@ def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, cus
             'data_source': 'ad_report_dimension_noheader',
             'source_report': 'AD',
         })
-    return rows, {'status': 'ok_no_header' if rows else 'no_header', 'row_count': row_count, 'mapped_rows': mapped_rows, 'header_preview': preview}
+    detail_rows = sum(1 for r in rows if str(r.get('media_name', '전체')) != '전체' or str(r.get('region_name', '전체')) != '전체')
+    summary_rows = len(rows) - detail_rows
+    distinct_media = sorted({str(r.get('media_name', '') or '') for r in rows if str(r.get('media_name', '전체')) != '전체'})
+    return rows, {
+        'status': 'ok_no_header' if rows else 'no_header',
+        'row_count': row_count,
+        'mapped_rows': mapped_rows,
+        'header_preview': preview,
+        'detail_rows': detail_rows,
+        'summary_rows': summary_rows,
+        'distinct_media_count': len(distinct_media),
+        'distinct_media_preview': distinct_media[:10],
+    }
 
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:
@@ -1954,7 +1966,20 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
             'data_source': 'ad_report_dimension',
             'source_report': 'AD',
         })
-    return rows, {'status': 'ok' if rows else 'no_rows', 'header_idx': header_idx, 'row_count': row_count, 'mapped_rows': mapped_rows, 'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx}}
+    detail_rows = sum(1 for r in rows if str(r.get('media_name', '전체')) != '전체' or str(r.get('region_name', '전체')) != '전체')
+    summary_rows = len(rows) - detail_rows
+    distinct_media = sorted({str(r.get('media_name', '') or '') for r in rows if str(r.get('media_name', '전체')) != '전체'})
+    return rows, {
+        'status': 'ok' if rows else 'no_rows',
+        'header_idx': header_idx,
+        'row_count': row_count,
+        'mapped_rows': mapped_rows,
+        'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx},
+        'detail_rows': detail_rows,
+        'summary_rows': summary_rows,
+        'distinct_media_count': len(distinct_media),
+        'distinct_media_preview': distinct_media[:10],
+    }
 
 def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
     agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
@@ -2432,10 +2457,21 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
                 scoped_campaign_types=['쇼핑검색'] if shopping_only else None,
             )
+            detail_rows = int(media_meta.get('detail_rows', 0) or 0)
+            summary_rows = int(media_meta.get('summary_rows', 0) or 0)
+            distinct_media_count = int(media_meta.get('distinct_media_count', 0) or 0)
+            media_preview = media_meta.get('distinct_media_preview') or []
+            preview_msg = f" | media_preview={media_preview}" if media_preview else ""
             if media_cnt:
-                log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
+                log(
+                    f"   ✅ [ {account_name} ] 매체/지역/기기 저장 완료: total_rows={media_cnt} | detail_rows={detail_rows} | "
+                    f"summary_rows={summary_rows} | media_codes={distinct_media_count} | source={media_meta.get('status')}{preview_msg}"
+                )
             else:
-                log(f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. source={media_meta.get('status')}")
+                log(
+                    f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. "
+                    f"source={media_meta.get('status')} | detail_rows={detail_rows} | summary_rows={summary_rows}"
+                )
 
             if collect_sa:
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
