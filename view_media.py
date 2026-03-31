@@ -203,9 +203,15 @@ def _query_device(engine, f) -> pd.DataFrame:
             join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
             type_sql = f"AND (COALESCE(CAST(c.campaign_tp AS TEXT),'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'PLACE' THEN '플레이스' ELSE COALESCE(CAST(c.campaign_tp AS TEXT),'') END) IN ({_sql_in_str_list(type_vals)}))"
         
+        device_expr = _safe_text_dim_expr(
+            cols,
+            ['device_name', 'device', 'device_tp', 'device_type', 'platform'],
+            '기타',
+        )
+
         sql = f"""
             SELECT
-                _safe_text_dim_expr(cols, ['device_name', 'device', 'device_tp', 'device_type', 'platform'], '기타') AS "기기명",
+                {device_expr} AS "기기명",
                 SUM({imp_expr}) AS "노출수",
                 SUM({clk_expr}) AS "클릭수",
                 SUM({cost_expr}) AS "광고비",
