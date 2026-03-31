@@ -69,6 +69,21 @@ def _normalize_device_value(v: object) -> str:
         return "PC"
     return s
 
+
+
+def _first_existing(cols: list[str], candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def _safe_text_dim_expr(cols: list[str], candidates: list[str], default: str) -> str:
+    col = _first_existing(cols, candidates)
+    if not col:
+        return f"'{default}'"
+    return f"COALESCE(NULLIF(TRIM(CAST({col} AS TEXT)), ''), '{default}')"
+
 def _type_filter_sql(type_vals: list[str], col_name: str = "campaign_type") -> str:
     if not type_vals:
         return ""
@@ -96,21 +111,6 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
             dedup.append(x)
     return dedup
 
-
-def _first_existing(cols: list[str], candidates: list[str]) -> str | None:
-    colset = {str(c).lower(): c for c in cols}
-    for name in candidates:
-        if name.lower() in colset:
-            return colset[name.lower()]
-    return None
-
-
-def _safe_text_dim_expr(cols: list[str], candidates: list[str], default: str) -> str:
-    col = _first_existing(cols, candidates)
-    if not col:
-        return f"'{default}'"
-    return f"COALESCE(NULLIF(TRIM(CAST({col} AS TEXT)), ''), '{default}')"
-
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
@@ -130,16 +130,8 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     else:
         conv_expr, sales_expr = "0", "0"
 
-    media_expr = _safe_text_dim_expr(
-        cols,
-        ["media_name", "placement_name", "media_code", "placement_code", "media_tp", "placement_tp"],
-        "전체",
-    )
-    device_expr = _safe_text_dim_expr(
-        cols,
-        ["device_name", "device", "device_tp", "device_type", "platform"],
-        "기타",
-    )
+    media_expr = _safe_text_dim_expr(cols, ["media_name", "placement_name", "media_code", "placement_code", "media_tp", "placement_tp"], "전체")
+    device_expr = _safe_text_dim_expr(cols, ["device_name", "device", "device_tp", "device_type", "platform"], "기타")
 
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
     cids = tuple(f.get('selected_customer_ids', []) or ())
@@ -155,6 +147,7 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
 
     sql = f"""
+        /* media_connection_fix_final */
         SELECT
             {media_expr} AS "매체이름",
             {device_expr} AS "기기명",
@@ -171,6 +164,8 @@ def _query_media_region(engine, f) -> pd.DataFrame:
         df = sql_read(engine, sql, params)
         if not df.empty:
             df['매체이름'] = df['매체이름'].apply(_map_media_name)
+            df['기기명'] = df['기기명'].apply(_normalize_device_value)
+            df = df.groupby(['매체이름', '기기명'], as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
         return df
     except Exception:
         return pd.DataFrame()
@@ -182,7 +177,7 @@ def _query_device(engine, f) -> pd.DataFrame:
 
     if table_exists(engine, 'fact_campaign_device_daily'):
         cols = get_table_columns(engine, 'fact_campaign_device_daily')
-        
+
         imp_expr = "COALESCE(f.imp, 0)" if "imp" in cols else "0"
         clk_expr = "COALESCE(f.clk, 0)" if "clk" in cols else "0"
         cost_expr = "COALESCE(f.cost, 0)" if "cost" in cols else "0"
@@ -196,20 +191,16 @@ def _query_device(engine, f) -> pd.DataFrame:
         else:
             conv_expr, sales_expr = "0", "0"
 
+        device_expr = _safe_text_dim_expr(cols, ["device_name", "device", "device_tp", "device_type", "platform"], "기타")
         where_cid = f"AND CAST(f.customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
         join_sql = ''
         type_sql = ''
         if type_vals:
             join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
             type_sql = f"AND (COALESCE(CAST(c.campaign_tp AS TEXT),'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'PLACE' THEN '플레이스' ELSE COALESCE(CAST(c.campaign_tp AS TEXT),'') END) IN ({_sql_in_str_list(type_vals)}))"
-        
-        device_expr = _safe_text_dim_expr(
-            cols,
-            ['device_name', 'device', 'device_tp', 'device_type', 'platform'],
-            '기타',
-        )
 
         sql = f"""
+            /* media_connection_fix_final_device */
             SELECT
                 {device_expr} AS "기기명",
                 SUM({imp_expr}) AS "노출수",
