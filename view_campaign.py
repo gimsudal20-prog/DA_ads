@@ -32,11 +32,13 @@ FMT_DICT = {
     "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
     "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
     "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
+    "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
+    "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
+    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}",
+    "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.1f}%",
     "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
     "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
     "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
-    "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
-    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}",
     "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
 }
 
@@ -81,7 +83,10 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
-    view["구매 ROAS(%)"] = np.where(view["광고비"] > 0, (view["구매완료 매출"] / view["광고비"]) * 100, 0.0)
+    
+    view["구매 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("구매완료 매출", 0) / view["광고비"]) * 100, 0.0)
+    view["장바구니 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("장바구니 매출액", 0) / view["광고비"]) * 100, 0.0)
+    view["위시리스트 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("위시리스트 매출액", 0) / view["광고비"]) * 100, 0.0)
     view["통합 ROAS(%)"] = np.where(view["광고비"] > 0, (view["총 전환매출"] / view["광고비"]) * 100, 0.0)
     return view
 
@@ -194,9 +199,6 @@ def _normalize_device_label(v: str) -> str:
         return 'PC'
     return '기타'
 
-
-
-
 def _expand_campaign_type_values(type_sel: tuple) -> list[str]:
     mapping = {
         "파워링크": ["파워링크", "WEB_SITE"],
@@ -217,7 +219,6 @@ def _expand_campaign_type_values(type_sel: tuple) -> list[str]:
             continue
         out.append(s)
         out.extend(mapping.get(s, []))
-    # dedupe keep order
     seen = set()
     deduped = []
     for x in out:
@@ -377,7 +378,6 @@ def _query_keyword_detail_for_campaign(engine, d1, d2, customer_id: str, campaig
         "wish_conv_expr": "COALESCE(wishlist_conv,0)",
         "wish_sales_expr": "COALESCE(wishlist_sales,0)",
     }
-    # reuse strict expressions when available in current schema
     try:
         from data import _strict_conv_selects
         expr = _strict_conv_selects(kw_fact_cols)
@@ -565,6 +565,9 @@ FAST_COL_CONFIG = {
     "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
     "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.1f %%"),
+    "장바구니수": st.column_config.NumberColumn("장바구니수", format="%d"),
+    "장바구니 매출액": st.column_config.NumberColumn("장바구니 매출액", format="%d 원"),
+    "장바구니 ROAS(%)": st.column_config.NumberColumn("장바구니 ROAS(%)", format="%.1f %%"),
     "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
     "구매완료 매출": st.column_config.NumberColumn("구매완료 매출", format="%d 원"),
     "구매 ROAS(%)": st.column_config.NumberColumn("구매 ROAS(%)", format="%.1f %%"),
@@ -620,12 +623,13 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
             roas_col, sales_col = "통합 ROAS(%)", "총 전환매출"
         else:
-            if not funnel_toggle:
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
-                roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
-            else:
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "위시리스트수", "위시리스트 매출액", "위시리스트 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-                roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
+            all_metrics_cols = [
+                "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
+                "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+                "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
+                "총 전환수", "총 전환매출", "통합 ROAS(%)"
+            ]
+            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
 
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
@@ -693,7 +697,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                         fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
                         st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
 
-                    sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"]
+                    sub_cols = [
+                        "광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", 
+                        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+                        "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
+                        "총 전환수", "총 전환매출", "통합 ROAS(%)"
+                    ]
                     if has_pre_patch_cur:
                         sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
@@ -736,7 +745,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if sel_camp != "전체":
                     grouped = grouped[grouped["캠페인"] == sel_camp]
 
-                all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "구매완료수", "구매완료 매출", "구매 ROAS(%)"] if not has_pre_patch_cur else ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                all_metrics_cols = [
+                    "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
+                    "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+                    "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
+                    "총 전환수", "총 전환매출", "통합 ROAS(%)"
+                ] if not has_pre_patch_cur else [
+                    "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
+                    "총 전환수", "총 전환매출", "통합 ROAS(%)"
+                ]
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
                 cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
                 disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
@@ -744,7 +761,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        # ⚡ 토글 명칭 변경 (왼쪽 정렬)
         show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -765,7 +781,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
         if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
 
-        # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 및 "순위 변화" 조건 완벽 적용
         metrics_cols_cmp = []
         metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
         metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
@@ -784,7 +799,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
         if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
             base_cols_cmp.append("평균순위")
-            if show_deltas: # ⚡ 토글을 켰을 때만 순위 변화 등장
+            if show_deltas: 
                 metrics_cols_cmp.append("순위 변화")
 
         final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
