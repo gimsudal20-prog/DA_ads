@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_campaign.py - Campaign performance page view (Minimal Device Share UI & Comma Formatting)."""
+"""view_campaign.py - Campaign performance page view (Minimal Device Share UI & Robust SQL)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -232,37 +232,38 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     type_vals = _expand_campaign_type_values(type_sel)
 
     if table_exists(engine, 'fact_campaign_device_daily'):
-        where_cid = f"AND f.customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ''
+        # DB 엔진 상관없이 호환되도록 ::text 대신 CAST(... AS TEXT) 사용
+        where_cid = f"AND CAST(f.customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
         join_sql = ''
         type_filter = ''
         if type_vals:
             cp_col = _campaign_type_column(engine)
-            join_sql = ' LEFT JOIN dim_campaign c ON f.customer_id::text = c.customer_id::text AND f.campaign_id::text = c.campaign_id::text '
+            join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
             type_list = _sql_in_str_list(type_vals)
             type_filter = f"""
                 AND (
-                    COALESCE(c.{cp_col}::text, '') IN ({type_list})
+                    COALESCE(CAST(c.{cp_col} AS TEXT), '') IN ({type_list})
                     OR (
                         CASE
-                            WHEN COALESCE(c.{cp_col}::text, '') = 'WEB_SITE' THEN '파워링크'
-                            WHEN COALESCE(c.{cp_col}::text, '') = 'SHOPPING' THEN '쇼핑검색'
-                            WHEN COALESCE(c.{cp_col}::text, '') = 'POWER_CONTENTS' THEN '파워컨텐츠'
-                            WHEN COALESCE(c.{cp_col}::text, '') = 'BRAND_SEARCH' THEN '브랜드검색'
-                            WHEN COALESCE(c.{cp_col}::text, '') = 'PLACE' THEN '플레이스'
-                            ELSE COALESCE(c.{cp_col}::text, '')
+                            WHEN COALESCE(CAST(c.{cp_col} AS TEXT), '') = 'WEB_SITE' THEN '파워링크'
+                            WHEN COALESCE(CAST(c.{cp_col} AS TEXT), '') = 'SHOPPING' THEN '쇼핑검색'
+                            WHEN COALESCE(CAST(c.{cp_col} AS TEXT), '') = 'POWER_CONTENTS' THEN '파워컨텐츠'
+                            WHEN COALESCE(CAST(c.{cp_col} AS TEXT), '') = 'BRAND_SEARCH' THEN '브랜드검색'
+                            WHEN COALESCE(CAST(c.{cp_col} AS TEXT), '') = 'PLACE' THEN '플레이스'
+                            ELSE COALESCE(CAST(c.{cp_col} AS TEXT), '')
                         END
                     ) IN ({type_list})
                 )
             """
         sql = f"""
             SELECT COALESCE(NULLIF(TRIM(f.device_name), ''), '기타') AS device_name,
-                   SUM(COALESCE(f.cost,0)) AS cost
+                   SUM(CAST(COALESCE(f.cost,0) AS NUMERIC)) AS cost
             FROM fact_campaign_device_daily f
             {join_sql}
             WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter}
             GROUP BY COALESCE(NULLIF(TRIM(f.device_name), ''), '기타')
-            HAVING SUM(COALESCE(f.cost,0)) > 0
-            ORDER BY SUM(COALESCE(f.cost,0)) DESC
+            HAVING SUM(CAST(COALESCE(f.cost,0) AS NUMERIC)) > 0
+            ORDER BY SUM(CAST(COALESCE(f.cost,0) AS NUMERIC)) DESC
         """
         try:
             df = sql_read(engine, sql, params)
@@ -274,12 +275,18 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
         except Exception:
             pass
 
+    # Fallback to fact_media_daily
     if table_exists(engine, 'fact_media_daily'):
         cols = get_table_columns(engine, 'fact_media_daily')
         if 'device_name' in cols:
-            where_cid = f"AND customer_id::text IN ({_sql_in_str_list(list(cids))})" if cids else ''
-            type_filter = f"AND campaign_type IN ({_sql_in_str_list(type_vals)})" if type_vals and 'campaign_type' in cols else ''
-            sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '기타') AS device_name, SUM(cost) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '기타') HAVING SUM(cost) > 0 ORDER BY SUM(cost) DESC"
+            where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
+            
+            cp_col = "campaign_type"
+            if "campaign_tp" in cols: cp_col = "campaign_tp"
+            elif "campaign_type_label" in cols: cp_col = "campaign_type_label"
+                
+            type_filter = f"AND CAST({cp_col} AS TEXT) IN ({_sql_in_str_list(type_vals)})" if type_vals and cp_col in cols else ''
+            sql = f"SELECT COALESCE(NULLIF(TRIM(device_name), ''), '기타') AS device_name, SUM(CAST(COALESCE(cost,0) AS NUMERIC)) AS cost FROM fact_media_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} {type_filter} GROUP BY COALESCE(NULLIF(TRIM(device_name), ''), '기타') HAVING SUM(CAST(COALESCE(cost,0) AS NUMERIC)) > 0 ORDER BY SUM(CAST(COALESCE(cost,0) AS NUMERIC)) DESC"
             try:
                 df = sql_read(engine, sql, params)
                 if not df.empty:
@@ -623,19 +630,15 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
                 type_grp = type_grp.sort_values("광고비", ascending=False)
                 
-                # 강제 string 포맷팅 시 ProgressColumn 이 깨지지 않도록 기본 NumberColumn 적용 후 (원) 명시
+                safe_fmt_type = {k: v for k, v in FMT_DICT.items() if k in type_grp.columns}
                 st.dataframe(
-                    type_grp,
+                    type_grp.style.format(safe_fmt_type),
                     width="stretch",
                     height=_compact_df_height(type_grp, min_height=74, max_height=220),
                     hide_index=True,
                     column_config={
-                        "캠페인유형": st.column_config.TextColumn("캠페인 유형"),
-                        "광고비": st.column_config.NumberColumn("총 광고비 (원)"),
-                        sales_col: st.column_config.NumberColumn(f"{sales_col} (원)"),
-                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100),
-                        roas_col: st.column_config.NumberColumn(f"평균 {roas_col}", format="%.1f%%"),
-                    },
+                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
+                    }
                 )
             with col_device:
                 st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
@@ -646,7 +649,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
         disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
         
-        # 콤마 강제 포맷팅 적용 (style.format)
         safe_fmt_main = {k: v for k, v in FMT_DICT.items() if k in disp_main_src.columns}
         event = st.dataframe(disp_main_src[final_cols].style.format(safe_fmt_main), width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
 
