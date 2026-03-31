@@ -97,26 +97,30 @@ def _expand_campaign_type_values(type_sel: tuple[str, ...]) -> list[str]:
     return dedup
 
 
+def _first_existing(cols: list[str], candidates: list[str]) -> str | None:
+    colset = {str(c).lower(): c for c in cols}
+    for name in candidates:
+        if name.lower() in colset:
+            return colset[name.lower()]
+    return None
 
-def _coalesce_text_expr(cols: list[str], candidates: list[str], default: str) -> str:
-    exprs = []
-    for c in candidates:
-        if c in cols:
-            exprs.append(f"NULLIF(TRIM(CAST({c} AS TEXT)), '')")
-    if not exprs:
+
+def _safe_text_dim_expr(cols: list[str], candidates: list[str], default: str) -> str:
+    col = _first_existing(cols, candidates)
+    if not col:
         return f"'{default}'"
-    return "COALESCE(" + ", ".join(exprs) + f", '{default}')"
+    return f"COALESCE(NULLIF(TRIM(CAST({col} AS TEXT)), ''), '{default}')"
 
 def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
-    
+
     cols = get_table_columns(engine, 'fact_media_daily')
-    
+
     imp_expr = "COALESCE(imp, 0)" if "imp" in cols else "0"
     clk_expr = "COALESCE(clk, 0)" if "clk" in cols else "0"
     cost_expr = "COALESCE(cost, 0)" if "cost" in cols else "0"
-    
+
     if "tot_conv" in cols and "tot_sales" in cols:
         conv_expr, sales_expr = "COALESCE(tot_conv, 0)", "COALESCE(tot_sales, 0)"
     elif "purchase_conv" in cols and "purchase_sales" in cols:
@@ -126,34 +130,34 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     else:
         conv_expr, sales_expr = "0", "0"
 
-    type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
-    cids = tuple(f.get('selected_customer_ids', []) or ())
-    where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
-    
-    cp_col = "campaign_type"
-    if "campaign_tp" in cols: cp_col = "campaign_tp"
-    elif "campaign_type_label" in cols: cp_col = "campaign_type_label"
-    
-    type_sql = _type_filter_sql(type_vals, cp_col) if cp_col in cols else ''
-    params = {'d1': str(f['start']), 'd2': str(f['end'])}
-    
-    media_expr = _coalesce_text_expr(
+    media_expr = _safe_text_dim_expr(
         cols,
-        ["media_name", "placement_name", "media_label", "placement_label", "media_code", "placement_code", "media_tp", "placement_tp", "media"],
+        ["media_name", "placement_name", "media_code", "placement_code", "media_tp", "placement_tp"],
         "전체",
     )
-    device_expr = _coalesce_text_expr(
+    device_expr = _safe_text_dim_expr(
         cols,
-        ["device_name", "device_type", "device_tp", "device", "device_code", "platform"],
+        ["device_name", "device", "device_tp", "device_type", "platform"],
         "기타",
     )
 
-    # 지역 관련 컬럼 제외 (퍼포먼스 향상)
+    type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
+    cids = tuple(f.get('selected_customer_ids', []) or ())
+    where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
+
+    cp_col = "campaign_type"
+    if "campaign_tp" in cols:
+        cp_col = "campaign_tp"
+    elif "campaign_type_label" in cols:
+        cp_col = "campaign_type_label"
+
+    type_sql = _type_filter_sql(type_vals, cp_col) if cp_col in cols else ''
+    params = {'d1': str(f['start']), 'd2': str(f['end'])}
+
     sql = f"""
-        /* media_connection_fix_v3 */
         SELECT
-            {media_expr} AS "매체이름_raw",
-            {device_expr} AS "기기명_raw",
+            {media_expr} AS "매체이름",
+            {device_expr} AS "기기명",
             SUM({imp_expr}) AS "노출수",
             SUM({clk_expr}) AS "클릭수",
             SUM({cost_expr}) AS "광고비",
@@ -165,11 +169,8 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     """
     try:
         df = sql_read(engine, sql, params)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df['매체이름'] = df['매체이름_raw'].apply(_map_media_name)
-        df['기기명'] = df['기기명_raw'].apply(_normalize_device_value)
-        df = df.groupby(['매체이름', '기기명'], as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
+        if not df.empty:
+            df['매체이름'] = df['매체이름'].apply(_map_media_name)
         return df
     except Exception:
         return pd.DataFrame()
@@ -204,7 +205,7 @@ def _query_device(engine, f) -> pd.DataFrame:
         
         sql = f"""
             SELECT
-                COALESCE(NULLIF(TRIM(f.device_name), ''), '기타') AS "기기명",
+                _safe_text_dim_expr(cols, ['device_name', 'device', 'device_tp', 'device_type', 'platform'], '기타') AS "기기명",
                 SUM({imp_expr}) AS "노출수",
                 SUM({clk_expr}) AS "클릭수",
                 SUM({cost_expr}) AS "광고비",
