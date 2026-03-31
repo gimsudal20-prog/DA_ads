@@ -1,0 +1,143 @@
+name: 과거 데이터 대량 백필
+run-name: 과거 데이터 대량 백필 실행
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '수집 시작일 (YYYY-MM-DD)'
+        required: true
+        default: '2026-03-11'
+      end_date:
+        description: '수집 종료일 (YYYY-MM-DD)'
+        required: true
+        default: '2026-03-18'
+      account_name:
+        description: '단일 업체명 (예: 휴앤고)'
+        required: false
+        default: ''
+      account_names:
+        description: '여러 업체명 콤마구분 (예: 휴앤고,대성소파,로베라)'
+        required: false
+        default: ''
+      workers:
+        description: '동시 작업 수 (권장 3)'
+        required: false
+        default: '3'
+      fast:
+        description: '빠른 백필 모드 (문제 분석/구매완료 확인 시 false 권장)'
+        required: false
+        default: 'false'
+      collect_mode:
+        description: '수집 모드'
+        required: false
+        default: 'sa_with_device'
+        type: choice
+        options:
+          - sa_with_device
+          - sa_only
+          - device_only
+      sync_dim_first_day:
+        description: '첫날만 구조수집 수행 (true/false)'
+        required: false
+        default: 'false'
+      with_gfa:
+        description: 'GFA 포함 실행 (true/false, 현재 collector_gfa.py가 있을 때만 동작)'
+        required: false
+        default: 'false'
+      shopping_only:
+        description: '쇼핑검색 캠페인만 재수집 (true/false)'
+        required: false
+        default: 'false'
+      with_shop_ext:
+        description: '쇼핑 확장소재도 함께 수집 (true/false)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: fast-backfill-${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}-${{ github.event.inputs.start_date }}-${{ github.event.inputs.end_date }}
+  cancel-in-progress: false
+
+jobs:
+  run-backfill:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+      - name: Verify running collector.py
+        run: |
+          echo "=== collector.py verify ==="
+          echo "pwd=$(pwd)"
+          echo "branch=${GITHUB_REF_NAME} sha=${GITHUB_SHA}"
+          ls -l collector.py || true
+          grep -n "def normalize_device_name" collector.py || true
+          grep -n "source=no_header" collector.py || true
+          python - <<'PY2'
+from pathlib import Path
+import hashlib
+p = Path('collector.py')
+text = p.read_text(encoding='utf-8')
+print('normalize_device_name exists:', 'def normalize_device_name' in text)
+print('source=no_header debug exists:', 'source=no_header' in text)
+print('collector.py size:', len(text))
+print('collector.py sha256:', hashlib.sha256(text.encode('utf-8')).hexdigest())
+for needle in ['def normalize_device_name', 'source=no_header', 'header_preview', 'ok_no_header']:
+    print(f'contains[{needle}] =', needle in text)
+PY2
+
+      - name: Run fast backfill
+        run: |
+          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}")
+
+          if [ -n "${{ github.event.inputs.account_name }}" ]; then
+            CMD+=(--account_name "${{ github.event.inputs.account_name }}")
+          fi
+          if [ -n "${{ github.event.inputs.account_names }}" ]; then
+            CMD+=(--account_names "${{ github.event.inputs.account_names }}")
+          fi
+          if [ "${{ github.event.inputs.fast }}" = "true" ]; then
+            CMD+=(--fast)
+          fi
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+            CMD+=(--sync_dim_first_day)
+          fi
+          if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
+            CMD+=(--with_gfa)
+          fi
+          if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+            CMD+=(--shopping_only)
+          fi
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
+            CMD+=(--with_shop_ext)
+          fi
+
+          printf '실행 명령어: %q ' "${CMD[@]}"; echo
+          "${CMD[@]}"
+
+      - name: Upload split debug rows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: split-debug-rows-${{ github.run_number }}
+          path: debug_split_rows/*.csv
+          if-no-files-found: ignore

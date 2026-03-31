@@ -1,0 +1,110 @@
+name: 네이버 광고 성과 일일 수집
+run-name: 네이버 광고 일일 수집 실행
+
+on:
+  schedule:
+    - cron: "7 19,1,7,13 * * *"   # KST 04:07 / 10:07 / 16:07 / 22:07
+  workflow_dispatch:
+    inputs:
+      collect_mode:
+        description: '수집 모드'
+        required: false
+        default: 'sa_with_device'
+        type: choice
+        options:
+          - sa_with_device
+          - sa_only
+          - device_only
+      fast:
+        description: '수동 실행 시 fast 사용 여부'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: collector-daily
+  cancel-in-progress: false
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify running collector.py
+        run: |
+          echo "=== collector.py verify ==="
+          echo "pwd=$(pwd)"
+          echo "branch=${GITHUB_REF_NAME} sha=${GITHUB_SHA}"
+          ls -l collector.py || true
+          grep -n "def normalize_device_name" collector.py || true
+          grep -n "source=no_header" collector.py || true
+          python - <<'PY2'
+from pathlib import Path
+import hashlib
+p = Path('collector.py')
+text = p.read_text(encoding='utf-8')
+print('normalize_device_name exists:', 'def normalize_device_name' in text)
+print('source=no_header debug exists:', 'source=no_header' in text)
+print('collector.py size:', len(text))
+print('collector.py sha256:', hashlib.sha256(text.encode('utf-8')).hexdigest())
+for needle in ['def normalize_device_name', 'source=no_header', 'header_preview', 'ok_no_header']:
+    print(f'contains[{needle}] =', needle in text)
+PY2
+
+      - name: Run collector (Yesterday / Today optimized)
+        env:
+          DISPATCH_COLLECT_MODE: ${{ github.event.inputs.collect_mode }}
+          DISPATCH_FAST: ${{ github.event.inputs.fast }}
+        run: |
+          echo "⏰ 현재 한국 시간: $(date +%F' '%H:%M:%S)"
+
+          KST_HOUR=$(date +%H)
+          YESTERDAY=$(date -d "yesterday" +%F)
+          TODAY=$(date +%F)
+          COLLECT_MODE="${DISPATCH_COLLECT_MODE:-sa_with_device}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${DISPATCH_FAST}" = "false" ]; then
+              FAST_FLAG=""
+            else
+              FAST_FLAG="--fast"
+            fi
+
+            echo "🚀 Manual collect date (Yesterday) = ${YESTERDAY} | mode=${COLLECT_MODE} | fast=${DISPATCH_FAST:-true}"
+            python collector.py --date "${YESTERDAY}" --workers 3 --collect_mode "${COLLECT_MODE}" ${FAST_FLAG}
+          else
+            if [ "$KST_HOUR" = "04" ]; then
+              echo "🚀 Collect date (Yesterday, full refresh) = ${YESTERDAY} | mode=${COLLECT_MODE}"
+              python collector.py --date "${YESTERDAY}" --workers 3 --collect_mode "${COLLECT_MODE}"
+            else
+              echo "🚀 Collect date (Yesterday, fast refresh) = ${YESTERDAY} | mode=${COLLECT_MODE}"
+              python collector.py --date "${YESTERDAY}" --workers 3 --collect_mode "${COLLECT_MODE}" --fast
+            fi
+
+            if [ "${COLLECT_MODE}" = "device_only" ]; then
+              echo "⏭️ Today fast refresh는 device_only 모드에서 생략합니다."
+            else
+              echo "🚀 Collect date (Today, fast refresh) = ${TODAY} | mode=${COLLECT_MODE}"
+              python collector.py --date "${TODAY}" --workers 3 --collect_mode "${COLLECT_MODE}" --fast
+            fi
+          fi
