@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_keyword.py - Keyword & Adgroup performance page view (Rank Delta Toggle & Integer Format Fixed)."""
+"""view_keyword.py - Keyword & Adgroup performance page view (Comma Formatting Fixed)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -216,19 +216,6 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-FAST_KW_CONFIG = {
-    "일자": st.column_config.TextColumn("일자", width="small"),
-    "노출": st.column_config.NumberColumn("노출", format="%d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
-    "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
-    "CPC(원)": st.column_config.NumberColumn("CPC(원)", format="%d 원"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%d 원"),
-    "전환": st.column_config.NumberColumn("전환", format="%.1f"),
-    "CPA(원)": st.column_config.NumberColumn("CPA(원)", format="%d 원"),
-    "전환매출": st.column_config.NumberColumn("전환매출", format="%d 원"),
-    "ROAS(%)": st.column_config.NumberColumn("ROAS(%)", format="%.2f %%"),
-}
-
 def _render_sticky_table(df, first_col: str, height: int = 550, col_config: dict = None):
     try:
         rows = len(df.index)
@@ -294,7 +281,11 @@ def render_keyword_main(view, top_n):
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
     
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
-    _render_sticky_table(disp, "키워드", height=550, col_config=FAST_KW_CONFIG)
+    
+    # 콤마 및 스타일 포맷 적용
+    safe_fmt = {k: v for k, v in FMT_DICT.items() if k in disp.columns}
+    styled_disp = disp.style.format(safe_fmt)
+    _render_sticky_table(styled_disp, "키워드", height=550)
 
 
 @st.fragment
@@ -400,7 +391,9 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp_cmp.columns]
     disp_final = disp_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
-    styled_cmp = disp_final.style.format(FMT_DICT)
+    # 안전하게 콤마 및 스타일 포맷 적용
+    safe_fmt_cmp = {k: v for k, v in FMT_DICT.items() if k in disp_final.columns}
+    styled_cmp = disp_final.style.format(safe_fmt_cmp)
     styled_cmp = _apply_delta_styles(styled_cmp, disp_final)
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
@@ -417,7 +410,6 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    # 종합성과 시 일자 포함 (include_dt=True)
     kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000, include_dt=True)
     ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50, include_dt=True)
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
