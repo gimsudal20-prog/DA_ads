@@ -1812,63 +1812,53 @@ def _detect_media_header_idx(df: pd.DataFrame) -> int:
             return i
     return best_idx if best_score >= 3 else -1
 
-def _looks_like_no_header_media_row(vals: List[Any]) -> bool:
-    if not vals or len(vals) < 13:
-        return False
-    v = [str(x or '').strip() for x in vals]
-    camp = v[2] if len(v) > 2 else ''
-    adg = v[3] if len(v) > 3 else ''
-    adid = v[5] if len(v) > 5 else ''
-    device = v[8] if len(v) > 8 else ''
-    return camp.startswith('cmp-') and adg.startswith('grp-') and adid.startswith('nad-') and device in {'M', 'P', 'PC', 'MO'}
 
 
-def parse_media_report_rows_no_header(df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    if df is None or df.empty:
+def normalize_device_name(device_value: Any) -> str:
+    v = str(device_value or '').strip().upper()
+    if not v:
+        return ''
+    if v in {'M', 'MO', 'MOBILE', '모바일'}:
+        return 'MO'
+    if v in {'P', 'PC', 'DESKTOP', 'DESK', '컴퓨터'}:
+        return 'PC'
+    return v
+
+def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None):
+    if raw_df is None or raw_df.empty:
         return [], {'status': 'empty'}
-
-    raw_df = df.reset_index(drop=True).copy()
-    preview = raw_df.head(5).fillna('').values.tolist()
-    first_row = preview[0] if preview else []
-    if not _looks_like_no_header_media_row(first_row):
-        return [], {'status': 'no_header'}
-
-    # Observed no-header AD report layout
-    # 0=date, 1=customer, 2=campaign_id, 3=adgroup_id, 4=keyword_id or '-', 5=ad_id, 6=biz_channel,
-    # 7=placement/media code, 8=device(P/M), 9=avg rank, 10=clk, 11=cost, 12=imp, 13=conv
-    campaign_idx = 2
-    media_idx = 7
-    device_idx = 8
-    clk_idx = 10
-    cost_idx = 11
-    imp_idx = 12
-    conv_idx = 13
-
-    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    # Observed no-header row layout from logs:
+    # 0 dt, 1 account/customer, 2 campaign_id, 3 adgroup_id, 4 keyword_id or '-', 5 ad_id, 6 biz channel,
+    # 7 media/placement code, 8 device(M/P), 9~13 metrics where 10=clk, 11=cost, 12=imp, 13=conv.
+    preview = raw_df.head(5).fillna('').astype(str).values.tolist()
+    agg = {}
     row_count = 0
     mapped_rows = 0
     for _, row in raw_df.iterrows():
-        vals = row.fillna('').tolist()
-        row_count += 1
-        if not _looks_like_no_header_media_row(vals):
+        vals = [str(x).strip() for x in row.fillna('').tolist()]
+        if len(vals) < 14:
             continue
-        campaign_id = str(vals[campaign_idx] or '').strip()
-        if not campaign_id:
+        row_count += 1
+        campaign_id = vals[2].strip()
+        if not campaign_id or not campaign_id.startswith('cmp-'):
             continue
         if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
             continue
         mapped_rows += 1
         campaign_type = campaign_type_map.get(campaign_id, '기타')
-        media_name = _m_safe_text(vals[media_idx] if len(vals) > media_idx else '', '전체')
+        media_name = vals[7].strip() or '전체'
+        device_name = normalize_device_name(vals[8]) or '전체'
         region_name = '전체'
-        device_name = normalize_device_name(vals[device_idx] if len(vals) > device_idx else '')
-        key = (campaign_type, media_name, region_name, device_name or '전체')
+        clk = int(round(_m_safe_float(vals[10]))) if len(vals) > 10 else 0
+        cost = int(round(_m_safe_float(vals[11]))) if len(vals) > 11 else 0
+        imp = int(round(_m_safe_float(vals[12]))) if len(vals) > 12 else 0
+        conv = float(_m_safe_float(vals[13])) if len(vals) > 13 else 0.0
+        key = (campaign_type, media_name, region_name, device_name)
         bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
-        bucket['clk'] += int(round(_m_safe_float(vals[clk_idx]) if len(vals) > clk_idx else 0))
-        bucket['cost'] += int(round(_m_safe_float(vals[cost_idx]) if len(vals) > cost_idx else 0))
-        bucket['imp'] += int(round(_m_safe_float(vals[imp_idx]) if len(vals) > imp_idx else 0))
-        bucket['conv'] += float(_m_safe_float(vals[conv_idx]) if len(vals) > conv_idx else 0)
-
+        bucket['imp'] += imp
+        bucket['clk'] += clk
+        bucket['cost'] += cost
+        bucket['conv'] += conv
     rows = []
     for (campaign_type, media_name, region_name, device_name), s in agg.items():
         rows.append({
@@ -1877,27 +1867,16 @@ def parse_media_report_rows_no_header(df: pd.DataFrame, target_date: date, custo
             'campaign_type': campaign_type,
             'media_name': media_name,
             'region_name': region_name,
-            'device_name': device_name or '전체',
+            'device_name': device_name,
             'imp': int(s['imp']),
             'clk': int(s['clk']),
             'cost': int(s['cost']),
             'conv': float(round(s['conv'], 4)),
-            'sales': int(s['sales']),
-            'data_source': 'ad_report_no_header_dimension',
+            'sales': 0,
+            'data_source': 'ad_report_dimension_noheader',
             'source_report': 'AD',
         })
-    meta = {
-        'status': 'ok_no_header' if rows else 'no_rows_no_header',
-        'header_preview': preview,
-        'layout': {
-            'campaign_idx': campaign_idx, 'media_idx': media_idx, 'device_idx': device_idx,
-            'clk_idx': clk_idx, 'cost_idx': cost_idx, 'imp_idx': imp_idx, 'conv_idx': conv_idx
-        },
-        'row_count': row_count,
-        'mapped_rows': mapped_rows,
-    }
-    return rows, meta
-
+    return rows, {'status': 'ok_no_header' if rows else 'no_header', 'row_count': row_count, 'mapped_rows': mapped_rows, 'header_preview': preview}
 
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:
@@ -1906,7 +1885,7 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     raw_df = df.reset_index(drop=True).copy()
     header_idx = _detect_media_header_idx(raw_df)
     if header_idx == -1:
-        return parse_media_report_rows_no_header(raw_df, target_date, customer_id, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        return _build_media_rows_from_noheader(raw_df, target_date, customer_id, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
 
     headers_raw = [str(x) for x in raw_df.iloc[header_idx].fillna('').tolist()]
     headers = [_m_normalize_header(x) for x in headers_raw]
