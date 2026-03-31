@@ -188,10 +188,18 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     df_ad = _perf_common_merge_meta(ad_bundle, meta) if not ad_bundle.empty else pd.DataFrame()
     view_kw, view_ad = pd.DataFrame(), pd.DataFrame()
     
-    if not df_kw.empty: view_kw = df_kw.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"})
+    if not df_kw.empty:
+        rename_dict = {"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}
+        if "dt" in df_kw.columns: rename_dict["dt"] = "일자"
+        view_kw = df_kw.rename(columns=rename_dict)
+        if "일자" in view_kw.columns: view_kw["일자"] = pd.to_datetime(view_kw["일자"]).dt.strftime('%Y-%m-%d')
+        
     if not df_ad.empty:
-        view_ad = df_ad.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"})
+        rename_dict = {"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "ad_name": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}
+        if "dt" in df_ad.columns: rename_dict["dt"] = "일자"
+        view_ad = df_ad.rename(columns=rename_dict)
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
+        if "일자" in view_ad.columns: view_ad["일자"] = pd.to_datetime(view_ad["일자"]).dt.strftime('%Y-%m-%d')
         
     if view_kw.empty and view_ad.empty: return pd.DataFrame()
     view = _prefer_keyword_source_by_campaign(view_kw, view_ad)
@@ -209,6 +217,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
 
 
 FAST_KW_CONFIG = {
+    "일자": st.column_config.TextColumn("일자", width="small"),
     "노출": st.column_config.NumberColumn("노출", format="%d"),
     "클릭": st.column_config.NumberColumn("클릭", format="%d"),
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
@@ -263,8 +272,11 @@ def render_keyword_main(view, top_n):
         else:
             disp = disp[disp["키워드"].astype(str).str.contains(search_kw, case=False, na=False)]
 
-    base_cols = ["키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
+    base_cols = ["일자", "키워드", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
+    if "일자" not in disp.columns:
+        base_cols.remove("일자")
     if "평균순위" in disp.columns: base_cols.append("평균순위")
+    
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
 
     # 키워드 합산(Agg) 처리
@@ -272,10 +284,11 @@ def render_keyword_main(view, top_n):
         agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
         grp_cols = ["업체명", "키워드"]
         if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
+        if "일자" in disp.columns: grp_cols.insert(1, "일자")
         
         disp = disp.groupby(grp_cols, as_index=False).agg(agg_dict)
         disp = _add_perf_metrics(disp)
-        base_cols = ["키워드", "업체명"] # 캠페인, 광고그룹, 순위 등 제외
+        base_cols = ["일자", "키워드", "업체명"] if "일자" in disp.columns else ["키워드", "업체명"]
 
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
@@ -285,7 +298,18 @@ def render_keyword_main(view, top_n):
 
 
 @st.fragment
-def render_keyword_cmp(view, engine, cids, type_sel, top_n, start_dt, end_dt):
+def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_dt):
+    # 기간 비교 시, 일자가 포함되어 있으면 키워드/그룹 단위 비교가 흩어지므로 다시 묶어줍니다.
+    if "일자" in view_orig.columns:
+        grp_cols = [c for c in view_orig.columns if c not in ["일자", "노출", "클릭", "광고비", "전환", "전환매출", "CTR(%)", "CPC(원)", "CPA(원)", "ROAS(%)", "avg_rank", "평균순위"]]
+        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
+        if "avg_rank" in view_orig.columns: agg_dict["avg_rank"] = "mean"
+        view = view_orig.groupby(grp_cols, as_index=False).agg(agg_dict)
+        view = _add_perf_metrics(view)
+        if "avg_rank" in view.columns: view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+    else:
+        view = view_orig.copy()
+
     st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
     show_deltas = st.toggle("증감률 보기", value=False, key="kw_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -392,9 +416,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
-    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000)
-    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50)
+
+    # 종합성과 시 일자 포함 (include_dt=True)
+    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=50000, include_dt=True)
+    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=50000, top_k=50, include_dt=True)
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
+
     selected_tab = st.pills("분석 탭 선택", ["종합 성과", "기간 비교"], default="종합 성과")
     if selected_tab == "종합 성과": render_keyword_main(view, top_n)
     elif selected_tab == "기간 비교": render_keyword_cmp(view, engine, cids, type_sel, top_n, f["start"], f["end"])
