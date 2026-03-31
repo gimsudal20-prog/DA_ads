@@ -333,31 +333,27 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
         for _, row in df.iterrows()
     )
 
-    st.markdown(
-        f"""
-        <div style='padding: 12px 8px; display: flex; flex-direction: column; gap: 20px;'>
-            <div style='display: flex; justify-content: space-between; align-items: flex-end;'>
-                <div>
-                    <div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>총 광고비</div>
-                    <div style='font-size: 24px; font-weight: 800; color: #111827; line-height: 1;'>{int(total):,}원</div>
-                </div>
-                <div style='text-align: right;'>
-                    <div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>우세 기기</div>
-                    <div style='font-size: 16px; font-weight: 700; color: #111827; line-height: 1;'>{escape(dominant)} <span style='font-size:14px; font-weight: 500; color: #4B5563; margin-left: 4px;'>({dominant_share:.1f}%)</span></div>
-                </div>
-            </div>
+    # HTML 마크다운이 코드로 표시되지 않도록 들여쓰기 제거
+    html_str = f"""<div style='padding: 12px 8px; display: flex; flex-direction: column; gap: 20px;'>
+<div style='display: flex; justify-content: space-between; align-items: flex-end;'>
+<div>
+<div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>총 광고비</div>
+<div style='font-size: 24px; font-weight: 800; color: #111827; line-height: 1;'>{int(total):,}원</div>
+</div>
+<div style='text-align: right;'>
+<div style='font-size: 13px; font-weight: 500; color: #6B7280; margin-bottom: 6px;'>우세 기기</div>
+<div style='font-size: 16px; font-weight: 700; color: #111827; line-height: 1;'>{escape(dominant)} <span style='font-size:14px; font-weight: 500; color: #4B5563; margin-left: 4px;'>({dominant_share:.1f}%)</span></div>
+</div>
+</div>
+<div style='width: 100%; background: #EEF2F7; border-radius: 12px; overflow: hidden; display: flex; height: 24px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);'>
+{bar_segments}
+</div>
+<div style='display: flex; flex-wrap: wrap; gap: 10px;'>
+{''.join(pills)}
+</div>
+</div>"""
 
-            <div style='width: 100%; background: #EEF2F7; border-radius: 12px; overflow: hidden; display: flex; height: 24px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);'>
-                {bar_segments}
-            </div>
-
-            <div style='display: flex; flex-wrap: wrap; gap: 10px;'>
-                {''.join(pills)}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(html_str, unsafe_allow_html=True)
 
 
 def _campaign_type_column(engine) -> str:
