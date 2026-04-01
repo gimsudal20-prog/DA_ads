@@ -43,6 +43,11 @@ def _map_media_name(name_or_code: object) -> str:
     s = str(name_or_code or "").strip()
     if not s or s.lower() in {"nan", "none", "전체"}:
         return "전체"
+    
+    # ✨ 수정 1: 소수점이 붙어있는 매체 코드 처리 (예: "8753.0" -> "8753")
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+        
     if s in NAVER_MEDIA_MAP:
         return NAVER_MEDIA_MAP[s]
     if s.isdigit():
@@ -174,39 +179,7 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     return out
 
 def _query_device(engine, f) -> pd.DataFrame:
-    type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
-    cids = tuple(f.get('selected_customer_ids', []) or ())
-    params = {'d1': str(f['start']), 'd2': str(f['end'])}
-
-    if table_exists(engine, 'fact_campaign_device_daily'):
-        cols = set(get_table_columns(engine, 'fact_campaign_device_daily'))
-        where_cid = f"AND CAST(f.customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
-        join_sql = ''
-        type_sql = ''
-        if type_vals:
-            join_sql = ' LEFT JOIN dim_campaign c ON CAST(f.customer_id AS TEXT) = CAST(c.customer_id AS TEXT) AND CAST(f.campaign_id AS TEXT) = CAST(c.campaign_id AS TEXT) '
-            type_sql = f"AND (COALESCE(CAST(c.campaign_tp AS TEXT),'') IN ({_sql_in_str_list(type_vals)}) OR (CASE WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'WEB_SITE' THEN '파워링크' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'SHOPPING' THEN '쇼핑검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'POWER_CONTENTS' THEN '파워컨텐츠' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'BRAND_SEARCH' THEN '브랜드검색' WHEN COALESCE(CAST(c.campaign_tp AS TEXT),'') = 'PLACE' THEN '플레이스' ELSE COALESCE(CAST(c.campaign_tp AS TEXT),'') END) IN ({_sql_in_str_list(type_vals)}))"
-        device_expr = "COALESCE(NULLIF(TRIM(CAST(f.device_name AS TEXT)), ''), '기타')" if 'device_name' in cols else ("COALESCE(NULLIF(TRIM(CAST(f.device AS TEXT)), ''), '기타')" if 'device' in cols else "'기타'")
-        sql = f"""
-            SELECT
-                {device_expr} AS "기기명",
-                SUM({_metric_expr(cols, 'imp', 'f.imp').replace('imp','f.imp') if 'imp' in cols else '0'}) AS "노출수",
-                SUM({_metric_expr(cols, 'clk', 'f.clk').replace('clk','f.clk') if 'clk' in cols else '0'}) AS "클릭수",
-                SUM({_metric_expr(cols, 'cost', 'f.cost').replace('cost','f.cost') if 'cost' in cols else '0'}) AS "광고비",
-                SUM(COALESCE(f.tot_conv, COALESCE(f.purchase_conv, COALESCE(f.conv, 0)))) AS "전환수",
-                SUM(COALESCE(f.tot_sales, COALESCE(f.purchase_sales, COALESCE(f.sales, 0)))) AS "전환매출"
-            FROM fact_campaign_device_daily f
-            {join_sql}
-            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_sql}
-            GROUP BY 1
-        """
-        try:
-            out = sql_read(engine, sql, params)
-            if out is not None and not out.empty:
-                return out
-        except Exception:
-            pass
-
+    # ✨ 수정 2: 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경
     media_df = _query_media_region(engine, f)
     if media_df.empty:
         return pd.DataFrame()
