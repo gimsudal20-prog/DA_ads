@@ -130,23 +130,60 @@ def clear_fact_scope(engine, customer_id: str, target_date: date, ad_ids: list[s
     return False
 
 
+def _iter_text_values(value):
+    if isinstance(value, str):
+        v = value.strip()
+        if v and not v.startswith("http"):
+            yield v
+        return
+    if isinstance(value, dict):
+        skip_keys = {"extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type"}
+        for k, v in value.items():
+            if k in skip_keys:
+                continue
+            yield from _iter_text_values(v)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_text_values(item)
+
+
+def _first_non_empty(value, keys):
+    if isinstance(value, dict):
+        for k in keys:
+            v = value.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            v = _first_non_empty(item, keys)
+            if v:
+                return v
+    return ""
+
+
+def _normalize_ext_info(ext: dict):
+    ext_info = ext.get("adExtension")
+    if isinstance(ext_info, (dict, list)):
+        return ext_info
+    return ext or {}
+
+
 def parse_ext_name(ext: dict) -> str:
-    ext_info = ext.get("adExtension", {}) or ext
+    ext_info = _normalize_ext_info(ext)
     ext_type = ext.get("extensionType") or ext.get("type") or "확장소재"
-    cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text"]
-    text_val = ""
-    for c in cands:
-        if ext_info.get(c):
-            text_val = str(ext_info[c]).strip()
-            break
+    cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text", "name"]
+    text_val = _first_non_empty(ext_info, cands)
     if not text_val:
-        vals = [
-            str(v)
-            for k, v in ext_info.items()
-            if isinstance(v, str)
-            and not v.startswith("http")
-            and k not in ("extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type")
-        ]
+        vals = []
+        seen = set()
+        for v in _iter_text_values(ext_info):
+            if v not in seen:
+                seen.add(v)
+                vals.append(v)
+            if len(vals) >= 5:
+                break
         text_val = " / ".join(vals) if vals else str(ext_info)[:150]
     return f"[확장소재] {ext_type} | {text_val}"
 
@@ -205,7 +242,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
                     target_ad_ids.append(ext_id)
-                    ext_info = ext.get("adExtension", {}) or ext
+                    ext_info = _normalize_ext_info(ext)
                     display_name = parse_ext_name(ext)
                     ad_rows.append(
                         {
@@ -216,8 +253,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                             "status": ext.get("status"),
                             "ad_title": display_name,
                             "ad_desc": display_name,
-                            "pc_landing_url": ext_info.get("pcLandingUrl", ""),
-                            "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                            "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                            "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
                             "creative_text": display_name[:500],
                         }
                     )
@@ -240,7 +277,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
                     target_ad_ids.append(ext_id)
-                    ext_info = ext.get("adExtension", {}) or ext
+                    ext_info = _normalize_ext_info(ext)
                     display_name = parse_ext_name(ext)
                     ad_rows.append(
                         {
@@ -251,8 +288,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                             "status": ext.get("status"),
                             "ad_title": display_name,
                             "ad_desc": display_name,
-                            "pc_landing_url": ext_info.get("pcLandingUrl", ""),
-                            "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                            "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                            "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
                             "creative_text": display_name[:500],
                         }
                     )
