@@ -58,25 +58,37 @@ def _inject_ad_css():
     </style>
     """, unsafe_allow_html=True)
 
+# ✨ 수정됨: 확장소재일 경우 시각적으로 확실히 띄워주기 위해 [확장소재] 태그를 강제 부착합니다.
 def _build_material_name(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
     work = df.copy()
-    if "ad_title" in work.columns:
-        work["final_ad_name"] = work["ad_title"].fillna("").astype(str).str.strip()
-        mask_empty = work["final_ad_name"].isin(["", "nan", "None"])
-        if "ad_name" in work.columns:
-            work.loc[mask_empty, "final_ad_name"] = work.loc[mask_empty, "ad_name"].fillna("").astype(str).str.strip()
-    elif "ad_name" in work.columns:
-        work["final_ad_name"] = work["ad_name"].fillna("").astype(str).str.strip()
-    else: work["final_ad_name"] = ""
+    
+    ad_title = work.get("ad_title", pd.Series(index=work.index, dtype=str)).fillna("").astype(str).str.strip()
+    ad_name = work.get("ad_name", pd.Series(index=work.index, dtype=str)).fillna("").astype(str).str.strip()
+    
+    final_name = ad_title.copy()
+    mask_empty = final_name.isin(["", "nan", "None"])
+    final_name.loc[mask_empty] = ad_name.loc[mask_empty]
+    
+    is_ext = ad_name.str.contains("확장소재", na=False)
+    needs_tag = is_ext & ~final_name.str.contains("확장소재", na=False)
+    final_name.loc[needs_tag] = "[확장소재] " + final_name.loc[needs_tag]
+    
+    work["final_ad_name"] = final_name
     return work
 
+# ✨ 수정됨: ad_name과 소재내용 모두를 검사하여 확장소재가 일반소재에 섞이는 현상을 100% 차단합니다.
 def _filter_by_ad_kind(df: pd.DataFrame, kind: str) -> pd.DataFrame:
     if df is None or df.empty or "소재내용" not in df.columns:
         return pd.DataFrame() if df is None else df
     work = df.copy()
-    s = work["소재내용"].fillna("").astype(str)
-    non_talk = ~s.str.contains("TALK", na=False, case=False)
-    is_ext = s.str.contains("확장소재", na=False)
+    
+    s_content = work.get("소재내용", pd.Series(index=work.index, dtype=str)).fillna("").astype(str)
+    s_name = work.get("ad_name", pd.Series(index=work.index, dtype=str)).fillna("").astype(str)
+    
+    non_talk = ~s_content.str.contains("TALK", na=False, case=False)
+    is_ext = s_content.str.contains("확장소재", na=False) | s_name.str.contains("확장소재", na=False)
     
     if kind == "확장소재":
         return work[is_ext & non_talk].copy()
@@ -341,7 +353,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
             
     elif selected_tab == "쇼핑검색":
         df_shop = view[view["캠페인유형"] == "쇼핑검색"].copy()
-        ad_kind = st.segmented_control("소재 유형 필터", ["일반 소재", "확장소재"], default="확장소재", key="shop_ad_kind")
+        ad_kind = st.segmented_control("소재 유형 필터", ["일반 소재", "확장소재"], default="일반 소재", key="shop_ad_kind")
         if ad_kind:
             df_shop = _filter_by_ad_kind(df_shop, ad_kind)
             _render_ad_tab(df_shop, f"쇼핑검색 ({ad_kind})", top_n, f["start"], f["end"])
