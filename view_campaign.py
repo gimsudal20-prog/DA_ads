@@ -502,6 +502,11 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
 
     if kw_df.empty and ad_df.empty:
         return pd.DataFrame()
+
+    # ✨ [수정 1] 소재 목록에서 '확장소재'가 포함된 항목을 명시적으로 제거합니다.
+    if not ad_df.empty and "item_name" in ad_df.columns:
+        ad_df = ad_df[~ad_df["item_name"].astype(str).str.contains("확장소재", na=False)]
+
     if kw_df.empty:
         return ad_df.reset_index(drop=True)
     if ad_df.empty:
@@ -522,15 +527,22 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         kw_rows = kw_df[kw_df["campaign_id"] == cid] if "campaign_id" in kw_df.columns else pd.DataFrame()
         ad_rows = ad_df[ad_df["campaign_id"] == cid] if "campaign_id" in ad_df.columns else pd.DataFrame()
 
-        kw_shop = (not kw_rows.empty and "campaign_type_label" in kw_rows.columns and _is_shopping_campaign_type(kw_rows["campaign_type_label"]).any())
-        ad_shop = (not ad_rows.empty and "campaign_type_label" in ad_rows.columns and _is_shopping_campaign_type(ad_rows["campaign_type_label"]).any())
+        # ✨ [수정 2] 캠페인 유형을 기반으로 키워드/소재 노출 여부를 엄격하게 고정합니다.
+        camp_type = ""
+        if not kw_rows.empty and "campaign_type_label" in kw_rows.columns:
+            camp_type = str(kw_rows["campaign_type_label"].iloc[0]).upper()
+        elif not ad_rows.empty and "campaign_type_label" in ad_rows.columns:
+            camp_type = str(ad_rows["campaign_type_label"].iloc[0]).upper()
 
-        if kw_shop or ad_shop:
+        if any(x in camp_type for x in ["쇼핑", "SHOPPING", "브랜드", "BRAND", "플레이스", "PLACE"]):
             pref[cid] = "ad"
-        elif not kw_rows.empty:
+        elif any(x in camp_type for x in ["파워링크", "WEB_SITE", "파워컨텐츠", "POWER"]):
             pref[cid] = "kw"
-        elif not ad_rows.empty:
-            pref[cid] = "ad"
+        else:
+            if not kw_rows.empty:
+                pref[cid] = "kw"
+            elif not ad_rows.empty:
+                pref[cid] = "ad"
 
     kept = []
     if not kw_df.empty and "campaign_id" in kw_df.columns:
@@ -616,7 +628,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
                 "총 전환수", "총 전환매출", "통합 ROAS(%)"
             ]
-            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
+            roas_col, sales_col = "구매완료 매출"
 
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
