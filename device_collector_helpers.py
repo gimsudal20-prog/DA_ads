@@ -263,10 +263,24 @@ def build_ad_to_campaign_map(engine: Engine, customer_id: str) -> Dict[str, str]
 
 def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk_name: str):
     pk_cols = ["dt", "customer_id", pk_name, "device_name"]
+    scope_ids = []
+    seen = set()
+    for row in rows or []:
+        value = str((row or {}).get(pk_name) or '').strip()
+        if value and value not in seen:
+            seen.add(value)
+            scope_ids.append(value)
+
     for _ in range(3):
         try:
             with engine.begin() as conn:
-                conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt"), {"cid": str(customer_id), "dt": d1})
+                if scope_ids:
+                    conn.execute(
+                        text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk_name} = ANY(:ids)"),
+                        {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
+                    )
+                else:
+                    conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt"), {"cid": str(customer_id), "dt": d1})
             break
         except Exception:
             time.sleep(2)

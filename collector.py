@@ -58,6 +58,7 @@ SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
 SKIP_AD_STATS = False       
 FAST_MODE = False
+STATS_MAX_WORKERS = max(2, int((os.getenv("STATS_MAX_WORKERS") or "6").strip() or "6"))
 
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
@@ -375,22 +376,45 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk:
             time.sleep(3)
 
 
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    clear_fact_range(engine, table, customer_id, d1)
+def _normalize_scope_ids(values: List[Any] | None) -> List[str]:
+    return [str(x).strip() for x in (values or []) if str(x).strip()]
+
+
+def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for row in rows or []:
+        value = str((row or {}).get(pk) or '').strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _prepare_fact_df(rows: List[Dict[str, Any]], pk_cols: List[str]) -> pd.DataFrame:
+    return (
+        pd.DataFrame(rows)
+        .drop_duplicates(subset=pk_cols, keep='last')
+        .sort_values(by=pk_cols)
+        .astype(object)
+        .where(pd.notnull, None)
+    )
+
+
+def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows:
         return
 
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
-
+    df = _prepare_fact_df(rows, pk_cols)
     cols = list(df.columns)
-    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
+    update_cols = [c for c in cols if c not in pk_cols]
     col_names = ", ".join([f'"{c}"' for c in cols])
-    
+    pk_str = ", ".join(pk_cols)
+
     if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
     else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO NOTHING'
 
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
@@ -416,6 +440,18 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             if raw_conn:
                 try: raw_conn.close()
                 except Exception: pass
+
+
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    scope_ids = _extract_scope_ids(rows, pk)
+    if scope_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, d1)
+    if not rows:
+        return
+    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
 # [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
@@ -462,45 +498,14 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
                 except Exception: pass
 
 def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk: str, ids: List[str]):
-    clear_fact_scope(engine, table, customer_id, d1, pk, ids)
+    scope_ids = _normalize_scope_ids(ids) or _extract_scope_ids(rows, pk)
+    if scope_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
-
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
-
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-
-    if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
-
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
-    tuples = list(df.itertuples(index=False, name=None))
-
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            break
-        except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
 
 def filter_stat_result(stat_res: dict, allowed_ids: set[str] | None) -> dict:
@@ -640,7 +645,7 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         if status == 200 and isinstance(data, dict) and "data" in data: return data["data"]
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, max(1, len(chunks)))) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(STATS_MAX_WORKERS, max(1, len(chunks)))) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results: out.extend(res)
     return out
@@ -707,8 +712,9 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
         rows.append(row)
 
     pk_name = id_key
-    if scoped_replace:
-        replace_fact_scope(engine, table_name, rows, customer_id, target_date, pk_name, ids)
+    scope_ids = ids if ids else None
+    if scoped_replace or scope_ids:
+        replace_fact_scope(engine, table_name, rows, customer_id, target_date, pk_name, scope_ids or [])
     else:
         replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
@@ -2381,7 +2387,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         else:
                             ad_data_source = "report_split" if split_report_ok else "report_total_only"
                             ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
-                            a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+                            a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source, scoped_ids=target_ad_ids) if ad_stat else 0
                     else:
                         a_cnt = 0
                         ad_stat = {}

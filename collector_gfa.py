@@ -173,10 +173,26 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, target_dt: da
 
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, target_dt: date) -> None:
-    clear_fact_range(engine, table, customer_id, target_dt)
+    pk = "campaign_id" if table == "fact_campaign_daily" else "ad_id"
+    scope_ids = []
+    seen = set()
+    for row in rows or []:
+        value = str((row or {}).get(pk) or '').strip()
+        if value and value not in seen:
+            seen.add(value)
+            scope_ids.append(value)
+
+    with engine.begin() as conn:
+        if scope_ids:
+            conn.execute(
+                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
+            )
+        else:
+            conn.execute(text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt"), {"cid": str(customer_id), "dt": target_dt})
+
     if not rows:
         return
-    pk = "campaign_id" if table == "fact_campaign_daily" else "ad_id"
     df = pd.DataFrame(rows).drop_duplicates(subset=["dt", "customer_id", pk], keep="last").astype(object).where(pd.notnull, None)
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in ["dt", "customer_id", pk]]

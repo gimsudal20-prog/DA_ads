@@ -269,14 +269,38 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
             time.sleep(3)
 
 
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    clear_fact_range(engine, table, customer_id, d1)
+def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]):
+    ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
+    if not ids:
+        return
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f'DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
+                    {"cid": str(customer_id), "dt": d1, "ids": ids},
+                )
+            return
+        except Exception:
+            time.sleep(3)
+
+
+def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for row in rows or []:
+        value = str((row or {}).get(pk) or '').strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows:
         return
 
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
-
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
     sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
 
@@ -301,6 +325,18 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             if raw_conn:
                 try: raw_conn.close()
                 except Exception: pass
+
+
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    scope_ids = _extract_scope_ids(rows, pk)
+    if scope_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, d1)
+    if not rows:
+        return
+    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     table = "fact_shopping_query_daily"
@@ -466,7 +502,7 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         if status == 200 and isinstance(data, dict) and "data" in data: return data["data"]
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(STATS_MAX_WORKERS, max(1, len(chunks)))) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results: out.extend(res)
     return out
@@ -532,7 +568,8 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
 
-    replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    clear_fact_scope(engine, table_name, customer_id, target_date, id_key, ids)
+    _upsert_fact_rows(engine, table_name, rows, ["dt", "customer_id", id_key])
     return len(rows)
 
 def cleanup_ghost_reports(customer_id: str):
@@ -1464,7 +1501,7 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
     return res
 
 
-def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str) -> int:
+def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str, scoped_ids: List[str] | None = None) -> int:
     if not stat_res:
         return 0
 
@@ -1518,7 +1555,11 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
 
-    replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    if scoped_ids:
+        clear_fact_scope(engine, table_name, customer_id, target_date, pk_name, scoped_ids)
+        _upsert_fact_rows(engine, table_name, rows, ["dt", "customer_id", pk_name])
+    else:
+        replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 
@@ -1786,7 +1827,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if ad_report_df is not None and not ad_report_df.empty:
                     ad_data_source = "report_split" if split_report_ok else "report_total_only"
                     ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
-                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source, scoped_ids=target_ad_ids) if ad_stat else 0
 
                     ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
                     if device_meta.get("status") == "ok":
