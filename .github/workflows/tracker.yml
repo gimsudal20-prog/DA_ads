@@ -1,0 +1,35 @@
+name: 광고비 실시간 감시 (30분 간격)
+run-name: 광고비 실시간 감시 실행
+
+on:
+  workflow_dispatch:
+
+jobs:
+  track-budget:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NAVER_ADS_API_KEY: ${{ secrets.NAVER_ADS_API_KEY }}
+      NAVER_ADS_SECRET: ${{ secrets.NAVER_ADS_SECRET }}
+      ACCOUNT_MASTER_FILE: account_master.xlsx
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+      - name: Run OFF Scanner
+        run: |
+          echo "🕵️ [$(date +'%Y-%m-%d %H:%M:%S')] OFF 스캔 시작"
+          python check_off.py
