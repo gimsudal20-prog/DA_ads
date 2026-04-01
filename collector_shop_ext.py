@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-collector_shop_ext.py - 네이버 검색광고 수집기 (쇼핑검색 확장소재 전용 테스트용)
+collector_shop_ext.py - 네이버 검색광고 확장소재 수집기
+
+지원 버킷
+- shopping: 쇼핑검색 캠페인 확장소재만
+- non_shopping: 파워링크, 플레이스, 브랜드검색 등 쇼핑검색 외 전체
+- all: 전체 확장소재
 """
 
 import os
@@ -114,18 +119,32 @@ def parse_ext_name(ext: dict) -> str:
             
     return f"[확장소재] {ext_type} | {text_val}"
 
-def process_account(engine, customer_id: str, target_date: date):
-    log(f"--- [ {customer_id} ] 쇼핑검색 확장소재 전용 수집 시작 ({target_date}) ---")
-    
+def campaign_bucket(campaign_tp: str | None) -> str:
+    return "shopping" if str(campaign_tp or "").upper() == "SHOPPING" else "non_shopping"
+
+def bucket_label(ext_bucket: str) -> str:
+    return {"shopping": "쇼핑검색", "non_shopping": "파워링크외", "all": "전체"}.get(ext_bucket, ext_bucket)
+
+def match_bucket(campaign_tp: str | None, ext_bucket: str) -> bool:
+    bucket = campaign_bucket(campaign_tp)
+    return ext_bucket == "all" or bucket == ext_bucket
+
+def process_account(engine, customer_id: str, target_date: date, ext_bucket: str = "all"):
+    log(f"--- [ {customer_id} ] {bucket_label(ext_bucket)} 확장소재 수집 시작 ({target_date}) ---")
+
     camps = request_json("GET", "/ncc/campaigns", customer_id)
-    if not camps: return
-    shop_camps = [c for c in camps if c.get("campaignTp") == "SHOPPING"]
-    log(f"   ▶ 쇼핑검색 캠페인 {len(shop_camps)}개 발견")
-    
+    if not camps:
+        return
+
+    selected_camps = [c for c in camps if match_bucket(c.get("campaignTp"), ext_bucket)]
+    shopping_cnt = sum(1 for c in selected_camps if campaign_bucket(c.get("campaignTp")) == "shopping")
+    non_shopping_cnt = len(selected_camps) - shopping_cnt
+    log(f"   ▶ 대상 캠페인 {len(selected_camps)}개 | 쇼핑검색 {shopping_cnt}개 | 파워링크외 {non_shopping_cnt}개")
+
     camp_rows, ag_rows, ad_rows = [], [], []
     target_ad_ids = []
-    
-    for c in shop_camps:
+
+    for c in selected_camps:
         cid = c.get("nccCampaignId")
         camp_rows.append({
             "customer_id": str(customer_id), "campaign_id": str(cid),
@@ -287,8 +306,10 @@ def main():
         except Exception:
             pass
 
+    log(f"🧩 확장소재 수집 버킷: {bucket_label(args.ext_bucket)} ({args.ext_bucket})")
+
     for acc in accounts:
-        process_account(engine, acc, target_date)
+        process_account(engine, acc, target_date, args.ext_bucket)
 
 if __name__ == "__main__":
     main()

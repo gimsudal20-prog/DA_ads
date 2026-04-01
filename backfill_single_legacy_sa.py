@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 백필")
     p.add_argument("--with_shop_ext", action="store_true", help="collector_shop_ext.py도 함께 실행")
+    p.add_argument("--shop_ext_bucket", default="shopping", choices=["shopping", "non_shopping", "all"], help="확장소재 수집 버킷")
     args = p.parse_args()
     args.start = clean(args.start)
     args.end = clean(args.end)
@@ -85,6 +86,7 @@ def main() -> None:
             print(f"⚠️ 쇼핑검색 백필은 workers=1로 고정합니다. (입력값 {args.workers} → 1)", flush=True)
         args.workers = 1
         args.with_shop_ext = True
+        args.shop_ext_bucket = "shopping"
 
     print("=" * 64, flush=True)
     print("🚀 Legacy 단일 업체 SA 백필 시작", flush=True)
@@ -126,7 +128,7 @@ def main() -> None:
         print(f"📅 {d_str} | mode={mode}", flush=True)
         run_cmd(cmd, "collector", d_str)
         if args.with_shop_ext or args.shopping_only:
-            ext_cmd = [sys.executable, "collector_shop_ext.py", "--date", d_str, "--account_name", args.account_name]
+            ext_cmd = [sys.executable, "collector_shop_ext.py", "--date", d_str, "--account_name", args.account_name, "--ext_bucket", args.shop_ext_bucket]
             run_cmd(ext_cmd, "shop_ext", d_str)
         first = False
 

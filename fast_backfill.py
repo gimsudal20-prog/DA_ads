@@ -31,10 +31,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--with_gfa", action="store_true", help="collector_gfa.py도 함께 실행")
     p.add_argument("--with_shop_ext", action="store_true", help="collector_shop_ext.py도 함께 실행")
+    p.add_argument("--shop_ext_bucket", default="shopping", choices=["shopping", "non_shopping", "all"], help="확장소재 수집 버킷")
     p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/백필")
     p.add_argument("--collect_mode", default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="collector.py 수집 모드")
-    p.add_argument("--sa_scope", default="full", choices=["full", "ad_only"], help="collector.py SA 범위")
-    p.add_argument("--run_target", default="sa_and_shop_ext", choices=["sa_only", "shop_ext_only", "sa_and_shop_ext"], help="백필 실행 대상")
     args = p.parse_args()
     args.start = clean(args.start)
     args.end = clean(args.end)
@@ -70,7 +69,7 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
-    cmd += ["--collect_mode", args.collect_mode, "--sa_scope", args.sa_scope]
+    cmd += ["--collect_mode", args.collect_mode]
     if args.shopping_only:
         cmd.append("--shopping_only")
 
@@ -90,7 +89,7 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
 
 
 def build_shop_ext_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
-    cmd: List[str] = [sys.executable, "collector_shop_ext.py", "--date", d_str]
+    cmd: List[str] = [sys.executable, "collector_shop_ext.py", "--date", d_str, "--ext_bucket", args.shop_ext_bucket]
     if args.account_name:
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
@@ -104,7 +103,7 @@ def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
-    cmd += ["--collect_mode", args.collect_mode, "--sa_scope", args.sa_scope]
+    cmd += ["--collect_mode", args.collect_mode]
     return cmd
 
 
@@ -134,14 +133,7 @@ def main() -> None:
             print(f"⚠️ 쇼핑검색 백필은 workers=1로 고정합니다. (입력값 {args.workers} → 1)", flush=True)
         args.workers = 1
         args.with_shop_ext = True
-
-    run_sa = args.run_target in {"sa_only", "sa_and_shop_ext"}
-    run_shop_ext = args.run_target in {"shop_ext_only", "sa_and_shop_ext"}
-    if args.with_shop_ext:
-        run_shop_ext = True
-    if args.run_target == "shop_ext_only":
-        args.fast = False
-        args.collect_mode = "sa_only"
+        args.shop_ext_bucket = "shopping"
 
     print(f"🚀 백필 작업 시작: {start_date} ~ {end_date}", flush=True)
     if args.account_name:
@@ -151,7 +143,6 @@ def main() -> None:
     if args.fast:
         print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
     print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
-    print(f"🎯 SA 범위: {args.sa_scope}", flush=True)
     if args.sync_dim_first_day:
         print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
     else:
@@ -162,9 +153,9 @@ def main() -> None:
         print("📺 GFA 수집 포함", flush=True)
     if args.shopping_only:
         print("🛍️ 쇼핑검색 전용 수집", flush=True)
-    print(f"🚚 실행 대상: {args.run_target}", flush=True)
-    if run_shop_ext or args.shopping_only:
-        print("🧩 쇼핑 확장소재 수집 포함", flush=True)
+    if args.with_shop_ext or args.shopping_only:
+        label = {"shopping": "쇼핑검색", "non_shopping": "파워링크외", "all": "전체"}.get(args.shop_ext_bucket, args.shop_ext_bucket)
+        print(f"🧩 확장소재 수집 포함 | 버킷: {label}", flush=True)
     print("=" * 60, flush=True)
 
     first = True
@@ -172,13 +163,10 @@ def main() -> None:
         d_str = d.strftime("%Y-%m-%d")
         print(f"\n📅 [ {d_str} ]", flush=True)
 
-        if run_sa:
-            cmd_sa = build_sa_cmd(args, d_str, first)
-            run_cmd(cmd_sa, "SA", d_str)
-        else:
-            print("   ⏭️ [SA] run_target 설정으로 건너뜁니다.", flush=True)
+        cmd_sa = build_sa_cmd(args, d_str, first)
+        run_cmd(cmd_sa, "SA", d_str)
 
-        if run_shop_ext or args.shopping_only:
+        if args.with_shop_ext or args.shopping_only:
             if os.path.exists("collector_shop_ext.py"):
                 cmd_shop_ext = build_shop_ext_cmd(args, d_str)
                 run_cmd(cmd_shop_ext, "SHOP_EXT", d_str)
