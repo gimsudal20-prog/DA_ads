@@ -13,15 +13,6 @@ from ui import *
 from page_helpers import *
 from page_helpers import _perf_common_merge_meta, _render_ab_test_sbs, render_item_comparison_search
 
-def _ad_fetch_limit(top_n: int) -> int:
-    try:
-        top_n = int(top_n or 0)
-    except Exception:
-        top_n = 0
-    top_n = max(top_n, 1)
-    return min(max(top_n * 3, 800), 1800)
-
-
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
     "클릭": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
@@ -79,16 +70,18 @@ def _build_material_name(df: pd.DataFrame) -> pd.DataFrame:
     else: work["final_ad_name"] = ""
     return work
 
-def _filter_shop_ext_materials(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame() if df is None else df
+def _filter_by_ad_kind(df: pd.DataFrame, kind: str) -> pd.DataFrame:
+    if df is None or df.empty or "소재내용" not in df.columns:
+        return pd.DataFrame() if df is None else df
     work = df.copy()
-    if "소재내용" not in work.columns: return work
     s = work["소재내용"].fillna("").astype(str)
     non_talk = ~s.str.contains("TALK", na=False, case=False)
-    explicit = s.str.contains(r"\[확장소재\]", na=False, regex=True)
-    filtered = work[explicit & non_talk].copy()
-    if not filtered.empty: return filtered
-    return work[non_talk].copy()
+    is_ext = s.str.contains("확장소재", na=False)
+    
+    if kind == "확장소재":
+        return work[is_ext & non_talk].copy()
+    else:
+        return work[~is_ext & non_talk].copy()
 
 def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
     if view_df.empty: return view_df
@@ -255,24 +248,24 @@ def render_landing_tab(view):
 
 @st.fragment
 def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
-    # ⚡ 왼쪽 정렬 및 "증감율 보기" 토글 적용
     st.markdown("<div style='display:flex; justify-content:flex-start; margin-bottom:8px;'>", unsafe_allow_html=True)
     show_deltas = st.toggle("증감률 보기", value=False, key="ad_abs_toggle")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='ad-toolbar'><div class='ad-toolbar-title'>기간 비교 설정</div>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 1])
-    with c1: cmp_sub_mode = st.radio("비교 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
-    with c2:
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1: cmp_sub_mode = st.radio("매체 대상", ["파워링크", "쇼핑검색"], horizontal=True, key="ad_cmp_sub")
+    with c2: ad_kind_cmp = st.radio("소재 유형", ["일반 소재", "확장소재"], horizontal=True, key="ad_cmp_kind")
+    with c3:
         opts = get_dynamic_cmp_options(start_dt, end_dt)
         cmp_mode = st.radio("비교 기준", [o for o in opts if o != "비교 안함"], horizontal=True, key="ad_cmp_base")
     st.markdown("</div>", unsafe_allow_html=True)
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=_ad_fetch_limit(top_n), top_k=50)
+    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
 
     df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_sub_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
-    if "쇼핑검색" in cmp_sub_mode: df_target = _filter_shop_ext_materials(df_target)
+    df_target = _filter_by_ad_kind(df_target, ad_kind_cmp)
 
     if df_target.empty:
         st.info("비교할 데이터가 없습니다.")
@@ -292,14 +285,13 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     if not base_ad_bundle.empty:
         base_ad_bundle = _build_material_name(base_ad_bundle)
         base_for_search = base_ad_bundle.rename(columns={"final_ad_name": "소재내용"})
-        base_for_search = _filter_shop_ext_materials(base_for_search) if "쇼핑검색" in cmp_sub_mode else base_for_search
+        base_for_search = _filter_by_ad_kind(base_for_search, ad_kind_cmp)
     else: base_for_search = pd.DataFrame()
         
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>개별 소재 비교</div>", unsafe_allow_html=True)
         render_item_comparison_search("소재", df_target, base_for_search, "소재내용", start_dt, end_dt, b1, b2)
 
-    # ⚡ 토글 ON/OFF 에 따른 컬럼 표출 (퍼널 및 비율 최적화)
     metrics_cols_cmp = []
     metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
     metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
@@ -331,7 +323,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_ad", 200))
-    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_ad_fetch_limit(top_n), top_k=50)
+    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
 
     view = compute_ad_view(bundle, meta)
     if view.empty:
@@ -342,10 +334,20 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     if selected_tab == "파워링크":
         df_pl = view[view["캠페인유형"] == "파워링크"].copy()
-        _render_ad_tab(df_pl, "파워링크", top_n, f["start"], f["end"])
+        ad_kind = st.segmented_control("소재 유형 필터", ["일반 소재", "확장소재"], default="일반 소재", key="pl_ad_kind")
+        if ad_kind:
+            df_pl = _filter_by_ad_kind(df_pl, ad_kind)
+            _render_ad_tab(df_pl, f"파워링크 ({ad_kind})", top_n, f["start"], f["end"])
+            
     elif selected_tab == "쇼핑검색":
         df_shop = view[view["캠페인유형"] == "쇼핑검색"].copy()
-        if not df_shop.empty: df_shop = _filter_shop_ext_materials(df_shop)
-        _render_ad_tab(df_shop, "쇼핑검색 확장소재", top_n, f["start"], f["end"])
-    elif selected_tab == "랜딩페이지 효율": render_landing_tab(view)
-    elif selected_tab == "기간 비교": render_ad_cmp_tab(view, engine, cids, type_sel, top_n, f["start"], f["end"])
+        ad_kind = st.segmented_control("소재 유형 필터", ["일반 소재", "확장소재"], default="확장소재", key="shop_ad_kind")
+        if ad_kind:
+            df_shop = _filter_by_ad_kind(df_shop, ad_kind)
+            _render_ad_tab(df_shop, f"쇼핑검색 ({ad_kind})", top_n, f["start"], f["end"])
+            
+    elif selected_tab == "랜딩페이지 효율": 
+        render_landing_tab(view)
+        
+    elif selected_tab == "기간 비교": 
+        render_ad_cmp_tab(view, engine, cids, type_sel, top_n, f["start"], f["end"])
