@@ -232,7 +232,6 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
     type_vals = _expand_campaign_type_values(type_sel)
 
     if table_exists(engine, 'fact_campaign_device_daily'):
-        # DB 엔진 상관없이 호환되도록 ::text 대신 CAST(... AS TEXT) 사용
         where_cid = f"AND CAST(f.customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
         join_sql = ''
         type_filter = ''
@@ -275,7 +274,6 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
         except Exception:
             pass
 
-    # Fallback to fact_media_daily
     if table_exists(engine, 'fact_media_daily'):
         cols = get_table_columns(engine, 'fact_media_daily')
         if 'device_name' in cols:
@@ -338,7 +336,6 @@ def _render_device_share_panel(device_df: pd.DataFrame) -> None:
         for _, row in df.iterrows()
     )
 
-    # 마크다운 코드 블록으로 파싱되지 않도록 들여쓰기 및 줄바꿈을 완벽히 제거한 HTML 문자열
     html_str = (
         "<div style='display: flex; flex-direction: column; gap: 14px; padding: 4px 0;'>"
         "<div style='display: flex; justify-content: space-between; align-items: flex-end;'>"
@@ -503,7 +500,6 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
     if kw_df.empty and ad_df.empty:
         return pd.DataFrame()
 
-    # ✨ [수정 1] 소재 목록에서 '확장소재'가 포함된 항목을 명시적으로 제거합니다.
     if not ad_df.empty and "item_name" in ad_df.columns:
         ad_df = ad_df[~ad_df["item_name"].astype(str).str.contains("확장소재", na=False)]
 
@@ -527,7 +523,6 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         kw_rows = kw_df[kw_df["campaign_id"] == cid] if "campaign_id" in kw_df.columns else pd.DataFrame()
         ad_rows = ad_df[ad_df["campaign_id"] == cid] if "campaign_id" in ad_df.columns else pd.DataFrame()
 
-        # ✨ [수정 2] 캠페인 유형을 기반으로 키워드/소재 노출 여부를 엄격하게 고정합니다.
         camp_type = ""
         if not kw_rows.empty and "campaign_type_label" in kw_rows.columns:
             camp_type = str(kw_rows["campaign_type_label"].iloc[0]).upper()
@@ -575,6 +570,7 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
     else:
         ad_tmp = pd.DataFrame()
     return _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
+
 
 @st.fragment
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -628,7 +624,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
                 "총 전환수", "총 전환매출", "통합 ROAS(%)"
             ]
-            roas_col, sales_col = "구매완료 매출"
+            # ✨ TypeError 발생 지점 완벽 수정 (두 개의 값을 정상 할당)
+            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출" 
 
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
@@ -819,7 +816,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("이 지면에서는 상세 퍼널보다 안정적인 광고 운영 여부가 중요합니다.")
         try:
             days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
-            if days_diff < 3: st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다.")
+            if days_diff < 3: st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 정있습니다.")
         except: pass
 
         off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
