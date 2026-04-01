@@ -25,60 +25,80 @@ on:
         required: false
         default: '3'
       fast:
-        description: '빠른 백필 모드 (문제 분석/구매완료 확인 시 false 권장)'
+        description: '빠른 백필 모드'
         required: false
-        default: 'false'
+        default: '아니오'
+        type: choice
+        options:
+          - 아니오
+          - 예
       collect_mode:
         description: '수집 모드'
         required: false
-        default: 'sa_with_device'
+        default: 'SA+기기'
         type: choice
         options:
-          - sa_with_device
-          - sa_only
-          - device_only
+          - SA+기기
+          - SA만
+          - 기기만
       sa_scope:
         description: 'SA 범위'
         required: false
-        default: 'full'
+        default: '전체'
         type: choice
         options:
-          - full
-          - ad_only
+          - 전체
+          - 소재만
       run_target:
         description: '실행 대상'
         required: false
-        default: 'sa_and_shop_ext'
+        default: 'SA+확장소재'
         type: choice
         options:
-          - sa_only
-          - shop_ext_only
-          - sa_and_shop_ext
+          - SA만
+          - 확장소재만
+          - SA+확장소재
       shop_ext_bucket:
-        description: '확장소재 버킷'
+        description: '확장소재 구분'
         required: false
-        default: 'shopping'
+        default: '쇼핑검색'
         type: choice
         options:
-          - shopping
-          - non_shopping
-          - all
+          - 쇼핑검색
+          - 파워링크외
+          - 전체
       sync_dim_first_day:
-        description: '첫날만 구조수집 수행 (true/false)'
+        description: '첫날만 구조수집 수행'
         required: false
-        default: 'false'
+        default: '아니오'
+        type: choice
+        options:
+          - 아니오
+          - 예
       with_gfa:
-        description: 'GFA 포함 실행 (true/false, 현재 collector_gfa.py가 있을 때만 동작)'
+        description: 'GFA 포함 실행'
         required: false
-        default: 'false'
+        default: '아니오'
+        type: choice
+        options:
+          - 아니오
+          - 예
       shopping_only:
-        description: '쇼핑검색 캠페인만 재수집 (true/false)'
+        description: '쇼핑검색 캠페인만 재수집'
         required: false
-        default: 'false'
+        default: '아니오'
+        type: choice
+        options:
+          - 아니오
+          - 예
       with_shop_ext:
-        description: '확장소재도 함께 수집 (true/false)'
+        description: '확장소재도 함께 수집'
         required: false
-        default: 'false'
+        default: '아니오'
+        type: choice
+        options:
+          - 아니오
+          - 예
 
 concurrency:
   group: fast-backfill-${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}-${{ github.event.inputs.start_date }}-${{ github.event.inputs.end_date }}
@@ -120,19 +140,19 @@ jobs:
           if [ -n "${{ github.event.inputs.account_names }}" ]; then
             CMD+=(--account_names "${{ github.event.inputs.account_names }}")
           fi
-          if [ "${{ github.event.inputs.fast }}" = "true" ]; then
+          if [ "${{ github.event.inputs.fast }}" = "예" ]; then
             CMD+=(--fast)
           fi
-          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "예" ]; then
             CMD+=(--sync_dim_first_day)
           fi
-          if [ "${{ github.event.inputs.with_gfa }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_gfa }}" = "예" ]; then
             CMD+=(--with_gfa)
           fi
-          if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+          if [ "${{ github.event.inputs.shopping_only }}" = "예" ]; then
             CMD+=(--shopping_only)
           fi
-          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "예" ]; then
             CMD+=(--with_shop_ext)
           fi
 
