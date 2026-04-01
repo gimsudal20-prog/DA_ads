@@ -24,6 +24,17 @@ FMT_DICT = {
     "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
 }
 
+
+def _keyword_fetch_limit(top_n: int, daily_breakdown: bool = False) -> int:
+    try:
+        top_n = int(top_n or 0)
+    except Exception:
+        top_n = 0
+    top_n = max(top_n, 1)
+    if daily_breakdown:
+        return min(max(top_n * 2, 600), 900)
+    return min(max(top_n * 3, 800), 1600)
+
 def _style_delta_numeric(val):
     try: v = float(val)
     except: return ''
@@ -339,8 +350,8 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
             disp = disp[disp["키워드"].astype(str).str.contains(search_kw_cmp, case=False, na=False)]
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
-    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=max(top_n * 20, 5000))
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=max(top_n * 20, 5000), top_k=50)
+    base_kw_bundle = query_keyword_bundle(engine, b1, b2, list(cids), type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=False))
+    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=False), top_k=50)
 
     base_kw = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
     base_ad = base_ad_bundle.rename(columns={"ad_name": "키워드"}) if not base_ad_bundle.empty else pd.DataFrame()
@@ -410,8 +421,8 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 300))
 
-    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=max(top_n * 20, 5000), include_dt=True)
-    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 20, 5000), top_k=50, include_dt=True)
+    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), include_dt=True)
+    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), top_k=50, include_dt=True)
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
 
     selected_tab = st.pills("분석 탭 선택", ["종합 성과", "기간 비교"], default="종합 성과")

@@ -22,6 +22,15 @@ from data import (
 )
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta
 
+def _campaign_fetch_limit(top_n: int) -> int:
+    try:
+        top_n = int(top_n or 0)
+    except Exception:
+        top_n = 0
+    top_n = max(top_n, 1)
+    return min(max(top_n * 3, 800), 1800)
+
+
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
     "클릭": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
@@ -552,6 +561,7 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         return pd.concat(kept, ignore_index=True)
     return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
 
+# ✨ 수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
 def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
@@ -569,6 +579,7 @@ def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaig
             ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
         ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
         
+        # 확장소재만 별도로 추출
         ext_ads = ad_tmp[ad_tmp["item_name"].astype(str).str.contains("확장소재", na=False)].copy()
     else:
         ad_tmp = pd.DataFrame()
@@ -588,10 +599,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     has_pre_patch_cur = (f["start"] < patch_date)
 
     if has_pre_patch_cur:
-        st.info("3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
+        st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
 
-    with st.spinner("최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
-        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000))
+    with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
+        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
         if bundle is None or bundle.empty:
             return
 
@@ -671,7 +682,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
             selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
             
-            with st.spinner("선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
+            # ✨ 수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
+            with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
                 kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
             
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
@@ -680,9 +692,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 
                 has_data = False
                 
+                # --- 1) 확장소재 테이블 렌더링 ---
                 if not ext_ads.empty:
                     has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>확장소재 성과</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>✨ 확장소재 성과</div>", unsafe_allow_html=True)
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in ext_ads.columns:
                             ext_ads[c] = 0
@@ -707,9 +720,10 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.dataframe(ext_disp.style.format(safe_fmt_ext), width="stretch", hide_index=True)
                     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
                 
+                # --- 2) 일반 키워드/소재 테이블 렌더링 ---
                 if not kw_detail.empty:
                     has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>📊 하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in kw_detail.columns:
                             kw_detail[c] = 0
@@ -737,9 +751,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 및 확장소재 데이터가 없습니다.")
 
     elif selected_tab == "그룹 성과":
-        with st.spinner("광고그룹 성과를 불러오는 중입니다..."):
-            kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=max(top_n * 10, 3000))
-            ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
+        with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
+            kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
+            ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
             kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
             if not ad_bundle_grp.empty:
                 ad_tmp = ad_bundle_grp.copy()
@@ -789,7 +803,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        show_deltas = st.toggle("증감율 보기", value=False, key="camp_abs_toggle")
+        show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
         opts = get_dynamic_cmp_options(f["start"], f["end"])
@@ -797,8 +811,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
-        with st.spinner("이전 기간의 데이터를 불러오는 중입니다..."):
-            base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=max(top_n * 10, 3000))
+        with st.spinner("🔄 이전 기간의 데이터를 불러오는 중입니다..."):
+            base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
 
         view_cmp = view.copy()
         valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
@@ -807,7 +821,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
         has_pre_patch_base = (b1 < patch_date) if b1 else False
         show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
-        if show_mode == "integrated_only": st.warning("비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
+        if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
 
         metrics_cols_cmp = []
         metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
