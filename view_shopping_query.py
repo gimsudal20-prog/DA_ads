@@ -14,22 +14,37 @@ from data import query_shopping_search_terms
 from page_helpers import _perf_common_merge_meta, period_compare_range
 
 
-FAST_COL_CONFIG = {
-    "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
-    "구매완료 매출": st.column_config.NumberColumn("구매완료 매출", format="%d 원"),
-    "장바구니수": st.column_config.NumberColumn("장바구니수", format="%d"),
-    "장바구니 매출액": st.column_config.NumberColumn("장바구니 매출액", format="%d 원"),
-    "위시리스트수": st.column_config.NumberColumn("위시리스트수", format="%d"),
-    "위시리스트 매출액": st.column_config.NumberColumn("위시리스트 매출액", format="%d 원"),
-    "총 전환수": st.column_config.NumberColumn("총 전환수", format="%d"),
-    "총 전환매출": st.column_config.NumberColumn("총 전환매출", format="%d 원"),
-    "구매기여율(%)": st.column_config.NumberColumn("구매기여율(%)", format="%.1f %%"),
-    "장바구니기여율(%)": st.column_config.NumberColumn("장바구니기여율(%)", format="%.1f %%"),
-    "구매완료수 증감": st.column_config.NumberColumn("구매완료수 증감", format="%+.1f %%"),
-    "구매완료 매출 증감": st.column_config.NumberColumn("구매완료 매출 증감", format="%+.1f %%"),
-    "총 전환수 증감": st.column_config.NumberColumn("총 전환수 증감", format="%+.1f %%"),
-    "총 전환매출 증감": st.column_config.NumberColumn("총 전환매출 증감", format="%+.1f %%"),
+# ✨ 숫자 콤마 및 기호 포맷팅 딕셔너리
+FMT_DICT = {
+    "구매완료수": "{:,.0f}",
+    "구매완료 매출": "{:,.0f}원",
+    "장바구니수": "{:,.0f}",
+    "장바구니 매출액": "{:,.0f}원",
+    "위시리스트수": "{:,.0f}",
+    "위시리스트 매출액": "{:,.0f}원",
+    "총 전환수": "{:,.0f}",
+    "총 전환매출": "{:,.0f}원",
+    "구매기여율(%)": "{:,.1f}%",
+    "장바구니기여율(%)": "{:,.1f}%",
+    "구매완료수 증감": "{:+.1f}%",
+    "구매완료 매출 증감": "{:+.1f}%",
+    "총 전환수 증감": "{:+.1f}%",
+    "총 전환매출 증감": "{:+.1f}%",
 }
+
+def _style_delta_numeric(val):
+    try: v = float(val)
+    except: return ''
+    if pd.isna(v) or v == 0: return ''
+    return 'color: #1A73E8; font-weight: 700;' if v > 0 else 'color: #EA4335; font-weight: 700;'
+
+def _apply_delta_styles(styler, df: pd.DataFrame):
+    pos_cols = [c for c in ['구매완료수 증감', '구매완료 매출 증감', '총 전환수 증감', '총 전환매출 증감'] if c in df.columns]
+    try:
+        if pos_cols: styler = styler.map(_style_delta_numeric, subset=pos_cols)
+    except AttributeError:
+        if pos_cols: styler = styler.applymap(_style_delta_numeric, subset=pos_cols)
+    return styler
 
 
 def _empty_notice(message: str):
@@ -208,7 +223,6 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     _render_top_cards(view, cmp_mode)
     filtered = _render_filter_panel(view)
 
-    # 액션 라벨, 변화 태그, 추천 사유 컬럼이 제거된 디스플레이 리스트
     display_cols = [
         "업체명", "캠페인", "광고그룹", "실제 검색어",
         "구매완료수", "구매완료 매출", "장바구니수", "위시리스트수", "총 전환수", "총 전환매출",
@@ -221,7 +235,11 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         if disp.empty:
             _empty_notice("조건에 맞는 검색어가 없습니다.")
         else:
-            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+            # ✨ 세 자리 콤마 포맷팅 & 증감률 컬러 스타일링 적용
+            safe_fmt = {k: v for k, v in FMT_DICT.items() if k in disp.columns}
+            styled_disp = disp.style.format(safe_fmt)
+            styled_disp = _apply_delta_styles(styled_disp, disp)
+            st.dataframe(styled_disp, use_container_width=True, hide_index=True)
 
     st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
     
