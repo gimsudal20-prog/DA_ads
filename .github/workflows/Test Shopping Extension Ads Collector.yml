@@ -11,6 +11,10 @@ on:
         description: '종료 날짜 (YYYY-MM-DD 포맷), 미입력시 자동으로 어제 날짜'
         required: false
         default: ''
+      ext_bucket:
+        description: '확장소재 수집 버킷 (shopping / non_shopping / all)'
+        required: false
+        default: 'shopping'
   schedule:
     - cron: '0 1 * * *'
 
@@ -65,6 +69,6 @@ jobs:
           CURRENT=$START
           while [[ "$CURRENT" < "$END" || "$CURRENT" == "$END" ]]; do
             echo "▶ 수집 중: $CURRENT"
-            python collector_shop_ext.py --date "$CURRENT"
+            python collector_shop_ext.py --date "$CURRENT" --ext_bucket "${{ github.event.inputs.ext_bucket }}"
             CURRENT=$(date -d "$CURRENT + 1 day" +%Y-%m-%d)
           done

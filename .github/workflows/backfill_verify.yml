@@ -50,6 +50,11 @@ on:
         required: false
         default: false
         type: boolean
+      shop_ext_bucket:
+        description: 'Extension collector bucket (shopping / non_shopping / all)'
+        required: false
+        default: 'shopping'
+        type: string
 
 jobs:
   backfill:
@@ -108,7 +113,7 @@ jobs:
       - name: Run backfill
         shell: bash
         run: |
-          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start }}" --end "${{ github.event.inputs.end }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}")
+          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start }}" --end "${{ github.event.inputs.end }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}" --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
             CMD+=(--account_name "${{ github.event.inputs.account_name }}")

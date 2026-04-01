@@ -37,23 +37,6 @@ on:
           - sa_with_device
           - sa_only
           - device_only
-      sa_scope:
-        description: 'SA 범위'
-        required: false
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - ad_only
-      run_target:
-        description: '실행 대상'
-        required: false
-        default: 'sa_and_shop_ext'
-        type: choice
-        options:
-          - sa_only
-          - shop_ext_only
-          - sa_and_shop_ext
       sync_dim_first_day:
         description: '첫날만 구조수집 수행 (true/false)'
         required: false
@@ -67,9 +50,18 @@ on:
         required: false
         default: 'false'
       with_shop_ext:
-        description: '쇼핑 확장소재도 함께 수집 (true/false)'
+        description: '확장소재도 함께 수집 (true/false)'
         required: false
         default: 'false'
+      shop_ext_bucket:
+        description: "확장소재 수집 버킷"
+        required: false
+        default: "shopping"
+        type: choice
+        options:
+          - shopping
+          - non_shopping
+          - all
 
 concurrency:
   group: fast-backfill-${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}-${{ github.event.inputs.start_date }}-${{ github.event.inputs.end_date }}
@@ -103,7 +95,7 @@ jobs:
 
       - name: Run fast backfill
         run: |
-          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}" --sa_scope "${{ github.event.inputs.sa_scope }}" --run_target "${{ github.event.inputs.run_target }}")
+          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}" --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
             CMD+=(--account_name "${{ github.event.inputs.account_name }}")

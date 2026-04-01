@@ -38,6 +38,11 @@ on:
         required: false
         default: false
         type: boolean
+      shop_ext_bucket:
+        description: "확장소재 수집 버킷 (shopping / non_shopping / all)"
+        required: false
+        default: "shopping"
+        type: string
 
 concurrency:
   group: manual-new-account-backfill-${{ github.event.inputs.account_name }}
@@ -75,7 +80,8 @@ jobs:
             --start "${{ github.event.inputs.start_date }}" \
             --end "${{ github.event.inputs.end_date }}" \
             --account_name "${{ github.event.inputs.account_name }}" \
-            --workers "${{ github.event.inputs.workers }}")
+            --workers "${{ github.event.inputs.workers }}" \
+            --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
 
           if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
             CMD+=(--sync_dim_first_day)
