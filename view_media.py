@@ -44,7 +44,7 @@ def _map_media_name(name_or_code: object) -> str:
     if not s or s.lower() in {"nan", "none", "전체"}:
         return "전체"
     
-    # ✨ 수정 1: 소수점이 붙어있는 매체 코드 처리 (예: "8753.0" -> "8753")
+    # ✨ 소수점이 붙어있는 매체 코드 처리 (예: "8753.0" -> "8753")
     if s.endswith(".0") and s[:-2].isdigit():
         s = s[:-2]
         
@@ -116,7 +116,6 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     cids = tuple(f.get('selected_customer_ids', []) or ())
     where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
 
-    # UI/UX는 그대로 두고, 연동부만 안정적으로 raw read -> pandas aggregate 로 변경
     select_cols = [
         'dt', 'customer_id',
         'campaign_type' if 'campaign_type' in cols else None,
@@ -154,7 +153,6 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
 
-    # campaign_type filter를 pandas에서 수행해 no-header 적재 케이스도 놓치지 않게 함
     cp_candidates = [c for c in ['campaign_type', 'campaign_tp', 'campaign_type_label'] if c in raw.columns]
     if type_vals and cp_candidates:
         cp_series = raw[cp_candidates].bfill(axis=1).iloc[:, 0].fillna('').astype(str)
@@ -179,7 +177,7 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     return out
 
 def _query_device(engine, f) -> pd.DataFrame:
-    # ✨ 수정 2: 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경
+    # ✨ 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경 (오류 유발 SQL 완전 제거)
     media_df = _query_media_region(engine, f)
     if media_df.empty:
         return pd.DataFrame()
