@@ -483,13 +483,13 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
 
-    sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
+    sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain} GROUP BY customer_id"
     df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2)})
 
-    sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
+    sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain} GROUP BY customer_id"
     df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2)})
 
-    sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
+    sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain} GROUP BY customer_id"
     df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2)})
 
     if table_exists(_engine, "fact_bizmoney_daily"):
@@ -569,7 +569,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
+    return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain}", {"d1": str(d1), "d2": str(d2)})
 
 @st.cache_data(ttl=600, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
@@ -672,7 +672,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
                    SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
                    {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
             FROM fact_campaign_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+            WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain}
             GROUP BY customer_id, campaign_id
         )
         SELECT
@@ -696,7 +696,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    where_cid_f = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    where_cid_plain = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
 
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -740,7 +741,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
                 JOIN dim_keyword k ON f.keyword_id = k.keyword_id AND f.customer_id = k.customer_id
                 JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
                 JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid_f} {type_filter_sql}
                 GROUP BY f.customer_id, f.keyword_id
                 ORDER BY SUM(f.cost) DESC
                 LIMIT {topn_cost}
@@ -773,7 +774,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
                        SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
                        {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
                 FROM fact_keyword_daily
-                WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+                WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain}
                 GROUP BY customer_id, keyword_id{dt_group}
             )
             SELECT
@@ -800,7 +801,8 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    where_cid_f = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    where_cid_plain = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
 
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -849,7 +851,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
                 JOIN dim_ad ad ON f.ad_id = ad.ad_id AND f.customer_id = ad.customer_id
                 JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
                 JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid_f} {type_filter_sql}
                 GROUP BY f.customer_id, f.ad_id
                 ORDER BY SUM(f.cost) DESC
                 LIMIT {topn_cost}
@@ -882,7 +884,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
                        SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
                        {conv_agg_sql}{rank_agg_sql}{cart_agg_sql}{wish_agg_sql}
                 FROM fact_ad_daily
-                WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+                WHERE dt BETWEEN :d1 AND :d2 {where_cid_plain}
                 GROUP BY customer_id, ad_id{dt_group}
             )
             SELECT
