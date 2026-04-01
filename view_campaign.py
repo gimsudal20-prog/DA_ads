@@ -561,7 +561,7 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         return pd.concat(kept, ignore_index=True)
     return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
 
-# ✨ 수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
+#  수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
 def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
@@ -682,7 +682,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
             selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
             
-            # ✨ 수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
+            #  수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
             with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
                 kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
             
@@ -695,7 +695,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 # --- 1) 확장소재 테이블 렌더링 ---
                 if not ext_ads.empty:
                     has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>✨ 확장소재 성과</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'> 확장소재 성과</div>", unsafe_allow_html=True)
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in ext_ads.columns:
                             ext_ads[c] = 0
@@ -723,7 +723,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 # --- 2) 일반 키워드/소재 테이블 렌더링 ---
                 if not kw_detail.empty:
                     has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>📊 하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'> 하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in kw_detail.columns:
                             kw_detail[c] = 0
@@ -803,7 +803,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        show_deltas = st.toggle("📊 증감율 보기", value=False, key="camp_abs_toggle")
+        show_deltas = st.toggle(" 증감율 보기", value=False, key="camp_abs_toggle")
         st.markdown("</div>", unsafe_allow_html=True)
 
         opts = get_dynamic_cmp_options(f["start"], f["end"])
