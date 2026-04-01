@@ -5,7 +5,6 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
-import plotly.express as px
 from typing import Dict
 from datetime import date
 from html import escape
@@ -553,11 +552,14 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         return pd.concat(kept, ignore_index=True)
     return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
 
-
-def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> pd.DataFrame:
+# ✨ 수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
+def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
+    
     kw_tmp = kw_bundle.rename(columns={"keyword": "item_name"}) if not kw_bundle.empty else pd.DataFrame()
+    
+    ext_ads = pd.DataFrame()
     if not ad_bundle.empty:
         ad_tmp = ad_bundle.copy()
         if "ad_title" in ad_tmp.columns:
@@ -567,10 +569,14 @@ def _query_detail_bundle_for_campaign(engine, d1, d2, customer_id: str, campaign
         else:
             ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
         ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
+        
+        # 확장소재만 별도로 추출
+        ext_ads = ad_tmp[ad_tmp["item_name"].astype(str).str.contains("확장소재", na=False)].copy()
     else:
         ad_tmp = pd.DataFrame()
-    return _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
-
+        
+    regular_detail = _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
+    return regular_detail, ext_ads
 
 @st.fragment
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -624,8 +630,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
                 "총 전환수", "총 전환매출", "통합 ROAS(%)"
             ]
-            # ✨ TypeError 발생 지점 완벽 수정 (두 개의 값을 정상 할당)
-            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출" 
+            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
 
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
@@ -667,12 +672,49 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             selected_campaign = disp_main_src.iloc[selected_idx]["캠페인"]
             selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
             selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
+            
+            # ✨ 수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
             with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
-                kw_detail = _query_detail_bundle_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
+                kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
+            
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             with st.container(border=True):
-                st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 8px;'>[{selected_campaign}] 하위 그룹/상세 성과</h5>", unsafe_allow_html=True)
+                st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 12px;'>[{selected_campaign}] 상세 분석</h5>", unsafe_allow_html=True)
+                
+                has_data = False
+                
+                # --- 1) 확장소재 테이블 렌더링 ---
+                if not ext_ads.empty:
+                    has_data = True
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>✨ 확장소재 성과</div>", unsafe_allow_html=True)
+                    for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
+                        if c not in ext_ads.columns:
+                            ext_ads[c] = 0
+                    ext_view = ext_ads.rename(columns={"adgroup_name": "광고그룹", "item_name": "확장소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"})
+                    ext_view['광고그룹'] = ext_view['광고그룹'].fillna('미분류').replace('', '미분류')
+                    ext_view['확장소재명'] = ext_view['확장소재명'].fillna('미분류').replace('', '미분류')
+                    group_value_cols = [c for c in ['노출', '클릭', '광고비', '장바구니수', '장바구니 매출액', '위시리스트수', '위시리스트 매출액', '구매완료수', '구매완료 매출', '총 전환수', '총 전환매출'] if c in ext_view.columns]
+                    grp_ext = ext_view.groupby(['광고그룹', '확장소재명'], as_index=False)[group_value_cols].sum()
+                    grp_ext = _add_perf_metrics(grp_ext)
+
+                    sub_cols = [
+                        "광고그룹", "확장소재명", "노출", "클릭", "CTR(%)", "광고비", 
+                        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+                        "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
+                        "총 전환수", "총 전환매출", "통합 ROAS(%)"
+                    ]
+                    if has_pre_patch_cur:
+                        sub_cols = ["광고그룹", "확장소재명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                    
+                    ext_disp = grp_ext[[c for c in sub_cols if c in grp_ext.columns]].sort_values("광고비", ascending=False).head(100)
+                    safe_fmt_ext = {k: v for k, v in FMT_DICT.items() if k in ext_disp.columns}
+                    st.dataframe(ext_disp.style.format(safe_fmt_ext), width="stretch", hide_index=True)
+                    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+                
+                # --- 2) 일반 키워드/소재 테이블 렌더링 ---
                 if not kw_detail.empty:
+                    has_data = True
+                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'>📊 하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
                     for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
                         if c not in kw_detail.columns:
                             kw_detail[c] = 0
@@ -682,15 +724,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     group_value_cols = [c for c in ['노출', '클릭', '광고비', '장바구니수', '장바구니 매출액', '위시리스트수', '위시리스트 매출액', '구매완료수', '구매완료 매출', '총 전환수', '총 전환매출'] if c in kw_view.columns]
                     grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[group_value_cols].sum()
                     grp_kw = _add_perf_metrics(grp_kw)
-                    scatter_df = grp_kw[grp_kw['광고비'] > 0].sort_values('광고비', ascending=False).head(30).copy()
-                    if not scatter_df.empty:
-                        scatter_df['짧은이름'] = scatter_df['키워드/상품명'].apply(lambda x: str(x)[:12] + "...")
-                        scatter_df['클릭_size'] = scatter_df['클릭'].apply(lambda x: max(x, 1))
-                        fig_scatter = px.scatter(scatter_df, x='광고비', y=roas_col, color='광고그룹', size='클릭_size', text='짧은이름', hover_data={'키워드/상품명': True, '광고비': ':,.0f', roas_col: ':.1f', '클릭': ':,.0f'})
-                        fig_scatter.update_traces(textposition='top center', textfont_size=11, marker=dict(line=dict(width=1, color='white')))
-                        fig_scatter.add_hline(y=100, line_dash="dash", line_color="#EF4444")
-                        fig_scatter.update_layout(margin=dict(t=20, l=10, r=20, b=10), height=450, xaxis_title="광고 소진액 (원)", yaxis_title=f"{roas_col}", legend_title="광고그룹")
-                        st.plotly_chart(fig_scatter, use_container_width=True, config={'displayModeBar': False})
 
                     sub_cols = [
                         "광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", 
@@ -704,8 +737,9 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
                     safe_fmt_kw = {k: v for k, v in FMT_DICT.items() if k in kw_disp.columns}
                     st.dataframe(kw_disp.style.format(safe_fmt_kw), width="stretch", hide_index=True)
-                else:
-                    st.info("해당 캠페인에 등록된 하위 키워드/소재 데이터가 없습니다.")
+                
+                if not has_data:
+                    st.info("해당 캠페인에 등록된 하위 키워드/소재 및 확장소재 데이터가 없습니다.")
 
     elif selected_tab == "그룹 성과":
         with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
@@ -816,7 +850,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("이 지면에서는 상세 퍼널보다 안정적인 광고 운영 여부가 중요합니다.")
         try:
             days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
-            if days_diff < 3: st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 정있습니다.")
+            if days_diff < 3: st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다.")
         except: pass
 
         off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
