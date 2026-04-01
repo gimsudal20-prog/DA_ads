@@ -38,19 +38,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--sa_scope",
         default="full",
-        choices=["full", "ad_only"],
+        choices=["full", "ad_only", "전체", "소재만"],
         help="collector.py SA 범위",
     )
     p.add_argument(
         "--run_target",
         default="sa_and_shop_ext",
-        choices=["sa_only", "shop_ext_only", "sa_and_shop_ext"],
+        choices=["sa_only", "shop_ext_only", "sa_and_shop_ext", "SA만", "확장소재만", "SA+확장소재"],
         help="백필 실행 대상",
     )
     p.add_argument(
         "--shop_ext_bucket",
         default="shopping",
-        choices=["shopping", "non_shopping", "all"],
+        choices=["shopping", "non_shopping", "all", "쇼핑검색", "파워링크외", "전체"],
         help="확장소재 수집 버킷",
     )
     args = p.parse_args()
@@ -172,9 +172,9 @@ def main() -> None:
         print(f"🎯 복수 업체 필터: {args.account_names}", flush=True)
     if args.fast:
         print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
-    print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
-    print(f"🎯 SA 범위: {args.sa_scope}", flush=True)
-    print(f"🎬 실행 대상: {args.run_target}", flush=True)
+    print(f"🧭 수집 모드: {_label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
+    print(f"🎯 SA 범위: {_label_sa_scope(args.sa_scope)} ({args.sa_scope})", flush=True)
+    print(f"🎬 실행 대상: {_label_run_target(args.run_target)} ({args.run_target})", flush=True)
     if args.sync_dim_first_day:
         print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
     else:
