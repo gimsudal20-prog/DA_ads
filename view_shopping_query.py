@@ -83,23 +83,6 @@ def _merge_compare(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
     out["총 전환수 증감"], out["총 전환수 차이"] = _pct_change(out.get("total_conv", 0), out.get("b_total_conv", 0))
     out["총 전환매출 증감"], out["총 전환매출 차이"] = _pct_change(out.get("total_sales", 0), out.get("b_total_sales", 0))
 
-    def _compare_tag(row):
-        cur_p = float(row.get("purchase_conv", 0) or 0)
-        base_p = float(row.get("b_purchase_conv", 0) or 0)
-        cur_sales = float(row.get("purchase_sales", 0) or 0)
-        base_sales = float(row.get("b_purchase_sales", 0) or 0)
-        sales_delta = float(row.get("구매완료 매출 증감", 0) or 0)
-        if base_p == 0 and cur_p > 0:
-            return "전환 회복"
-        if cur_sales > 0 and sales_delta >= 50:
-            return "급상승"
-        if base_sales > 0 and cur_sales == 0:
-            return "효율 악화"
-        if sales_delta <= -50:
-            return "하락"
-        return "유지"
-
-    out["변화 태그"] = out.apply(_compare_tag, axis=1)
     return out
 
 
@@ -114,59 +97,18 @@ def _add_funnel_metrics(view: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _add_action_labels(view: pd.DataFrame) -> pd.DataFrame:
-    out = view.copy()
-    sales_pos = pd.to_numeric(out.get("구매완료 매출", 0), errors="coerce").fillna(0)
-    positive_sales = sales_pos[sales_pos > 0]
-    sales_cut = float(positive_sales.quantile(0.6)) if not positive_sales.empty else 0.0
-    sales_cut = max(sales_cut, 1.0)
-
-    labels = []
-    reasons = []
-    for _, row in out.iterrows():
-        p = float(row.get("구매완료수", 0) or 0)
-        s = float(row.get("구매완료 매출", 0) or 0)
-        c = float(row.get("장바구니수", 0) or 0)
-        w = float(row.get("위시리스트수", 0) or 0)
-        t = float(row.get("총 전환수", 0) or 0)
-        q = str(row.get("실제 검색어", "") or "")
-
-        if p >= 1 and (s >= sales_cut or t >= 2):
-            labels.append("확대 후보")
-            reasons.append("구매 발생 + 매출/전환 기여가 높음")
-        elif p == 0 and c >= 1:
-            labels.append("관찰 필요")
-            reasons.append("장바구니 반응은 있으나 구매 전환 미발생")
-        elif p == 0 and c == 0 and w >= 1:
-            labels.append("저의도 의심")
-            reasons.append("위시리스트 중심 반응으로 구매 의도 약함")
-        elif p >= 1:
-            labels.append("유지")
-            reasons.append("구매는 발생하나 확대 판단 전 추가 관찰 필요")
-        elif len(q.strip()) <= 2 and t > 0:
-            labels.append("관찰 필요")
-            reasons.append("짧은 일반 검색어로 의도 확인 필요")
-        else:
-            labels.append("유지")
-            reasons.append("즉시 확대/제외보다 누적 데이터 관찰 권장")
-
-    out["액션 라벨"] = labels
-    out["추천 사유"] = reasons
-    return out
-
-
 def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
     q_cnt = int(len(view))
-    expand_cnt = int((view["액션 라벨"] == "확대 후보").sum()) if "액션 라벨" in view.columns else 0
-    observe_cnt = int((view["액션 라벨"] == "관찰 필요").sum()) if "액션 라벨" in view.columns else 0
     purchase_cnt = int((pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0) > 0).sum())
+    cart_cnt = int((pd.to_numeric(view.get("장바구니수", 0), errors="coerce").fillna(0) > 0).sum())
+    wish_cnt = int((pd.to_numeric(view.get("위시리스트수", 0), errors="coerce").fillna(0) > 0).sum())
 
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
         with c1: st.metric("검색어 수", f"{q_cnt:,}개", help="조회 기간 내 실제 검색어")
-        with c2: st.metric("확대 후보", f"{expand_cnt:,}개", help="매출/전환 기여가 높은 검색어")
-        with c3: st.metric("관찰 필요", f"{observe_cnt:,}개", help="장바구니 반응 중심 검색어")
-        with c4: st.metric("구매 발생", f"{purchase_cnt:,}개", help=f"{cmp_mode} 기준 증감 태그 포함")
+        with c2: st.metric("구매 발생", f"{purchase_cnt:,}개", help=f"{cmp_mode} 기준 증감 태그 포함")
+        with c3: st.metric("장바구니 발생", f"{cart_cnt:,}개")
+        with c4: st.metric("위시리스트 발생", f"{wish_cnt:,}개")
 
 
 def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
@@ -174,7 +116,7 @@ def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
         st.markdown("<div style='font-size:15px;font-weight:700;color:#1F2937;margin-bottom:12px;'>쇼핑 검색어 필터</div>", unsafe_allow_html=True)
         filtered = view.copy()
         
-        r1c1, r1c2, r1c3 = st.columns(3)
+        r1c1, r1c2 = st.columns(2)
         camps = ["전체"] + sorted([str(x) for x in filtered["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered.columns else ["전체"]
         sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_unified")
         if sel_camp != "전체":
@@ -184,11 +126,6 @@ def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
         sel_grp = r1c2.selectbox("광고그룹", grps, key="sq_grp_filter_unified")
         if sel_grp != "전체":
             filtered = filtered[filtered["광고그룹"] == sel_grp]
-
-        labels = ["전체"] + [x for x in ["확대 후보", "유지", "관찰 필요", "저의도 의심"] if x in filtered["액션 라벨"].unique().tolist()]
-        sel_label = r1c3.selectbox("액션 라벨", labels, key="sq_label_filter_unified")
-        if sel_label != "전체":
-            filtered = filtered[filtered["액션 라벨"] == sel_label]
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         r2c1, r2c2, r2c3 = st.columns(3)
@@ -267,46 +204,24 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     ]
     view = _to_num(view, numeric_cols)
     view = _add_funnel_metrics(view)
-    view = _add_action_labels(view)
 
     _render_top_cards(view, cmp_mode)
     filtered = _render_filter_panel(view)
 
+    # 액션 라벨, 변화 태그, 추천 사유 컬럼이 제거된 디스플레이 리스트
     display_cols = [
-        "업체명", "캠페인", "광고그룹", "실제 검색어", "액션 라벨", "변화 태그", "추천 사유",
+        "업체명", "캠페인", "광고그룹", "실제 검색어",
         "구매완료수", "구매완료 매출", "장바구니수", "위시리스트수", "총 전환수", "총 전환매출",
         "구매기여율(%)", "장바구니기여율(%)", "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감",
     ]
     disp = filtered[[c for c in display_cols if c in filtered.columns]].sort_values(["구매완료 매출", "총 전환매출"], ascending=False).head(500).copy()
 
-    top_expand = disp[disp.get("액션 라벨", "") == "확대 후보"].head(100).copy() if "액션 라벨" in disp.columns else pd.DataFrame()
-    top_observe = disp[disp.get("액션 라벨", "") == "관찰 필요"].head(100).copy() if "액션 라벨" in disp.columns else pd.DataFrame()
-
-    selected_tab = st.pills("분석 탭 선택", ["전체 검색어", "확대 후보", "관찰 필요"], default="전체 검색어")
-
-    if selected_tab == "전체 검색어":
-        with st.container(border=True):
-            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>검색어별 퍼널 성과 (상위 500개)</div>", unsafe_allow_html=True)
-            if disp.empty:
-                _empty_notice("조건에 맞는 검색어가 없습니다.")
-            else:
-                st.dataframe(disp, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
-
-    elif selected_tab == "확대 후보":
-        with st.container(border=True):
-            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>확대 후보 (구매 발생 + 기여 높음)</div>", unsafe_allow_html=True)
-            if top_expand.empty:
-                _empty_notice("확대 후보 검색어가 없습니다.")
-            else:
-                st.dataframe(top_expand, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
-
-    elif selected_tab == "관찰 필요":
-        with st.container(border=True):
-            st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>관찰 필요 (장바구니 반응 위주)</div>", unsafe_allow_html=True)
-            if top_observe.empty:
-                _empty_notice("관찰 필요 검색어가 없습니다.")
-            else:
-                st.dataframe(top_observe, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
+    with st.container(border=True):
+        st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>검색어별 퍼널 성과 (상위 500개)</div>", unsafe_allow_html=True)
+        if disp.empty:
+            _empty_notice("조건에 맞는 검색어가 없습니다.")
+        else:
+            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
 
     st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
     
