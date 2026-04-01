@@ -260,7 +260,7 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("</div>", unsafe_allow_html=True)
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=10000, top_k=50)
+    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
 
     df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_sub_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
     if "쇼핑검색" in cmp_sub_mode: df_target = _filter_shop_ext_materials(df_target)
@@ -322,7 +322,7 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_ad", 200))
-    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=10000, top_k=50)
+    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
 
     view = compute_ad_view(bundle, meta)
     if view.empty:

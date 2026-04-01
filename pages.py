@@ -76,6 +76,20 @@ def main():
             return
         f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
+    requires_selection_pages = {
+        "요약",
+        "예산 및 잔액",
+        "매체(지면) 분석",
+        "성과 분석 · 캠페인",
+        "성과 분석 · 키워드",
+        "성과 분석 · 소재",
+        "쇼핑 검색어 분석",
+    }
+
+    if nav in requires_selection_pages and not (f.get("manager") or f.get("account")):
+        st.info("담당자 또는 광고주(계정) 필터를 먼저 1개 이상 선택하면 데이터가 표시됩니다.")
+        st.stop()
+
     if nav == "요약":
         page_overview(meta, engine, f)
     elif nav == "예산 및 잔액":
@@ -84,16 +98,12 @@ def main():
         page_media(engine, f)
     elif nav == "성과 분석 · 캠페인":
         page_perf_campaign(meta, engine, f)
-    elif nav in ["성과 분석 · 키워드", "성과 분석 · 소재", "쇼핑 검색어 분석"]:
-        if not (f.get("manager") or f.get("account")):
-            st.info("담당자 또는 광고주(계정) 필터를 먼저 1개 이상 선택하면 데이터가 표시됩니다.")
-            st.stop()
-        if nav == "성과 분석 · 키워드":
-            page_perf_keyword(meta, engine, f)
-        elif nav == "쇼핑 검색어 분석":
-            page_perf_shopping_query(meta, engine, f)
-        else:
-            page_perf_ad(meta, engine, f)
+    elif nav == "성과 분석 · 키워드":
+        page_perf_keyword(meta, engine, f)
+    elif nav == "쇼핑 검색어 분석":
+        page_perf_shopping_query(meta, engine, f)
+    elif nav == "성과 분석 · 소재":
+        page_perf_ad(meta, engine, f)
     else:
         page_settings(engine)
 

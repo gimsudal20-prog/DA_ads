@@ -76,7 +76,7 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
 
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=0)
+    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=3000)
     except Exception: return pd.DataFrame()
 
 

@@ -579,7 +579,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
 
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
-        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=20000)
+        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000))
         if bundle is None or bundle.empty:
             return
 
@@ -700,8 +700,8 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     elif selected_tab == "그룹 성과":
         with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
-            kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=0)
-            ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=0, top_k=50)
+            kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=max(top_n * 10, 3000))
+            ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=max(top_n * 10, 3000), top_k=50)
             kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
             if not ad_bundle_grp.empty:
                 ad_tmp = ad_bundle_grp.copy()
@@ -760,7 +760,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
         with st.spinner("🔄 이전 기간의 데이터를 불러오는 중입니다..."):
-            base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=20000)
+            base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=max(top_n * 10, 3000))
 
         view_cmp = view.copy()
         valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
