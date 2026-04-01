@@ -1597,6 +1597,25 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
         sales_idx = 9 if "CAMPAIGN" in report_tp else 12
         rank_idx = 11 if "CAMPAIGN" in report_tp else 14
 
+        # 헤더가 없는 AD 리포트는 간헐적으로 노출/클릭 컬럼 순서가 뒤바뀐 형태로 내려오는 경우가 있다.
+        # 기본 인덱스(8=imp, 9=clk)로 읽었을 때 샘플 다수에서 imp < clk 가 반복되면 안전하게 swap 한다.
+        if "AD" in report_tp and imp_idx != -1 and clk_idx != -1:
+            sample_df = data_df.head(50)
+            reversed_hits = 0
+            normal_hits = 0
+            for _, sr in sample_df.iterrows():
+                if len(sr) <= max(imp_idx, clk_idx):
+                    continue
+                imp_v = safe_float(sr.iloc[imp_idx])
+                clk_v = safe_float(sr.iloc[clk_idx])
+                if imp_v > 0 and clk_v > 0:
+                    if imp_v < clk_v:
+                        reversed_hits += 1
+                    else:
+                        normal_hits += 1
+            if reversed_hits >= 5 and reversed_hits > (normal_hits * 2):
+                imp_idx, clk_idx = clk_idx, imp_idx
+
     res = {}
     for _, r in data_df.iterrows():
         if len(r) <= pk_idx:
