@@ -277,7 +277,15 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
 
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    if update_cols:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+    else:
+        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
+
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -311,7 +319,15 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
 
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    if update_cols:
+        conflict_clause = 'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+    else:
+        conflict_clause = 'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO NOTHING'
+
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -1457,25 +1473,6 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
         conv_idx = 8 if "CAMPAIGN" in report_tp else 11
         sales_idx = 9 if "CAMPAIGN" in report_tp else 12
         rank_idx = 11 if "CAMPAIGN" in report_tp else 14
-
-        # 헤더가 없는 AD 리포트는 간헐적으로 노출/클릭 컬럼 순서가 뒤바뀐 형태로 내려오는 경우가 있다.
-        # 기본 인덱스(8=imp, 9=clk)로 읽었을 때 샘플 다수에서 imp < clk 가 반복되면 안전하게 swap 한다.
-        if "AD" in report_tp and imp_idx != -1 and clk_idx != -1:
-            sample_df = data_df.head(50)
-            reversed_hits = 0
-            normal_hits = 0
-            for _, sr in sample_df.iterrows():
-                if len(sr) <= max(imp_idx, clk_idx):
-                    continue
-                imp_v = safe_float(sr.iloc[imp_idx])
-                clk_v = safe_float(sr.iloc[clk_idx])
-                if imp_v > 0 and clk_v > 0:
-                    if imp_v < clk_v:
-                        reversed_hits += 1
-                    else:
-                        normal_hits += 1
-            if reversed_hits >= 5 and reversed_hits > (normal_hits * 2):
-                imp_idx, clk_idx = clk_idx, imp_idx
 
     res = {}
     for _, r in data_df.iterrows():

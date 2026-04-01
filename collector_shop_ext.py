@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-collector_shop_ext.py - 네이버 검색광고 확장소재 수집기
-
-지원 버킷
-- shopping: 쇼핑검색 캠페인 확장소재만
-- non_shopping: 파워링크, 플레이스, 브랜드검색 등 쇼핑검색 외 전체
-- all: 전체 확장소재
+collector_shop_ext.py - 네이버 검색광고 수집기 (쇼핑검색 확장소재 전용 테스트용)
 """
 
 import os
@@ -99,6 +94,23 @@ def upsert_many(engine, table: str, rows: list, pk_cols: list):
         if cur: cur.close()
         if raw_conn: raw_conn.close()
 
+def clear_fact_scope(engine, customer_id: str, target_date: date, ad_ids: list[str]):
+    ad_ids = sorted({str(x).strip() for x in (ad_ids or []) if str(x).strip()})
+    if not ad_ids:
+        return True
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("DELETE FROM fact_ad_daily WHERE customer_id=:cid AND dt=:dt AND ad_id = ANY(:ids)"),
+                    {"cid": str(customer_id), "dt": target_date, "ids": ad_ids},
+                )
+            return True
+        except Exception as e:
+            log(f"⚠️ fact_ad_daily 범위 삭제 실패({attempt+1}/3): {e}")
+            time.sleep(2 + attempt)
+    return False
+
 def parse_ext_name(ext: dict) -> str:
     ext_info = ext.get("adExtension", {}) or ext
     ext_type = ext.get("extensionType") or ext.get("type") or "쇼핑확장"
@@ -119,32 +131,18 @@ def parse_ext_name(ext: dict) -> str:
             
     return f"[확장소재] {ext_type} | {text_val}"
 
-def campaign_bucket(campaign_tp: str | None) -> str:
-    return "shopping" if str(campaign_tp or "").upper() == "SHOPPING" else "non_shopping"
-
-def bucket_label(ext_bucket: str) -> str:
-    return {"shopping": "쇼핑검색", "non_shopping": "파워링크외", "all": "전체"}.get(ext_bucket, ext_bucket)
-
-def match_bucket(campaign_tp: str | None, ext_bucket: str) -> bool:
-    bucket = campaign_bucket(campaign_tp)
-    return ext_bucket == "all" or bucket == ext_bucket
-
-def process_account(engine, customer_id: str, target_date: date, ext_bucket: str = "all"):
-    log(f"--- [ {customer_id} ] {bucket_label(ext_bucket)} 확장소재 수집 시작 ({target_date}) ---")
-
+def process_account(engine, customer_id: str, target_date: date):
+    log(f"--- [ {customer_id} ] 쇼핑검색 확장소재 전용 수집 시작 ({target_date}) ---")
+    
     camps = request_json("GET", "/ncc/campaigns", customer_id)
-    if not camps:
-        return
-
-    selected_camps = [c for c in camps if match_bucket(c.get("campaignTp"), ext_bucket)]
-    shopping_cnt = sum(1 for c in selected_camps if campaign_bucket(c.get("campaignTp")) == "shopping")
-    non_shopping_cnt = len(selected_camps) - shopping_cnt
-    log(f"   ▶ 대상 캠페인 {len(selected_camps)}개 | 쇼핑검색 {shopping_cnt}개 | 파워링크외 {non_shopping_cnt}개")
-
+    if not camps: return
+    shop_camps = [c for c in camps if c.get("campaignTp") == "SHOPPING"]
+    log(f"   ▶ 쇼핑검색 캠페인 {len(shop_camps)}개 발견")
+    
     camp_rows, ag_rows, ad_rows = [], [], []
     target_ad_ids = []
-
-    for c in selected_camps:
+    
+    for c in shop_camps:
         cid = c.get("nccCampaignId")
         camp_rows.append({
             "customer_id": str(customer_id), "campaign_id": str(cid),
@@ -201,6 +199,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
     log(f"   ▶ 캠페인({len(camp_rows)}), 광고그룹({len(ag_rows)}), 확장소재({len(ad_rows)}) 매핑 완료!")
 
+    target_ad_ids = sorted({str(x).strip() for x in target_ad_ids if str(x).strip()})
+
     if target_ad_ids:
         log(f"   ▶ 확장소재 {len(target_ad_ids)}개 실시간 통계 조회 중...")
         d_str = target_date.strftime("%Y-%m-%d")
@@ -227,28 +227,11 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
             })
             
         if fact_rows:
-            df_fact = pd.DataFrame(fact_rows)
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("DELETE FROM fact_ad_daily WHERE customer_id=:cid AND dt=:dt AND ad_id IN :ids"), 
-                                 {"cid": str(customer_id), "dt": target_date, "ids": tuple(target_ad_ids)})
-            except Exception: pass
-            
-            tuples_f = list(df_fact.itertuples(index=False, name=None))
-            col_names = '", "'.join(df_fact.columns)
-            sql_f = f'INSERT INTO fact_ad_daily ("{col_names}") VALUES %s'
-            
-            raw_conn, cur = None, None
-            try:
-                raw_conn = engine.raw_connection()
-                cur = raw_conn.cursor()
-                psycopg2.extras.execute_values(cur, sql_f, tuples_f, page_size=2000)
-                raw_conn.commit()
+            if clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
+                upsert_many(engine, "fact_ad_daily", fact_rows, ["dt", "customer_id", "ad_id"])
                 log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
-            except Exception as e: log(f"통계 저장 실패: {e}")
-            finally:
-                if cur: cur.close()
-                if raw_conn: raw_conn.close()
+            else:
+                log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단했습니다. 중복 방지를 위해 확인 후 재실행하세요.")
         else:
             log("   ⚠️ 조회된 날짜에 노출/클릭이 발생한 확장소재가 없습니다.")
 
@@ -306,10 +289,8 @@ def main():
         except Exception:
             pass
 
-    log(f"🧩 확장소재 수집 버킷: {bucket_label(args.ext_bucket)} ({args.ext_bucket})")
-
     for acc in accounts:
-        process_account(engine, acc, target_date, args.ext_bucket)
+        process_account(engine, acc, target_date)
 
 if __name__ == "__main__":
     main()
