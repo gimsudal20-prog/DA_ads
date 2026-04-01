@@ -358,7 +358,6 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
         except Exception:
             time.sleep(3)
 
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]):
     ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
     if not ids:
@@ -373,7 +372,6 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk:
             return
         except Exception:
             time.sleep(3)
-
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     clear_fact_range(engine, table, customer_id, d1)
@@ -417,7 +415,6 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
                 try: raw_conn.close()
                 except Exception: pass
 
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     table = "fact_shopping_query_daily"
     clear_fact_range(engine, table, customer_id, d1)
@@ -1852,8 +1849,11 @@ def _detect_media_header_idx(df: pd.DataFrame) -> int:
     for i in range(scan_limit):
         row_vals = [_m_normalize_header(x) for x in df.iloc[i].fillna('').tolist()]
         score = 0
-        if any(c in row_vals for c in [_m_normalize_header(x) for x in AD_HEADER_CANDIDATES_LOCAL]):
+        
+        # ✨ 수정 1: 헤더 감지 시 캠페인 ID를 포함시켜, 소재 ID가 생략된 양식의 매체 리포트도 인지하도록 안전망 추가
+        if any(c in row_vals for c in [_m_normalize_header(x) for x in AD_HEADER_CANDIDATES_LOCAL + ["캠페인id", "campaignid", "ncccampaignid"]]):
             score += 2
+            
         if any(c in row_vals for c in [_m_normalize_header(x) for x in MEDIA_HEADER_CANDIDATES + REGION_HEADER_CANDIDATES + DEVICE_HEADER_CANDIDATES_LOCAL]):
             score += 2
         metric_hits = sum(1 for x in [_m_normalize_header(x) for x in IMP_HEADER_CANDIDATES_LOCAL + CLK_HEADER_CANDIDATES_LOCAL + COST_HEADER_CANDIDATES_LOCAL] if x in row_vals)
@@ -1880,17 +1880,16 @@ def normalize_device_name(device_value: Any) -> str:
 def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None):
     if raw_df is None or raw_df.empty:
         return [], {'status': 'empty'}
-    # Observed no-header row layout from logs:
-    # 0 dt, 1 account/customer, 2 campaign_id, 3 adgroup_id, 4 keyword_id or '-', 5 ad_id, 6 biz channel,
-    # 7 media/placement code, 8 device(M/P), 9~13 metrics where 10=clk, 11=cost, 12=imp, 13=conv.
     preview = raw_df.head(5).fillna('').astype(str).values.tolist()
     agg = {}
     row_count = 0
     mapped_rows = 0
     for _, row in raw_df.iterrows():
         vals = [str(x).strip() for x in row.fillna('').tolist()]
+        # ✨ 수정 2: index 14(전환매출액)까지 안전하게 파싱하도록 최소 길이를 14로 수정 (기존 14 미만 스킵)
         if len(vals) < 14:
             continue
+            
         row_count += 1
         campaign_id = vals[2].strip()
         if not campaign_id or not campaign_id.startswith('cmp-'):
@@ -1906,12 +1905,18 @@ def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, cus
         cost = int(round(_m_safe_float(vals[11]))) if len(vals) > 11 else 0
         imp = int(round(_m_safe_float(vals[12]))) if len(vals) > 12 else 0
         conv = float(_m_safe_float(vals[13])) if len(vals) > 13 else 0.0
+        
+        # ✨ 수정 2: 강제로 0으로 하드코딩되던 sales 부분 파싱 추가
+        sales = int(round(_m_safe_float(vals[14]))) if len(vals) > 14 else 0  
+        
         key = (campaign_type, media_name, region_name, device_name)
         bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
         bucket['imp'] += imp
         bucket['clk'] += clk
         bucket['cost'] += cost
         bucket['conv'] += conv
+        bucket['sales'] += sales
+        
     rows = []
     for (campaign_type, media_name, region_name, device_name), s in agg.items():
         rows.append({
@@ -1925,7 +1930,7 @@ def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, cus
             'clk': int(s['clk']),
             'cost': int(s['cost']),
             'conv': float(round(s['conv'], 4)),
-            'sales': 0,
+            'sales': int(s['sales']),
             'data_source': 'ad_report_dimension_noheader',
             'source_report': 'AD',
         })
@@ -1957,6 +1962,7 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     data_df = raw_df.iloc[header_idx + 1:].reset_index(drop=True)
 
     ad_idx = _m_get_col_idx(headers, AD_HEADER_CANDIDATES_LOCAL)
+    camp_idx = _m_get_col_idx(headers, ["캠페인id", "campaignid", "ncccampaignid"])
     media_idx = _m_get_col_idx(headers, MEDIA_HEADER_CANDIDATES)
     region_idx = _m_get_col_idx(headers, REGION_HEADER_CANDIDATES)
     device_idx = _m_get_col_idx(headers, DEVICE_HEADER_CANDIDATES_LOCAL)
@@ -1966,8 +1972,9 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     conv_idx = _m_get_col_idx(headers, CONV_HEADER_CANDIDATES_LOCAL)
     sales_idx = _m_get_col_idx(headers, SALES_HEADER_CANDIDATES_LOCAL)
 
-    if ad_idx == -1:
-        return [], {'status': 'no_ad_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+    # ✨ 수정 3: ad_id가 무조건 있어야만 통과시키던 로직에서 camp_id가 있는 경우도 허용하도록 완화 (전체 유실 방지)
+    if ad_idx == -1 and camp_idx == -1:
+        return [], {'status': 'no_ad_or_camp_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
 
     if media_idx == -1 and region_idx == -1 and device_idx == -1:
         return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:20]}
@@ -1977,17 +1984,27 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     mapped_rows = 0
     for _, row in data_df.iterrows():
         row_count += 1
-        max_idx = max([x for x in [ad_idx, media_idx, region_idx, device_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx] if x != -1], default=0)
+        max_idx = max([x for x in [ad_idx, camp_idx, media_idx, region_idx, device_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx] if x != -1], default=0)
         if len(row) <= max_idx:
             continue
-        ad_id = str(row.iloc[ad_idx] if ad_idx != -1 and len(row) > ad_idx else '').strip()
-        if not ad_id:
-            continue
-        campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
+            
+        campaign_id = ''
+        
+        # 1. 소재 ID를 통한 캠페인 추적 (기존 로직)
+        if ad_idx != -1 and len(row) > ad_idx:
+            ad_id = str(row.iloc[ad_idx]).strip()
+            campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
+            
+        # 2. 매체 리포트에 캠페인 ID가 직접 박혀있는 경우의 Fallback
+        if not campaign_id and camp_idx != -1 and len(row) > camp_idx:
+            campaign_id = str(row.iloc[camp_idx]).strip()
+            
         if not campaign_id:
             continue
+            
         if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
             continue
+            
         mapped_rows += 1
         campaign_type = campaign_type_map.get(campaign_id, '기타')
         media_name = _m_safe_text(row.iloc[media_idx] if media_idx != -1 and len(row) > media_idx else '', '전체')
@@ -2668,7 +2685,6 @@ def main():
             ]
         log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(accounts_info)}개")
 
-    # [수정됨] 중복 ID를 완벽히 제거하여 동일 계정이 여러 스레드에 할당되는 Race Condition/에러 방지
     unique_accounts = {}
     for acc in accounts_info:
         unique_accounts[acc["id"]] = acc
