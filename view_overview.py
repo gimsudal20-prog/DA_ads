@@ -141,6 +141,10 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
         if neg_subset: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_subset)
     return styler
 
+# 나눗셈 연산 시 0으로 나누기 오류(ZeroDivisionError) 방지 도우미 함수
+def _safe_div(n, d, mult=1.0):
+    sd = np.where(d == 0, 1, d)
+    return np.where(d > 0, (n / sd) * mult, 0.0)
 
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty: return pd.DataFrame()
@@ -171,35 +175,35 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
 
-    c_cpc = np.where(c_clk > 0, c_cost / c_clk, 0)
-    b_cpc = np.where(b_clk > 0, b_cost / b_clk, 0)
+    c_cpc = _safe_div(c_cost, c_clk)
+    b_cpc = _safe_div(b_cost, b_clk)
 
     out = pd.DataFrame()
     out[group_label] = merged[group_col].astype(str).str.upper().map(type_kor_map).fillna(merged[group_col]) if type_kor_map else merged[group_col]
 
     out['노출수'] = c_imp
     out['클릭수'] = c_clk
-    out['클릭률(%)'] = np.where(c_imp > 0, (c_clk / c_imp) * 100, 0)
+    out['클릭률(%)'] = _safe_div(c_clk, c_imp, 100.0)
     out['광고비'] = c_cost
     out['CPC'] = c_cpc
     
     out['구매완료수'] = c_conv
-    out['구매 전환율(%)'] = np.where(c_clk > 0, (c_conv / c_clk) * 100, 0)
+    out['구매 전환율(%)'] = _safe_div(c_conv, c_clk, 100.0)
     out['구매완료 매출'] = c_sales
-    out['구매완료 ROAS(%)'] = np.where(c_cost > 0, (c_sales / c_cost) * 100, 0)
+    out['구매완료 ROAS(%)'] = _safe_div(c_sales, c_cost, 100.0)
     
     out['총 전환수'] = c_tot_conv
-    out['총 전환율(%)'] = np.where(c_clk > 0, (c_tot_conv / c_clk) * 100, 0)
+    out['총 전환율(%)'] = _safe_div(c_tot_conv, c_clk, 100.0)
     out['총 전환매출'] = c_tot_sales
-    out['통합 ROAS(%)'] = np.where(c_cost > 0, (c_tot_sales / c_cost) * 100, 0)
+    out['통합 ROAS(%)'] = _safe_div(c_tot_sales, c_cost, 100.0)
 
     # Base values for deltas
-    b_ctr = np.where(b_imp > 0, (b_clk / b_imp) * 100, 0)
-    b_cvr = np.where(b_clk > 0, (b_conv / b_clk) * 100, 0)
-    b_roas = np.where(b_cost > 0, (b_sales / b_cost) * 100, 0)
+    b_ctr = _safe_div(b_clk, b_imp, 100.0)
+    b_cvr = _safe_div(b_conv, b_clk, 100.0)
+    b_roas = _safe_div(b_sales, b_cost, 100.0)
     
-    b_tcvr = np.where(b_clk > 0, (b_tot_conv / b_clk) * 100, 0)
-    b_troas = np.where(b_cost > 0, (b_tot_sales / b_cost) * 100, 0)
+    b_tcvr = _safe_div(b_tot_conv, b_clk, 100.0)
+    b_troas = _safe_div(b_tot_sales, b_cost, 100.0)
 
     def _apply_pct_diff(c, b, pct_col, abs_col):
         diff = c - b
@@ -243,19 +247,19 @@ def _build_ts_df(df, group_col, group_label):
     out[group_label] = grp[group_col]
     out['노출수'] = grp['imp']
     out['클릭수'] = grp['clk']
-    out['클릭률(%)'] = np.where(grp['imp'] > 0, (grp['clk'] / grp['imp']) * 100, 0)
+    out['클릭률(%)'] = _safe_div(grp['clk'], grp['imp'], 100.0)
     out['광고비'] = grp['cost']
-    out['CPC'] = np.where(grp['clk'] > 0, grp['cost'] / grp['clk'], 0)
+    out['CPC'] = _safe_div(grp['cost'], grp['clk'])
     
     out['구매완료수'] = grp['conv']
-    out['구매 전환율(%)'] = np.where(grp['clk'] > 0, (grp['conv'] / grp['clk']) * 100, 0)
+    out['구매 전환율(%)'] = _safe_div(grp['conv'], grp['clk'], 100.0)
     out['구매완료 매출'] = grp['sales']
-    out['구매완료 ROAS(%)'] = np.where(grp['cost'] > 0, (grp['sales'] / grp['cost']) * 100, 0)
+    out['구매완료 ROAS(%)'] = _safe_div(grp['sales'], grp['cost'], 100.0)
     
     out['총 전환수'] = grp['tot_conv'] if has_tot else grp['conv']
-    out['총 전환율(%)'] = np.where(grp['clk'] > 0, (out['총 전환수'] / grp['clk']) * 100, 0)
+    out['총 전환율(%)'] = _safe_div(out['총 전환수'], grp['clk'], 100.0)
     out['총 전환매출'] = grp['tot_sales'] if has_tot else grp['sales']
-    out['통합 ROAS(%)'] = np.where(grp['cost'] > 0, (out['총 전환매출'] / grp['cost']) * 100, 0)
+    out['통합 ROAS(%)'] = _safe_div(out['총 전환매출'], grp['cost'], 100.0)
 
     return out
 
@@ -415,7 +419,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
-    # ⚡ 구매완료 데이터 보기 토글 오른쪽 밀착 정렬
     head_col_meta, empty_col, head_col_toggle = st.columns([5, 1, 3])
     with head_col_meta:
         st.markdown(
@@ -531,8 +534,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 target_df["conv"] = pd.to_numeric(target_df.get("conv", 0), errors="coerce").fillna(0.0)
 
                 target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
-                target_df["c_roas_purch"] = np.where(target_df["cost"] > 0, (target_df["sales"] / target_df["cost"]) * 100, 0.0)
-                target_df["achieve_raw"] = np.where(target_df["base_roas"] > 0, (target_df["c_roas_purch"] / target_df["base_roas"]) * 100, 0.0)
+                target_df["c_roas_purch"] = _safe_div(target_df["sales"], target_df["cost"], 100.0)
+                target_df["achieve_raw"] = _safe_div(target_df["c_roas_purch"], target_df["base_roas"], 100.0)
                 target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
                 
                 target_df["status"] = np.where(
@@ -630,11 +633,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
 
     # ====================================================
-    # ✨ 퍼널 뷰 배치 및 증감/절대값 토글 로직
+    # 퍼널 뷰 배치 및 증감/절대값 토글 로직
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
-    # ⚡ 토글 버튼 왼쪽 배치 및 명칭 수정, 기본값 표출 축소(Base Only)
     st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
     show_deltas = st.toggle("증감률 보기", value=False, key="ov_abs_toggle")
 
