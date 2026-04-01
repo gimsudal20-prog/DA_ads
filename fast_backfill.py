@@ -60,6 +60,33 @@ def _normalize_shop_ext_bucket(v: str) -> str:
 
 
 
+
+
+def _label_collect_mode(v: str) -> str:
+    m = {
+        "sa_only": "SA만",
+        "device_only": "기기만",
+        "sa_with_device": "SA+기기",
+    }
+    return m.get(clean(v), clean(v))
+
+
+def _label_sa_scope(v: str) -> str:
+    m = {
+        "full": "전체",
+        "ad_only": "소재만",
+    }
+    return m.get(clean(v), clean(v))
+
+
+def _label_run_target(v: str) -> str:
+    m = {
+        "sa_only": "SA만",
+        "shop_ext_only": "확장소재만",
+        "sa_and_shop_ext": "SA+확장소재",
+    }
+    return m.get(clean(v), clean(v))
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="날짜 범위별 SA/GFA/확장소재 백필 실행기")
     p.add_argument("--start", required=True, help="시작일 YYYY-MM-DD")
