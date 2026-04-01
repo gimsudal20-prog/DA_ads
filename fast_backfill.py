@@ -13,6 +13,53 @@ def clean(v: str | None) -> str:
     return (v or "").strip()
 
 
+def _normalize_collect_mode(v: str) -> str:
+    m = {
+        "sa_only": "sa_only",
+        "device_only": "device_only",
+        "sa_with_device": "sa_with_device",
+        "SA만": "sa_only",
+        "기기만": "device_only",
+        "SA+기기": "sa_with_device",
+    }
+    return m.get(clean(v), clean(v))
+
+
+def _normalize_sa_scope(v: str) -> str:
+    m = {
+        "full": "full",
+        "ad_only": "ad_only",
+        "전체": "full",
+        "소재만": "ad_only",
+    }
+    return m.get(clean(v), clean(v))
+
+
+def _normalize_run_target(v: str) -> str:
+    m = {
+        "sa_only": "sa_only",
+        "shop_ext_only": "shop_ext_only",
+        "sa_and_shop_ext": "sa_and_shop_ext",
+        "SA만": "sa_only",
+        "확장소재만": "shop_ext_only",
+        "SA+확장소재": "sa_and_shop_ext",
+    }
+    return m.get(clean(v), clean(v))
+
+
+def _normalize_shop_ext_bucket(v: str) -> str:
+    m = {
+        "shopping": "shopping",
+        "non_shopping": "non_shopping",
+        "all": "all",
+        "쇼핑검색": "shopping",
+        "파워링크외": "non_shopping",
+        "전체": "all",
+    }
+    return m.get(clean(v), clean(v))
+
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="날짜 범위별 SA/GFA/확장소재 백필 실행기")
     p.add_argument("--start", required=True, help="시작일 YYYY-MM-DD")
@@ -32,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--collect_mode",
         default="sa_with_device",
-        choices=["sa_only", "device_only", "sa_with_device"],
+        choices=["sa_only", "device_only", "sa_with_device", "SA만", "기기만", "SA+기기"],
         help="collector.py 수집 모드",
     )
     p.add_argument(
@@ -58,6 +105,10 @@ def parse_args() -> argparse.Namespace:
     args.end = clean(args.end)
     args.account_name = clean(args.account_name)
     args.account_names = clean(args.account_names)
+    args.collect_mode = _normalize_collect_mode(args.collect_mode)
+    args.sa_scope = _normalize_sa_scope(args.sa_scope)
+    args.run_target = _normalize_run_target(args.run_target)
+    args.shop_ext_bucket = _normalize_shop_ext_bucket(args.shop_ext_bucket)
     return args
 
 
