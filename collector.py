@@ -494,6 +494,35 @@ def _normalize_scope_ids(values: List[Any] | None) -> List[str]:
     return [str(x).strip() for x in (values or []) if str(x).strip()]
 
 
+def _fetch_existing_scope_ids(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]) -> List[str]:
+    ids = _normalize_scope_ids(ids)
+    if not ids:
+        return []
+    sql = text(f"SELECT {pk}::text AS scope_id FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)")
+    for _ in range(3):
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(sql, {"cid": str(customer_id), "dt": d1, "ids": ids}).fetchall()
+            seen = set()
+            out: List[str] = []
+            for row in rows or []:
+                value = str((row[0] if row else '') or '').strip()
+                if value and value not in seen:
+                    seen.add(value)
+                    out.append(value)
+            return out
+        except Exception:
+            time.sleep(1)
+    return []
+
+
+def _clear_stale_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, existing_ids: List[str], keep_ids: List[str]):
+    keep = set(_normalize_scope_ids(keep_ids))
+    stale_ids = [str(x).strip() for x in (existing_ids or []) if str(x).strip() and str(x).strip() not in keep]
+    if stale_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, stale_ids)
+
+
 def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
     seen = set()
     out: List[str] = []
@@ -503,35 +532,6 @@ def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
             seen.add(value)
             out.append(value)
     return out
-
-
-def _list_existing_scope_ids(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]) -> List[str]:
-    scope_ids = _normalize_scope_ids(ids)
-    if not scope_ids:
-        return []
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(f'SELECT DISTINCT {pk} FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
-                {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
-            )
-            return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
-    except Exception:
-        return []
-
-
-def clear_stale_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, scoped_ids: List[str], current_ids: List[str]):
-    scope_ids = _normalize_scope_ids(scoped_ids)
-    if not scope_ids:
-        return
-    current_set = set(_normalize_scope_ids(current_ids))
-    if not current_set:
-        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
-        return
-    existing_ids = _list_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
-    stale_ids = [value for value in existing_ids if value not in current_set]
-    if stale_ids:
-        clear_fact_scope(engine, table, customer_id, d1, pk, stale_ids)
 
 
 def _prepare_fact_df(rows: List[Dict[str, Any]], pk_cols: List[str]) -> pd.DataFrame:
@@ -588,15 +588,21 @@ def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     scope_ids = _extract_scope_ids(rows, pk)
-    if scope_ids:
-        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
-    else:
-        clear_fact_range(engine, table, customer_id, d1)
-    if not rows:
+    if not scope_ids:
+        if not rows:
+            clear_fact_range(engine, table, customer_id, d1)
+            return
+        _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
         return
+
+    if not rows:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        return
+
+    existing_ids = _fetch_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
+    _clear_stale_scope(engine, table, customer_id, d1, pk, existing_ids, scope_ids)
     _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
-# [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_adgroup_ids: List[str] | None = None, scoped_ad_ids: List[str] | None = None):
     table = "fact_shopping_query_daily"
     adgroup_ids = _normalize_scope_ids(scoped_adgroup_ids) or _extract_scope_ids(rows, "adgroup_id")
@@ -616,15 +622,20 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
 
 def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk: str, ids: List[str]):
     scope_ids = _normalize_scope_ids(ids) or _extract_scope_ids(rows, pk)
-    current_ids = _extract_scope_ids(rows, pk)
-    if scope_ids:
-        clear_stale_fact_scope(engine, table, customer_id, d1, pk, scope_ids, current_ids)
-    else:
-        clear_fact_range(engine, table, customer_id, d1)
-    if not rows:
+    if not scope_ids:
+        if not rows:
+            clear_fact_range(engine, table, customer_id, d1)
+            return
+        _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
         return
-    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
+    if not rows:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        return
+
+    existing_ids = _fetch_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
+    _clear_stale_scope(engine, table, customer_id, d1, pk, existing_ids, scope_ids)
+    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
 def filter_stat_result(stat_res: dict, allowed_ids: set[str] | None) -> dict:
     if not stat_res or not allowed_ids:

@@ -171,42 +171,34 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, target_dt: da
     with engine.begin() as conn:
         conn.execute(text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt"), {"cid": str(customer_id), "dt": target_dt})
 
-
-def _list_existing_scope_ids(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, ids: List[str]) -> List[str]:
-    scope_ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
-    if not scope_ids:
-        return []
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(f"SELECT DISTINCT {pk} FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
-                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
-            )
-            return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
-    except Exception:
-        return []
-
-
-def clear_stale_fact_scope(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, scoped_ids: List[str], current_ids: List[str]) -> None:
-    scope_ids = [str(x).strip() for x in (scoped_ids or []) if str(x).strip()]
-    if not scope_ids:
+def clear_fact_scope(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, ids: List[str]) -> None:
+    ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
+    if not ids:
         return
-    current_set = {str(x).strip() for x in (current_ids or []) if str(x).strip()}
-    if not current_set:
-        with engine.begin() as conn:
-            conn.execute(
-                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
-                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
-            )
-        return
-    existing_ids = _list_existing_scope_ids(engine, table, customer_id, target_dt, pk, scope_ids)
-    stale_ids = [value for value in existing_ids if value not in current_set]
-    if stale_ids:
-        with engine.begin() as conn:
-            conn.execute(
-                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
-                {"cid": str(customer_id), "dt": target_dt, "ids": stale_ids},
-            )
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+            {"cid": str(customer_id), "dt": target_dt, "ids": ids},
+        )
+
+
+def _fetch_existing_scope_ids(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, ids: List[str]) -> List[str]:
+    ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
+    if not ids:
+        return []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT {pk}::text AS scope_id FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+            {"cid": str(customer_id), "dt": target_dt, "ids": ids},
+        ).fetchall()
+    seen = set()
+    out: List[str] = []
+    for row in rows or []:
+        value = str((row[0] if row else '') or '').strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, target_dt: date) -> None:
@@ -219,32 +211,24 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             seen.add(value)
             scope_ids.append(value)
 
-    if scope_ids:
-        clear_stale_fact_scope(engine, table, customer_id, target_dt, pk, scope_ids, scope_ids)
-    else:
-        clear_fact_range(engine, table, customer_id, target_dt)
+    if not scope_ids:
+        if not rows:
+            clear_fact_range(engine, table, customer_id, target_dt)
+            return
+        upsert_many(engine, table, rows, ["dt", "customer_id", pk])
+        return
 
     if not rows:
+        clear_fact_scope(engine, table, customer_id, target_dt, pk, scope_ids)
         return
-    df = pd.DataFrame(rows).drop_duplicates(subset=["dt", "customer_id", pk], keep="last").astype(object).where(pd.notnull, None)
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in ["dt", "customer_id", pk]]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    sql = f"INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}"
-    tuples = list(df.itertuples(index=False, name=None))
-    raw_conn = engine.raw_connection()
-    try:
-        cur = raw_conn.cursor()
-        psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
-        raw_conn.commit()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-        raw_conn.close()
 
+    existing_ids = _fetch_existing_scope_ids(engine, table, customer_id, target_dt, pk, scope_ids)
+    keep = {str(x).strip() for x in scope_ids if str(x).strip()}
+    stale_ids = [str(x).strip() for x in existing_ids if str(x).strip() and str(x).strip() not in keep]
+    if stale_ids:
+        clear_fact_scope(engine, table, customer_id, target_dt, pk, stale_ids)
+
+    upsert_many(engine, table, rows, ["dt", "customer_id", pk])
 
 def _to_int(v: Any) -> Optional[int]:
     if v is None:

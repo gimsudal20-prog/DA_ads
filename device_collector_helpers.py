@@ -261,6 +261,47 @@ def build_ad_to_campaign_map(engine: Engine, customer_id: str) -> Dict[str, str]
         return {}
 
 
+def _fetch_existing_device_scope_pairs(engine: Engine, table: str, customer_id: str, d1: date, pk_name: str, ids: List[str]) -> List[Tuple[str, str]]:
+    ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
+    if not ids:
+        return []
+    sql = text(
+        f"SELECT {pk_name}::text AS scope_id, COALESCE(device_name::text, '') AS device_name "
+        f"FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk_name} = ANY(:ids)"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"cid": str(customer_id), "dt": d1, "ids": ids}).fetchall()
+    seen = set()
+    out: List[Tuple[str, str]] = []
+    for row in rows or []:
+        scope_id = str((row[0] if row else '') or '').strip()
+        device_name = str((row[1] if row else '') or '').strip()
+        key = (scope_id, device_name)
+        if scope_id and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _clear_stale_device_scope_pairs(engine: Engine, table: str, customer_id: str, d1: date, pk_name: str, pairs: List[Tuple[str, str]]):
+    stale_pairs = [(str(pk).strip(), str(device).strip()) for pk, device in (pairs or []) if str(pk).strip() and str(device).strip()]
+    if not stale_pairs:
+        return
+    ids = [pk for pk, _ in stale_pairs]
+    devices = [device for _, device in stale_pairs]
+    sql = text(
+        f"DELETE FROM {table} t USING (SELECT * FROM unnest(:ids, :devices)) AS s(scope_id, device_name) "
+        f"WHERE t.customer_id=:cid AND t.dt=:dt AND t.{pk_name}::text = s.scope_id::text AND COALESCE(t.device_name::text, '') = s.device_name::text"
+    )
+    for _ in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(sql, {"cid": str(customer_id), "dt": d1, "ids": ids, "devices": devices})
+            return
+        except Exception:
+            time.sleep(2)
+
+
 def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk_name: str):
     pk_cols = ["dt", "customer_id", pk_name, "device_name"]
     scope_ids = []
@@ -271,19 +312,37 @@ def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, A
             seen.add(value)
             scope_ids.append(value)
 
-    for _ in range(3):
-        try:
-            with engine.begin() as conn:
-                if scope_ids:
-                    conn.execute(
-                        text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk_name} = ANY(:ids)"),
-                        {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
-                    )
-                else:
-                    conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt"), {"cid": str(customer_id), "dt": d1})
-            break
-        except Exception:
-            time.sleep(2)
+    if not scope_ids:
+        if not rows:
+            for _ in range(3):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt"), {"cid": str(customer_id), "dt": d1})
+                    break
+                except Exception:
+                    time.sleep(2)
+            return
+    else:
+        if not rows:
+            for _ in range(3):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk_name} = ANY(:ids)"),
+                            {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
+                        )
+                    break
+                except Exception:
+                    time.sleep(2)
+            return
+
+        current_pairs = {(str((row or {}).get(pk_name) or '').strip(), str((row or {}).get('device_name') or '').strip()) for row in rows or []}
+        current_pairs = {pair for pair in current_pairs if pair[0] and pair[1]}
+        existing_pairs = _fetch_existing_device_scope_pairs(engine, table, customer_id, d1, pk_name, scope_ids)
+        stale_pairs = [pair for pair in existing_pairs if pair not in current_pairs]
+        if stale_pairs:
+            _clear_stale_device_scope_pairs(engine, table, customer_id, d1, pk_name, stale_pairs)
+
     if not rows:
         return
 
@@ -326,7 +385,6 @@ def replace_device_fact_range(engine: Engine, table: str, rows: List[Dict[str, A
                     raw_conn.close()
                 except Exception:
                     pass
-
 
 def parse_ad_device_report(
     df: pd.DataFrame,
