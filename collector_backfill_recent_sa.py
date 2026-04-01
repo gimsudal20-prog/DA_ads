@@ -51,8 +51,6 @@ SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
 SKIP_AD_STATS = False       
-STATS_MAX_WORKERS = max(2, int((os.getenv("STATS_MAX_WORKERS") or "6").strip() or "6"))
-ACCOUNT_MAX_WORKERS_DEFAULT = max(1, int((os.getenv("ACCOUNT_MAX_WORKERS") or "6").strip() or "6"))
 
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
@@ -271,77 +269,15 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
             time.sleep(3)
 
 
-def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]):
-    ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
-    if not ids:
-        return
-    for attempt in range(3):
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(f'DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
-                    {"cid": str(customer_id), "dt": d1, "ids": ids},
-                )
-            return
-        except Exception:
-            time.sleep(3)
-
-
-def _normalize_scope_ids(values: List[Any] | None) -> List[str]:
-    return [str(x).strip() for x in (values or []) if str(x).strip()]
-
-
-def _fetch_existing_scope_ids(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]) -> List[str]:
-    ids = _normalize_scope_ids(ids)
-    if not ids:
-        return []
-    sql = text(f"SELECT {pk}::text AS scope_id FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)")
-    for _ in range(3):
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(sql, {"cid": str(customer_id), "dt": d1, "ids": ids}).fetchall()
-            seen = set()
-            out: List[str] = []
-            for row in rows or []:
-                value = str((row[0] if row else '') or '').strip()
-                if value and value not in seen:
-                    seen.add(value)
-                    out.append(value)
-            return out
-        except Exception:
-            time.sleep(1)
-    return []
-
-
-def _clear_stale_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, existing_ids: List[str], keep_ids: List[str]):
-    keep = set(_normalize_scope_ids(keep_ids))
-    stale_ids = [str(x).strip() for x in (existing_ids or []) if str(x).strip() and str(x).strip() not in keep]
-    if stale_ids:
-        clear_fact_scope(engine, table, customer_id, d1, pk, stale_ids)
-
-
-def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
-    seen = set()
-    out: List[str] = []
-    for row in rows or []:
-        value = str((row or {}).get(pk) or '').strip()
-        if value and value not in seen:
-            seen.add(value)
-            out.append(value)
-    return out
-
-
-def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
+def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+    clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
 
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in pk_cols]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    pk_str = ", ".join([f'"{c}"' for c in pk_cols])
-    conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols]) if update_cols else f'ON CONFLICT ({pk_str}) DO NOTHING'
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
+    df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
+
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -366,40 +302,39 @@ def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk
                 try: raw_conn.close()
                 except Exception: pass
 
-def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
-    pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
-    scope_ids = _extract_scope_ids(rows, pk)
-    if not scope_ids:
-        if not rows:
-            clear_fact_range(engine, table, customer_id, d1)
-            return
-        _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
-        return
-
-    if not rows:
-        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
-        return
-
-    existing_ids = _fetch_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
-    _clear_stale_scope(engine, table, customer_id, d1, pk, existing_ids, scope_ids)
-    _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
-
-def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_adgroup_ids: List[str] | None = None, scoped_ad_ids: List[str] | None = None):
+def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     table = "fact_shopping_query_daily"
-    adgroup_ids = _normalize_scope_ids(scoped_adgroup_ids) or _extract_scope_ids(rows, "adgroup_id")
-    ad_ids = _normalize_scope_ids(scoped_ad_ids) or _extract_scope_ids(rows, "ad_id")
-
-    if adgroup_ids:
-        clear_fact_scope(engine, table, customer_id, d1, "adgroup_id", adgroup_ids)
-    elif ad_ids:
-        clear_fact_scope(engine, table, customer_id, d1, "ad_id", ad_ids)
-    else:
-        clear_fact_range(engine, table, customer_id, d1)
+    clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
 
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
-    _upsert_fact_rows(engine, table, rows, pk_cols)
+    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    tuples = list(df.itertuples(index=False, name=None))
+
+    for attempt in range(3):
+        raw_conn, cur = None, None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
+            raw_conn.commit()
+            break
+        except Exception as e:
+            if raw_conn:
+                try: raw_conn.rollback()
+                except Exception: pass
+            time.sleep(3)
+            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
+        finally:
+            if cur:
+                try: cur.close()
+                except Exception: pass
+            if raw_conn:
+                try: raw_conn.close()
+                except Exception: pass
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -531,7 +466,7 @@ def get_stats_range(customer_id: str, ids: List[str], d1: date) -> List[dict]:
         if status == 200 and isinstance(data, dict) and "data" in data: return data["data"]
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(STATS_MAX_WORKERS, max(1, len(chunks)))) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         results = executor.map(fetch_chunk, chunks)
         for res in results: out.extend(res)
     return out
@@ -597,8 +532,7 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
 
-    clear_fact_scope(engine, table_name, customer_id, target_date, id_key, ids)
-    _upsert_fact_rows(engine, table_name, rows, ["dt", "customer_id", id_key])
+    replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 def cleanup_ghost_reports(customer_id: str):
@@ -816,6 +750,59 @@ def merge_split_maps(*maps: dict) -> dict:
 
 
 
+
+def filter_split_map_excluding_ids(split_map: dict, excluded_ids: set[str] | None = None) -> dict:
+    if not split_map:
+        return {}
+    excluded = {str(x).strip() for x in (excluded_ids or set()) if str(x).strip()}
+    if not excluded:
+        return dict(split_map)
+    out = {}
+    for k, v in split_map.items():
+        ks = str(k).strip()
+        if not ks or ks in excluded:
+            continue
+        out[ks] = v
+    return out
+
+def summarize_split_map(split_map: dict) -> dict:
+    out = empty_split_summary()
+    if not split_map:
+        return out
+    for v in split_map.values():
+        if not isinstance(v, dict):
+            continue
+        out['purchase_conv'] += float(v.get('purchase_conv', 0.0) or 0.0)
+        out['purchase_sales'] += int(float(v.get('purchase_sales', 0) or 0))
+        out['cart_conv'] += float(v.get('cart_conv', 0.0) or 0.0)
+        out['cart_sales'] += int(float(v.get('cart_sales', 0) or 0))
+        out['wishlist_conv'] += float(v.get('wishlist_conv', 0.0) or 0.0)
+        out['wishlist_sales'] += int(float(v.get('wishlist_sales', 0) or 0))
+    return out
+
+def validate_shopping_split_summary(summary: dict, ad_map: dict) -> tuple[bool, str]:
+    if not split_summary_has_values(summary) or not ad_map:
+        return True, ''
+    map_sum = summarize_split_map(ad_map)
+    checks = [
+        ('purchase_conv', 0.6),
+        ('purchase_sales', 0.15),
+        ('cart_conv', 1.5),
+        ('cart_sales', 0.20),
+        ('wishlist_conv', 1.5),
+        ('wishlist_sales', 0.20),
+    ]
+    mismatches = []
+    for key, ratio_tol in checks:
+        s_val = float(summary.get(key, 0) or 0)
+        m_val = float(map_sum.get(key, 0) or 0)
+        if s_val <= 0 and m_val <= 0:
+            continue
+        diff = abs(s_val - m_val)
+        base = max(abs(s_val), abs(m_val), 1.0)
+        if diff / base > ratio_tol:
+            mismatches.append(f"{key} summary={s_val} ad_map={m_val}")
+    return (len(mismatches) == 0, '; '.join(mismatches))
 
 def empty_split_summary() -> dict:
     return {
@@ -1530,7 +1517,7 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
     return res
 
 
-def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str, scoped_ids: List[str] | None = None) -> int:
+def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str) -> int:
     if not stat_res:
         return 0
 
@@ -1584,11 +1571,7 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
             row["avg_rnk"] = round(avg_rnk, 2)
         rows.append(row)
 
-    if scoped_ids:
-        clear_fact_scope(engine, table_name, customer_id, target_date, pk_name, scoped_ids)
-        _upsert_fact_rows(engine, table_name, rows, ["dt", "customer_id", pk_name])
-    else:
-        replace_fact_range(engine, table_name, rows, customer_id, target_date)
+    replace_fact_range(engine, table_name, rows, customer_id, target_date)
     return len(rows)
 
 
@@ -1599,6 +1582,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
         shopping_adgroup_ids: set[str] = set()
+        shopping_keyword_ids: set[str] = set()
 
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
@@ -1623,7 +1607,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 groups = list_adgroups(customer_id, cid)
                 for g in groups:
                     gid = str(g.get("nccAdgroupId"))
-                    if is_shopping_campaign_obj(c):
+                    if cid in shopping_campaign_ids:
                         shopping_adgroup_ids.add(gid)
                     ag_rows.append({
                         "customer_id": str(customer_id),
@@ -1674,6 +1658,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   🔎 [ {account_name} ] 구조 키워드 텍스트 적재: {kw_text_filled}/{len(kw_rows)}")
             if not SKIP_AD_DIM:
                 upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+            shopping_keyword_ids = set(target_kw_ids) if shopping_adgroup_ids else set()
             log(f"   ✅ [ {account_name} ] 구조 적재 완료")
 
         else:
@@ -1688,6 +1673,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         {"cid": customer_id, "cids": list(shopping_campaign_ids)},
                     )
                 } if shopping_campaign_ids else set()
+                shopping_keyword_ids = {
+                    str(r[0]) for r in conn.execute(
+                        text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
+                        {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
+                    )
+                } if shopping_adgroup_ids else set()
 
         keyword_lookup = {}
         keyword_unique_lookup = {}
@@ -1832,11 +1823,21 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 # 쇼핑 키워드 detail 은 AD keyword split 이 비었을 때만 fallback 으로 사용한다.
                 camp_map = ad_camp_map if ad_camp_map else shop_camp_map
                 ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
+                raw_kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
+                kw_map = filter_split_map_excluding_ids(raw_kw_map, shopping_keyword_ids)
+                removed_kw = max(0, len(raw_kw_map) - len(kw_map))
+                if removed_kw:
+                    log(f"   ℹ️ [ {account_name} ] 쇼핑 키워드 split {removed_kw}건은 fact_keyword_daily 적재에서 제외합니다.")
 
                 split_report_ok = bool(camp_map or kw_map or ad_map)
 
                 final_split_summary = ad_summary if split_summary_has_values(ad_summary) else shop_summary
+                split_ok, split_reason = validate_shopping_split_summary(final_split_summary, ad_map)
+                if split_report_ok and not split_ok:
+                    log(f"   ⚠️ [ {account_name} ] shopping split 검증 실패 → 상세 split 저장을 건너뛰고 총합만 적재합니다. ({split_reason})")
+                    camp_map, kw_map, ad_map = {}, {}, {}
+                    shop_query_rows = []
+                    split_report_ok = False
 
                 if split_report_ok:
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
@@ -1865,7 +1866,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if ad_report_df is not None and not ad_report_df.empty:
                     ad_data_source = "report_split" if split_report_ok else "report_total_only"
                     ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
-                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source, scoped_ids=target_ad_ids) if ad_stat else 0
+                    a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
 
                     ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
                     if device_meta.get("status") == "ok":
@@ -1923,7 +1924,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             else:
                 a_cnt = 0
 
-            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date, scoped_adgroup_ids=list(shopping_adgroup_ids))
+            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
             if shop_query_rows:
                 log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
@@ -1946,7 +1947,7 @@ def main():
     parser.add_argument("--account_names", type=str, default="", help="쉼표(,)로 구분한 여러 업체명")
     parser.add_argument("--exclude_gfa_accounts", action="store_true", help="계정명 끝이 ' GFA' 인 계정은 수집 대상에서 제외")
     parser.add_argument("--skip_dim", action="store_true")
-    parser.add_argument("--workers", type=int, default=ACCOUNT_MAX_WORKERS_DEFAULT)
+    parser.add_argument("--workers", type=int, default=20)
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else (datetime.utcnow() + timedelta(hours=9)).date() - timedelta(days=1)

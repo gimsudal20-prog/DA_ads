@@ -80,6 +80,12 @@ def main() -> None:
         print("❌ [FATAL] 시작일이 종료일보다 늦습니다.", flush=True)
         sys.exit(1)
 
+    if args.shopping_only:
+        if args.workers != 1:
+            print(f"⚠️ 쇼핑검색 백필은 workers=1로 고정합니다. (입력값 {args.workers} → 1)", flush=True)
+        args.workers = 1
+        args.with_shop_ext = True
+
     print("=" * 64, flush=True)
     print("🚀 Legacy 단일 업체 SA 백필 시작", flush=True)
     print(f"- 기간: {start_date} ~ {end_date}", flush=True)
