@@ -172,6 +172,43 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, target_dt: da
         conn.execute(text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt"), {"cid": str(customer_id), "dt": target_dt})
 
 
+def _list_existing_scope_ids(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, ids: List[str]) -> List[str]:
+    scope_ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
+    if not scope_ids:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT DISTINCT {pk} FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
+            )
+            return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
+    except Exception:
+        return []
+
+
+def clear_stale_fact_scope(engine: Engine, table: str, customer_id: str, target_dt: date, pk: str, scoped_ids: List[str], current_ids: List[str]) -> None:
+    scope_ids = [str(x).strip() for x in (scoped_ids or []) if str(x).strip()]
+    if not scope_ids:
+        return
+    current_set = {str(x).strip() for x in (current_ids or []) if str(x).strip()}
+    if not current_set:
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
+            )
+        return
+    existing_ids = _list_existing_scope_ids(engine, table, customer_id, target_dt, pk, scope_ids)
+    stale_ids = [value for value in existing_ids if value not in current_set]
+    if stale_ids:
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
+                {"cid": str(customer_id), "dt": target_dt, "ids": stale_ids},
+            )
+
+
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, target_dt: date) -> None:
     pk = "campaign_id" if table == "fact_campaign_daily" else "ad_id"
     scope_ids = []
@@ -182,14 +219,10 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             seen.add(value)
             scope_ids.append(value)
 
-    with engine.begin() as conn:
-        if scope_ids:
-            conn.execute(
-                text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt AND {pk} = ANY(:ids)"),
-                {"cid": str(customer_id), "dt": target_dt, "ids": scope_ids},
-            )
-        else:
-            conn.execute(text(f"DELETE FROM {table} WHERE customer_id = :cid AND dt = :dt"), {"cid": str(customer_id), "dt": target_dt})
+    if scope_ids:
+        clear_stale_fact_scope(engine, table, customer_id, target_dt, pk, scope_ids, scope_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, target_dt)
 
     if not rows:
         return

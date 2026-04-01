@@ -59,6 +59,9 @@ SKIP_KEYWORD_STATS = False
 SKIP_AD_STATS = False       
 FAST_MODE = False
 STATS_MAX_WORKERS = max(2, int((os.getenv("STATS_MAX_WORKERS") or "6").strip() or "6"))
+ACCOUNT_MAX_WORKERS_DEFAULT = max(1, int((os.getenv("ACCOUNT_MAX_WORKERS") or "6").strip() or "6"))
+ENABLE_RECENT_SUCCESS_SKIP = str(os.getenv("COLLECTOR_SKIP_RECENT_SUCCESS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+RECENT_SUCCESS_SKIP_MINUTES = max(0, int((os.getenv("RECENT_SUCCESS_SKIP_MINUTES") or "90").strip() or "90"))
 
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
@@ -209,6 +212,102 @@ def release_job_lock(raw_conn, customer_id: str, target_date: date):
         except Exception:
             pass
 
+
+def _recent_skip_enabled_for_date(target_date: date, fast_mode: bool) -> bool:
+    kst_today = (datetime.utcnow() + timedelta(hours=9)).date()
+    return fast_mode or target_date >= (kst_today - timedelta(days=1))
+
+
+def _normalize_dt_for_compare(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone().replace(tzinfo=None)
+        return value
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def should_skip_recent_success(engine: Engine, customer_id: str, target_date: date, collect_mode: str, shopping_only: bool, fast_mode: bool) -> tuple[bool, datetime | None]:
+    if not ENABLE_RECENT_SUCCESS_SKIP or RECENT_SUCCESS_SKIP_MINUTES <= 0:
+        return False, None
+    if not _recent_skip_enabled_for_date(target_date, fast_mode):
+        return False, None
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT status, run_finished_at
+                FROM collector_run_log
+                WHERE target_date = :target_date
+                  AND customer_id = :customer_id
+                  AND collect_mode = :collect_mode
+                  AND shopping_only = :shopping_only
+                  AND fast_mode = :fast_mode
+            """), {
+                "target_date": target_date,
+                "customer_id": str(customer_id),
+                "collect_mode": str(collect_mode or "sa_with_device"),
+                "shopping_only": bool(shopping_only),
+                "fast_mode": bool(fast_mode),
+            }).fetchone()
+        if not row:
+            return False, None
+        status = str(row[0] or '').strip().lower()
+        finished_at = _normalize_dt_for_compare(row[1])
+        if status != 'success' or finished_at is None:
+            return False, None
+        if datetime.utcnow() - finished_at < timedelta(minutes=RECENT_SUCCESS_SKIP_MINUTES):
+            return True, finished_at
+    except Exception:
+        return False, None
+    return False, None
+
+
+def mark_collector_run(engine: Engine, customer_id: str, target_date: date, collect_mode: str, shopping_only: bool, fast_mode: bool, status: str, row_counts: dict | None = None, note: str = ''):
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO collector_run_log (
+                    target_date, customer_id, collect_mode, shopping_only, fast_mode,
+                    status, run_started_at, run_finished_at, row_counts, note
+                ) VALUES (
+                    :target_date, :customer_id, :collect_mode, :shopping_only, :fast_mode,
+                    :status, :run_started_at, :run_finished_at, :row_counts, :note
+                )
+                ON CONFLICT (target_date, customer_id, collect_mode, shopping_only, fast_mode)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    run_started_at = CASE
+                        WHEN EXCLUDED.status = 'running' THEN EXCLUDED.run_started_at
+                        ELSE collector_run_log.run_started_at
+                    END,
+                    run_finished_at = CASE
+                        WHEN EXCLUDED.status = 'running' THEN NULL
+                        ELSE EXCLUDED.run_finished_at
+                    END,
+                    row_counts = EXCLUDED.row_counts,
+                    note = EXCLUDED.note
+            """), {
+                "target_date": target_date,
+                "customer_id": str(customer_id),
+                "collect_mode": str(collect_mode or "sa_with_device"),
+                "shopping_only": bool(shopping_only),
+                "fast_mode": bool(fast_mode),
+                "status": str(status or ''),
+                "run_started_at": datetime.utcnow() if status == 'running' else None,
+                "run_finished_at": datetime.utcnow() if status != 'running' else None,
+                "row_counts": json.dumps(row_counts or {}, ensure_ascii=False) if status != 'running' else None,
+                "note": str(note or '')[:1000],
+            })
+    except Exception as e:
+        log(f"⚠️ collector_run_log 기록 실패: {e}")
+
 def get_engine() -> Engine:
     if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
     db_url = DB_URL
@@ -257,6 +356,21 @@ def ensure_tables(engine: Engine):
                     data_source TEXT,
                     PRIMARY KEY(dt, customer_id, adgroup_id, ad_id, query_text)
                 )"""))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS collector_run_log (
+                        target_date DATE,
+                        customer_id TEXT,
+                        collect_mode TEXT,
+                        shopping_only BOOLEAN DEFAULT FALSE,
+                        fast_mode BOOLEAN DEFAULT FALSE,
+                        status TEXT,
+                        run_started_at TIMESTAMPTZ,
+                        run_finished_at TIMESTAMPTZ,
+                        row_counts TEXT,
+                        note TEXT,
+                        PRIMARY KEY(target_date, customer_id, collect_mode, shopping_only, fast_mode)
+                    )
+                """))
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
                         dt DATE,
@@ -391,6 +505,35 @@ def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
     return out
 
 
+def _list_existing_scope_ids(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]) -> List[str]:
+    scope_ids = _normalize_scope_ids(ids)
+    if not scope_ids:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f'SELECT DISTINCT {pk} FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
+                {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
+            )
+            return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
+    except Exception:
+        return []
+
+
+def clear_stale_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, scoped_ids: List[str], current_ids: List[str]):
+    scope_ids = _normalize_scope_ids(scoped_ids)
+    if not scope_ids:
+        return
+    current_set = set(_normalize_scope_ids(current_ids))
+    if not current_set:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        return
+    existing_ids = _list_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
+    stale_ids = [value for value in existing_ids if value not in current_set]
+    if stale_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, stale_ids)
+
+
 def _prepare_fact_df(rows: List[Dict[str, Any]], pk_cols: List[str]) -> pd.DataFrame:
     return (
         pd.DataFrame(rows)
@@ -454,53 +597,28 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
 # [수정됨] UPSERT (ON CONFLICT DO UPDATE) 방식을 사용하여 중복 데이터 에러 완벽 차단
-def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_adgroup_ids: List[str] | None = None, scoped_ad_ids: List[str] | None = None):
     table = "fact_shopping_query_daily"
-    clear_fact_range(engine, table, customer_id, d1)
+    adgroup_ids = _normalize_scope_ids(scoped_adgroup_ids) or _extract_scope_ids(rows, "adgroup_id")
+    ad_ids = _normalize_scope_ids(scoped_ad_ids) or _extract_scope_ids(rows, "ad_id")
+
+    if adgroup_ids:
+        clear_fact_scope(engine, table, customer_id, d1, "adgroup_id", adgroup_ids)
+    elif ad_ids:
+        clear_fact_scope(engine, table, customer_id, d1, "ad_id", ad_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
 
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in pk_cols]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    
-    if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO NOTHING'
-
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
-    tuples = list(df.itertuples(index=False, name=None))
-
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            break
-        except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+    _upsert_fact_rows(engine, table, rows, pk_cols)
 
 def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk: str, ids: List[str]):
     scope_ids = _normalize_scope_ids(ids) or _extract_scope_ids(rows, pk)
+    current_ids = _extract_scope_ids(rows, pk)
     if scope_ids:
-        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        clear_stale_fact_scope(engine, table, customer_id, d1, pk, scope_ids, current_ids)
     else:
         clear_fact_range(engine, table, customer_id, d1)
     if not rows:
@@ -2085,10 +2203,24 @@ def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_r
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
+    collect_mode = (collect_mode or "sa_with_device").strip().lower()
     job_lock = acquire_job_lock(engine, customer_id, target_date)
     if job_lock is False:
         log(f"⏭️ [ {account_name} ] 동일 날짜/계정 수집이 이미 실행 중이라 건너뜁니다. ({target_date})")
         return
+
+    skip_recent, prev_finished_at = should_skip_recent_success(engine, customer_id, target_date, collect_mode, shopping_only, fast_mode)
+    if skip_recent:
+        prev_msg = prev_finished_at.strftime("%Y-%m-%d %H:%M:%S") if prev_finished_at else "recent success"
+        log(f"⏭️ [ {account_name} ] 동일 조건 수집이 최근 성공해 재실행을 건너뜁니다. (last_success={prev_msg}, window={RECENT_SUCCESS_SKIP_MINUTES}m)")
+        if job_lock is not False:
+            release_job_lock(job_lock, customer_id, target_date)
+        return
+
+    mark_collector_run(engine, customer_id, target_date, collect_mode, shopping_only, fast_mode, status='running', note='started')
+    run_stats = {"campaign": 0, "keyword": 0, "ad": 0, "device_ad": 0, "device_campaign": 0, "media": 0, "shopping_query": 0}
+    run_success = False
+    run_note = ''
 
     try:
         collect_mode = (collect_mode or "sa_with_device").strip().lower()
@@ -2480,9 +2612,19 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 )
 
             if collect_sa:
-                replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
+                replace_query_fact_range(engine, shop_query_rows, customer_id, target_date, scoped_adgroup_ids=list(shopping_adgroup_ids), scoped_ad_ids=target_ad_ids if shopping_only else None)
                 if shop_query_rows:
                     log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
+
+            run_stats.update({
+                "campaign": int(c_cnt or 0),
+                "keyword": int(k_cnt or 0),
+                "ad": int(a_cnt or 0),
+                "device_ad": int(device_ad_cnt or 0),
+                "device_campaign": int(device_campaign_cnt or 0),
+                "media": int(media_cnt or 0),
+                "shopping_query": int(len(shop_query_rows) if collect_sa else 0),
+            })
 
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0:
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
@@ -2494,10 +2636,19 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     if collect_device:
                         mode_msg += " + PC/M"
                     log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            run_success = True
+            run_note = 'completed'
 
     except Exception as e:
+        run_note = str(e)
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
     finally:
+        mark_collector_run(
+            engine, customer_id, target_date, collect_mode, shopping_only, fast_mode,
+            status='success' if run_success else 'failed',
+            row_counts=run_stats,
+            note=run_note,
+        )
         if job_lock is not False:
             release_job_lock(job_lock, customer_id, target_date)
 
@@ -2511,7 +2662,7 @@ def main():
     parser.add_argument("--account_names", type=str, default="", help="쉼표(,)로 구분한 여러 업체명")
     parser.add_argument("--skip_dim", action="store_true")
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
-    parser.add_argument("--workers", type=int, default=20)
+    parser.add_argument("--workers", type=int, default=ACCOUNT_MAX_WORKERS_DEFAULT)
     parser.add_argument("--collect_mode", type=str, default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="sa_only=기존 SA만, device_only=PC/M만, sa_with_device=둘 다")
     parser.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/재적재")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")

@@ -51,6 +51,8 @@ SKIP_KEYWORD_DIM = False
 SKIP_AD_DIM = False
 SKIP_KEYWORD_STATS = False  
 SKIP_AD_STATS = False       
+STATS_MAX_WORKERS = max(2, int((os.getenv("STATS_MAX_WORKERS") or "6").strip() or "6"))
+ACCOUNT_MAX_WORKERS_DEFAULT = max(1, int((os.getenv("ACCOUNT_MAX_WORKERS") or "6").strip() or "6"))
 
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
@@ -285,6 +287,10 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk:
             time.sleep(3)
 
 
+def _normalize_scope_ids(values: List[Any] | None) -> List[str]:
+    return [str(x).strip() for x in (values or []) if str(x).strip()]
+
+
 def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
     seen = set()
     out: List[str] = []
@@ -296,12 +302,51 @@ def _extract_scope_ids(rows: List[Dict[str, Any]], pk: str) -> List[str]:
     return out
 
 
+def _list_existing_scope_ids(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]) -> List[str]:
+    scope_ids = _normalize_scope_ids(ids)
+    if not scope_ids:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f'SELECT DISTINCT {pk} FROM {table} WHERE customer_id=:cid AND dt=:dt AND {pk} = ANY(:ids)'),
+                {"cid": str(customer_id), "dt": d1, "ids": scope_ids},
+            )
+            return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
+    except Exception:
+        return []
+
+
+def clear_stale_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, scoped_ids: List[str], current_ids: List[str]):
+    scope_ids = _normalize_scope_ids(scoped_ids)
+    if not scope_ids:
+        return
+    current_set = set(_normalize_scope_ids(current_ids))
+    if not current_set:
+        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        return
+    existing_ids = _list_existing_scope_ids(engine, table, customer_id, d1, pk, scope_ids)
+    stale_ids = [value for value in existing_ids if value not in current_set]
+    if stale_ids:
+        clear_fact_scope(engine, table, customer_id, d1, pk, stale_ids)
+
+
 def _upsert_fact_rows(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
     if not rows:
         return
 
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
+    cols = list(df.columns)
+    update_cols = [c for c in cols if c not in pk_cols]
+    col_names = ", ".join([f'"{c}"' for c in cols])
+    pk_str = ", ".join(pk_cols)
+
+    if update_cols:
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
+    else:
+        conflict_clause = f'ON CONFLICT ({pk_str}) DO NOTHING'
+
+    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -331,46 +376,29 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     scope_ids = _extract_scope_ids(rows, pk)
     if scope_ids:
-        clear_fact_scope(engine, table, customer_id, d1, pk, scope_ids)
+        clear_stale_fact_scope(engine, table, customer_id, d1, pk, scope_ids, scope_ids)
     else:
         clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
     _upsert_fact_rows(engine, table, rows, ['dt', 'customer_id', pk])
 
-def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
+def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_adgroup_ids: List[str] | None = None, scoped_ad_ids: List[str] | None = None):
     table = "fact_shopping_query_daily"
-    clear_fact_range(engine, table, customer_id, d1)
+    adgroup_ids = _normalize_scope_ids(scoped_adgroup_ids) or _extract_scope_ids(rows, "adgroup_id")
+    ad_ids = _normalize_scope_ids(scoped_ad_ids) or _extract_scope_ids(rows, "ad_id")
+
+    if adgroup_ids:
+        clear_fact_scope(engine, table, customer_id, d1, "adgroup_id", adgroup_ids)
+    elif ad_ids:
+        clear_fact_scope(engine, table, customer_id, d1, "ad_id", ad_ids)
+    else:
+        clear_fact_range(engine, table, customer_id, d1)
     if not rows:
         return
 
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
-
-    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
-    tuples = list(df.itertuples(index=False, name=None))
-
-    for attempt in range(3):
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            break
-        except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
-            time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+    _upsert_fact_rows(engine, table, rows, pk_cols)
 
 def list_campaigns(customer_id: str) -> List[dict]:
     ok, data = safe_call("GET", "/ncc/campaigns", customer_id)
@@ -568,7 +596,7 @@ def fetch_stats_fallback(engine: Engine, customer_id: str, target_date: date, id
             row["avg_rnk"] = float(r.get("avgRnk", 0) or 0)
         rows.append(row)
 
-    clear_fact_scope(engine, table_name, customer_id, target_date, id_key, ids)
+    clear_stale_fact_scope(engine, table_name, customer_id, target_date, id_key, ids, [str((row or {}).get(id_key) or "").strip() for row in rows])
     _upsert_fact_rows(engine, table_name, rows, ["dt", "customer_id", id_key])
     return len(rows)
 
@@ -1569,6 +1597,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
+        shopping_adgroup_ids: set[str] = set()
 
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
@@ -1593,6 +1622,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 groups = list_adgroups(customer_id, cid)
                 for g in groups:
                     gid = str(g.get("nccAdgroupId"))
+                    if is_shopping_campaign_obj(c):
+                        shopping_adgroup_ids.add(gid)
                     ag_rows.append({
                         "customer_id": str(customer_id),
                         "adgroup_id": gid,
@@ -1650,6 +1681,12 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
                 shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
+                shopping_adgroup_ids = {
+                    str(r[0]) for r in conn.execute(
+                        text("SELECT adgroup_id FROM dim_adgroup WHERE customer_id = :cid AND campaign_id = ANY(:cids)"),
+                        {"cid": customer_id, "cids": list(shopping_campaign_ids)},
+                    )
+                } if shopping_campaign_ids else set()
 
         keyword_lookup = {}
         keyword_unique_lookup = {}
@@ -1885,7 +1922,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             else:
                 a_cnt = 0
 
-            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
+            replace_query_fact_range(engine, shop_query_rows, customer_id, target_date, scoped_adgroup_ids=list(shopping_adgroup_ids))
             if shop_query_rows:
                 log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
@@ -1908,7 +1945,7 @@ def main():
     parser.add_argument("--account_names", type=str, default="", help="쉼표(,)로 구분한 여러 업체명")
     parser.add_argument("--exclude_gfa_accounts", action="store_true", help="계정명 끝이 ' GFA' 인 계정은 수집 대상에서 제외")
     parser.add_argument("--skip_dim", action="store_true")
-    parser.add_argument("--workers", type=int, default=20)
+    parser.add_argument("--workers", type=int, default=ACCOUNT_MAX_WORKERS_DEFAULT)
     args = parser.parse_args()
     
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else (datetime.utcnow() + timedelta(hours=9)).date() - timedelta(days=1)
