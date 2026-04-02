@@ -710,44 +710,6 @@ def safe_float(v) -> float:
     except Exception: return 0.0
 
 
-def maybe_swap_imp_clk_indices(data_df: pd.DataFrame, report_tp: str, pk_idx: int, imp_idx: int, clk_idx: int) -> tuple[int, int, dict | None]:
-    if data_df is None or data_df.empty or imp_idx == -1 or clk_idx == -1 or "AD" not in report_tp:
-        return imp_idx, clk_idx, None
-
-    valid = 0
-    bad = 0
-    imp_total = 0
-    clk_total = 0
-    preview = []
-    need_idx = max(pk_idx, imp_idx, clk_idx)
-
-    for _, r in data_df.head(80).iterrows():
-        if len(r) <= need_idx:
-            continue
-        obj_id = str(r.iloc[pk_idx]).strip() if pk_idx != -1 and len(r) > pk_idx else ""
-        if not obj_id or obj_id == "-" or obj_id.lower() in ["id", "adid", "campaignid", "keywordid"]:
-            continue
-        imp = int(safe_float(r.iloc[imp_idx])) if len(r) > imp_idx else 0
-        clk = int(safe_float(r.iloc[clk_idx])) if len(r) > clk_idx else 0
-        if imp == 0 and clk == 0:
-            continue
-        valid += 1
-        imp_total += imp
-        clk_total += clk
-        if len(preview) < 5:
-            preview.append((obj_id, imp, clk))
-        if clk > imp:
-            bad += 1
-
-    if valid < 5:
-        return imp_idx, clk_idx, None
-
-    should_swap = bad >= max(3, int(valid * 0.6)) or (imp_total > 0 and clk_total > imp_total)
-    if should_swap:
-        return clk_idx, imp_idx, {"valid": valid, "bad": bad, "imp_total": imp_total, "clk_total": clk_total, "preview": preview}
-
-    return imp_idx, clk_idx, None
-
 def split_enabled_for_date(target_date: date) -> bool:
     return target_date >= CART_ENABLE_DATE
 
@@ -1457,6 +1419,46 @@ def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, di
             unique_lookup.setdefault(kw_n, []).append(kid_s)
     return lookup, unique_lookup
 
+def _maybe_swap_ad_metric_indexes(data_df: pd.DataFrame, pk_idx: int, imp_idx: int, clk_idx: int) -> tuple[int, int]:
+    if data_df is None or data_df.empty or imp_idx == -1 or clk_idx == -1:
+        return imp_idx, clk_idx
+    sample_rows = []
+    total_imp = 0.0
+    total_clk = 0.0
+    suspicious = 0
+    checked = 0
+    for _, row in data_df.head(200).iterrows():
+        try:
+            if len(row) <= max(pk_idx, imp_idx, clk_idx):
+                continue
+            obj_id = str(row.iloc[pk_idx]).strip()
+            if not obj_id or obj_id == "-" or obj_id.lower() in ["id", "adid", "campaignid", "keywordid"]:
+                continue
+            imp = safe_float(row.iloc[imp_idx]) if imp_idx != -1 and len(row) > imp_idx else 0.0
+            clk = safe_float(row.iloc[clk_idx]) if clk_idx != -1 and len(row) > clk_idx else 0.0
+            if imp <= 0 and clk <= 0:
+                continue
+            checked += 1
+            total_imp += imp
+            total_clk += clk
+            if clk > imp:
+                suspicious += 1
+        except Exception:
+            continue
+    if checked >= 5:
+        ratio = suspicious / checked if checked else 0.0
+        if ratio >= 0.6 or (total_clk > total_imp * 1.15 and total_clk > 0):
+            return clk_idx, imp_idx
+    return imp_idx, clk_idx
+
+def _filter_split_map_for_ids(split_map: dict | None, allowed_ids) -> dict:
+    if not split_map:
+        return {}
+    allow = {str(x) for x in (allowed_ids or []) if str(x)}
+    if not allow:
+        return {}
+    return {str(k): v for k, v in split_map.items() if str(k) in allow}
+
 def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = None, has_conv_report: bool = False) -> dict:
     if df is None or df.empty:
         return {}
@@ -1486,6 +1488,8 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
         conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
         sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
         rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
+        if "AD" in report_tp:
+            imp_idx, clk_idx = _maybe_swap_ad_metric_indexes(data_df, pk_idx, imp_idx, clk_idx)
     else:
         data_df = df.iloc[1:] if ("date" in str(df.iloc[0, 0]).lower() or "id" in str(df.iloc[0, 0]).lower()) else df
         pk_idx = 2 if "CAMPAIGN" in report_tp else 5
@@ -1495,14 +1499,8 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
         conv_idx = 8 if "CAMPAIGN" in report_tp else 11
         sales_idx = 9 if "CAMPAIGN" in report_tp else 12
         rank_idx = 11 if "CAMPAIGN" in report_tp else 14
-
-    imp_idx, clk_idx, swap_meta = maybe_swap_imp_clk_indices(data_df, report_tp, pk_idx, imp_idx, clk_idx)
-    if swap_meta:
-        print(
-            f"   ⚠️ {report_tp} 리포트에서 노출/클릭 컬럼 순서가 뒤바뀐 것으로 보여 자동 교정합니다. "
-            f"(valid={swap_meta['valid']}, bad={swap_meta['bad']}, imp_total={swap_meta['imp_total']}, clk_total={swap_meta['clk_total']}, preview={swap_meta['preview']})",
-            flush=True,
-        )
+        if "AD" in report_tp:
+            imp_idx, clk_idx = _maybe_swap_ad_metric_indexes(data_df, pk_idx, imp_idx, clk_idx)
 
     res = {}
     for _, r in data_df.iterrows():
@@ -1629,6 +1627,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         shopping_campaign_ids: set[str] = set()
         shopping_adgroup_ids: set[str] = set()
         shopping_keyword_ids: set[str] = set()
+        shopping_ad_ids: set[str] = set()
+        shopping_ad_ids: set[str] = set()
 
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
@@ -1681,6 +1681,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         for ad in ads:
                             adid = str(ad.get("nccAdId"))
                             target_ad_ids.append(adid)
+                            if is_shopping:
+                                shopping_ad_ids.add(adid)
+                            if is_shopping:
+                                shopping_ad_ids.add(adid)
                             ext = extract_ad_creative_fields(ad)
                             ad_rows.append({
                                 "customer_id": str(customer_id),
@@ -1704,7 +1708,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   🔎 [ {account_name} ] 구조 키워드 텍스트 적재: {kw_text_filled}/{len(kw_rows)}")
             if not SKIP_AD_DIM:
                 upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
-            shopping_keyword_ids = set(target_kw_ids) if shopping_adgroup_ids else set()
+            shopping_keyword_ids = {str(r["keyword_id"]) for r in kw_rows if str(r.get("adgroup_id")) in shopping_adgroup_ids} if shopping_adgroup_ids else set()
             log(f"   ✅ [ {account_name} ] 구조 적재 완료")
 
         else:
@@ -1913,6 +1917,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     ad_data_source = "report_split" if split_report_ok else "report_total_only"
                     ad_stat = parse_base_report(ad_report_df, "AD", ad_map, has_conv_report=split_report_ok)
                     a_cnt = merge_and_save_combined(engine, customer_id, target_date, "fact_ad_daily", "ad_id", ad_stat, data_source=ad_data_source) if ad_stat else 0
+                    if shopping_ad_ids:
+                        shopping_split_map = _filter_split_map_for_ids(ad_map, shopping_ad_ids)
+                        shopping_a_cnt = fetch_stats_fallback(engine, customer_id, target_date, sorted(shopping_ad_ids), "ad_id", "fact_ad_daily", split_map=shopping_split_map, scoped_replace=True)
+                        if shopping_a_cnt:
+                            log(f"   ✅ [ {account_name} ] 쇼핑검색(SSA) 일반소재는 stats 총합으로 재적재: {shopping_a_cnt}건")
 
                     ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
                     if device_meta.get("status") == "ok":
