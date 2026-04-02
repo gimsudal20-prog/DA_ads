@@ -482,11 +482,111 @@ def _guess_id_col_from_rows(data_df: pd.DataFrame) -> int:
     return best_idx if best_hits >= 2 else -1
 
 
+
+
+def _looks_like_fixed_adext_report(df: pd.DataFrame) -> bool:
+    if df is None or df.empty:
+        return False
+    scan_rows = min(20, len(df))
+    ext_hits = 0
+    num_tail_hits = 0
+    for i in range(scan_rows):
+        vals = [str(x).strip() for x in df.iloc[i].fillna("").tolist()]
+        if len(vals) < 12:
+            continue
+        if len(vals) > 6 and str(vals[6]).strip().lower().startswith("ext-"):
+            ext_hits += 1
+        tail = vals[-2:]
+        if len(tail) == 2 and all(re.fullmatch(r"-?\d+(?:\.\d+)?", str(x).replace(",", "")) for x in tail):
+            num_tail_hits += 1
+    return ext_hits >= 2 and num_tail_hits >= 2
+
+
+def _guess_fixed_adext_columns(df: pd.DataFrame) -> dict:
+    # 기본 포맷(로그 preview 기준)
+    # [0]dt [1]customer_id [2]campaign_id [3]adgroup_id [4]keyword_id/- [5]ad_id(nad-*) [6]ext_id(ext-*) ... [9]device [10]imp [11]clk
+    cols = {"ad_idx": 5, "id_idx": 6, "imp_idx": 10, "clk_idx": 11, "cost_idx": -1, "conv_idx": -1, "sales_idx": -1}
+    if df is None or df.empty:
+        return cols
+    scan_rows = min(50, len(df))
+    # ext-id / nad-id는 패턴으로 다시 탐지
+    ext_best = (-1, -1)
+    nad_best = (-1, -1)
+    for col_idx in range(df.shape[1]):
+        ext_hits = 0
+        nad_hits = 0
+        for i in range(scan_rows):
+            try:
+                v = str(df.iloc[i, col_idx]).strip().lower()
+            except Exception:
+                continue
+            if v.startswith('ext-'):
+                ext_hits += 1
+            if v.startswith('nad-'):
+                nad_hits += 1
+        if ext_hits > ext_best[1]:
+            ext_best = (col_idx, ext_hits)
+        if nad_hits > nad_best[1]:
+            nad_best = (col_idx, nad_hits)
+    if ext_best[1] >= 2:
+        cols['id_idx'] = ext_best[0]
+    if nad_best[1] >= 2:
+        cols['ad_idx'] = nad_best[0]
+
+    # 노출/클릭은 뒤에서 가까운 숫자 2개를 우선 사용
+    imp_guess = None
+    clk_guess = None
+    for i in range(scan_rows):
+        vals = [str(x).strip() for x in df.iloc[i].fillna("").tolist()]
+        num_cols = []
+        for idx, v in enumerate(vals):
+            vv = str(v).replace(',', '')
+            if re.fullmatch(r"-?\d+(?:\.\d+)?", vv):
+                num_cols.append(idx)
+        if len(num_cols) >= 2:
+            imp_guess = num_cols[-2]
+            clk_guess = num_cols[-1]
+            break
+    if imp_guess is not None and clk_guess is not None:
+        cols['imp_idx'] = imp_guess
+        cols['clk_idx'] = clk_guess
+    return cols
+
+
+def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool) -> dict:
+    cols = _guess_fixed_adext_columns(df)
+    log(
+        f"   ↪ 고정포맷 fallback 적용: ad={cols['ad_idx']} ext={cols['id_idx']} imp={cols['imp_idx']} clk={cols['clk_idx']}"
+    )
+    out = {}
+    for _, r in df.iterrows():
+        vals = [str(x).strip() for x in r.fillna("").tolist()]
+        if len(vals) <= max(cols['id_idx'], cols['imp_idx'], cols['clk_idx']):
+            continue
+        obj_id = vals[cols['id_idx']].strip()
+        obj_id_l = obj_id.lower()
+        if not obj_id or obj_id == '-' or not obj_id_l.startswith('ext-'):
+            continue
+        bucket = out.setdefault(obj_id, {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0})
+        bucket['imp'] += int(safe_float(vals[cols['imp_idx']])) if cols['imp_idx'] != -1 else 0
+        bucket['clk'] += int(safe_float(vals[cols['clk_idx']])) if cols['clk_idx'] != -1 else 0
+        if cols['cost_idx'] != -1 and len(vals) > cols['cost_idx']:
+            bucket['cost'] += int(safe_float(vals[cols['cost_idx']]))
+        if include_conv_cols and cols['conv_idx'] != -1 and len(vals) > cols['conv_idx']:
+            bucket['conv'] += safe_float(vals[cols['conv_idx']])
+        if include_conv_cols and cols['sales_idx'] != -1 and len(vals) > cols['sales_idx']:
+            bucket['sales'] += int(safe_float(vals[cols['sales_idx']]))
+    return out
+
 def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool) -> dict:
     if df is None or df.empty:
         return {}
     header_idx = _find_header_row(df, id_candidates)
     if header_idx == -1:
+        if _looks_like_fixed_adext_report(df):
+            log("⚠️ 리포트 헤더를 찾지 못했습니다. 쇼핑검색 ADEXTENSION 고정포맷 fallback으로 계속 진행합니다.")
+            _debug_preview_rows(df)
+            return _parse_fixed_adext_report(df, include_conv_cols)
         log("⚠️ 리포트 헤더를 찾지 못했습니다. preview를 남기고 이 리포트는 건너뜁니다.")
         _debug_preview_rows(df)
         return {}
