@@ -13,12 +13,12 @@ import time
 import io
 import csv
 import json
-import re
 import hmac
 import base64
 import hashlib
 import argparse
 import random
+import re
 import requests
 import pandas as pd
 from datetime import datetime, date, timedelta
@@ -38,6 +38,47 @@ load_dotenv(override=True)
 API_KEY = (os.getenv("NAVER_API_KEY") or os.getenv("NAVER_ADS_API_KEY") or "").strip()
 API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or "").strip()
 DB_URL = os.getenv("DATABASE_URL", "").strip()
+
+SHOPPING_ADEXTENSION_FIXED_DEFAULTS = {
+    "ad_idx": 5,
+    "id_idx": 6,
+    "device_idx": 9,
+    "imp_idx": 10,
+    "clk_idx": 11,
+    "cost_idx": -1,
+    "conv_idx": -1,
+    "sales_idx": -1,
+}
+
+def _load_shopping_fixed_override() -> dict:
+    """Optional env override for shopping ADEXTENSION fixed-column parsing.
+    Format: ad=5,ext=6,imp=10,clk=11,cost=-1,conv=-1,sales=-1
+    """
+    cols = dict(SHOPPING_ADEXTENSION_FIXED_DEFAULTS)
+    raw = (os.getenv("SHOPPING_ADEXTENSION_FIXED_OVERRIDE") or "").strip()
+    if not raw:
+        return cols
+    key_map = {
+        "ad": "ad_idx", "ad_idx": "ad_idx",
+        "ext": "id_idx", "id": "id_idx", "ext_idx": "id_idx", "id_idx": "id_idx",
+        "device": "device_idx", "device_idx": "device_idx",
+        "imp": "imp_idx", "imp_idx": "imp_idx",
+        "clk": "clk_idx", "click": "clk_idx", "clk_idx": "clk_idx",
+        "cost": "cost_idx", "cost_idx": "cost_idx",
+        "conv": "conv_idx", "conv_idx": "conv_idx",
+        "sales": "sales_idx", "sales_idx": "sales_idx",
+    }
+    try:
+        for part in raw.split(','):
+            if '=' not in part:
+                continue
+            k, v = [x.strip().lower() for x in part.split('=', 1)]
+            if k not in key_map:
+                continue
+            cols[key_map[k]] = int(v)
+    except Exception as e:
+        log(f"⚠️ SHOPPING_ADEXTENSION_FIXED_OVERRIDE 파싱 실패: {e}")
+    return cols
 
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
@@ -485,6 +526,25 @@ def _guess_id_col_from_rows(data_df: pd.DataFrame) -> int:
 
 
 
+def _debug_fixed_row_dump(df: pd.DataFrame, max_rows: int = 5, max_cols: int = 40):
+    if df is None or df.empty:
+        return
+    n_rows = min(max_rows, len(df))
+    n_cols = min(max_cols, df.shape[1])
+    log(f"   ↪ 쇼핑검색 ADEXTENSION raw dump 준비판 | rows={len(df)} cols={df.shape[1]} preview_rows={n_rows}")
+    for i in range(n_rows):
+        vals = [str(x).strip() for x in df.iloc[i].fillna("").tolist()]
+        indexed = ' | '.join(f"{idx}:{vals[idx]}" for idx in range(min(n_cols, len(vals))))
+        log(f"   ↪ raw[{i}] {indexed}")
+        numeric = []
+        for idx, v in enumerate(vals):
+            vv = str(v).replace(',', '')
+            if re.fullmatch(r"-?\d+(?:\.\d+)?", vv):
+                numeric.append(f"{idx}:{v}")
+        if numeric:
+            log(f"   ↪ raw[{i}] numeric_cols {' | '.join(numeric[:20])}")
+
+
 def _looks_like_fixed_adext_report(df: pd.DataFrame) -> bool:
     if df is None or df.empty:
         return False
@@ -503,10 +563,10 @@ def _looks_like_fixed_adext_report(df: pd.DataFrame) -> bool:
     return ext_hits >= 2 and num_tail_hits >= 2
 
 
-def _guess_fixed_adext_columns(df: pd.DataFrame) -> dict:
+def _guess_fixed_adext_columns(df: pd.DataFrame, base_cols: dict | None = None) -> dict:
     # 기본 포맷(로그 preview 기준)
     # [0]dt [1]customer_id [2]campaign_id [3]adgroup_id [4]keyword_id/- [5]ad_id(nad-*) [6]ext_id(ext-*) ... [9]device [10]imp [11]clk
-    cols = {"ad_idx": 5, "id_idx": 6, "imp_idx": 10, "clk_idx": 11, "cost_idx": -1, "conv_idx": -1, "sales_idx": -1}
+    cols = dict(base_cols or SHOPPING_ADEXTENSION_FIXED_DEFAULTS)
     if df is None or df.empty:
         return cols
     scan_rows = min(50, len(df))
@@ -554,10 +614,10 @@ def _guess_fixed_adext_columns(df: pd.DataFrame) -> dict:
     return cols
 
 
-def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool) -> dict:
-    cols = _guess_fixed_adext_columns(df)
+def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool, fixed_cols: dict | None = None, dump_label: str = "") -> dict:
+    cols = _guess_fixed_adext_columns(df, base_cols=fixed_cols)
     log(
-        f"   ↪ 고정포맷 fallback 적용: ad={cols['ad_idx']} ext={cols['id_idx']} imp={cols['imp_idx']} clk={cols['clk_idx']}"
+        f"   ↪ 고정포맷 fallback 적용{f' [{dump_label}]' if dump_label else ""}: ad={cols['ad_idx']} ext={cols['id_idx']} imp={cols['imp_idx']} clk={cols['clk_idx']} cost={cols.get('cost_idx', -1)} conv={cols.get('conv_idx', -1)} sales={cols.get('sales_idx', -1)}"
     )
     out = {}
     for _, r in df.iterrows():
@@ -579,7 +639,7 @@ def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool) -> dict
             bucket['sales'] += int(safe_float(vals[cols['sales_idx']]))
     return out
 
-def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool) -> dict:
+def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool, report_name: str = "", bucket: str = "") -> dict:
     if df is None or df.empty:
         return {}
     header_idx = _find_header_row(df, id_candidates)
@@ -587,7 +647,12 @@ def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_con
         if _looks_like_fixed_adext_report(df):
             log("⚠️ 리포트 헤더를 찾지 못했습니다. 쇼핑검색 ADEXTENSION 고정포맷 fallback으로 계속 진행합니다.")
             _debug_preview_rows(df)
-            return _parse_fixed_adext_report(df, include_conv_cols)
+            if (bucket or "").lower() == "shopping" and (report_name or "").upper() == "ADEXTENSION":
+                _debug_fixed_row_dump(df)
+                fixed_cols = _load_shopping_fixed_override()
+                log(f"   ↪ 쇼핑검색 ADEXTENSION 전용 인덱스 준비판: {fixed_cols}")
+                return _parse_fixed_adext_report(df, include_conv_cols, fixed_cols=fixed_cols, dump_label="shopping_ADEXTENSION")
+            return _parse_fixed_adext_report(df, include_conv_cols, dump_label=report_name or bucket)
         log("⚠️ 리포트 헤더를 찾지 못했습니다. preview를 남기고 이 리포트는 건너뜁니다.")
         _debug_preview_rows(df)
         return {}
@@ -769,8 +834,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     conv_df = fetch_stat_report(customer_id, "ADEXTENSION_CONVERSION", target_date)
 
     id_candidates = REPORT_ID_ALIASES
-    base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False)
-    conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True)
+    base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False, report_name="ADEXTENSION", bucket=ext_bucket)
+    conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True, report_name="ADEXTENSION_CONVERSION", bucket=ext_bucket)
     metric_map = _merge_metric_maps(base_map, conv_map)
 
     # 대상 버킷으로만 필터
