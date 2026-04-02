@@ -2,22 +2,25 @@
 """
 collector_shop_ext.py - 네이버 검색광고 확장소재 수집기
 
-지원 버킷
-- shopping: 쇼핑검색(SSA) 캠페인 확장소재만
-- non_shopping: 파워링크/플레이스/브랜드검색 등 쇼핑검색 외 검색광고 확장소재
-- all: 전체 확장소재
+수집 전략
+- 성과는 /stats 직접 조회보다 stat-report 기반(ADEXTENSION / ADEXTENSION_CONVERSION)을 우선 사용
+- 쇼핑검색/파워링크외 버킷은 구조 매핑 후 ad_id 기준으로 필터링
+- 같은 날짜 재실행 시 dt+customer_id+ad_id 기준 업서트
 """
 
 import os
 import time
+import io
 import json
 import hmac
 import base64
 import hashlib
 import argparse
+import random
 import requests
 import pandas as pd
 from datetime import datetime, date, timedelta
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 import psycopg2.extras
@@ -36,6 +39,7 @@ DB_URL = os.getenv("DATABASE_URL", "").strip()
 
 BASE_URL = "https://api.searchad.naver.com"
 TIMEOUT = 60
+DEBUG_REPORT_DIR = os.getenv("DEBUG_REPORT_DIR", "debug_reports")
 
 
 def log(msg: str):
@@ -52,39 +56,144 @@ def sign_path_only(method: str, path: str, timestamp: str, secret: str) -> str:
     return base64.b64encode(dig).decode("utf-8")
 
 
-def request_json(method: str, path: str, customer_id: str, params: dict | None = None):
-    url = BASE_URL + path
+def make_headers(method: str, path: str, customer_id: str) -> dict:
     ts = now_millis()
-    headers = {
+    return {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Timestamp": ts,
         "X-API-KEY": API_KEY,
         "X-Customer": str(customer_id),
         "X-Signature": sign_path_only(method.upper(), path, ts, API_SECRET),
     }
-    for attempt in range(4):
+
+
+def request_json(method: str, path: str, customer_id: str, params: dict | None = None, json_data: dict | None = None, raise_error=False):
+    url = BASE_URL + path
+    session = requests.Session()
+    max_retries = 6
+    for attempt in range(max_retries):
         try:
-            r = requests.request(method, url, headers=headers, params=params, timeout=TIMEOUT)
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code in [429, 500, 502, 503, 504]:
-                time.sleep(2 + attempt)
+            r = session.request(method, url, headers=make_headers(method, path, customer_id), params=params, json=json_data, timeout=TIMEOUT)
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(2 + attempt + random.uniform(0.1, 0.8))
                 continue
+            data = None
             try:
-                body = r.text[:500]
+                data = r.json()
             except Exception:
-                body = ""
-            log(f"⚠️ API 오류 {r.status_code} | {path} | {body}")
-            return None
-        except Exception as e:
-            log(f"⚠️ API 요청 예외 | {path} | {e}")
+                data = r.text
+            if raise_error and r.status_code >= 400:
+                raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
+            return r.status_code, data
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                if raise_error:
+                    raise
+                return 0, str(e)
             time.sleep(2 + attempt)
-    return None
+    return 0, None
 
 
 def get_engine():
     db_url = DB_URL + ("&sslmode=require" if "?" in DB_URL else "?sslmode=require")
     return create_engine(db_url, poolclass=NullPool, future=True)
+
+
+def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
+    try:
+        if not content:
+            return
+        os.makedirs(DEBUG_REPORT_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(DEBUG_REPORT_DIR, f"{ts}_{customer_id}_{tp}_{job_id}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
+
+
+def parse_report_text_to_df(txt: str) -> pd.DataFrame:
+    txt = (txt or "").strip()
+    if not txt:
+        return pd.DataFrame()
+    sep = "\t" if "\t" in txt else ","
+    try:
+        return pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str, on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame()
+
+
+def resolve_download_url(dl_url: str) -> str:
+    if not dl_url:
+        return ""
+    dl_url = str(dl_url).strip()
+    if dl_url.startswith("http://") or dl_url.startswith("https://"):
+        return dl_url
+    if dl_url.startswith("/"):
+        return BASE_URL + dl_url
+    return f"{BASE_URL}/{dl_url.lstrip('/')}"
+
+
+def download_report_dataframe(customer_id: str, tp: str, job_id: str, initial_url: str) -> pd.DataFrame:
+    session = requests.Session()
+    current_url = initial_url
+    for retry in range(3):
+        url = resolve_download_url(current_url)
+        try:
+            r = session.get(url, timeout=60, allow_redirects=True)
+            if r.status_code == 200:
+                r.encoding = "utf-8"
+                save_debug_report(tp, customer_id, job_id, r.text)
+                return parse_report_text_to_df(r.text)
+
+            parsed = urlparse(url)
+            if url.startswith(BASE_URL):
+                r2 = session.get(url, headers=make_headers("GET", parsed.path or "/", customer_id), timeout=60, allow_redirects=True)
+                if r2.status_code == 200:
+                    r2.encoding = "utf-8"
+                    save_debug_report(tp, customer_id, job_id, r2.text)
+                    return parse_report_text_to_df(r2.text)
+
+            s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id)
+            if s_status == 200 and isinstance(s_data, dict) and s_data.get("downloadUrl"):
+                current_url = s_data.get("downloadUrl")
+            log(f"⚠️ [{tp}] 다운로드 실패 재시도 {retry+1}/3")
+            time.sleep(2)
+        except Exception as e:
+            log(f"⚠️ [{tp}] 다운로드 예외: {e} (재시도 {retry+1}/3)")
+            time.sleep(2)
+    return pd.DataFrame()
+
+
+def fetch_stat_report(customer_id: str, report_tp: str, target_date: date) -> pd.DataFrame:
+    payload = {"reportTp": report_tp, "statDt": target_date.strftime("%Y%m%d")}
+    status, data = request_json("POST", "/stat-reports", customer_id, json_data=payload)
+    if status != 200 or not isinstance(data, dict) or not data.get("reportJobId"):
+        log(f"⚠️ [{report_tp}] 리포트 요청 실패: HTTP {status} | {data}")
+        return pd.DataFrame()
+
+    job_id = data["reportJobId"]
+    for _ in range(120):
+        s_status, s_data = request_json("GET", f"/stat-reports/{job_id}", customer_id)
+        if s_status == 200 and isinstance(s_data, dict):
+            st = s_data.get("status")
+            if st == "BUILT":
+                try:
+                    return download_report_dataframe(customer_id, report_tp, job_id, s_data.get("downloadUrl", ""))
+                finally:
+                    request_json("DELETE", f"/stat-reports/{job_id}", customer_id)
+            if st == "NONE":
+                request_json("DELETE", f"/stat-reports/{job_id}", customer_id)
+                log(f"⚠️ [{report_tp}] NONE 응답")
+                return pd.DataFrame()
+            if st == "ERROR":
+                request_json("DELETE", f"/stat-reports/{job_id}", customer_id)
+                log(f"⚠️ [{report_tp}] ERROR 응답")
+                return pd.DataFrame()
+        time.sleep(1)
+    request_json("DELETE", f"/stat-reports/{job_id}", customer_id)
+    log(f"⚠️ [{report_tp}] 타임아웃")
+    return pd.DataFrame()
 
 
 def upsert_many(engine, table: str, rows: list, pk_cols: list):
@@ -108,9 +217,9 @@ def upsert_many(engine, table: str, rows: list, pk_cols: list):
         psycopg2.extras.execute_values(cur, sql, tuples, page_size=2000)
         raw_conn.commit()
     except Exception as e:
-        log(f"⚠️ {table} 저장 중 오류: {e}")
         if raw_conn:
             raw_conn.rollback()
+        log(f"⚠️ {table} 저장 중 오류: {e}")
         raise
     finally:
         if cur:
@@ -123,36 +232,46 @@ def clear_fact_scope(engine, customer_id: str, target_date: date, ad_ids: list[s
     ad_ids = sorted({str(x).strip() for x in (ad_ids or []) if str(x).strip()})
     if not ad_ids:
         return True
-    for attempt in range(3):
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text("DELETE FROM fact_ad_daily WHERE customer_id=:cid AND dt=:dt AND ad_id = ANY(:ids)"),
-                    {"cid": str(customer_id), "dt": target_date, "ids": ad_ids},
-                )
-            return True
-        except Exception as e:
-            log(f"⚠️ fact_ad_daily 범위 삭제 실패({attempt+1}/3): {e}")
-            time.sleep(2 + attempt)
-    return False
-
-
-def _to_float(v, default: float = 0.0) -> float:
     try:
-        if v is None or v == "":
-            return default
-        return float(v)
-    except Exception:
-        return default
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM fact_ad_daily WHERE customer_id=:cid AND dt=:dt AND ad_id = ANY(:ids)"),
+                {"cid": str(customer_id), "dt": target_date, "ids": ad_ids},
+            )
+        return True
+    except Exception as e:
+        log(f"⚠️ fact_ad_daily 범위 삭제 실패: {e}")
+        return False
 
 
-def _to_int(v, default: int = 0) -> int:
+def normalize_header(v: str) -> str:
+    return str(v).lower().replace(" ", "").replace("_", "").replace("-", "").replace('"', '').replace("'", "")
+
+
+def get_col_idx(headers, candidates):
+    norm_headers = [normalize_header(h) for h in headers]
+    norm_candidates = [normalize_header(c) for c in candidates]
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c == h:
+                return i
+    for c in norm_candidates:
+        for i, h in enumerate(norm_headers):
+            if c in h and "그룹" not in h:
+                return i
+    return -1
+
+
+def safe_float(v) -> float:
+    if pd.isna(v):
+        return 0.0
+    s = str(v).replace(",", "").strip()
+    if not s or s == "-":
+        return 0.0
     try:
-        if v is None or v == "":
-            return default
-        return int(round(float(v)))
+        return float(s)
     except Exception:
-        return default
+        return 0.0
 
 
 def _normalize_ext_info(ext: dict):
@@ -230,114 +349,90 @@ def match_bucket(campaign_tp: str | None, ext_bucket: str) -> bool:
     return ext_bucket == "all" or bucket == ext_bucket
 
 
-def _deep_candidates(row: dict, keys: list[str]):
-    vals = []
-    for d in _iter_dicts(row):
-        for k in keys:
-            if k in d and d.get(k) not in (None, ""):
-                vals.append(d.get(k))
-    return vals
+def _find_header_row(df: pd.DataFrame, id_candidates: list[str]) -> int:
+    max_rows = min(20, len(df))
+    musts = [normalize_header(x) for x in id_candidates]
+    for i in range(max_rows):
+        row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
+        if any(c in row_vals for c in musts):
+            return i
+        if "노출수" in row_vals or "impressions" in row_vals:
+            return i
+    return -1
 
 
-def _first_metric(row: dict, keys: list[str], cast="int"):
-    vals = _deep_candidates(row, keys)
-    if not vals:
-        return 0 if cast == "int" else 0.0
-    if cast == "float":
-        for v in vals:
-            fv = _to_float(v, None)
-            if fv is not None:
-                return fv
-        return 0.0
-    for v in vals:
-        iv = _to_int(v, None)
-        if iv is not None:
-            return iv
-    return 0
+def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool) -> dict:
+    if df is None or df.empty:
+        return {}
+    header_idx = _find_header_row(df, id_candidates)
+    if header_idx == -1:
+        log("⚠️ 리포트 헤더를 찾지 못했습니다. 잘못된 컬럼 매핑 방지를 위해 이 리포트는 건너뜁니다.")
+        return {}
+    headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
+    data_df = df.iloc[header_idx + 1:]
+
+    id_idx = get_col_idx(headers, id_candidates)
+    imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
+    clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
+    cost_idx = get_col_idx(headers, ["총비용", "비용", "cost", "salesamt"])
+    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
+    sales_idx = get_col_idx(headers, ["전환매출액", "전환매출", "conversionvalue", "sales", "convamt"])
+
+    if id_idx == -1:
+        log("⚠️ 리포트에 확장소재 ID 컬럼이 없습니다.")
+        return {}
+
+    out = {}
+    for _, r in data_df.iterrows():
+        if len(r) <= id_idx:
+            continue
+        obj_id = str(r.iloc[id_idx]).strip()
+        if not obj_id or obj_id == "-":
+            continue
+        obj_id_l = obj_id.lower()
+        if obj_id_l in {"id", "adid", "adextensionid", "nccadextensionid", "확장소재id", "광고id", "소재id"}:
+            continue
+        bucket = out.setdefault(obj_id, {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0})
+        if imp_idx != -1 and len(r) > imp_idx:
+            bucket["imp"] += int(safe_float(r.iloc[imp_idx]))
+        if clk_idx != -1 and len(r) > clk_idx:
+            bucket["clk"] += int(safe_float(r.iloc[clk_idx]))
+        if cost_idx != -1 and len(r) > cost_idx:
+            bucket["cost"] += int(safe_float(r.iloc[cost_idx]))
+        if include_conv_cols and conv_idx != -1 and len(r) > conv_idx:
+            bucket["conv"] += safe_float(r.iloc[conv_idx])
+        if include_conv_cols and sales_idx != -1 and len(r) > sales_idx:
+            bucket["sales"] += int(safe_float(r.iloc[sales_idx]))
+    return out
 
 
-def _raw_metrics_preview(r: dict) -> str:
-    keep = [
-        "id", "nccAdExtensionId", "impCnt", "clkCnt", "salesAmt", "ctr", "cpc", "ccnt",
-        "convAmt", "ror", "cpConv", "viewCnt", "cost", "spend", "chargeAmt", "clickCnt"
-    ]
-    slim = {}
-    for d in _iter_dicts(r):
-        for k in keep:
-            if k in d and k not in slim:
-                slim[k] = d.get(k)
-    return json.dumps(slim, ensure_ascii=False, separators=(",", ":"))
+def _merge_metric_maps(base_map: dict, conv_map: dict) -> dict:
+    out = {}
+    keys = set(base_map.keys()) | set(conv_map.keys())
+    for k in keys:
+        b = base_map.get(k, {})
+        c = conv_map.get(k, {})
+        out[k] = {
+            "imp": int(b.get("imp", 0) or 0),
+            "clk": int(b.get("clk", 0) or 0),
+            "cost": int(b.get("cost", 0) or 0),
+            "conv": float(c.get("conv", b.get("conv", 0.0)) or 0.0),
+            "sales": int(c.get("sales", b.get("sales", 0)) or 0),
+        }
+    return out
 
 
-def _normalize_stats_row(r: dict):
-    ad_id = str(
-        _first_metric(r, ["id", "nccAdExtensionId", "nccAdId"], cast="int") or
-        _first_non_empty(r, ["id", "nccAdExtensionId", "nccAdId"]) or ""
-    ).strip()
-    if ad_id == "0":
-        ad_id = str(_first_non_empty(r, ["id", "nccAdExtensionId", "nccAdId"]))
-
-    imp = _first_metric(r, ["impCnt", "imp"])
-    clk = _first_metric(r, ["clkCnt", "clickCnt", "clk", "clicks"])
-    cost = _first_metric(r, ["salesAmt", "chargeAmt", "spend", "cost", "amt"])
-    conv = _first_metric(r, ["ccnt", "convCnt", "conversionCnt", "conversions"], cast="float")
-    sales = _first_metric(r, ["convAmt", "conversionValue", "sales", "convValue"])
-    ctr = _first_metric(r, ["ctr"], cast="float")
-    cpc = _first_metric(r, ["cpc"], cast="float")
-    ror = _first_metric(r, ["ror", "roas"], cast="float")
-
-    # 안전한 보정만 허용
-    if clk <= 0 and imp > 0 and ctr > 0:
-        clk = max(0, int(round(imp * ctr / 100.0)))
-    if cost <= 0 and clk > 0 and cpc > 0:
-        cost = max(0, int(round(clk * cpc)))
-    if sales <= 0 and cost > 0 and ror > 0:
-        sales = max(0, int(round(cost * ror / 100.0)))
-
-    return {
-        "ad_id": ad_id,
-        "imp": imp,
-        "clk": clk,
-        "cost": cost,
-        "conv": conv,
-        "sales": sales,
-        "ctr": ctr,
-        "cpc": cpc,
-        "ror": ror,
-    }
-
-
-def fetch_stats_for_ids(customer_id: str, ad_ids: list[str], target_date: date, bucket: str):
-    d_str = target_date.strftime("%Y-%m-%d")
-    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(",", ":"))
-    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ctr", "cpc", "ccnt", "convAmt", "ror"], separators=(",", ":"))
-    raw_stats = []
-
-    for i in range(0, len(ad_ids), 50):
-        chunk = ad_ids[i:i + 50]
-        params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
-        res = request_json("GET", "/stats", customer_id, params=params)
-        if isinstance(res, dict) and isinstance(res.get("data"), list):
-            raw_stats.extend(res["data"])
-
-    # 1차 응답이 비거나 일부 누락되면 개별 재조회
-    found_ids = {str(_normalize_stats_row(r).get("ad_id") or "") for r in raw_stats}
-    missing_ids = [x for x in ad_ids if str(x) not in found_ids]
-    if missing_ids:
-        log(f"   ↪ {bucket_label(bucket)} /stats 미응답 ID {len(missing_ids)}건 개별 재조회")
-        for ad_id in missing_ids[:200]:
-            params = {"ids": str(ad_id), "fields": fields, "timeRange": time_range}
-            res = request_json("GET", "/stats", customer_id, params=params)
-            if isinstance(res, dict) and isinstance(res.get("data"), list):
-                raw_stats.extend(res["data"])
-
-    return raw_stats
+def _report_sample(metric_map: dict, label: str):
+    items = list(metric_map.items())[:5]
+    for ad_id, m in items:
+        log(f"   ↪ 샘플[{label}] ad_id={ad_id} imp={m.get('imp',0)} clk={m.get('clk',0)} cost={m.get('cost',0)} conv={m.get('conv',0)} sales={m.get('sales',0)}")
 
 
 def process_account(engine, customer_id: str, target_date: date, ext_bucket: str = "shopping"):
     log(f"--- [ {customer_id} ] {bucket_label(ext_bucket)} 확장소재 수집 시작 ({target_date}) ---")
-    camps = request_json("GET", "/ncc/campaigns", customer_id)
-    if not camps:
+    status, camps = request_json("GET", "/ncc/campaigns", customer_id)
+    if status != 200 or not isinstance(camps, list):
+        log("⚠️ 캠페인 조회 실패")
         return
 
     selected_camps = [c for c in camps if match_bucket(c.get("campaignTp"), ext_bucket)]
@@ -350,57 +445,61 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     target_ad_ids = []
 
     for c in selected_camps:
-        cid = c.get("nccCampaignId")
+        cid = str(c.get("nccCampaignId"))
         bucket = campaign_bucket(c.get("campaignTp"))
         camp_rows.append({
             "customer_id": str(customer_id),
-            "campaign_id": str(cid),
+            "campaign_id": cid,
             "campaign_name": c.get("name"),
             "campaign_tp": c.get("campaignTp"),
             "status": c.get("status"),
         })
 
-        camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": cid}) or []
-        if camp_exts:
-            ag_rows.append({
-                "customer_id": str(customer_id),
-                "adgroup_id": f"CAMP_{cid}",
-                "campaign_id": str(cid),
-                "adgroup_name": "[캠페인 공통 소재]",
-                "status": "ELIGIBLE",
-            })
-            for ext in camp_exts:
-                ext_id = str(ext.get("nccAdExtensionId") or "").strip()
-                if not ext_id:
-                    continue
-                target_ad_ids.append(ext_id)
-                ad_bucket_map[ext_id] = bucket
-                ext_info = _normalize_ext_info(ext)
-                display_name = parse_ext_name(ext)
-                ad_rows.append({
+        for owner_id, agid, agname in [(cid, f"CAMP_{cid}", "[캠페인 공통 소재]")]:
+            s, camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": owner_id})
+            camp_exts = camp_exts if s == 200 and isinstance(camp_exts, list) else []
+            if camp_exts:
+                ag_rows.append({
                     "customer_id": str(customer_id),
-                    "ad_id": ext_id,
-                    "adgroup_id": f"CAMP_{cid}",
-                    "ad_name": display_name,
-                    "status": ext.get("status"),
-                    "ad_title": display_name,
-                    "ad_desc": display_name,
-                    "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
-                    "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
-                    "creative_text": display_name[:500],
+                    "adgroup_id": agid,
+                    "campaign_id": cid,
+                    "adgroup_name": agname,
+                    "status": "ELIGIBLE",
                 })
+                for ext in camp_exts:
+                    ext_id = str(ext.get("nccAdExtensionId") or "").strip()
+                    if not ext_id:
+                        continue
+                    target_ad_ids.append(ext_id)
+                    ad_bucket_map[ext_id] = bucket
+                    ext_info = _normalize_ext_info(ext)
+                    display_name = parse_ext_name(ext)
+                    ad_rows.append({
+                        "customer_id": str(customer_id),
+                        "ad_id": ext_id,
+                        "adgroup_id": agid,
+                        "ad_name": display_name,
+                        "status": ext.get("status"),
+                        "ad_title": display_name,
+                        "ad_desc": display_name,
+                        "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                        "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
+                        "creative_text": display_name[:500],
+                    })
 
-        groups = request_json("GET", "/ncc/adgroups", customer_id, {"nccCampaignId": cid}) or []
+        s_groups, groups = request_json("GET", "/ncc/adgroups", customer_id, params={"nccCampaignId": cid})
+        groups = groups if s_groups == 200 and isinstance(groups, list) else []
         for g in groups:
-            gid = g.get("nccAdgroupId")
+            gid = str(g.get("nccAdgroupId"))
             ag_rows.append({
                 "customer_id": str(customer_id),
-                "adgroup_id": str(gid),
-                "campaign_id": str(cid),
+                "adgroup_id": gid,
+                "campaign_id": cid,
                 "adgroup_name": g.get("name"),
                 "status": g.get("status"),
             })
-            exts = request_json("GET", "/ncc/ad-extensions", customer_id, {"ownerId": gid}) or []
+            s_exts, exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": gid})
+            exts = exts if s_exts == 200 and isinstance(exts, list) else []
             for ext in exts:
                 ext_id = str(ext.get("nccAdExtensionId") or "").strip()
                 if not ext_id:
@@ -412,7 +511,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 ad_rows.append({
                     "customer_id": str(customer_id),
                     "ad_id": ext_id,
-                    "adgroup_id": str(gid),
+                    "adgroup_id": gid,
                     "ad_name": display_name,
                     "status": ext.get("status"),
                     "ad_title": display_name,
@@ -432,73 +531,87 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
         log("   ⚠️ 수집 대상 확장소재가 없습니다.")
         return
 
-    # 버킷별로 따로 /stats 요청해서 한쪽 응답이 다른 쪽을 먹는 문제를 방지
-    ids_by_bucket = {
-        "shopping": [x for x in target_ad_ids if ad_bucket_map.get(x) == "shopping"],
-        "non_shopping": [x for x in target_ad_ids if ad_bucket_map.get(x) == "non_shopping"],
-    }
+    # 공식 대용량 리포트 기반 수집
+    log(f"   ▶ ADEXTENSION / ADEXTENSION_CONVERSION 리포트 수집 중...")
+    base_df = fetch_stat_report(customer_id, "ADEXTENSION", target_date)
+    conv_df = fetch_stat_report(customer_id, "ADEXTENSION_CONVERSION", target_date)
 
-    raw_stats = []
-    for bucket, ids in ids_by_bucket.items():
-        if not ids:
-            continue
-        log(f"   ▶ {bucket_label(bucket)} 확장소재 {len(ids)}개 /stats 조회 중...")
-        bucket_stats = fetch_stats_for_ids(customer_id, ids, target_date, bucket)
-        log(f"   ↪ {bucket_label(bucket)} /stats 응답 {len(bucket_stats)}건 수신")
-        raw_stats.extend(bucket_stats)
-        for sample in bucket_stats[:3]:
-            log(f"   ↪ 샘플[{bucket}] {_raw_metrics_preview(sample)}")
+    id_candidates = ["확장소재id", "광고확장소재id", "nccadextensionid", "adextensionid", "소재id", "광고id", "adid"]
+    base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False)
+    conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True)
+    metric_map = _merge_metric_maps(base_map, conv_map)
 
-    if not raw_stats:
-        log("   ⚠️ /stats 응답이 없습니다.")
+    # 대상 버킷으로만 필터
+    metric_map = {ad_id: m for ad_id, m in metric_map.items() if ad_id in target_ad_ids}
+
+    if base_map:
+        _report_sample({k: v for k, v in base_map.items() if k in target_ad_ids}, "ADEXTENSION")
+    if conv_map:
+        _report_sample({k: v for k, v in conv_map.items() if k in target_ad_ids}, "ADEXTENSION_CONVERSION")
+
+    if not metric_map:
+        log("   ⚠️ 확장소재 성과 리포트에서 대상 ad_id 데이터를 찾지 못했습니다.")
+        log("   ↪ debug_reports 폴더의 ADEXTENSION / ADEXTENSION_CONVERSION 원본을 확인하세요.")
         return
 
+    missing = [ad_id for ad_id in target_ad_ids if ad_id not in metric_map]
+    if missing:
+        log(f"   ↪ 리포트 미포착 확장소재 {len(missing)}건")
+        for ad_id in missing[:10]:
+            log(f"      missing ad_id={ad_id} bucket={ad_bucket_map.get(ad_id)}")
+
     fact_rows = []
-    bad_rows = []
-    for r in raw_stats:
-        norm = _normalize_stats_row(r)
-        ad_id = str(norm.get("ad_id") or "").strip()
-        if not ad_id:
-            if len(bad_rows) < 10:
-                bad_rows.append(f"ad_id_missing raw={_raw_metrics_preview(r)}")
+    shopping_zero = 0
+    for ad_id, m in metric_map.items():
+        imp = int(m.get("imp", 0) or 0)
+        clk = int(m.get("clk", 0) or 0)
+        cost = int(m.get("cost", 0) or 0)
+        conv = float(m.get("conv", 0.0) or 0.0)
+        sales = int(m.get("sales", 0) or 0)
+        if imp == 0 and clk == 0 and cost == 0 and conv == 0 and sales == 0:
             continue
-        if norm["imp"] == 0 and norm["clk"] == 0 and norm["cost"] == 0 and norm["conv"] == 0 and norm["sales"] == 0:
-            continue
+        if ad_bucket_map.get(ad_id) == "shopping" and imp > 0 and clk == 0:
+            shopping_zero += 1
         fact_rows.append({
             "dt": target_date,
             "customer_id": str(customer_id),
-            "ad_id": ad_id,
-            "imp": norm["imp"],
-            "clk": norm["clk"],
-            "cost": norm["cost"],
-            "conv": norm["conv"],
-            "sales": norm["sales"],
-            "roas": (norm["sales"] / norm["cost"] * 100.0) if norm["cost"] > 0 else 0.0,
+            "ad_id": str(ad_id),
+            "imp": imp,
+            "clk": clk,
+            "cost": cost,
+            "conv": conv,
+            "sales": sales,
+            "roas": (sales / cost * 100.0) if cost > 0 else 0.0,
         })
-        if len(bad_rows) < 10:
-            bucket = ad_bucket_map.get(ad_id, "unknown")
-            if bucket == "shopping" and norm["clk"] == 0 and norm["imp"] > 0:
-                bad_rows.append(f"shopping_clk_zero ad_id={ad_id} raw={_raw_metrics_preview(r)}")
-            if bucket == "non_shopping" and norm["cost"] == norm["clk"] and norm["clk"] > 0:
-                bad_rows.append(f"non_shopping_cost_equals_clk ad_id={ad_id} raw={_raw_metrics_preview(r)}")
-            if bucket == "non_shopping" and norm["cost"] > 0 and norm["conv"] == 0 and norm["sales"] == 0:
-                bad_rows.append(f"non_shopping_conv_sales_zero ad_id={ad_id} raw={_raw_metrics_preview(r)}")
 
     if not fact_rows:
-        log("   ⚠️ 조회된 날짜에 노출/클릭이 발생한 확장소재가 없습니다.")
+        log("   ⚠️ 리포트상 성과가 있는 확장소재가 없습니다.")
         return
 
     if not clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
-        log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단했습니다. 중복 방지를 위해 확인 후 재실행하세요.")
+        log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단합니다.")
         return
 
     upsert_many(engine, "fact_ad_daily", fact_rows, ["dt", "customer_id", "ad_id"])
     log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
+    if shopping_zero:
+        log(f"   ↪ 쇼핑검색(SSA)에서 imp>0 이지만 clk=0 인 확장소재 {shopping_zero}건")
 
-    if bad_rows:
-        log("   ↪ 확인 필요 샘플(최대 10건)")
-        for row in bad_rows[:10]:
-            log(f"      {row}")
+
+def normalize_ext_bucket(v: str) -> str:
+    mapping = {
+        "shopping": "shopping",
+        "쇼핑검색": "shopping",
+        "쇼핑검색(ssa)": "shopping",
+        "non_shopping": "non_shopping",
+        "파워링크외": "non_shopping",
+        "파워링크 외": "non_shopping",
+        "파워링크 외 검색광고": "non_shopping",
+        "all": "all",
+        "전체": "all",
+    }
+    key = str(v or "shopping").strip().lower()
+    return mapping.get(key, str(v or "shopping").strip())
 
 
 def main():
@@ -507,10 +620,11 @@ def main():
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--account_name", type=str, default="")
     parser.add_argument("--account_names", type=str, default="")
-    parser.add_argument("--ext_bucket", type=str, default="shopping", choices=["shopping", "non_shopping", "all"])
+    parser.add_argument("--ext_bucket", type=str, default="shopping")
     args = parser.parse_args()
 
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today() - timedelta(days=1)
+    ext_bucket = normalize_ext_bucket(args.ext_bucket)
 
     print("\n" + "=" * 50, flush=True)
     print(f"🧩 확장소재 수집기 [날짜: {target_date}]", flush=True)
@@ -527,17 +641,9 @@ def main():
     if not accounts:
         try:
             with engine.connect() as conn:
-                accounts = [
-                    str(r[0])
-                    for r in conn.execute(text("SELECT DISTINCT customer_id FROM dim_account_meta WHERE COALESCE(naver_media_type, 'sa') <> 'gfa'"))
-                ]
+                accounts = [str(r[0]) for r in conn.execute(text("SELECT DISTINCT customer_id FROM dim_account_meta WHERE COALESCE(naver_media_type, 'sa') <> 'gfa'"))]
         except Exception:
             pass
-
-    if not accounts:
-        cid = os.getenv("CUSTOMER_ID")
-        if cid:
-            accounts = [cid]
 
     target_name_tokens = []
     if getattr(args, "account_name", ""):
@@ -559,9 +665,9 @@ def main():
         except Exception:
             pass
 
-    log(f"🧩 확장소재 수집 구분: {bucket_label(args.ext_bucket)} ({args.ext_bucket})")
+    log(f"🧩 확장소재 수집 구분: {bucket_label(ext_bucket)} ({ext_bucket})")
     for acc in accounts:
-        process_account(engine, acc, target_date, args.ext_bucket)
+        process_account(engine, acc, target_date, ext_bucket)
 
 
 if __name__ == "__main__":
