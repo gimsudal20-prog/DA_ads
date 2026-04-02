@@ -11,6 +11,7 @@ collector_shop_ext.py - 네이버 검색광고 확장소재 수집기
 import os
 import time
 import io
+import csv
 import json
 import hmac
 import base64
@@ -113,14 +114,53 @@ def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
 
 
 def parse_report_text_to_df(txt: str) -> pd.DataFrame:
-    txt = (txt or "").strip()
+    txt = (txt or "").replace("﻿", "").strip()
     if not txt:
         return pd.DataFrame()
-    sep = "\t" if "\t" in txt else ","
-    try:
-        return pd.read_csv(io.StringIO(txt), sep=sep, header=None, dtype=str, on_bad_lines="skip")
-    except Exception:
+
+    lines = [ln for ln in txt.splitlines() if ln is not None]
+    if not lines:
         return pd.DataFrame()
+
+    sample = [ln for ln in lines[:20] if str(ln).strip()]
+    sep = "\t" if sum(ln.count("\t") for ln in sample) >= sum(ln.count(",") for ln in sample) else ","
+
+    def _manual_parse(delim: str) -> pd.DataFrame:
+        rows = []
+        reader = csv.reader(io.StringIO(txt), delimiter=delim)
+        max_cols = 0
+        for row in reader:
+            row = [str(c).strip() for c in row]
+            rows.append(row)
+            max_cols = max(max_cols, len(row))
+        if not rows:
+            return pd.DataFrame()
+        norm_rows = [r + [""] * (max_cols - len(r)) for r in rows]
+        return pd.DataFrame(norm_rows)
+
+    tries = []
+    if sep == "\t":
+        tries = ["\t", ","]
+    else:
+        tries = [",", "\t"]
+
+    for delim in tries:
+        try:
+            df = _manual_parse(delim)
+            if not df.empty and max(df.shape) > 1:
+                return df
+        except Exception:
+            pass
+
+    for delim in tries:
+        try:
+            df = pd.read_csv(io.StringIO(txt), sep=delim, header=None, dtype=str, on_bad_lines="skip")
+            if not df.empty:
+                return df.fillna("")
+        except Exception:
+            pass
+
+    return pd.DataFrame()
 
 
 def resolve_download_url(dl_url: str) -> str:
@@ -349,16 +389,97 @@ def match_bucket(campaign_tp: str | None, ext_bucket: str) -> bool:
     return ext_bucket == "all" or bucket == ext_bucket
 
 
+REPORT_ID_ALIASES = [
+    "확장소재id", "광고확장소재id", "nccadextensionid", "adextensionid", "adextension",
+    "소재id", "광고id", "adid", "id", "nccadid"
+]
+REPORT_IMP_ALIASES = [
+    "노출수", "노출", "impressions", "impression", "imp", "impcnt", "exposurecount"
+]
+REPORT_CLK_ALIASES = [
+    "클릭수", "클릭", "clicks", "click", "clk", "clkcnt", "clickcount"
+]
+REPORT_COST_ALIASES = [
+    "총비용", "비용", "광고비", "소진비용", "cost", "spend", "salesamt", "amount"
+]
+REPORT_CONV_ALIASES = [
+    "전환수", "전환", "conversion", "conversions", "ccnt", "conv", "conversioncount"
+]
+REPORT_SALES_ALIASES = [
+    "전환매출액", "전환매출", "매출", "매출액", "conversionvalue", "sales", "convamt", "salesamount"
+]
+
+
+def _row_non_empty_count(row_vals: list[str]) -> int:
+    return sum(1 for x in row_vals if str(x).strip())
+
+
+def _row_contains_any(row_vals: list[str], candidates: list[str]) -> bool:
+    cand_norm = [normalize_header(c) for c in candidates]
+    for rv in row_vals:
+        for c in cand_norm:
+            if c and c in rv:
+                return True
+    return False
+
+
 def _find_header_row(df: pd.DataFrame, id_candidates: list[str]) -> int:
-    max_rows = min(20, len(df))
-    musts = [normalize_header(x) for x in id_candidates]
+    max_rows = min(100, len(df))
+    metric_aliases = REPORT_IMP_ALIASES + REPORT_CLK_ALIASES + REPORT_COST_ALIASES + REPORT_CONV_ALIASES + REPORT_SALES_ALIASES
+    best_idx = -1
+    best_score = -1
     for i in range(max_rows):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
-        if any(c in row_vals for c in musts):
+        if _row_non_empty_count(row_vals) < 3:
+            continue
+        score = 0
+        if _row_contains_any(row_vals, id_candidates):
+            score += 4
+        if _row_contains_any(row_vals, REPORT_IMP_ALIASES):
+            score += 2
+        if _row_contains_any(row_vals, REPORT_CLK_ALIASES):
+            score += 2
+        if _row_contains_any(row_vals, REPORT_COST_ALIASES):
+            score += 2
+        if _row_contains_any(row_vals, REPORT_CONV_ALIASES):
+            score += 1
+        if _row_contains_any(row_vals, REPORT_SALES_ALIASES):
+            score += 1
+        if any(rv in {"date", "기준일", "일자", "statdt"} for rv in row_vals):
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_idx = i
+        if score >= 6:
             return i
-        if "노출수" in row_vals or "impressions" in row_vals:
-            return i
-    return -1
+    return best_idx if best_score >= 3 else -1
+
+
+def _debug_preview_rows(df: pd.DataFrame, max_rows: int = 8):
+    for i in range(min(max_rows, len(df))):
+        row = [str(x).strip() for x in df.iloc[i].fillna("").tolist()]
+        row = [x for x in row if x]
+        if row:
+            log(f"   ↪ 헤더탐지 preview[{i}] {row[:12]}")
+
+
+def _guess_id_col_from_rows(data_df: pd.DataFrame) -> int:
+    max_scan = min(50, len(data_df))
+    best_idx = -1
+    best_hits = 0
+    for col_idx in range(data_df.shape[1]):
+        hits = 0
+        for i in range(max_scan):
+            try:
+                val = str(data_df.iloc[i, col_idx]).strip().lower()
+            except Exception:
+                continue
+            if val.startswith("ext-") or val.startswith("nad-"):
+                hits += 1
+        if hits > best_hits:
+            best_hits = hits
+            best_idx = col_idx
+    return best_idx if best_hits >= 2 else -1
 
 
 def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool) -> dict:
@@ -366,20 +487,28 @@ def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_con
         return {}
     header_idx = _find_header_row(df, id_candidates)
     if header_idx == -1:
-        log("⚠️ 리포트 헤더를 찾지 못했습니다. 잘못된 컬럼 매핑 방지를 위해 이 리포트는 건너뜁니다.")
+        log("⚠️ 리포트 헤더를 찾지 못했습니다. preview를 남기고 이 리포트는 건너뜁니다.")
+        _debug_preview_rows(df)
         return {}
-    headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-    data_df = df.iloc[header_idx + 1:]
 
-    id_idx = get_col_idx(headers, id_candidates)
-    imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
-    clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
-    cost_idx = get_col_idx(headers, ["총비용", "비용", "cost", "salesamt"])
-    conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-    sales_idx = get_col_idx(headers, ["전환매출액", "전환매출", "conversionvalue", "sales", "convamt"])
+    raw_headers = [str(x).strip() for x in df.iloc[header_idx].fillna("")]
+    headers = [normalize_header(str(x)) for x in raw_headers]
+    data_df = df.iloc[header_idx + 1:].reset_index(drop=True)
+
+    id_idx = get_col_idx(headers, REPORT_ID_ALIASES + id_candidates)
+    imp_idx = get_col_idx(headers, REPORT_IMP_ALIASES)
+    clk_idx = get_col_idx(headers, REPORT_CLK_ALIASES)
+    cost_idx = get_col_idx(headers, REPORT_COST_ALIASES)
+    conv_idx = get_col_idx(headers, REPORT_CONV_ALIASES)
+    sales_idx = get_col_idx(headers, REPORT_SALES_ALIASES)
 
     if id_idx == -1:
-        log("⚠️ 리포트에 확장소재 ID 컬럼이 없습니다.")
+        id_idx = _guess_id_col_from_rows(data_df)
+        if id_idx != -1:
+            log(f"   ↪ 확장소재 ID 컬럼 fallback 적용: col={id_idx} header='{raw_headers[id_idx] if id_idx < len(raw_headers) else ''}'")
+    if id_idx == -1:
+        log("⚠️ 리포트에 확장소재 ID 컬럼을 찾지 못했습니다. preview를 남깁니다.")
+        _debug_preview_rows(df)
         return {}
 
     out = {}
@@ -391,6 +520,8 @@ def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_con
             continue
         obj_id_l = obj_id.lower()
         if obj_id_l in {"id", "adid", "adextensionid", "nccadextensionid", "확장소재id", "광고id", "소재id"}:
+            continue
+        if not (obj_id_l.startswith("ext-") or obj_id_l.startswith("nad-")):
             continue
         bucket = out.setdefault(obj_id, {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0})
         if imp_idx != -1 and len(r) > imp_idx:
@@ -536,7 +667,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     base_df = fetch_stat_report(customer_id, "ADEXTENSION", target_date)
     conv_df = fetch_stat_report(customer_id, "ADEXTENSION_CONVERSION", target_date)
 
-    id_candidates = ["확장소재id", "광고확장소재id", "nccadextensionid", "adextensionid", "소재id", "광고id", "adid"]
+    id_candidates = REPORT_ID_ALIASES
     base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False)
     conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True)
     metric_map = _merge_metric_maps(base_map, conv_map)
@@ -551,6 +682,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
 
     if not metric_map:
         log("   ⚠️ 확장소재 성과 리포트에서 대상 ad_id 데이터를 찾지 못했습니다.")
+        log(f"   ↪ ADEXTENSION rows={len(base_df) if base_df is not None else 0} | ADEXTENSION_CONVERSION rows={len(conv_df) if conv_df is not None else 0}")
         log("   ↪ debug_reports 폴더의 ADEXTENSION / ADEXTENSION_CONVERSION 원본을 확인하세요.")
         return
 
