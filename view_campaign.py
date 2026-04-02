@@ -485,7 +485,7 @@ def _query_ad_detail_for_campaign(engine, d1, d2, customer_id: str, campaign_id:
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.campaign_id
         WHERE agg.customer_id = :cid AND a.campaign_id = :camp_id
     """
     df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(customer_id), "camp_id": str(campaign_id)})
@@ -609,7 +609,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         df = _perf_common_merge_meta(bundle, meta)
         view = df.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-            "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
+            "campaign_name": "캠페인", "imp": "노출", "클릭": "클릭", "cost": "광고비",
             "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
             "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액",
             "conv": "구매완료수", "sales": "구매완료 매출"
@@ -751,9 +751,42 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                     st.info("해당 캠페인에 등록된 하위 키워드/소재 및 확장소재 데이터가 없습니다.")
 
     elif selected_tab == "그룹 성과":
+        st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
+        show_deltas_grp = st.toggle(" 증감율 보기", value=False, key="grp_abs_toggle")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        cmp_mode_grp = None
+        b1_grp, b2_grp = None, None
+        if show_deltas_grp:
+            opts = get_dynamic_cmp_options(f["start"], f["end"])
+            cmp_opts = [o for o in opts if o != "비교 안함"]
+            cmp_mode_grp = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="grp_cmp_mode")
+            b1_grp, b2_grp = period_compare_range(f["start"], f["end"], cmp_mode_grp)
+
         with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
             kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
             ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
+            
+            # 비교 기준 데이터 불러오기 (증감율 토글 활성화 시)
+            base_detail_bundle_grp = pd.DataFrame()
+            if show_deltas_grp and b1_grp and b2_grp:
+                b_kw_bundle_grp = query_keyword_bundle(engine, b1_grp, b2_grp, list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
+                b_ad_bundle_grp = query_ad_bundle(engine, b1_grp, b2_grp, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
+                
+                b_kw_tmp = b_kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not b_kw_bundle_grp.empty else pd.DataFrame()
+                if not b_ad_bundle_grp.empty:
+                    b_ad_tmp = b_ad_bundle_grp.copy()
+                    if "ad_title" in b_ad_tmp.columns:
+                        b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_title"].fillna("").astype(str).str.strip()
+                        mask_empty = b_ad_tmp["final_ad_name"].isin(["", "nan", "None"])
+                        b_ad_tmp.loc[mask_empty, "final_ad_name"] = b_ad_tmp.loc[mask_empty, "ad_name"].astype(str)
+                    else:
+                        b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_name"].astype(str)
+                    b_ad_tmp = b_ad_tmp.rename(columns={"final_ad_name": "item_name"})
+                else:
+                    b_ad_tmp = pd.DataFrame()
+                base_detail_bundle_grp = _prefer_detail_source_by_campaign(b_kw_tmp, b_ad_tmp)
+
             kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
             if not ad_bundle_grp.empty:
                 ad_tmp = ad_bundle_grp.copy()
@@ -767,6 +800,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             else:
                 ad_tmp = pd.DataFrame()
             detail_bundle_grp = _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
+
         if detail_bundle_grp is None or detail_bundle_grp.empty:
             st.info("광고그룹 성과 데이터가 없습니다.")
         else:
@@ -780,26 +814,60 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 grouped = grp.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"}).copy()
                 grouped = _add_perf_metrics(grouped)
 
+                valid_keys_grp = [k for k in ["customer_id", "campaign_id", "adgroup_id"] if k in grouped.columns]
+                
+                # 증감 계산
+                if show_deltas_grp:
+                    if not base_detail_bundle_grp.empty and valid_keys_grp:
+                        b_grp_cols = [c for c in valid_keys_grp if c in base_detail_bundle_grp.columns]
+                        b_grp = base_detail_bundle_grp.groupby(b_grp_cols, as_index=False)[val_cols].sum()
+                        grouped = _apply_comparison_metrics(grouped, b_grp, valid_keys_grp)
+                    else:
+                        grouped = _apply_comparison_metrics(grouped, pd.DataFrame(), valid_keys_grp)
+
                 camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
                 sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
                 if sel_camp != "전체":
                     grouped = grouped[grouped["캠페인"] == sel_camp]
 
-                all_metrics_cols = [
-                    "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
-                    "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
-                    "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
-                    "총 전환수", "총 전환매출", "통합 ROAS(%)"
-                ] if not has_pre_patch_cur else [
-                    "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
-                    "총 전환수", "총 전환매출", "통합 ROAS(%)"
-                ]
+                has_pre_patch_base = (b1_grp < patch_date) if (show_deltas_grp and b1_grp) else False
+                show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
+                
+                if show_deltas_grp and show_mode == "integrated_only":
+                    st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
+
+                metrics_cols_grp = []
+                if show_deltas_grp:
+                    metrics_cols_grp.extend(["노출", "노출 증감", "노출 차이"])
+                    metrics_cols_grp.extend(["클릭", "클릭 증감", "클릭 차이"])
+                    metrics_cols_grp.extend(["광고비", "광고비 증감", "광고비 차이"])
+                    metrics_cols_grp.extend(["CPC(원)", "CPC 증감", "CPC 차이"])
+
+                    if show_mode == "integrated_only":
+                        metrics_cols_grp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"])
+                        metrics_cols_grp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"])
+                        metrics_cols_grp.extend(["통합 ROAS(%)", "통합 ROAS 증감"])
+                    else:
+                        metrics_cols_grp.extend(["구매완료수", "구매 증감", "구매 차이"])
+                        metrics_cols_grp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"])
+                        metrics_cols_grp.extend(["구매 ROAS(%)", "구매 ROAS 증감"])
+                else:
+                    if show_mode == "integrated_only":
+                         metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+                    else:
+                         metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+
                 base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
-                cols_grp = [c for c in base_cols_grp + all_metrics_cols if c in grouped.columns]
-                disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n)
+                cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
+                disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
                 
                 safe_fmt_grp = {k: v for k, v in FMT_DICT.items() if k in disp_grp.columns}
-                st.dataframe(disp_grp.style.format(safe_fmt_grp), width="stretch", hide_index=True)
+                styled_grp = disp_grp.style.format(safe_fmt_grp)
+                
+                if show_deltas_grp:
+                    styled_grp = _apply_delta_styles(styled_grp, disp_grp)
+                    
+                st.dataframe(styled_grp, width="stretch", hide_index=True)
 
     elif selected_tab == "기간 비교":
         st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
