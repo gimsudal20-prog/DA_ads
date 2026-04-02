@@ -616,8 +616,9 @@ def _guess_fixed_adext_columns(df: pd.DataFrame, base_cols: dict | None = None) 
 
 def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool, fixed_cols: dict | None = None, dump_label: str = "") -> dict:
     cols = _guess_fixed_adext_columns(df, base_cols=fixed_cols)
+    dump_suffix = f" [{dump_label}]" if dump_label else ""
     log(
-        f"   ↪ 고정포맷 fallback 적용{f' [{dump_label}]' if dump_label else ""}: ad={cols['ad_idx']} ext={cols['id_idx']} imp={cols['imp_idx']} clk={cols['clk_idx']} cost={cols.get('cost_idx', -1)} conv={cols.get('conv_idx', -1)} sales={cols.get('sales_idx', -1)}"
+        f"   ↪ 고정포맷 fallback 적용{dump_suffix}: ad={cols['ad_idx']} ext={cols['id_idx']} imp={cols['imp_idx']} clk={cols['clk_idx']} cost={cols.get('cost_idx', -1)} conv={cols.get('conv_idx', -1)} sales={cols.get('sales_idx', -1)}"
     )
     out = {}
     for _, r in df.iterrows():
