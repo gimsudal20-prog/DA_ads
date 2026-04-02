@@ -6,89 +6,117 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, date
+from pathlib import Path
 from typing import List
+
+
+CART_ENABLE_DATE = date(2026, 3, 11)
+
+COLLECT_MODE_ALIASES = {
+    "sa_only": "sa_only",
+    "검색광고 전체만": "sa_only",
+    "검색광고전체만": "sa_only",
+    "device_only": "device_only",
+    "기기만": "device_only",
+    "sa_with_device": "sa_with_device",
+    "검색광고 전체+기기": "sa_with_device",
+    "검색광고전체+기기": "sa_with_device",
+    "검색광고 전체 + 기기": "sa_with_device",
+}
+
+SA_SCOPE_ALIASES = {
+    "full": "full",
+    "전체": "full",
+    "ad_only": "ad_only",
+    "소재만": "ad_only",
+}
+
+RUN_TARGET_ALIASES = {
+    "sa_only": "sa_only",
+    "search_ads_only": "sa_only",
+    "검색광고 전체만": "sa_only",
+    "검색광고전체만": "sa_only",
+    "shop_ext_only": "shop_ext_only",
+    "ext_only": "shop_ext_only",
+    "확장소재만": "shop_ext_only",
+    "sa_and_shop_ext": "sa_and_shop_ext",
+    "search_ads_and_ext": "sa_and_shop_ext",
+    "검색광고 전체+확장소재": "sa_and_shop_ext",
+    "검색광고전체+확장소재": "sa_and_shop_ext",
+    "검색광고 전체 + 확장소재": "sa_and_shop_ext",
+}
+
+SHOP_EXT_BUCKET_ALIASES = {
+    "shopping": "shopping",
+    "쇼핑검색": "shopping",
+    "쇼핑검색(SSA)": "shopping",
+    "쇼핑검색 (SSA)": "shopping",
+    "non_shopping": "non_shopping",
+    "파워링크 외 검색광고": "non_shopping",
+    "파워링크외": "non_shopping",
+    "파워링크 외": "non_shopping",
+    "all": "all",
+    "전체": "all",
+}
 
 
 def clean(v: str | None) -> str:
     return (v or "").strip()
 
 
-def _normalize_collect_mode(v: str) -> str:
-    m = {
-        "sa_only": "sa_only",
-        "device_only": "device_only",
-        "sa_with_device": "sa_with_device",
-        "SA만": "sa_only",
-        "기기만": "device_only",
-        "SA+기기": "sa_with_device",
-    }
-    return m.get(clean(v), clean(v))
+def _normalize_choice(value: str, alias_map: dict[str, str], field_name: str) -> str:
+    raw = clean(value)
+    if not raw:
+        raise ValueError(f"{field_name} 값이 비어 있습니다.")
+    if raw in alias_map:
+        return alias_map[raw]
+    lowered = raw.lower()
+    if lowered in alias_map:
+        return alias_map[lowered]
+    raise ValueError(f"{field_name} 값이 올바르지 않습니다: {value}")
 
 
-def _normalize_sa_scope(v: str) -> str:
-    m = {
-        "full": "full",
-        "ad_only": "ad_only",
-        "전체": "full",
-        "소재만": "ad_only",
-    }
-    return m.get(clean(v), clean(v))
-
-
-def _normalize_run_target(v: str) -> str:
-    m = {
-        "sa_only": "sa_only",
-        "shop_ext_only": "shop_ext_only",
-        "sa_and_shop_ext": "sa_and_shop_ext",
-        "SA만": "sa_only",
-        "확장소재만": "shop_ext_only",
-        "SA+확장소재": "sa_and_shop_ext",
-    }
-    return m.get(clean(v), clean(v))
-
-
-def _normalize_shop_ext_bucket(v: str) -> str:
-    m = {
-        "shopping": "shopping",
-        "non_shopping": "non_shopping",
-        "all": "all",
-        "쇼핑검색": "shopping",
-        "파워링크외": "non_shopping",
-        "전체": "all",
-    }
-    return m.get(clean(v), clean(v))
-
-
-
-
-
-def _label_collect_mode(v: str) -> str:
-    m = {
-        "sa_only": "SA만",
+def _label_collect_mode(value: str) -> str:
+    return {
+        "sa_only": "검색광고 전체만",
         "device_only": "기기만",
-        "sa_with_device": "SA+기기",
-    }
-    return m.get(clean(v), clean(v))
+        "sa_with_device": "검색광고 전체+기기",
+    }.get(value, value)
 
 
-def _label_sa_scope(v: str) -> str:
-    m = {
+def _label_sa_scope(value: str) -> str:
+    return {
         "full": "전체",
         "ad_only": "소재만",
-    }
-    return m.get(clean(v), clean(v))
+    }.get(value, value)
 
 
-def _label_run_target(v: str) -> str:
-    m = {
-        "sa_only": "SA만",
+def _label_run_target(value: str) -> str:
+    return {
+        "sa_only": "검색광고 전체만",
         "shop_ext_only": "확장소재만",
-        "sa_and_shop_ext": "SA+확장소재",
-    }
-    return m.get(clean(v), clean(v))
+        "sa_and_shop_ext": "검색광고 전체+확장소재",
+    }.get(value, value)
+
+
+def _label_shop_ext_bucket(value: str) -> str:
+    return {
+        "shopping": "쇼핑검색(SSA)",
+        "non_shopping": "파워링크 외 검색광고",
+        "all": "전체",
+    }.get(value, value)
+
+
+def _supports_cli_arg(filename: str, arg_name: str) -> bool:
+    try:
+        txt = Path(filename).read_text(encoding="utf-8")
+        return arg_name in txt
+    except Exception:
+        return False
+
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="날짜 범위별 SA/GFA/확장소재 백필 실행기")
+    p = argparse.ArgumentParser(description="날짜 범위별 검색광고/GFA 백필 실행기")
     p.add_argument("--start", required=True, help="시작일 YYYY-MM-DD")
     p.add_argument("--end", required=True, help="종료일 YYYY-MM-DD")
     p.add_argument("--workers", type=int, default=1, help="collector.py workers")
@@ -102,40 +130,23 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--with_gfa", action="store_true", help="collector_gfa.py도 함께 실행")
     p.add_argument("--with_shop_ext", action="store_true", help="collector_shop_ext.py도 함께 실행")
-    p.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/백필")
-    p.add_argument(
-        "--collect_mode",
-        default="sa_with_device",
-        choices=["sa_only", "device_only", "sa_with_device", "SA만", "기기만", "SA+기기"],
-        help="collector.py 수집 모드",
-    )
-    p.add_argument(
-        "--sa_scope",
-        default="full",
-        choices=["full", "ad_only", "전체", "소재만"],
-        help="collector.py SA 범위",
-    )
-    p.add_argument(
-        "--run_target",
-        default="sa_and_shop_ext",
-        choices=["sa_only", "shop_ext_only", "sa_and_shop_ext", "SA만", "확장소재만", "SA+확장소재"],
-        help="백필 실행 대상",
-    )
-    p.add_argument(
-        "--shop_ext_bucket",
-        default="shopping",
-        choices=["shopping", "non_shopping", "all", "쇼핑검색", "파워링크외", "전체"],
-        help="확장소재 수집 버킷",
-    )
+    p.add_argument("--shopping_only", action="store_true", help="쇼핑검색(SSA) 캠페인만 수집/백필")
+    p.add_argument("--collect_mode", default="검색광고 전체+기기", help="검색광고 전체만 / 기기만 / 검색광고 전체+기기")
+    p.add_argument("--sa_scope", default="전체", help="검색광고 수집 범위: 전체 / 소재만")
+    p.add_argument("--run_target", default="검색광고 전체만", help="실행 대상: 검색광고 전체만 / 확장소재만 / 검색광고 전체+확장소재")
+    p.add_argument("--shop_ext_bucket", default="쇼핑검색(SSA)", help="확장소재 구분: 쇼핑검색(SSA) / 파워링크 외 검색광고 / 전체")
     args = p.parse_args()
     args.start = clean(args.start)
     args.end = clean(args.end)
     args.account_name = clean(args.account_name)
     args.account_names = clean(args.account_names)
-    args.collect_mode = _normalize_collect_mode(args.collect_mode)
-    args.sa_scope = _normalize_sa_scope(args.sa_scope)
-    args.run_target = _normalize_run_target(args.run_target)
-    args.shop_ext_bucket = _normalize_shop_ext_bucket(args.shop_ext_bucket)
+    try:
+        args.collect_mode = _normalize_choice(args.collect_mode, COLLECT_MODE_ALIASES, "collect_mode")
+        args.sa_scope = _normalize_choice(args.sa_scope, SA_SCOPE_ALIASES, "sa_scope")
+        args.run_target = _normalize_choice(args.run_target, RUN_TARGET_ALIASES, "run_target")
+        args.shop_ext_bucket = _normalize_choice(args.shop_ext_bucket, SHOP_EXT_BUCKET_ALIASES, "shop_ext_bucket")
+    except ValueError as e:
+        p.error(str(e))
     return args
 
 
@@ -153,7 +164,7 @@ def run_cmd(cmd: List[str], label: str, day: str) -> None:
     print(f"   ✅ [{label}] {day} 완료", flush=True)
 
 
-def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]:
+def build_search_ads_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]:
     cmd: List[str] = [
         sys.executable,
         "collector.py",
@@ -161,14 +172,17 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
         d_str,
         "--workers",
         str(args.workers),
+        "--collect_mode",
+        args.collect_mode,
     ]
     if args.account_name:
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
-    cmd += ["--collect_mode", args.collect_mode, "--sa_scope", args.sa_scope]
     if args.shopping_only:
         cmd.append("--shopping_only")
+    if args.sa_scope == "ad_only" and _supports_cli_arg("collector.py", "--sa_scope"):
+        cmd += ["--sa_scope", args.sa_scope]
 
     if args.sync_dim_first_day:
         skip_dim_this_run = not first
@@ -186,18 +200,13 @@ def build_sa_cmd(args: argparse.Namespace, d_str: str, first: bool) -> List[str]
 
 
 def build_shop_ext_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
-    cmd: List[str] = [
-        sys.executable,
-        "collector_shop_ext.py",
-        "--date",
-        d_str,
-        "--ext_bucket",
-        args.shop_ext_bucket,
-    ]
+    cmd: List[str] = [sys.executable, "collector_shop_ext.py", "--date", d_str]
     if args.account_name:
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
+    if _supports_cli_arg("collector_shop_ext.py", "--ext_bucket"):
+        cmd += ["--ext_bucket", args.shop_ext_bucket]
     return cmd
 
 
@@ -207,6 +216,8 @@ def build_gfa_cmd(args: argparse.Namespace, d_str: str) -> List[str]:
         cmd += ["--account_name", args.account_name]
     if args.account_names and args.account_names != args.account_name:
         cmd += ["--account_names", args.account_names]
+    if _supports_cli_arg("collector_gfa.py", "--collect_mode"):
+        cmd += ["--collect_mode", args.collect_mode]
     return cmd
 
 
@@ -228,20 +239,25 @@ def main() -> None:
         print("❌ [FATAL] 시작일이 종료일보다 늦습니다.", flush=True)
         sys.exit(1)
 
+    if args.run_target in {"shop_ext_only", "sa_and_shop_ext"}:
+        args.with_shop_ext = True
+
     if args.shopping_only:
         if args.fast:
-            print("⚠️ 쇼핑검색 백필은 fast 모드를 강제로 해제합니다.", flush=True)
+            print("⚠️ 쇼핑검색(SSA) 백필은 fast 모드를 강제로 해제합니다.", flush=True)
         args.fast = False
         if args.workers != 1:
-            print(f"⚠️ 쇼핑검색 백필은 workers=1로 고정합니다. (입력값 {args.workers} → 1)", flush=True)
+            print(f"⚠️ 쇼핑검색(SSA) 백필은 workers=1로 고정합니다. (입력값 {args.workers} → 1)", flush=True)
         args.workers = 1
         args.with_shop_ext = True
-        args.shop_ext_bucket = "shopping"
+        if args.shop_ext_bucket != "shopping":
+            print(f"⚠️ shopping_only=true 이므로 확장소재 구분을 쇼핑검색(SSA)으로 맞춥니다. ({_label_shop_ext_bucket(args.shop_ext_bucket)} → 쇼핑검색(SSA))", flush=True)
+            args.shop_ext_bucket = "shopping"
 
-    run_sa = args.run_target in {"sa_only", "sa_and_shop_ext"}
-    run_shop_ext = args.run_target in {"shop_ext_only", "sa_and_shop_ext"}
-    if args.with_shop_ext:
-        run_shop_ext = True
+    if args.sa_scope == "ad_only" and not _supports_cli_arg("collector.py", "--sa_scope"):
+        print("⚠️ 현재 collector.py 가 --sa_scope 를 지원하지 않아 '소재만' 설정은 무시됩니다.", flush=True)
+    if args.shop_ext_bucket != "shopping" and not _supports_cli_arg("collector_shop_ext.py", "--ext_bucket"):
+        print("⚠️ 현재 collector_shop_ext.py 가 --ext_bucket 을 지원하지 않아 확장소재 구분 설정은 무시됩니다.", flush=True)
 
     print(f"🚀 백필 작업 시작: {start_date} ~ {end_date}", flush=True)
     if args.account_name:
@@ -249,23 +265,22 @@ def main() -> None:
     if args.account_names:
         print(f"🎯 복수 업체 필터: {args.account_names}", flush=True)
     if args.fast:
-        print("🧪 SA 빠른 수집 모드: collector.py 에 --fast 전달", flush=True)
-    print(f"🧭 수집 모드: {_label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
-    print(f"🎯 SA 범위: {_label_sa_scope(args.sa_scope)} ({args.sa_scope})", flush=True)
-    print(f"🎬 실행 대상: {_label_run_target(args.run_target)} ({args.run_target})", flush=True)
+        print("🧪 빠른 수집 모드: 구조 수집 스킵, 디버그 저장 축소", flush=True)
+    print(f"🧭 수집 모드: {_label_collect_mode(args.collect_mode)}", flush=True)
+    print(f"🎯 검색광고 수집 범위: {_label_sa_scope(args.sa_scope)}", flush=True)
+    print(f"🎬 실행 대상: {_label_run_target(args.run_target)}", flush=True)
     if args.sync_dim_first_day:
-        print("🧱 첫날만 구조 동기화, 이후 날짜는 --skip_dim", flush=True)
+        print("🧱 첫날만 구조 수집, 이후 날짜는 --skip_dim", flush=True)
     else:
         print("⚡ 전 기간 skip_dim 모드", flush=True)
     if args.fast and args.collect_mode != "sa_only":
-        print("⚠️ fast + device 수집 조합입니다. PC/M 문제 분석 시에는 fast=false 를 권장합니다.", flush=True)
+        print("⚠️ 빠른 수집 + 기기 조합입니다. PC/M 문제 분석 시에는 fast=false 를 권장합니다.", flush=True)
     if args.with_gfa:
         print("📺 GFA 수집 포함", flush=True)
     if args.shopping_only:
-        print("🛍️ 쇼핑검색 전용 수집", flush=True)
-    if run_shop_ext:
-        label = {"shopping": "쇼핑검색", "non_shopping": "파워링크외", "all": "전체"}.get(args.shop_ext_bucket, args.shop_ext_bucket)
-        print(f"🧩 확장소재 수집 포함 | 버킷: {label}", flush=True)
+        print("🛍️ 쇼핑검색(SSA) 캠페인만 수집", flush=True)
+    if args.with_shop_ext:
+        print(f"🧩 확장소재 수집 포함 | 구분: {_label_shop_ext_bucket(args.shop_ext_bucket)}", flush=True)
     print("=" * 60, flush=True)
 
     first = True
@@ -273,18 +288,19 @@ def main() -> None:
         d_str = d.strftime("%Y-%m-%d")
         print(f"\n📅 [ {d_str} ]", flush=True)
 
-        if run_sa:
-            cmd_sa = build_sa_cmd(args, d_str, first)
-            run_cmd(cmd_sa, "SA", d_str)
+        if args.run_target != "shop_ext_only":
+            cmd_search = build_search_ads_cmd(args, d_str, first)
+            search_label = "쇼핑검색(SSA)" if args.shopping_only else "검색광고 전체"
+            run_cmd(cmd_search, search_label, d_str)
         else:
-            print("   ⏭️ [SA] run_target 설정으로 스킵합니다.", flush=True)
+            print("   ⏭️ [검색광고 전체] run_target 설정으로 스킵합니다.", flush=True)
 
-        if run_shop_ext:
+        if args.with_shop_ext:
             if os.path.exists("collector_shop_ext.py"):
                 cmd_shop_ext = build_shop_ext_cmd(args, d_str)
-                run_cmd(cmd_shop_ext, "SHOP_EXT", d_str)
+                run_cmd(cmd_shop_ext, f"확장소재 | {_label_shop_ext_bucket(args.shop_ext_bucket)}", d_str)
             else:
-                print("   ⏭️ [SHOP_EXT] collector_shop_ext.py 파일이 없어 스킵합니다.", flush=True)
+                print("   ⏭️ [확장소재] collector_shop_ext.py 파일이 없어 스킵합니다.", flush=True)
 
         if args.with_gfa:
             if os.path.exists("collector_gfa.py"):
