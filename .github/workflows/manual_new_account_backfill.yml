@@ -24,25 +24,29 @@ on:
         default: "1"
         type: string
       sync_dim_first_day:
-        description: "첫날만 구조 동기화"
+        description: "첫날만 구조 수집"
         required: true
-        default: false
-        type: boolean
+        default: "예"
+        type: choice
+        options:
+          - "예"
+          - "아니오"
       shopping_only:
-        description: "쇼핑검색 캠페인만 백필"
+        description: "쇼핑검색(SSA) 캠페인만 백필"
         required: false
-        default: false
-        type: boolean
+        default: "아니오"
+        type: choice
+        options:
+          - "아니오"
+          - "예"
       with_shop_ext:
-        description: "쇼핑 확장소재도 함께 수집"
+        description: "확장소재 수집 포함"
         required: false
-        default: false
-        type: boolean
-      shop_ext_bucket:
-        description: "확장소재 수집 버킷 (shopping / non_shopping / all)"
-        required: false
-        default: "shopping"
-        type: string
+        default: "아니오"
+        type: choice
+        options:
+          - "아니오"
+          - "예"
 
 concurrency:
   group: manual-new-account-backfill-${{ github.event.inputs.account_name }}
@@ -80,18 +84,19 @@ jobs:
             --start "${{ github.event.inputs.start_date }}" \
             --end "${{ github.event.inputs.end_date }}" \
             --account_name "${{ github.event.inputs.account_name }}" \
-            --workers "${{ github.event.inputs.workers }}" \
-            --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
+            --workers "${{ github.event.inputs.workers }}")
 
-          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "예" ]; then
             CMD+=(--sync_dim_first_day)
           fi
-          if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+          if [ "${{ github.event.inputs.shopping_only }}" = "예" ]; then
             CMD+=(--shopping_only)
           fi
-          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "예" ]; then
             CMD+=(--with_shop_ext)
           fi
 
-          printf '실행 명령어: %q ' "${CMD[@]}"; echo
+          printf '실행 명령어:'
+          printf ' %q' "${CMD[@]}"
+          printf '\n'
           "${CMD[@]}"

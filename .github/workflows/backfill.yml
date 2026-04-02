@@ -25,80 +25,80 @@ on:
         required: false
         default: '3'
       fast:
-        description: '빠른 백필 모드'
+        description: '빠른 수집 모드'
         required: false
         default: '아니오'
         type: choice
         options:
-          - 아니오
-          - 예
+          - '아니오'
+          - '예'
       collect_mode:
         description: '수집 모드'
         required: false
-        default: 'SA+기기'
+        default: '검색광고 전체+기기'
         type: choice
         options:
-          - SA+기기
-          - SA만
-          - 기기만
+          - '검색광고 전체+기기'
+          - '검색광고 전체만'
+          - '기기만'
       sa_scope:
-        description: 'SA 범위'
+        description: '검색광고 수집 범위'
         required: false
         default: '전체'
         type: choice
         options:
-          - 전체
-          - 소재만
+          - '전체'
+          - '소재만'
       run_target:
         description: '실행 대상'
         required: false
-        default: 'SA+확장소재'
+        default: '검색광고 전체만'
         type: choice
         options:
-          - SA만
-          - 확장소재만
-          - SA+확장소재
+          - '검색광고 전체만'
+          - '확장소재만'
+          - '검색광고 전체+확장소재'
       shop_ext_bucket:
         description: '확장소재 구분'
         required: false
-        default: '쇼핑검색'
+        default: '쇼핑검색(SSA)'
         type: choice
         options:
-          - 쇼핑검색
-          - 파워링크외
-          - 전체
+          - '쇼핑검색(SSA)'
+          - '파워링크 외 검색광고'
+          - '전체'
       sync_dim_first_day:
-        description: '첫날만 구조수집 수행'
+        description: '첫날만 구조 수집'
         required: false
         default: '아니오'
         type: choice
         options:
-          - 아니오
-          - 예
+          - '아니오'
+          - '예'
       with_gfa:
         description: 'GFA 포함 실행'
         required: false
         default: '아니오'
         type: choice
         options:
-          - 아니오
-          - 예
+          - '아니오'
+          - '예'
       shopping_only:
-        description: '쇼핑검색 캠페인만 재수집'
+        description: '쇼핑검색(SSA) 캠페인만 재수집'
         required: false
         default: '아니오'
         type: choice
         options:
-          - 아니오
-          - 예
+          - '아니오'
+          - '예'
       with_shop_ext:
-        description: '확장소재도 함께 수집'
+        description: '확장소재 수집 포함'
         required: false
         default: '아니오'
         type: choice
         options:
-          - 아니오
-          - 예
+          - '아니오'
+          - '예'
 
 concurrency:
   group: fast-backfill-${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}-${{ github.event.inputs.start_date }}-${{ github.event.inputs.end_date }}
@@ -132,7 +132,14 @@ jobs:
 
       - name: Run fast backfill
         run: |
-          CMD=(python fast_backfill.py             --start "${{ github.event.inputs.start_date }}"             --end "${{ github.event.inputs.end_date }}"             --workers "${{ github.event.inputs.workers }}"             --collect_mode "${{ github.event.inputs.collect_mode }}"             --sa_scope "${{ github.event.inputs.sa_scope }}"             --run_target "${{ github.event.inputs.run_target }}"             --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
+          CMD=(python fast_backfill.py \
+            --start "${{ github.event.inputs.start_date }}" \
+            --end "${{ github.event.inputs.end_date }}" \
+            --workers "${{ github.event.inputs.workers }}" \
+            --collect_mode "${{ github.event.inputs.collect_mode }}" \
+            --sa_scope "${{ github.event.inputs.sa_scope }}" \
+            --run_target "${{ github.event.inputs.run_target }}" \
+            --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
             CMD+=(--account_name "${{ github.event.inputs.account_name }}")
@@ -156,7 +163,9 @@ jobs:
             CMD+=(--with_shop_ext)
           fi
 
-          printf '실행 명령어: %q ' "${CMD[@]}"; echo
+          printf '실행 명령어:'
+          printf ' %q' "${CMD[@]}"
+          printf '\n'
           "${CMD[@]}"
 
       - name: Upload split debug rows

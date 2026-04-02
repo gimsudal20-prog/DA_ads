@@ -9,17 +9,20 @@ on:
       collect_mode:
         description: '수집 모드'
         required: false
-        default: 'sa_with_device'
+        default: '검색광고 전체+기기'
         type: choice
         options:
-          - sa_with_device
-          - sa_only
-          - device_only
+          - '검색광고 전체+기기'
+          - '검색광고 전체만'
+          - '기기만'
       fast:
-        description: '수동 실행 시 fast 사용 여부'
+        description: '수동 실행 시 빠른 수집 사용 여부'
         required: false
-        default: true
-        type: boolean
+        default: '예'
+        type: choice
+        options:
+          - '예'
+          - '아니오'
 
 concurrency:
   group: collector-daily
@@ -61,30 +64,30 @@ jobs:
           KST_HOUR=$(date +%H)
           YESTERDAY=$(date -d "yesterday" +%F)
           TODAY=$(date +%F)
-          COLLECT_MODE="${DISPATCH_COLLECT_MODE:-sa_with_device}"
+          COLLECT_MODE="${DISPATCH_COLLECT_MODE:-검색광고 전체+기기}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${DISPATCH_FAST}" = "false" ]; then
+            if [ "${DISPATCH_FAST}" = "아니오" ]; then
               FAST_FLAG=""
             else
               FAST_FLAG="--fast"
             fi
 
-            echo "🚀 Manual collect date (Yesterday) = ${YESTERDAY} | mode=${COLLECT_MODE} | fast=${DISPATCH_FAST:-true}"
+            echo "🚀 수동 수집 날짜(전일) = ${YESTERDAY} | 모드=${COLLECT_MODE} | 빠른 수집=${DISPATCH_FAST:-예}"
             python collector.py --date "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}" ${FAST_FLAG}
           else
             if [ "$KST_HOUR" = "04" ]; then
-              echo "🚀 Collect date (Yesterday, full refresh) = ${YESTERDAY} | mode=${COLLECT_MODE}"
+              echo "🚀 수집 날짜(전일, 전체 갱신) = ${YESTERDAY} | 모드=${COLLECT_MODE}"
               python collector.py --date "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}"
             else
-              echo "🚀 Collect date (Yesterday, fast refresh) = ${YESTERDAY} | mode=${COLLECT_MODE}"
+              echo "🚀 수집 날짜(전일, 빠른 갱신) = ${YESTERDAY} | 모드=${COLLECT_MODE}"
               python collector.py --date "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}" --fast
             fi
 
-            if [ "${COLLECT_MODE}" = "device_only" ]; then
-              echo "⏭️ Today fast refresh는 device_only 모드에서 생략합니다."
+            if [ "${COLLECT_MODE}" = "기기만" ] || [ "${COLLECT_MODE}" = "device_only" ]; then
+              echo "⏭️ 당일 빠른 수집은 '기기만' 모드에서 생략합니다."
             else
-              echo "🚀 Collect date (Today, fast refresh) = ${TODAY} | mode=${COLLECT_MODE}"
+              echo "🚀 수집 날짜(당일, 빠른 갱신) = ${TODAY} | 모드=${COLLECT_MODE}"
               python collector.py --date "${TODAY}" --workers 2 --collect_mode "${COLLECT_MODE}" --fast
             fi
           fi

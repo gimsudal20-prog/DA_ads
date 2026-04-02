@@ -4,57 +4,90 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: 'Start date (YYYY-MM-DD)'
+        description: '시작일 (YYYY-MM-DD)'
         required: true
         type: string
       end:
-        description: 'End date (YYYY-MM-DD)'
+        description: '종료일 (YYYY-MM-DD)'
         required: true
         type: string
       workers:
-        description: 'Workers'
+        description: '동시 작업 수'
         required: false
         default: '1'
         type: string
       collect_mode:
-        description: 'Collect mode'
+        description: '수집 모드'
         required: false
-        default: 'sa_with_device'
+        default: '검색광고 전체+기기'
         type: choice
         options:
-          - sa_only
-          - device_only
-          - sa_with_device
+          - '검색광고 전체만'
+          - '기기만'
+          - '검색광고 전체+기기'
+      sa_scope:
+        description: '검색광고 수집 범위'
+        required: false
+        default: '전체'
+        type: choice
+        options:
+          - '전체'
+          - '소재만'
+      run_target:
+        description: '실행 대상'
+        required: false
+        default: '검색광고 전체만'
+        type: choice
+        options:
+          - '검색광고 전체만'
+          - '확장소재만'
+          - '검색광고 전체+확장소재'
+      shop_ext_bucket:
+        description: '확장소재 구분'
+        required: false
+        default: '쇼핑검색(SSA)'
+        type: choice
+        options:
+          - '쇼핑검색(SSA)'
+          - '파워링크 외 검색광고'
+          - '전체'
       account_name:
-        description: 'Optional single account name'
+        description: '단일 업체명 (선택)'
         required: false
         default: ''
         type: string
       fast:
-        description: 'Use fast mode'
+        description: '빠른 수집 모드'
         required: false
-        default: false
-        type: boolean
+        default: '아니오'
+        type: choice
+        options:
+          - '아니오'
+          - '예'
       sync_dim_first_day:
-        description: 'Sync dim on first day'
+        description: '첫날만 구조 수집'
         required: false
-        default: true
-        type: boolean
+        default: '예'
+        type: choice
+        options:
+          - '아니오'
+          - '예'
       shopping_only:
-        description: 'Shopping only'
+        description: '쇼핑검색(SSA) 캠페인만 재수집'
         required: false
-        default: false
-        type: boolean
+        default: '아니오'
+        type: choice
+        options:
+          - '아니오'
+          - '예'
       with_shop_ext:
-        description: 'Include shopping extension collector'
+        description: '확장소재 수집 포함'
         required: false
-        default: false
-        type: boolean
-      shop_ext_bucket:
-        description: 'Extension collector bucket (shopping / non_shopping / all)'
-        required: false
-        default: 'shopping'
-        type: string
+        default: '아니오'
+        type: choice
+        options:
+          - '아니오'
+          - '예'
 
 jobs:
   backfill:
@@ -113,25 +146,28 @@ jobs:
       - name: Run backfill
         shell: bash
         run: |
-          CMD=(python fast_backfill.py --start "${{ github.event.inputs.start }}" --end "${{ github.event.inputs.end }}" --workers "${{ github.event.inputs.workers }}" --collect_mode "${{ github.event.inputs.collect_mode }}" --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
+          CMD=(python fast_backfill.py \
+            --start "${{ github.event.inputs.start }}" \
+            --end "${{ github.event.inputs.end }}" \
+            --workers "${{ github.event.inputs.workers }}" \
+            --collect_mode "${{ github.event.inputs.collect_mode }}" \
+            --sa_scope "${{ github.event.inputs.sa_scope }}" \
+            --run_target "${{ github.event.inputs.run_target }}" \
+            --shop_ext_bucket "${{ github.event.inputs.shop_ext_bucket }}")
 
           if [ -n "${{ github.event.inputs.account_name }}" ]; then
             CMD+=(--account_name "${{ github.event.inputs.account_name }}")
           fi
-
-          if [ "${{ github.event.inputs.fast }}" = "true" ]; then
+          if [ "${{ github.event.inputs.fast }}" = "예" ]; then
             CMD+=(--fast)
           fi
-
-          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "true" ]; then
+          if [ "${{ github.event.inputs.sync_dim_first_day }}" = "예" ]; then
             CMD+=(--sync_dim_first_day)
           fi
-
-          if [ "${{ github.event.inputs.shopping_only }}" = "true" ]; then
+          if [ "${{ github.event.inputs.shopping_only }}" = "예" ]; then
             CMD+=(--shopping_only)
           fi
-
-          if [ "${{ github.event.inputs.with_shop_ext }}" = "true" ]; then
+          if [ "${{ github.event.inputs.with_shop_ext }}" = "예" ]; then
             CMD+=(--with_shop_ext)
           fi
 
