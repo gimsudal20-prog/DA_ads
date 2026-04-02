@@ -2192,7 +2192,7 @@ def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_r
 
     return replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types), {'status': 'empty'}
 
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False, sa_scope: str = "full"):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
     job_lock = acquire_job_lock(engine, customer_id, target_date)
@@ -2641,6 +2641,7 @@ def main():
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--collect_mode", type=str, default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="sa_only=기존 SA만, device_only=PC/M만, sa_with_device=둘 다")
+    parser.add_argument("--sa_scope", type=str, default="full", choices=["full", "ad_only", "전체", "소재만"], help="full=캠페인/키워드/소재 전체, ad_only=소재(AD)만")
     parser.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/재적재")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
     args = parser.parse_args()
@@ -2657,7 +2658,13 @@ def main():
     print("="*50, flush=True)
     if FAST_MODE:
         print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
+    if str(args.sa_scope).strip() == "소재만":
+        args.sa_scope = "ad_only"
+    elif str(args.sa_scope).strip() == "전체":
+        args.sa_scope = "full"
+
     print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
+    print(f"🎯 수집 범위: {args.sa_scope}", flush=True)
     if args.shopping_only:
         print("🛍️ 쇼핑검색 전용 수집", flush=True)
     print("="*50 + "\n", flush=True)
@@ -2743,7 +2750,7 @@ def main():
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast, args.collect_mode, args.shopping_only) for acc in accounts_info]
+        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast, args.collect_mode, args.shopping_only, args.sa_scope) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
             except Exception: pass
