@@ -609,7 +609,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         df = _perf_common_merge_meta(bundle, meta)
         view = df.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-            "campaign_name": "캠페인", "imp": "노출", "클릭": "클릭", "cost": "광고비",
+            "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
             "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
             "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액",
             "conv": "구매완료수", "sales": "구매완료 매출"
