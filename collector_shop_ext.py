@@ -130,23 +130,161 @@ def clear_fact_scope(engine, customer_id: str, target_date: date, ad_ids: list[s
     return False
 
 
+def _to_float(v, default: float = 0.0) -> float:
+    try:
+        if v is None or v == "":
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _to_int(v, default: int = 0) -> int:
+    try:
+        if v is None or v == "":
+            return default
+        return int(round(float(v)))
+    except Exception:
+        return default
+
+
+def _preview_stat_row(r: dict) -> str:
+    keep = [
+        "id", "impCnt", "clkCnt", "salesAmt", "ctr", "cpc", "ccnt", "convAmt",
+        "cost", "amt", "spend", "chargeAmt", "viewCnt"
+    ]
+    slim = {k: r.get(k) for k in keep if k in r}
+    return json.dumps(slim, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_ext_metrics(r: dict, bucket: str):
+    raw_imp = _to_int(r.get("impCnt", 0))
+    raw_clk = _to_int(r.get("clkCnt", 0))
+    raw_cost = _to_int(r.get("salesAmt", 0))
+    raw_conv = _to_float(r.get("ccnt", 0))
+    raw_sales = _to_int(r.get("convAmt", 0))
+    ctr = _to_float(r.get("ctr", 0.0))
+    cpc = _to_float(r.get("cpc", 0.0))
+
+    imp = raw_imp
+    clk = raw_clk
+    cost = raw_cost
+    conv = raw_conv
+    sales = raw_sales
+
+    debug_flags = []
+
+    if clk <= 0 and cost > 0 and cpc > 0:
+        est_clk = max(0, int(round(cost / cpc)))
+        if est_clk > 0:
+            clk = est_clk
+            debug_flags.append("clk_from_cost_cpc")
+
+    if clk <= 0 and imp > 0 and ctr > 0:
+        est_clk = max(0, int(round(imp * ctr / 100.0)))
+        if est_clk > 0:
+            clk = est_clk
+            debug_flags.append("clk_from_ctr")
+
+    if cost <= 0 and clk > 0 and cpc > 0:
+        est_cost = max(0, int(round(clk * cpc)))
+        if est_cost > 0:
+            cost = est_cost
+            debug_flags.append("cost_from_clk_cpc")
+
+    # 파워링크/플레이스 등에서는 salesAmt에 클릭수가 잘못 들어오는 케이스 보정
+    if bucket == "non_shopping" and clk > 0 and cpc > 0:
+        est_cost = max(0, int(round(clk * cpc)))
+        if cost == clk or cost < max(1, int(round(est_cost * 0.35))):
+            if est_cost > 0:
+                cost = est_cost
+                debug_flags.append("non_shopping_cost_recalc")
+
+    # 쇼핑검색은 clkCnt가 0으로 오는 케이스가 있어 ctr/cpc 기반으로 최대한 복원
+    if bucket == "shopping" and clk > 0 and cpc > 0:
+        est_cost = max(0, int(round(clk * cpc)))
+        if cost <= 0 or cost < max(1, int(round(est_cost * 0.35))):
+            if est_cost > 0:
+                cost = est_cost
+                debug_flags.append("shopping_cost_recalc")
+
+    return {
+        "imp": imp,
+        "clk": clk,
+        "cost": cost,
+        "conv": conv,
+        "sales": sales,
+        "cpc": cpc,
+        "ctr": ctr,
+        "debug_flags": debug_flags,
+        "raw": {
+            "imp": raw_imp,
+            "clk": raw_clk,
+            "cost": raw_cost,
+            "conv": raw_conv,
+            "sales": raw_sales,
+        },
+    }
+
+
+def _iter_text_values(value):
+    if isinstance(value, str):
+        v = value.strip()
+        if v and not v.startswith("http"):
+            yield v
+        return
+    if isinstance(value, dict):
+        skip_keys = {"extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type"}
+        for k, v in value.items():
+            if k in skip_keys:
+                continue
+            yield from _iter_text_values(v)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_text_values(item)
+
+
+def _first_non_empty(value, keys):
+    if isinstance(value, dict):
+        for k in keys:
+            v = value.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            v = _first_non_empty(item, keys)
+            if v:
+                return v
+    return ""
+
+
+def _normalize_ext_info(ext: dict):
+    ext_info = ext.get("adExtension")
+    if isinstance(ext_info, (dict, list)):
+        return ext_info
+    return ext or {}
+
+
 def parse_ext_name(ext: dict) -> str:
-    ext_info = ext.get("adExtension", {}) or ext
+    ext_info = _normalize_ext_info(ext)
     ext_type = ext.get("extensionType") or ext.get("type") or "확장소재"
-    cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text"]
+    cands = ["promoText", "addPromoText", "subLinkName", "pcText", "mobileText", "description", "title", "text", "name"]
     text_val = ""
     for c in cands:
         if ext_info.get(c):
             text_val = str(ext_info[c]).strip()
             break
     if not text_val:
-        vals = [
-            str(v)
-            for k, v in ext_info.items()
-            if isinstance(v, str)
-            and not v.startswith("http")
-            and k not in ("extensionType", "status", "nccAdExtensionId", "ownerId", "customer_id", "type")
-        ]
+        vals = []
+        seen = set()
+        for v in _iter_text_values(ext_info):
+            if v not in seen:
+                seen.add(v)
+                vals.append(v)
+            if len(vals) >= 5:
+                break
         text_val = " / ".join(vals) if vals else str(ext_info)[:150]
     return f"[확장소재] {ext_type} | {text_val}"
 
@@ -177,6 +315,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
 
     camp_rows, ag_rows, ad_rows = [], [], []
     target_ad_ids = []
+    ad_bucket_map = {}
 
     for c in selected_camps:
         cid = c.get("nccCampaignId")
@@ -205,7 +344,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
                     target_ad_ids.append(ext_id)
-                    ext_info = ext.get("adExtension", {}) or ext
+                    ad_bucket_map[str(ext_id)] = campaign_bucket(c.get("campaignTp"))
+                    ext_info = _normalize_ext_info(ext)
                     display_name = parse_ext_name(ext)
                     ad_rows.append(
                         {
@@ -216,8 +356,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                             "status": ext.get("status"),
                             "ad_title": display_name,
                             "ad_desc": display_name,
-                            "pc_landing_url": ext_info.get("pcLandingUrl", ""),
-                            "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                            "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                            "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
                             "creative_text": display_name[:500],
                         }
                     )
@@ -240,7 +380,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 ext_id = ext.get("nccAdExtensionId")
                 if ext_id:
                     target_ad_ids.append(ext_id)
-                    ext_info = ext.get("adExtension", {}) or ext
+                    ad_bucket_map[str(ext_id)] = campaign_bucket(c.get("campaignTp"))
+                    ext_info = _normalize_ext_info(ext)
                     display_name = parse_ext_name(ext)
                     ad_rows.append(
                         {
@@ -251,8 +392,8 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                             "status": ext.get("status"),
                             "ad_title": display_name,
                             "ad_desc": display_name,
-                            "pc_landing_url": ext_info.get("pcLandingUrl", ""),
-                            "mobile_landing_url": ext_info.get("mobileLandingUrl", ""),
+                            "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                            "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
                             "creative_text": display_name[:500],
                         }
                     )
@@ -269,7 +410,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
 
     log(f"   ▶ 확장소재 {len(target_ad_ids)}개 실시간 통계 조회 중...")
     d_str = target_date.strftime("%Y-%m-%d")
-    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "cpc", "ccnt", "convAmt"], separators=(",", ":"))
+    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ctr", "cpc", "ccnt", "convAmt"], separators=(",", ":"))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(",", ":"))
 
     raw_stats = []
@@ -280,45 +421,36 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
         if res and "data" in res:
             raw_stats.extend(res["data"])
 
+    if raw_stats:
+        log(f"   ▶ /stats 응답 {len(raw_stats)}건 수신")
+
     fact_rows = []
-    corrected_cost_rows = 0
-    corrected_clk_rows = 0
-    suspicious_equal_rows = 0
+    debug_counts = {
+        "clk_from_cost_cpc": 0,
+        "clk_from_ctr": 0,
+        "cost_from_clk_cpc": 0,
+        "non_shopping_cost_recalc": 0,
+        "shopping_cost_recalc": 0,
+    }
+    suspicious_samples = []
+
     for r in raw_stats:
         ad_id = str(r.get("id") or "").strip()
         if not ad_id:
             continue
 
-        imp = int(float(r.get("impCnt", 0) or 0))
-        clk = int(float(r.get("clkCnt", 0) or 0))
-        cost = int(round(float(r.get("salesAmt", 0) or 0)))
-        sales = int(round(float(r.get("convAmt", 0) or 0)))
-        conv = float(r.get("ccnt", 0) or 0)
-        cpc = float(r.get("cpc", 0) or 0)
+        bucket = ad_bucket_map.get(ad_id, "non_shopping")
+        norm = _normalize_ext_metrics(r, bucket)
 
-        # 확장소재 /stats 응답은 매체별로 clk/cost 값이 불안정한 케이스가 있어
-        # cpc를 이용해 클릭/비용을 상호 보정한다.
-        if clk == 0 and cost > 0 and cpc > 0:
-            est_clk = int(round(cost / cpc))
-            if est_clk > 0:
-                clk = est_clk
-                corrected_clk_rows += 1
+        for flag in norm["debug_flags"]:
+            debug_counts[flag] = debug_counts.get(flag, 0) + 1
 
-        if cost == 0 and clk > 0 and cpc > 0:
-            est_cost = int(round(clk * cpc))
-            if est_cost > 0:
-                cost = est_cost
-                corrected_cost_rows += 1
+        if norm["debug_flags"] and len(suspicious_samples) < 8:
+            suspicious_samples.append(
+                f"bucket={bucket} ad_id={ad_id} flags={','.join(norm['debug_flags'])} raw={_preview_stat_row(r)} -> imp={norm['imp']}, clk={norm['clk']}, cost={norm['cost']}"
+            )
 
-        # 클릭수가 광고비 컬럼으로 들어온 듯한 케이스 보정
-        if clk > 0 and cost == clk and cpc > 1:
-            est_cost = int(round(clk * cpc))
-            if est_cost > cost:
-                cost = est_cost
-                corrected_cost_rows += 1
-                suspicious_equal_rows += 1
-
-        if imp == 0 and clk == 0 and cost == 0 and conv == 0 and sales == 0:
+        if norm["imp"] == 0 and norm["clk"] == 0 and norm["cost"] == 0 and norm["conv"] == 0 and norm["sales"] == 0:
             continue
 
         fact_rows.append(
@@ -326,12 +458,12 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                 "dt": target_date,
                 "customer_id": str(customer_id),
                 "ad_id": ad_id,
-                "imp": imp,
-                "clk": clk,
-                "cost": cost,
-                "conv": conv,
-                "sales": sales,
-                "roas": (sales / cost * 100.0) if cost > 0 else 0.0,
+                "imp": norm["imp"],
+                "clk": norm["clk"],
+                "cost": norm["cost"],
+                "conv": norm["conv"],
+                "sales": norm["sales"],
+                "roas": (norm["sales"] / norm["cost"] * 100.0) if norm["cost"] > 0 else 0.0,
             }
         )
 
@@ -339,8 +471,22 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
         if clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
             upsert_many(engine, "fact_ad_daily", fact_rows, ["dt", "customer_id", "ad_id"])
             log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
-            if corrected_clk_rows or corrected_cost_rows or suspicious_equal_rows:
-                log(f"   ↪ 보정 적용 | 클릭 역산 {corrected_clk_rows}건 | 비용 역산 {corrected_cost_rows}건 | 클릭=비용 의심 보정 {suspicious_equal_rows}건")
+            total_fix = sum(debug_counts.values())
+            if total_fix:
+                log(
+                    "   ↪ 보정 적용 | "
+                    + ", ".join([
+                        f"cost/cpc→클릭 {debug_counts.get('clk_from_cost_cpc', 0)}건",
+                        f"ctr→클릭 {debug_counts.get('clk_from_ctr', 0)}건",
+                        f"clk*cpc→비용 {debug_counts.get('cost_from_clk_cpc', 0)}건",
+                        f"파워링크외 비용 재계산 {debug_counts.get('non_shopping_cost_recalc', 0)}건",
+                        f"쇼핑 비용 재계산 {debug_counts.get('shopping_cost_recalc', 0)}건",
+                    ])
+                )
+            if suspicious_samples:
+                log("   ↪ 원본 응답 샘플(최대 8건)")
+                for s in suspicious_samples:
+                    log(f"      {s}")
         else:
             log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단했습니다. 중복 방지를 위해 확인 후 재실행하세요.")
     else:
