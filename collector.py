@@ -62,6 +62,41 @@ FAST_MODE = False
 CART_ENABLE_DATE = date(2026, 3, 11)
 SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalog', 'shop')
 
+COLLECT_MODE_ALIASES = {
+    "sa_only": "sa_only",
+    "검색광고 전체만": "sa_only",
+    "검색광고전체만": "sa_only",
+    "device_only": "device_only",
+    "기기만": "device_only",
+    "sa_with_device": "sa_with_device",
+    "검색광고 전체+기기": "sa_with_device",
+    "검색광고전체+기기": "sa_with_device",
+    "검색광고 전체 + 기기": "sa_with_device",
+}
+
+
+def normalize_collect_mode(value: str | None) -> str:
+    raw = (value or "sa_with_device").strip()
+    if not raw:
+        return "sa_with_device"
+    if raw in COLLECT_MODE_ALIASES:
+        return COLLECT_MODE_ALIASES[raw]
+    lowered = raw.lower()
+    if lowered in COLLECT_MODE_ALIASES:
+        return COLLECT_MODE_ALIASES[lowered]
+    raise ValueError(
+        f"collect_mode 값이 올바르지 않습니다: {value} (허용: sa_only, device_only, sa_with_device, 검색광고 전체만, 기기만, 검색광고 전체+기기)"
+    )
+
+
+def label_collect_mode(value: str | None) -> str:
+    normalized = normalize_collect_mode(value)
+    return {
+        "sa_only": "검색광고 전체만",
+        "device_only": "기기만",
+        "sa_with_device": "검색광고 전체+기기",
+    }.get(normalized, normalized)
+
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -2600,10 +2635,15 @@ def main():
     parser.add_argument("--skip_dim", action="store_true")
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
-    parser.add_argument("--collect_mode", type=str, default="sa_with_device", choices=["sa_only", "device_only", "sa_with_device"], help="sa_only=기존 SA만, device_only=PC/M만, sa_with_device=둘 다")
+    parser.add_argument("--collect_mode", type=str, default="sa_with_device", help="sa_only/device_only/sa_with_device 또는 검색광고 전체만/기기만/검색광고 전체+기기")
     parser.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/재적재")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
     args = parser.parse_args()
+
+    try:
+        args.collect_mode = normalize_collect_mode(args.collect_mode)
+    except ValueError as e:
+        parser.error(str(e))
 
     global FAST_MODE
     FAST_MODE = bool(args.fast)
@@ -2617,7 +2657,7 @@ def main():
     print("="*50, flush=True)
     if FAST_MODE:
         print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
-    print(f"🧭 수집 모드: {args.collect_mode}", flush=True)
+    print(f"🧭 수집 모드: {label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
     if args.shopping_only:
         print("🛍️ 쇼핑검색 전용 수집", flush=True)
     print("="*50 + "\n", flush=True)
