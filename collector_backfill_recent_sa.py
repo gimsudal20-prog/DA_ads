@@ -277,15 +277,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     pk = "campaign_id" if "campaign" in table else ("keyword_id" if "keyword" in table else "ad_id")
     df = pd.DataFrame(rows).drop_duplicates(subset=['dt', 'customer_id', pk], keep='last').sort_values(by=['dt', 'customer_id', pk]).astype(object).where(pd.notnull, None)
 
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in ['dt', 'customer_id', pk]]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    if update_cols:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    else:
-        conflict_clause = f'ON CONFLICT (dt, customer_id, {pk}) DO NOTHING'
-
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -319,15 +311,7 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
     pk_cols = ['dt', 'customer_id', 'adgroup_id', 'ad_id', 'query_text']
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
 
-    cols = list(df.columns)
-    update_cols = [c for c in cols if c not in pk_cols]
-    col_names = ", ".join([f'"{c}"' for c in cols])
-    if update_cols:
-        conflict_clause = 'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
-    else:
-        conflict_clause = 'ON CONFLICT (dt, customer_id, adgroup_id, ad_id, query_text) DO NOTHING'
-
-    sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
+    sql = f'INSERT INTO {table} ({", ".join([f"{c}" for c in df.columns])}) VALUES %s'
     tuples = list(df.itertuples(index=False, name=None))
 
     for attempt in range(3):
@@ -725,6 +709,44 @@ def safe_float(v) -> float:
     try: return float(s)
     except Exception: return 0.0
 
+
+def maybe_swap_imp_clk_indices(data_df: pd.DataFrame, report_tp: str, pk_idx: int, imp_idx: int, clk_idx: int) -> tuple[int, int, dict | None]:
+    if data_df is None or data_df.empty or imp_idx == -1 or clk_idx == -1 or "AD" not in report_tp:
+        return imp_idx, clk_idx, None
+
+    valid = 0
+    bad = 0
+    imp_total = 0
+    clk_total = 0
+    preview = []
+    need_idx = max(pk_idx, imp_idx, clk_idx)
+
+    for _, r in data_df.head(80).iterrows():
+        if len(r) <= need_idx:
+            continue
+        obj_id = str(r.iloc[pk_idx]).strip() if pk_idx != -1 and len(r) > pk_idx else ""
+        if not obj_id or obj_id == "-" or obj_id.lower() in ["id", "adid", "campaignid", "keywordid"]:
+            continue
+        imp = int(safe_float(r.iloc[imp_idx])) if len(r) > imp_idx else 0
+        clk = int(safe_float(r.iloc[clk_idx])) if len(r) > clk_idx else 0
+        if imp == 0 and clk == 0:
+            continue
+        valid += 1
+        imp_total += imp
+        clk_total += clk
+        if len(preview) < 5:
+            preview.append((obj_id, imp, clk))
+        if clk > imp:
+            bad += 1
+
+    if valid < 5:
+        return imp_idx, clk_idx, None
+
+    should_swap = bad >= max(3, int(valid * 0.6)) or (imp_total > 0 and clk_total > imp_total)
+    if should_swap:
+        return clk_idx, imp_idx, {"valid": valid, "bad": bad, "imp_total": imp_total, "clk_total": clk_total, "preview": preview}
+
+    return imp_idx, clk_idx, None
 
 def split_enabled_for_date(target_date: date) -> bool:
     return target_date >= CART_ENABLE_DATE
@@ -1473,6 +1495,14 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
         conv_idx = 8 if "CAMPAIGN" in report_tp else 11
         sales_idx = 9 if "CAMPAIGN" in report_tp else 12
         rank_idx = 11 if "CAMPAIGN" in report_tp else 14
+
+    imp_idx, clk_idx, swap_meta = maybe_swap_imp_clk_indices(data_df, report_tp, pk_idx, imp_idx, clk_idx)
+    if swap_meta:
+        print(
+            f"   ⚠️ {report_tp} 리포트에서 노출/클릭 컬럼 순서가 뒤바뀐 것으로 보여 자동 교정합니다. "
+            f"(valid={swap_meta['valid']}, bad={swap_meta['bad']}, imp_total={swap_meta['imp_total']}, clk_total={swap_meta['clk_total']}, preview={swap_meta['preview']})",
+            flush=True,
+        )
 
     res = {}
     for _, r in data_df.iterrows():
