@@ -55,7 +55,7 @@ def table_exists(engine, table_name: str) -> bool:
             return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
-@st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     for attempt in range(3):
         try:
@@ -72,7 +72,7 @@ def get_table_columns(_engine, table_name: str) -> list:
         except Exception:
             return []
 
-@st.cache_data(ttl=600, max_entries=30, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     last_error = None
     for attempt in range(3):
@@ -99,7 +99,7 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
             time.sleep(1.0)
             
     st.cache_resource.clear()
-    raise RuntimeError(f"쿼리 실행 실패 (사유: {last_error})")
+    raise RuntimeError(f"쿼 실행 실패 (사유: {last_error})")
 
 def _sql_in_str_list(lst) -> str:
     if not lst:
@@ -149,7 +149,7 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
         st.error(f"업로드 실패: {e}")
         return {"meta": 0}
 
-@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"):
         return pd.DataFrame()
@@ -167,7 +167,7 @@ def get_meta(_engine) -> pd.DataFrame:
         df = df.rename(columns=rename_map)
     return df
 
-@st.cache_data(ttl=3600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"):
         return pd.DataFrame()
@@ -191,7 +191,7 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
         df[col_name] = df[col_name].apply(lambda x: mapping.get(str(x).upper(), x) if pd.notna(x) else x)
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
     dates = {}
     for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
@@ -238,6 +238,7 @@ def _normalize_extra_json(extra_json) -> str:
     except Exception:
         return "{}"
 
+# 인증 캐시는 짧게 유지 (토큰 갱신 등)
 @st.cache_data(ttl=60, max_entries=20, show_spinner=False)
 def get_platform_credentials(_engine, platform: str = "") -> pd.DataFrame:
     ensure_platform_credentials_table(_engine)
@@ -427,7 +428,7 @@ def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
         "total_sales_expr": f"COALESCE({prefix}sales, 0)",
     }
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
     if meta.empty:
@@ -519,7 +520,7 @@ def update_monthly_budget(_engine, cid: int, val: int):
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"):
         return pd.DataFrame()
@@ -527,7 +528,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
     return sql_read(_engine, f"SELECT * FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid}", {"d1": str(d1), "d2": str(d2)})
 
-@st.cache_data(ttl=600, max_entries=20, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
@@ -580,7 +581,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row["wishlist_roas"] = (row["wishlist_sales"] / row["cost"] * 100) if row.get("cost", 0) > 0 else 0
     return row
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
@@ -645,7 +646,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     df = _map_campaign_types(df, "campaign_type")
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
@@ -713,7 +714,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     df = _map_campaign_types(df, "campaign_type_label")
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
@@ -786,7 +787,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     df = _map_campaign_types(df, "campaign_type_label")
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
@@ -822,7 +823,7 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
         df["dt"] = pd.to_datetime(df["dt"])
     return df
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_shopping_query_daily"):
         return pd.DataFrame()
