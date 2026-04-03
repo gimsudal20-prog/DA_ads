@@ -638,7 +638,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
     st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
-    show_deltas = st.toggle("증감률 보기", value=False, key="ov_abs_toggle")
+    show_deltas = st.toggle("증감율 보기", value=False, key="ov_abs_toggle")
 
     def get_funnel_cols(show_deltas):
         cols = []
