@@ -8,7 +8,7 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import NullPool  # ✨ DB 연결 끊김 방지를 위한 NullPool 임포트
+from sqlalchemy.pool import NullPool
 from datetime import date
 
 # ==========================================
@@ -153,7 +153,7 @@ def get_meta(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_customer"):
         return pd.DataFrame()
         
-    # ✨ 수정 2번: SELECT * 대신 꼭 필요한 컬럼만 지정
+    # ✨ SELECT 최적화 (꼭 필요한 컬럼만 추출)
     cols = get_table_columns(_engine, "dim_customer")
     target_cols = []
     for c in cols:
@@ -182,7 +182,7 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     if not table_exists(_engine, "dim_campaign"):
         return pd.DataFrame()
         
-    # ✨ 수정 2번: SELECT * 대신 꼭 필요한 컬럼만 지정
+    # ✨ SELECT 최적화 (꼭 필요한 컬럼만 추출)
     cols = get_table_columns(_engine, "dim_campaign")
     target_cols = []
     for c in cols:
@@ -258,7 +258,7 @@ def _normalize_extra_json(extra_json) -> str:
     except Exception:
         return "{}"
 
-# 인증 캐시는 짧게 유지
+# 인증 캐시는 보안 및 토큰 만료를 위해 짧게 유지 (60초)
 @st.cache_data(ttl=60, max_entries=20, show_spinner=False)
 def get_platform_credentials(_engine, platform: str = "") -> pd.DataFrame:
     ensure_platform_credentials_table(_engine)
@@ -546,7 +546,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
         return pd.DataFrame()
     cids_tuple = tuple(cids) if cids else ()
     where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
-    # ✨ 수정 2번: 무제한 로드 방지 제한 추가 및 SELECT 최적화
+    # ✨ 데이터 로드 최적화 (LIMIT 5000)
     return sql_read(_engine, f"SELECT customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000", {"d1": str(d1), "d2": str(d2)})
 
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
@@ -660,7 +660,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 수정 2번: 무제한 로드 방지
+    # ✨ 데이터 로드 제한 최적화
     if topn_cost > 0:
         sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
     else:
@@ -731,7 +731,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 수정 2번: 무제한 로드 방지
+    # ✨ 데이터 로드 제한 최적화
     if topn_cost > 0:
         sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
     else:
@@ -807,7 +807,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 수정 2번: 무제한 로드 방지
+    # ✨ 데이터 로드 제한 최적화
     if topn_cost > 0:
         sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
     else:
@@ -876,7 +876,7 @@ def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.
         LEFT JOIN dim_adgroup a ON f.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid}
         GROUP BY f.customer_id, c.campaign_name, a.adgroup_name, f.query_text
-        -- ✨ 수정 2번: 의미 있는 성과가 있는 검색어 우선 정렬 및 무제한 로드 방지
+        -- ✨ 성과가 있는 검색어 우선 정렬 및 로드 수 제한 최적화
         HAVING SUM(f.total_sales) > 0 OR SUM(f.total_conv) > 0
         ORDER BY SUM(f.purchase_sales) DESC, SUM(f.total_sales) DESC
         LIMIT 5000
