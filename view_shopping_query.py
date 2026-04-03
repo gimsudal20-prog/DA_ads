@@ -144,7 +144,7 @@ def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         r2c1, r2c2, r2c3 = st.columns(3)
-        only_zero_purchase = r2c1.checkbox("구매 0건만", key="sq_only_zero_purchase_unified")
+        only_purchase = r2c1.checkbox("구매 발생만", key="sq_only_purchase_unified")
         only_cart = r2c2.checkbox("장바구니 발생만", key="sq_only_cart_unified")
         q_text = r2c3.text_input("검색어 포함", value="", key="sq_query_contains_unified", placeholder="예: 의자")
 
@@ -152,8 +152,8 @@ def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
         min_purchase_sales = r3c1.number_input("최소 구매매출", min_value=0, value=0, step=10000, key="sq_min_purchase_sales_unified")
         min_total_conv = r3c2.number_input("최소 총 전환수", min_value=0, value=0, step=1, key="sq_min_total_conv_unified")
 
-        if only_zero_purchase:
-            filtered = filtered[pd.to_numeric(filtered["구매완료수"], errors="coerce").fillna(0) == 0]
+        if only_purchase:
+            filtered = filtered[pd.to_numeric(filtered["구매완료수"], errors="coerce").fillna(0) > 0]
         if only_cart:
             filtered = filtered[pd.to_numeric(filtered["장바구니수"], errors="coerce").fillna(0) > 0]
         if q_text.strip():
