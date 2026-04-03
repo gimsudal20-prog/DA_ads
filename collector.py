@@ -1827,53 +1827,174 @@ def build_campaign_type_map(engine: Engine, customer_id: str) -> Dict[str, str]:
     except Exception:
         return {}
 
+def _get_fact_media_daily_conflict_cols(engine: Engine) -> List[str]:
+    expected = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name', 'device_name']
+    legacy = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name']
+    sql = text("""
+        SELECT
+            tc.constraint_name,
+            tc.constraint_type,
+            kcu.column_name,
+            kcu.ordinal_position
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_name = 'fact_media_daily'
+          AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+        ORDER BY
+            CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 0 ELSE 1 END,
+            tc.constraint_name,
+            kcu.ordinal_position
+    """)
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql).mappings().all()
+    except Exception as e:
+        log(f"⚠️ fact_media_daily 제약조건 조회 실패 → 기본 PK 가정 사용 | {type(e).__name__}: {e}")
+        return expected
+
+    grouped: Dict[Tuple[str, str], List[str]] = {}
+    for row in rows:
+        key = (str(row.get('constraint_name') or ''), str(row.get('constraint_type') or ''))
+        grouped.setdefault(key, []).append(str(row.get('column_name') or '').strip())
+
+    ordered_candidates: List[List[str]] = []
+    for (constraint_name, constraint_type), cols in grouped.items():
+        if constraint_type == 'PRIMARY KEY':
+            ordered_candidates.insert(0, cols)
+        else:
+            ordered_candidates.append(cols)
+
+    for cols in ordered_candidates:
+        if cols == expected:
+            return expected
+    for cols in ordered_candidates:
+        if cols == legacy:
+            return legacy
+    for cols in ordered_candidates:
+        if cols and all(c in cols for c in legacy):
+            log(f"⚠️ fact_media_daily 예상 외 제약조건 감지 | columns={cols}")
+            return cols
+
+    log("⚠️ fact_media_daily PK/UNIQUE 제약조건을 찾지 못해 기본 PK 가정 사용")
+    return expected
+
+
+def _prepare_media_fact_rows_for_conflict(df: pd.DataFrame, conflict_cols: List[str]) -> pd.DataFrame:
+    expected = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name', 'device_name']
+    legacy = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name']
+    numeric_cols = ['imp', 'clk', 'cost', 'conv', 'sales']
+
+    if 'device_name' not in df.columns:
+        df['device_name'] = '전체'
+    df['device_name'] = df['device_name'].map(lambda x: str(x).strip() if x is not None else '').replace('', '전체')
+
+    if conflict_cols == expected:
+        return df.drop_duplicates(subset=conflict_cols, keep='last').sort_values(by=conflict_cols)
+
+    if conflict_cols == legacy:
+        log("⚠️ fact_media_daily가 구 PK(device_name 제외) 스키마입니다. device_name을 '전체'로 병합해 임시 적재합니다. 스키마 마이그레이션 후 백필이 필요합니다.")
+        work = df.copy()
+        work['device_name'] = '전체'
+        if 'data_source' in work.columns:
+            work['data_source'] = 'legacy_pk_schema_aggregated'
+        if 'source_report' in work.columns:
+            work['source_report'] = work['source_report'].fillna('AD').replace('', 'AD')
+
+        agg_spec: Dict[str, Any] = {}
+        for col in work.columns:
+            if col in legacy:
+                continue
+            if col in numeric_cols:
+                agg_spec[col] = 'sum'
+            else:
+                agg_spec[col] = 'last'
+        grouped = work.groupby(legacy, dropna=False, as_index=False).agg(agg_spec)
+        ordered = legacy + [c for c in work.columns if c not in legacy]
+        grouped = grouped[ordered]
+        return grouped.sort_values(by=legacy)
+
+    log(f"⚠️ fact_media_daily 예상 외 충돌키 사용 | {conflict_cols}")
+    use_cols = [c for c in conflict_cols if c in df.columns]
+    if not use_cols:
+        use_cols = expected
+    return df.drop_duplicates(subset=use_cols, keep='last').sort_values(by=use_cols)
+
+
+
 def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_campaign_types: List[str] | None = None):
     table = 'fact_media_daily'
-    pk_cols = ['dt', 'customer_id', 'campaign_type', 'media_name', 'region_name', 'device_name']
-    for _ in range(3):
+    pk_cols = _get_fact_media_daily_conflict_cols(engine)
+    last_delete_err: Exception | None = None
+    delete_sql = text(
+        f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt" +
+        (" AND campaign_type = ANY(:types)" if scoped_campaign_types else "")
+    )
+
+    for attempt in range(1, 4):
         try:
             with engine.begin() as conn:
-                conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt" + (" AND campaign_type = ANY(:types)" if scoped_campaign_types else "")), {'cid': str(customer_id), 'dt': d1, 'types': scoped_campaign_types or []})
+                conn.execute(delete_sql, {'cid': str(customer_id), 'dt': d1, 'types': scoped_campaign_types or []})
+            last_delete_err = None
             break
-        except Exception:
+        except Exception as e:
+            last_delete_err = e
+            log(f"⚠️ fact_media_daily 삭제 실패 {attempt}/3 | cid={customer_id} dt={d1} pk={pk_cols} | {type(e).__name__}: {e}")
             time.sleep(2)
+    if last_delete_err is not None:
+        raise RuntimeError(f"fact_media_daily 삭제 실패 | cid={customer_id} dt={d1} pk={pk_cols} | {type(last_delete_err).__name__}: {last_delete_err}") from last_delete_err
+
     if not rows:
+        log(f"ℹ️ fact_media_daily 적재 대상 없음 | cid={customer_id} dt={d1}")
         return 0
 
-    df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
+    df = pd.DataFrame(rows).astype(object).where(pd.notnull, None)
+    df = _prepare_media_fact_rows_for_conflict(df, pk_cols).astype(object).where(pd.notnull, None)
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in pk_cols]
     col_names = ", ".join([f'"{c}"' for c in cols])
+    conflict_cols_sql = ", ".join(pk_cols)
     conflict_clause = (
-        'ON CONFLICT (dt, customer_id, campaign_type, media_name, region_name, device_name) DO UPDATE SET ' +
+        f'ON CONFLICT ({conflict_cols_sql}) DO UPDATE SET ' +
         ', '.join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols])
         if update_cols else
-        'ON CONFLICT (dt, customer_id, campaign_type, media_name, region_name, device_name) DO NOTHING'
+        f'ON CONFLICT ({conflict_cols_sql}) DO NOTHING'
     )
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    for _ in range(3):
+    last_upsert_err: Exception | None = None
+    for attempt in range(1, 4):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
+            log(f"✅ fact_media_daily 적재 완료 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols}")
             return len(df)
-        except Exception:
+        except Exception as e:
+            last_upsert_err = e
             if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+                try:
+                    raw_conn.rollback()
+                except Exception:
+                    pass
+            log(f"⚠️ fact_media_daily 적재 실패 {attempt}/3 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(e).__name__}: {e}")
             time.sleep(2)
         finally:
             if cur:
-                try: cur.close()
-                except Exception: pass
+                try:
+                    cur.close()
+                except Exception:
+                    pass
             if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
-    return 0
+                try:
+                    raw_conn.close()
+                except Exception:
+                    pass
+    raise RuntimeError(f"fact_media_daily 적재 최종 실패 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(last_upsert_err).__name__}: {last_upsert_err}") from last_upsert_err
 
 def _detect_media_header_idx(df: pd.DataFrame) -> int:
     if df is None or df.empty:
