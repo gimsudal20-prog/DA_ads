@@ -720,6 +720,93 @@ def _merge_metric_maps(base_map: dict, conv_map: dict) -> dict:
     return out
 
 
+def _fetch_stats_chunk(customer_id: str, ids: list[str], target_date: date) -> list[dict]:
+    if not ids:
+        return []
+    d_str = target_date.strftime("%Y-%m-%d")
+    fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"], separators=(",", ":"))
+    time_range = json.dumps({"since": d_str, "until": d_str}, separators=(",", ":"))
+    params = {"ids": ",".join(ids), "fields": fields, "timeRange": time_range}
+    status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
+    if status == 200 and isinstance(data, dict) and isinstance(data.get("data"), list):
+        return data.get("data") or []
+    return []
+
+
+def fetch_extension_stats_map(customer_id: str, ids: list[str], target_date: date) -> dict:
+    ids = [str(x).strip() for x in ids if str(x).strip().startswith("ext-")]
+    if not ids:
+        return {}
+    chunks = [ids[i:i+50] for i in range(0, len(ids), 50)]
+    out: dict[str, dict] = {}
+    max_workers = min(6, max(1, len(chunks)))
+    try:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_fetch_stats_chunk, customer_id, chunk, target_date) for chunk in chunks]
+            for fut in futures:
+                for r in fut.result() or []:
+                    obj_id = str(r.get("id") or "").strip()
+                    if not obj_id or not obj_id.startswith("ext-"):
+                        continue
+                    out[obj_id] = {
+                        "imp": int(r.get("impCnt", 0) or 0),
+                        "clk": int(r.get("clkCnt", 0) or 0),
+                        "cost": int(float(r.get("salesAmt", 0) or 0)),
+                        "conv": float(r.get("ccnt", 0) or 0.0),
+                        "sales": int(float(r.get("convAmt", 0) or 0)),
+                    }
+    except Exception as e:
+        log(f"⚠️ /stats 확장소재 보강 조회 실패: {e}")
+        return {}
+    return out
+
+
+def _combine_report_and_stats_metrics(report_map: dict, stats_map: dict) -> tuple[dict, dict]:
+    combined = {}
+    source_counts = {"report_only": 0, "stats_only": 0, "stats_enriched": 0, "report_preferred": 0}
+    keys = set(report_map.keys()) | set(stats_map.keys())
+    for k in keys:
+        r = report_map.get(k, {})
+        s = stats_map.get(k, {})
+        if r and not s:
+            combined[k] = {
+                "imp": int(r.get("imp", 0) or 0),
+                "clk": int(r.get("clk", 0) or 0),
+                "cost": int(r.get("cost", 0) or 0),
+                "conv": float(r.get("conv", 0.0) or 0.0),
+                "sales": int(r.get("sales", 0) or 0),
+            }
+            source_counts["report_only"] += 1
+            continue
+        if s and not r:
+            combined[k] = {
+                "imp": int(s.get("imp", 0) or 0),
+                "clk": int(s.get("clk", 0) or 0),
+                "cost": int(s.get("cost", 0) or 0),
+                "conv": float(s.get("conv", 0.0) or 0.0),
+                "sales": int(s.get("sales", 0) or 0),
+            }
+            source_counts["stats_only"] += 1
+            continue
+        row = {
+            "imp": max(int(r.get("imp", 0) or 0), int(s.get("imp", 0) or 0)),
+            "clk": max(int(r.get("clk", 0) or 0), int(s.get("clk", 0) or 0)),
+            "cost": max(int(r.get("cost", 0) or 0), int(s.get("cost", 0) or 0)),
+            "conv": max(float(r.get("conv", 0.0) or 0.0), float(s.get("conv", 0.0) or 0.0)),
+            "sales": max(int(r.get("sales", 0) or 0), int(s.get("sales", 0) or 0)),
+        }
+        combined[k] = row
+        if any((int(s.get("clk", 0) or 0) > int(r.get("clk", 0) or 0),
+                int(s.get("cost", 0) or 0) > int(r.get("cost", 0) or 0),
+                float(s.get("conv", 0.0) or 0.0) > float(r.get("conv", 0.0) or 0.0),
+                int(s.get("sales", 0) or 0) > int(r.get("sales", 0) or 0))):
+            source_counts["stats_enriched"] += 1
+        else:
+            source_counts["report_preferred"] += 1
+    return combined, source_counts
+
+
 def _report_sample(metric_map: dict, label: str):
     items = list(metric_map.items())[:5]
     for ad_id, m in items:
@@ -847,6 +934,26 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     if conv_map:
         _report_sample({k: v for k, v in conv_map.items() if k in target_ad_ids}, "ADEXTENSION_CONVERSION")
 
+    stats_needed = (
+        not metric_map
+        or not conv_map
+        or not any(int(m.get("cost", 0) or 0) > 0 or float(m.get("conv", 0.0) or 0.0) > 0 or int(m.get("sales", 0) or 0) > 0 for m in metric_map.values())
+        or sum(1 for m in metric_map.values() if int(m.get("clk", 0) or 0) > 0) < max(1, len(metric_map) // 20)
+    )
+    stats_map = {}
+    if stats_needed:
+        log(f"   ↪ /stats 확장소재 보강 조회 시작: target_ids={len(target_ad_ids)}")
+        stats_map = fetch_extension_stats_map(customer_id, target_ad_ids, target_date)
+        if stats_map:
+            _report_sample({k: v for k, v in stats_map.items() if k in target_ad_ids}, "ADEXTENSION_STATS")
+        log(f"   ↪ /stats 확장소재 보강 조회 완료: rows={len(stats_map)}")
+        metric_map, source_counts = _combine_report_and_stats_metrics(metric_map, stats_map)
+        log(
+            "   ↪ 확장소재 metric 결합 결과: "
+            f"report_only={source_counts['report_only']} | stats_only={source_counts['stats_only']} | "
+            f"stats_enriched={source_counts['stats_enriched']} | report_preferred={source_counts['report_preferred']}"
+        )
+
     if not metric_map:
         log("   ⚠️ 확장소재 성과 리포트에서 대상 ad_id 데이터를 찾지 못했습니다.")
         log(f"   ↪ ADEXTENSION rows={len(base_df) if base_df is not None else 0} | ADEXTENSION_CONVERSION rows={len(conv_df) if conv_df is not None else 0}")
@@ -886,6 +993,11 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
     if not fact_rows:
         log("   ⚠️ 리포트상 성과가 있는 확장소재가 없습니다.")
         return
+
+    nonzero_clk = sum(1 for r in fact_rows if int(r.get("clk", 0) or 0) > 0)
+    nonzero_cost = sum(1 for r in fact_rows if int(r.get("cost", 0) or 0) > 0)
+    nonzero_conv = sum(1 for r in fact_rows if float(r.get("conv", 0.0) or 0.0) > 0 or int(r.get("sales", 0) or 0) > 0)
+    log(f"   ↪ 확장소재 최종 품질: rows={len(fact_rows)} | clk>0 {nonzero_clk} | cost>0 {nonzero_cost} | conv/sales>0 {nonzero_conv}")
 
     if not clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
         log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단합니다.")
