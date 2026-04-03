@@ -23,21 +23,45 @@ FAST_COL_CONFIG = {
 }
 
 NAVER_MEDIA_MAP = {
-    "8753": "네이버 통합검색 (PC)",
-    "27758": "네이버 통합검색 (모바일)",
-    "8754": "네이버 검색탭 (PC)",
-    "27759": "네이버 검색탭 (모바일)",
-    "8755": "네이버 지식iN (PC)",
-    "27760": "네이버 지식iN (모바일)",
-    "8756": "네이버 블로그 (PC)",
-    "27761": "네이버 블로그 (모바일)",
-    "8757": "네이버 카페 (PC)",
-    "27762": "네이버 카페 (모바일)",
-    "8768": "네이버 쇼핑검색 (PC)",
-    "27771": "네이버 쇼핑검색 (모바일)",
-    "27772": "네이버 쇼핑 (모바일)",
-    "8769": "네이버 쇼핑 (PC)",
+    # 공식/사용자 대조 기반 확정 매핑
+    "8753": "네이버 통합검색 - 모바일",
+    "27758": "네이버 통합검색 - PC",
+    "11068": "네이버 쇼핑 - PC",
+    "33421": "네이버 쇼핑 - 모바일",
+    "335738": "Bing-PC",
+    "612593": "다음-PC",
+    "612594": "다음-모바일",
+    "122875": "네이버 통합검색 광고더보기",
+    "122876": "네이버 검색탭",
+
+    # 사용자 제공 다차원보고서 ↔ 수집 결과 대조로 매핑한 코드
+    "341893": "네이버 통합검색 추천 - 모바일",
+    "623353": "네이버 쇼핑 스마트스토어 추천 - 모바일",
+    "684928": "네이버플러스 스토어탭 추천 - 모바일",
+    "644590": "네이버 메인 - 모바일",
+    "684926": "네이버플러스 스토어 - 모바일",
+    "662393": "네이버 메인 - PC",
+    "168242": "네이버 연예뉴스 - 모바일",
+    "370822": "네이버 통합검색 추천 - PC",
+    "341898": "네이버 쇼핑 추천 - 모바일",
+    "684929": "네이버플러스 스토어탭 추천 - PC",
+    "370824": "네이버 쇼핑 카탈로그 추천 - 모바일",
+    "96500": "네이버 카페 - 모바일",
+    "684927": "네이버플러스 스토어 - PC",
+    "643599": "네이버 쇼핑 스마트스토어 추천 - PC",
+    "778344": "네이버 웹툰 - 모바일",
+    "466189": "네이버 페이 - 모바일",
+    "703142": "네이버 스포츠뉴스 - PC",
+    "746834": "네이버 부동산 - 모바일",
+    "370826": "네이버 쇼핑 카탈로그 추천 - PC",
+    "774861": "네이버 증권 - 모바일",
+    "667909": "네이버 메인 - 모바일 홈피드",
+    "171229": "네이버 뉴스 - 모바일",
+    "96499": "네이버 카페 - PC",
+    "168243": "네이버 스포츠뉴스 - 모바일",
+    "684924": "네이버 통합검색 네이버플러스 스토어 - 모바일",
 }
+
 
 def _map_media_name(name_or_code: object) -> str:
     s = str(name_or_code or "").strip()
@@ -106,7 +130,7 @@ def _metric_expr(cols: set[str], *candidates: str) -> str:
             return f"COALESCE({c}, 0)"
     return "0"
 
-def _query_media_region(engine, f, include_impression_only: bool = True) -> pd.DataFrame:
+def _query_media_region(engine, f) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
 
@@ -172,22 +196,13 @@ def _query_media_region(engine, f, include_impression_only: bool = True) -> pd.D
     for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
         raw[c] = pd.to_numeric(raw[c], errors='coerce').fillna(0)
 
-    raw = raw[(raw['imp'] != 0) | (raw['clk'] != 0) | (raw['cost'] != 0) | (raw['conv'] != 0) | (raw['sales'] != 0)]
-    if raw.empty:
-        return pd.DataFrame()
-
-    if not include_impression_only:
-        raw = raw[(raw['cost'] > 0) | (raw['clk'] > 0) | (raw['conv'] > 0) | (raw['sales'] > 0)]
-        if raw.empty:
-            return pd.DataFrame()
-
     out = raw.groupby(['매체이름', '기기명'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
     out = out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
     return out
 
-def _query_device(engine, f, include_impression_only: bool = True) -> pd.DataFrame:
+def _query_device(engine, f) -> pd.DataFrame:
     # ✨ 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경 (오류 유발 SQL 완전 제거)
-    media_df = _query_media_region(engine, f, include_impression_only=include_impression_only)
+    media_df = _query_media_region(engine, f)
     if media_df.empty:
         return pd.DataFrame()
     return media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
@@ -208,17 +223,11 @@ def page_media(engine, f):
     if not f.get("ready", False): return
 
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:12px;'>수집된 성과 테이블 기준으로 조회합니다. 전지표 0 행은 자동 제외되며, 숫자 매체 코드는 알려진 항목은 한글 지면명으로, 미확인 코드는 코드값이 보이도록 표기합니다.</div>", unsafe_allow_html=True)
-
-    include_impression_only = st.checkbox(
-        "노출만 있는 지면도 포함",
-        value=False,
-        help="기본값은 광고비·클릭·전환·매출이 전혀 없는 지면을 숨깁니다. 체크하면 노출만 있고 비용/클릭/전환이 없는 지면도 함께 표시합니다.",
-    )
+    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 확인된 코드부터 한글 지면명으로 변환되어 합산 표출됩니다. 미확인 코드는 코드값 그대로 유지됩니다.</div>", unsafe_allow_html=True)
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
-        media_region_df = _query_media_region(engine, f, include_impression_only=include_impression_only)
-        device_df = _query_device(engine, f, include_impression_only=include_impression_only)
+        media_region_df = _query_media_region(engine, f)
+        device_df = _query_device(engine, f)
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
@@ -239,22 +248,18 @@ def page_media(engine, f):
     if selected_tab == "지면(매체)":
         with st.container(border=True):
             st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>조회 기간 내 전체 매체(지면) 효율 리스트</div>", unsafe_allow_html=True)
-            if not include_impression_only:
-                st.caption("기본값으로 노출만 있고 광고비·클릭·전환·매출이 없는 지면은 숨김 처리됩니다.")
             if not df_media.empty:
                 st.dataframe(df_media, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
             else:
-                st.info('표시 조건에 맞는 지면 데이터가 없습니다. 필요하면 "노출만 있는 지면도 포함"을 켜서 다시 확인해 주세요.')
+                st.info('현재 자동 수집 경로에 지면 원천이 없어서 매체 리스트가 비어 있습니다. 기기 데이터 탭을 확인해 주세요.')
 
     elif selected_tab == "기기":
         with st.container(border=True):
             st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>기기별 성과 리스트</div>", unsafe_allow_html=True)
-            if not include_impression_only:
-                st.caption("기본값으로 노출만 있고 광고비·클릭·전환·매출이 없는 지면은 기기 집계에서도 제외됩니다.")
             if not df_device.empty:
                 st.dataframe(df_device, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
             else:
-                st.info('표시 조건에 맞는 기기 데이터가 없습니다. 필요하면 "노출만 있는 지면도 포함"을 켜서 다시 확인해 주세요.')
+                st.info('기기 자동 수집 데이터가 없습니다.')
 
     elif selected_tab == "비용 누수 항목":
         st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
