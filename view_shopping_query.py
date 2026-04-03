@@ -20,12 +20,8 @@ FMT_DICT = {
     "구매완료 매출": "{:,.0f}원",
     "장바구니수": "{:,.0f}",
     "장바구니 매출액": "{:,.0f}원",
-    "위시리스트수": "{:,.0f}",
-    "위시리스트 매출액": "{:,.0f}원",
     "총 전환수": "{:,.0f}",
     "총 전환매출": "{:,.0f}원",
-    "구매기여율(%)": "{:,.1f}%",
-    "장바구니기여율(%)": "{:,.1f}%",
     "구매완료수 증감": "{:+.1f}%",
     "구매완료 매출 증감": "{:+.1f}%",
     "총 전환수 증감": "{:+.1f}%",
@@ -81,7 +77,7 @@ def _merge_compare(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
 
     val_cols = [
         "purchase_conv", "purchase_sales", "cart_conv", "cart_sales",
-        "wishlist_conv", "wishlist_sales", "total_conv", "total_sales",
+        "total_conv", "total_sales",
     ]
     p = _to_num(p, val_cols)
     p = p[keys + [x for x in val_cols if x in p.columns]].copy()
@@ -101,29 +97,16 @@ def _merge_compare(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _add_funnel_metrics(view: pd.DataFrame) -> pd.DataFrame:
-    out = view.copy()
-    out = _to_num(out, [
-        "구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액",
-        "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출",
-    ])
-    out["구매기여율(%)"] = np.where(out["총 전환수"] > 0, (out["구매완료수"] / out["총 전환수"]) * 100, 0.0)
-    out["장바구니기여율(%)"] = np.where(out["총 전환수"] > 0, (out["장바구니수"] / out["총 전환수"]) * 100, 0.0)
-    return out
-
-
 def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
     q_cnt = int(len(view))
     purchase_cnt = int((pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0) > 0).sum())
     cart_cnt = int((pd.to_numeric(view.get("장바구니수", 0), errors="coerce").fillna(0) > 0).sum())
-    wish_cnt = int((pd.to_numeric(view.get("위시리스트수", 0), errors="coerce").fillna(0) > 0).sum())
 
     with st.container(border=True):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         with c1: st.metric("검색어 수", f"{q_cnt:,}개", help="조회 기간 내 실제 검색어")
         with c2: st.metric("구매 발생", f"{purchase_cnt:,}개", help=f"{cmp_mode} 기준 증감 태그 포함")
         with c3: st.metric("장바구니 발생", f"{cart_cnt:,}개")
-        with c4: st.metric("위시리스트 발생", f"{wish_cnt:,}개")
 
 
 def _render_filter_panel(view: pd.DataFrame) -> pd.DataFrame:
@@ -206,27 +189,24 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         "purchase_sales": "구매완료 매출",
         "cart_conv": "장바구니수",
         "cart_sales": "장바구니 매출액",
-        "wishlist_conv": "위시리스트수",
-        "wishlist_sales": "위시리스트 매출액",
         "total_conv": "총 전환수",
         "total_sales": "총 전환매출",
     }).copy()
 
     numeric_cols = [
         "구매완료수", "구매완료 매출", "장바구니수", "장바구니 매출액",
-        "위시리스트수", "위시리스트 매출액", "총 전환수", "총 전환매출",
+        "총 전환수", "총 전환매출",
         "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감", "총 전환매출 증감",
     ]
     view = _to_num(view, numeric_cols)
-    view = _add_funnel_metrics(view)
 
     _render_top_cards(view, cmp_mode)
     filtered = _render_filter_panel(view)
 
     display_cols = [
         "업체명", "캠페인", "광고그룹", "실제 검색어",
-        "구매완료수", "구매완료 매출", "장바구니수", "위시리스트수", "총 전환수", "총 전환매출",
-        "구매기여율(%)", "장바구니기여율(%)", "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감",
+        "구매완료수", "구매완료 매출", "장바구니수", "총 전환수", "총 전환매출",
+        "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감",
     ]
     disp = filtered[[c for c in display_cols if c in filtered.columns]].sort_values(["구매완료 매출", "총 전환매출"], ascending=False).head(500).copy()
 
