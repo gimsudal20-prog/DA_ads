@@ -106,7 +106,7 @@ def _metric_expr(cols: set[str], *candidates: str) -> str:
             return f"COALESCE({c}, 0)"
     return "0"
 
-def _query_media_region(engine, f) -> pd.DataFrame:
+def _query_media_region(engine, f, include_impression_only: bool = True) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
         return pd.DataFrame()
 
@@ -176,13 +176,18 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame()
 
+    if not include_impression_only:
+        raw = raw[(raw['cost'] > 0) | (raw['clk'] > 0) | (raw['conv'] > 0) | (raw['sales'] > 0)]
+        if raw.empty:
+            return pd.DataFrame()
+
     out = raw.groupby(['매체이름', '기기명'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
     out = out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
     return out
 
-def _query_device(engine, f) -> pd.DataFrame:
+def _query_device(engine, f, include_impression_only: bool = True) -> pd.DataFrame:
     # ✨ 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경 (오류 유발 SQL 완전 제거)
-    media_df = _query_media_region(engine, f)
+    media_df = _query_media_region(engine, f, include_impression_only=include_impression_only)
     if media_df.empty:
         return pd.DataFrame()
     return media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
@@ -203,11 +208,17 @@ def page_media(engine, f):
     if not f.get("ready", False): return
 
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. 0성과 행은 자동 제외되며, 숫자 매체 코드는 알려진 항목은 한글 지면명으로, 미확인 코드는 코드값이 보이도록 표기합니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:12px;'>수집된 성과 테이블 기준으로 조회합니다. 전지표 0 행은 자동 제외되며, 숫자 매체 코드는 알려진 항목은 한글 지면명으로, 미확인 코드는 코드값이 보이도록 표기합니다.</div>", unsafe_allow_html=True)
+
+    include_impression_only = st.checkbox(
+        "노출만 있는 지면도 포함",
+        value=False,
+        help="기본값은 광고비·클릭·전환·매출이 전혀 없는 지면을 숨깁니다. 체크하면 노출만 있고 비용/클릭/전환이 없는 지면도 함께 표시합니다.",
+    )
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
-        media_region_df = _query_media_region(engine, f)
-        device_df = _query_device(engine, f)
+        media_region_df = _query_media_region(engine, f, include_impression_only=include_impression_only)
+        device_df = _query_device(engine, f, include_impression_only=include_impression_only)
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
@@ -228,18 +239,22 @@ def page_media(engine, f):
     if selected_tab == "지면(매체)":
         with st.container(border=True):
             st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>조회 기간 내 전체 매체(지면) 효율 리스트</div>", unsafe_allow_html=True)
+            if not include_impression_only:
+                st.caption("기본값으로 노출만 있고 광고비·클릭·전환·매출이 없는 지면은 숨김 처리됩니다.")
             if not df_media.empty:
                 st.dataframe(df_media, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
             else:
-                st.info('현재 자동 수집 경로에 지면 원천이 없어서 매체 리스트가 비어 있습니다. 기기 데이터 탭을 확인해 주세요.')
+                st.info('표시 조건에 맞는 지면 데이터가 없습니다. 필요하면 "노출만 있는 지면도 포함"을 켜서 다시 확인해 주세요.')
 
     elif selected_tab == "기기":
         with st.container(border=True):
             st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:12px;'>기기별 성과 리스트</div>", unsafe_allow_html=True)
+            if not include_impression_only:
+                st.caption("기본값으로 노출만 있고 광고비·클릭·전환·매출이 없는 지면은 기기 집계에서도 제외됩니다.")
             if not df_device.empty:
                 st.dataframe(df_device, use_container_width=True, hide_index=True, column_config=FAST_COL_CONFIG)
             else:
-                st.info('기기 자동 수집 데이터가 없습니다.')
+                st.info('표시 조건에 맞는 기기 데이터가 없습니다. 필요하면 "노출만 있는 지면도 포함"을 켜서 다시 확인해 주세요.')
 
     elif selected_tab == "비용 누수 항목":
         st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
