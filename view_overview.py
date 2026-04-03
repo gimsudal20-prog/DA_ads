@@ -17,7 +17,7 @@ from page_helpers import get_dynamic_cmp_options, period_compare_range
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 600; line-height: 1.2; }
+    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 43200; line-height: 1.2; }
     .ov-chip.primary { background: var(--nv-primary-soft); color: var(--nv-primary); border-color: transparent; }
     .ov-chip.muted { color: var(--nv-muted); background: var(--nv-surface); }
     .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
@@ -68,19 +68,19 @@ def _selected_type_label(type_sel: tuple) -> str:
     return ", ".join(type_sel)
 
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1500)
     except Exception: return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1000)
     except Exception: return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
     except Exception: return pd.DataFrame()
