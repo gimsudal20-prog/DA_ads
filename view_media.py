@@ -172,6 +172,10 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
         raw[c] = pd.to_numeric(raw[c], errors='coerce').fillna(0)
 
+    raw = raw[(raw['imp'] != 0) | (raw['clk'] != 0) | (raw['cost'] != 0) | (raw['conv'] != 0) | (raw['sales'] != 0)]
+    if raw.empty:
+        return pd.DataFrame()
+
     out = raw.groupby(['매체이름', '기기명'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
     out = out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
     return out
@@ -199,7 +203,7 @@ def page_media(engine, f):
     if not f.get("ready", False): return
 
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 자동으로 한글 지면명으로 변환되어 합산 표출됩니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. 0성과 행은 자동 제외되며, 숫자 매체 코드는 알려진 항목은 한글 지면명으로, 미확인 코드는 코드값이 보이도록 표기합니다.</div>", unsafe_allow_html=True)
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
         media_region_df = _query_media_region(engine, f)

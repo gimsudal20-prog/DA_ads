@@ -1926,6 +1926,11 @@ def _prepare_media_fact_rows_for_conflict(df: pd.DataFrame, conflict_cols: List[
 def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date, scoped_campaign_types: List[str] | None = None):
     table = 'fact_media_daily'
     pk_cols = _get_fact_media_daily_conflict_cols(engine)
+    input_rows = len(rows or [])
+    rows = _filter_nonzero_media_rows(rows or [])
+    dropped_zero_rows = max(0, input_rows - len(rows))
+    if dropped_zero_rows:
+        log(f"ℹ️ fact_media_daily 0성과 행 제외 | cid={customer_id} dt={d1} dropped={dropped_zero_rows} kept={len(rows)}")
     last_delete_err: Exception | None = None
     delete_sql = text(
         f"DELETE FROM {table} WHERE customer_id=:cid AND dt=:dt" +
@@ -1946,7 +1951,8 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
         raise RuntimeError(f"fact_media_daily 삭제 실패 | cid={customer_id} dt={d1} pk={pk_cols} | {type(last_delete_err).__name__}: {last_delete_err}") from last_delete_err
 
     if not rows:
-        log(f"ℹ️ fact_media_daily 적재 대상 없음 | cid={customer_id} dt={d1}")
+        reason = 'all_zero_filtered' if input_rows else 'empty'
+        log(f"ℹ️ fact_media_daily 적재 대상 없음 | cid={customer_id} dt={d1} reason={reason} input_rows={input_rows}")
         return 0
 
     df = pd.DataFrame(rows).astype(object).where(pd.notnull, None)
@@ -2033,6 +2039,24 @@ def normalize_device_name(device_value: Any) -> str:
         return 'PC'
     return v
 
+
+def _has_media_metrics(imp: Any, clk: Any, cost: Any, conv: Any, sales: Any) -> bool:
+    return any([
+        int(round(_m_safe_float(imp))) != 0,
+        int(round(_m_safe_float(clk))) != 0,
+        int(round(_m_safe_float(cost))) != 0,
+        float(_m_safe_float(conv)) != 0.0,
+        int(round(_m_safe_float(sales))) != 0,
+    ])
+
+
+def _filter_nonzero_media_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for r in (rows or []):
+        if _has_media_metrics(r.get('imp'), r.get('clk'), r.get('cost'), r.get('conv'), r.get('sales')):
+            out.append(r)
+    return out
+
 def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None):
     if raw_df is None or raw_df.empty:
         return [], {'status': 'empty'}
@@ -2090,6 +2114,8 @@ def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, cus
             'data_source': 'ad_report_dimension_noheader',
             'source_report': 'AD',
         })
+    rows = _filter_nonzero_media_rows(rows)
+    rows = _filter_nonzero_media_rows(rows)
     detail_rows = sum(1 for r in rows if str(r.get('media_name', '전체')) != '전체' or str(r.get('region_name', '전체')) != '전체')
     summary_rows = len(rows) - detail_rows
     distinct_media = sorted({str(r.get('media_name', '') or '') for r in rows if str(r.get('media_name', '전체')) != '전체'})
@@ -2241,7 +2267,7 @@ def build_media_rows_from_campaign_device(target_date: date, customer_id: str, c
             'data_source': 'campaign_device_fallback',
             'source_report': 'AD',
         })
-    return rows
+    return _filter_nonzero_media_rows(rows)
 
 def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, target_date: date, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
     sql = "SELECT campaign_id, imp, clk, cost, conv, sales FROM fact_campaign_daily WHERE customer_id = :cid AND dt = :dt"
@@ -2282,7 +2308,7 @@ def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, ta
             'data_source': 'campaign_total_fallback',
             'source_report': 'STATS',
         })
-    return out
+    return _filter_nonzero_media_rows(out)
 
 def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
     media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
