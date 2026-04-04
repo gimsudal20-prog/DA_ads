@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """data.py - Database connection, caching, and common queries."""
 import os
+import re
 import time
 import json
 import pandas as pd
@@ -14,13 +15,20 @@ from datetime import date
 # ==========================================
 # 1. Database Connection (NullPool 적용)
 # ==========================================
-@st.cache_resource
-def get_engine():
+def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
     if not db_url:
-        return create_engine("sqlite:///:memory:", future=True)
+        raise RuntimeError(
+            "DATABASE_URL 환경변수가 비어 있습니다. 메모리 SQLite로 대체 실행하지 않고 중단합니다. "
+            "실제 DB 연결 문자열을 설정한 뒤 다시 실행해주세요."
+        )
     if "sslmode=" not in db_url:
         db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
+    return db_url
+
+@st.cache_resource
+def get_engine():
+    db_url = _require_database_url()
 
     connect_args = {
         "keepalives": 1,
@@ -54,12 +62,29 @@ def table_exists(engine, table_name: str) -> bool:
             return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
+def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
+    value = str(name or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"유효하지 않은 SQL {label}: {name}")
+    return value
+
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
+    safe_table_name = _validate_sql_identifier(table_name, "table name")
     for attempt in range(3):
         try:
             with _engine.connect() as conn:
-                res = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table_name}' AND table_schema='public'"))
+                res = conn.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = :table_name
+                          AND table_schema = 'public'
+                        """
+                    ),
+                    {"table_name": safe_table_name},
+                )
                 return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
             if attempt == 2:
@@ -100,10 +125,54 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
     st.cache_resource.clear()
     raise RuntimeError(f"쿼리 실행 실패 (사유: {last_error})")
 
-def _sql_in_str_list(lst) -> str:
-    if not lst:
-        return "''"
-    return ",".join(f"'{str(x)}'" for x in lst)
+def _normalize_filter_values(values) -> tuple:
+    if not values:
+        return tuple()
+    normalized = []
+    for value in values:
+        value_str = str(value).strip()
+        if value_str:
+            normalized.append(value_str)
+    return tuple(normalized)
+
+def _build_in_filter(column_sql: str, values, param_prefix: str) -> tuple[str, dict]:
+    normalized = _normalize_filter_values(values)
+    if not normalized:
+        return "", {}
+
+    placeholders = []
+    params = {}
+    for idx, value in enumerate(normalized):
+        key = f"{param_prefix}_{idx}"
+        placeholders.append(f":{key}")
+        params[key] = value
+    return f"AND {column_sql} IN ({', '.join(placeholders)})", params
+
+def _build_campaign_type_filter(column_name: str, type_sel: tuple, param_prefix: str = "campaign_type") -> tuple[str, dict]:
+    normalized_types = _normalize_filter_values(type_sel)
+    if not normalized_types:
+        return "", {}
+
+    safe_column = _validate_sql_identifier(column_name, "column name")
+    rev_map = {
+        "파워링크": "WEB_SITE",
+        "쇼핑검색": "SHOPPING",
+        "파워컨텐츠": "POWER_CONTENTS",
+        "브랜드검색": "BRAND_SEARCH",
+        "플레이스": "PLACE",
+    }
+    db_types = [rev_map.get(t, t) for t in normalized_types]
+    where_sql, params = _build_in_filter(f"c.{safe_column}", db_types, param_prefix)
+    return where_sql, params
+
+def _safe_limit(value, default: int, max_limit: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return min(parsed, max_limit)
 
 # ==========================================
 # 2. Metadata & Dimensions & Seeding
@@ -457,17 +526,17 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     def _norm_cid_series(s: pd.Series) -> pd.Series:
         return s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
 
-    cids_tuple = tuple(str(x).strip() for x in cids if str(x).strip()) if cids else ()
-    where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("CAST(customer_id AS TEXT)", cids_tuple, "budget_cid")
 
     sql_avg = f"SELECT customer_id, SUM(cost)/{avg_days}.0 as avg_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2)})
+    df_avg = sql_read(_engine, sql_avg, {"d1": str(avg_d1), "d2": str(avg_d2), **cid_params})
 
     sql_m = f"SELECT customer_id, SUM(cost) as current_month_cost, SUM(sales) as current_month_sales FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2)})
+    df_m = sql_read(_engine, sql_m, {"d1": str(month_d1), "d2": str(month_d2), **cid_params})
 
     sql_prev_m = f"SELECT customer_id, SUM(cost) as prev_month_cost FROM fact_campaign_daily WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
-    df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2)})
+    df_prev_m = sql_read(_engine, sql_prev_m, {"d1": str(prev_month_d1), "d2": str(prev_month_d2), **cid_params})
 
     if table_exists(_engine, "fact_bizmoney_daily"):
         latest_dt_df = sql_read(_engine, "SELECT MAX(dt) as latest_dt FROM fact_bizmoney_daily")
@@ -476,7 +545,7 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
         df_b = sql_read(
             _engine,
             f"SELECT customer_id, MAX(bizmoney_balance) as bizmoney_balance FROM fact_bizmoney_daily WHERE dt = :d1 {where_cid} GROUP BY customer_id",
-            {"d1": str(bizmoney_dt)},
+            {"d1": str(bizmoney_dt), **cid_params},
         )
     else:
         df_b = pd.DataFrame(columns=["customer_id", "bizmoney_balance"])
@@ -544,29 +613,31 @@ def update_monthly_budget(_engine, cid: int, val: int):
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "off_log_cid")
     # ✨ 데이터 로드 최적화 (LIMIT 5000)
-    return sql_read(_engine, f"SELECT customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000", {"d1": str(d1), "d2": str(d2)})
+    return sql_read(
+        _engine,
+        f"SELECT customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000",
+        {"d1": str(d1), "d2": str(d2), **cid_params},
+    )
 
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, f"{entity}_cid")
     type_join_sql = ""
     type_where_sql = ""
+    type_params = {}
     if type_sel and table_exists(_engine, "dim_campaign"):
         dim_cols = get_table_columns(_engine, "dim_campaign")
         cp_col = "campaign_tp" if "campaign_tp" in dim_cols else ("campaign_type_label" if "campaign_type_label" in dim_cols else "campaign_type")
         fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
         if "campaign_id" in fact_cols and cp_col in dim_cols:
-            rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-            db_types = [rev_map.get(t, t) for t in type_sel]
-            type_list_str = ",".join([f"'{x}'" for x in db_types])
             type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-            type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+            type_where_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, f"{entity}_campaign_type")
 
     fact_cols = get_table_columns(_engine, f"fact_{entity}_daily")
     expr = _strict_conv_selects(fact_cols, alias="f")
@@ -588,7 +659,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
     """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     if df.empty:
         return {}
 
@@ -606,8 +677,8 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
 def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "campaign_bundle_cid")
 
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -615,12 +686,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     target_roas_select = ", c.target_roas" if "target_roas" in cols else ", 0.0 as target_roas"
     min_roas_select = ", c.min_roas" if "min_roas" in cols else ", 0.0 as min_roas"
 
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
+    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "campaign_bundle_type")
 
     rank_col = None
     camp_fact_cols = get_table_columns(_engine, "fact_campaign_daily")
@@ -660,13 +726,10 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 데이터 로드 제한 최적화
-    if topn_cost > 0:
-        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-    else:
-        sql += " ORDER BY agg.cost DESC LIMIT 10000"
+    limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
+    sql += f" ORDER BY agg.cost DESC LIMIT {limit_value}"
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     df = _map_campaign_types(df, "campaign_type")
     return df
 
@@ -674,18 +737,13 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
 def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "keyword_bundle_cid")
 
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
 
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
+    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "keyword_bundle_type")
 
     rank_col = None
     kw_fact_cols = get_table_columns(_engine, "fact_keyword_daily")
@@ -731,13 +789,10 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 데이터 로드 제한 최적화
-    if topn_cost > 0:
-        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-    else:
-        sql += " ORDER BY agg.cost DESC LIMIT 10000"
+    limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
+    sql += f" ORDER BY agg.cost DESC LIMIT {limit_value}"
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     df = _map_campaign_types(df, "campaign_type_label")
     return df
 
@@ -745,8 +800,8 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
 def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "ad_bundle_cid")
 
     cols = get_table_columns(_engine, "dim_campaign")
     cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
@@ -756,12 +811,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     title_select = "ad.ad_title" if "ad_title" in ad_cols else "ad.ad_name as ad_title"
     image_select = "ad.image_url" if "image_url" in ad_cols else "'' as image_url"
 
-    type_filter_sql = ""
-    if type_sel:
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
-        type_filter_sql = f"AND c.{cp_col} IN ({type_list_str})"
+    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "ad_bundle_type")
 
     rank_col = None
     ad_fact_cols = get_table_columns(_engine, "fact_ad_daily")
@@ -807,13 +857,10 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE 1=1 {type_filter_sql}
     """
-    # ✨ 데이터 로드 제한 최적화
-    if topn_cost > 0:
-        sql += f" ORDER BY agg.cost DESC LIMIT {topn_cost}"
-    else:
-        sql += " ORDER BY agg.cost DESC LIMIT 10000"
+    limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
+    sql += f" ORDER BY agg.cost DESC LIMIT {limit_value}"
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     df = _map_campaign_types(df, "campaign_type_label")
     return df
 
@@ -821,19 +868,17 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "campaign_timeseries_cid")
 
     type_join_sql = ""
     type_where_sql = ""
+    type_params = {}
     if type_sel and table_exists(_engine, "dim_campaign"):
         cols = get_table_columns(_engine, "dim_campaign")
         cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-        rev_map = {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}
-        db_types = [rev_map.get(t, t) for t in type_sel]
-        type_list_str = ",".join([f"'{x}'" for x in db_types])
         type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-        type_where_sql = f"AND c.{cp_col} IN ({type_list_str})"
+        type_where_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "campaign_timeseries_type")
 
     fact_cols = get_table_columns(_engine, "fact_campaign_daily")
     expr = _strict_conv_selects(fact_cols, alias="f")
@@ -848,7 +893,7 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
         GROUP BY f.dt ORDER BY f.dt
     """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     if not df.empty:
         df["dt"] = pd.to_datetime(df["dt"])
     return df
@@ -857,8 +902,8 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
 def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_shopping_query_daily"):
         return pd.DataFrame()
-    cids_tuple = tuple(cids) if cids else ()
-    where_cid = f"AND f.customer_id IN ({_sql_in_str_list(cids_tuple)})" if cids_tuple else ""
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "shopping_terms_cid")
 
     sql = f"""
         SELECT
@@ -881,5 +926,5 @@ def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.
         ORDER BY SUM(f.purchase_sales) DESC, SUM(f.total_sales) DESC
         LIMIT 5000
     """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params})
     return df
