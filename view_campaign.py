@@ -31,6 +31,36 @@ def _campaign_fetch_limit(top_n: int) -> int:
     return min(max(top_n * 3, 800), 1800)
 
 
+def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, source: str = "", note: str = "") -> None:
+    if diag is None:
+        return
+    row_txt = "-" if rows is None else str(rows)
+    diag.append({
+        "step": str(step),
+        "status": str(status),
+        "rows": row_txt,
+        "source": str(source or "-"),
+        "note": str(note or "-")[:300],
+    })
+
+
+def _render_diag_panel(diag: list | None) -> None:
+    if not diag:
+        return
+    df = pd.DataFrame(diag)
+    if df.empty:
+        return
+    status_order = {"error": 0, "zero_data": 1, "warn": 2, "ok": 3}
+    if "status" in df.columns:
+        df["_ord"] = df["status"].map(status_order).fillna(9)
+        df = df.sort_values(["_ord", "step"], ascending=[True, True]).drop(columns=["_ord"])
+    rename_map = {"step": "단계", "status": "상태", "rows": "건수", "source": "원천", "note": "메모"}
+    df = df.rename(columns=rename_map)
+    with st.expander("조회 진단", expanded=False):
+        st.caption("조회 이상값이 보일 때, 어떤 원천/단계에서 비거나 실패했는지 확인하는 용도입니다.")
+        st.dataframe(df, width="stretch", hide_index=True)
+
+
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
     "클릭": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
@@ -235,7 +265,7 @@ def _expand_campaign_type_values(type_sel: tuple) -> list[str]:
             deduped.append(x)
     return deduped
 
-def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple, diag: list | None = None) -> pd.DataFrame:
     params = {'d1': str(d1), 'd2': str(d2)}
     type_vals = _expand_campaign_type_values(type_sel)
 
@@ -278,8 +308,11 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
                 df['device_name'] = df['device_name'].apply(_normalize_device_label)
                 df['cost'] = pd.to_numeric(df['cost'], errors='coerce').fillna(0)
                 df = df.groupby('device_name', as_index=False)['cost'].sum().sort_values('cost', ascending=False)
-                return df[df['cost'] > 0]
-        except Exception:
+                out = df[df['cost'] > 0]
+                _diag_add(diag, '기기비중', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_campaign_device_daily', '기기별 원천 사용')
+                return out
+        except Exception as e:
+            _diag_add(diag, '기기비중', 'error', 0, 'fact_campaign_device_daily', f"{type(e).__name__}: {e}")
             pass
 
     if table_exists(engine, 'fact_media_daily'):
@@ -299,9 +332,13 @@ def _query_device_breakdown(engine, d1, d2, cids: tuple, type_sel: tuple) -> pd.
                     df['device_name'] = df['device_name'].apply(_normalize_device_label)
                     df['cost'] = pd.to_numeric(df['cost'], errors='coerce').fillna(0)
                     df = df.groupby('device_name', as_index=False)['cost'].sum().sort_values('cost', ascending=False)
-                    return df[df['cost'] > 0]
-            except Exception:
+                    out = df[df['cost'] > 0]
+                    _diag_add(diag, '기기비중', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_media_daily', 'fact_campaign_device_daily fallback')
+                    return out
+            except Exception as e:
+                _diag_add(diag, '기기비중', 'error', 0, 'fact_media_daily', f"{type(e).__name__}: {e}")
                 pass
+    _diag_add(diag, '기기비중', 'zero_data', 0, 'none', '기기별 광고비 데이터 없음')
     return pd.DataFrame()
 
 
@@ -485,7 +522,7 @@ def _query_ad_detail_for_campaign(engine, d1, d2, customer_id: str, campaign_id:
         FROM agg
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.campaign_id
+        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
         WHERE agg.customer_id = :cid AND a.campaign_id = :camp_id
     """
     df = sql_read(engine, sql, {"d1": str(d1), "d2": str(d2), "cid": str(customer_id), "camp_id": str(campaign_id)})
@@ -562,9 +599,11 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
     return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
 
 #  수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
-def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str, diag: list | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
+    _diag_add(diag, '상세-키워드', 'ok' if not kw_bundle.empty else 'zero_data', len(kw_bundle.index), 'fact_keyword_daily', f'customer_id={customer_id} campaign_id={campaign_id}')
+    _diag_add(diag, '상세-소재', 'ok' if not ad_bundle.empty else 'zero_data', len(ad_bundle.index), 'fact_ad_daily', f'customer_id={customer_id} campaign_id={campaign_id}')
     
     kw_tmp = kw_bundle.rename(columns={"keyword": "item_name"}) if not kw_bundle.empty else pd.DataFrame()
     
@@ -585,6 +624,7 @@ def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaig
         ad_tmp = pd.DataFrame()
         
     regular_detail = _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
+    _diag_add(diag, '상세-분리결과', 'ok' if (not regular_detail.empty or not ext_ads.empty) else 'zero_data', len(regular_detail.index) + len(ext_ads.index), 'detail_split', f'일반={len(regular_detail.index)} 확장소재={len(ext_ads.index)}')
     return regular_detail, ext_ads
 
 @st.fragment
@@ -597,16 +637,20 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     top_n = int(f.get("top_n_campaign", 200))
     patch_date = date(2026, 3, 11)
     has_pre_patch_cur = (f["start"] < patch_date)
+    diag: list[dict] = []
 
     if has_pre_patch_cur:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
 
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
         bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
+        _diag_add(diag, '캠페인집계', 'ok' if bundle is not None and not bundle.empty else 'zero_data', 0 if bundle is None else len(bundle.index), 'query_campaign_bundle', f'기간={f["start"]}~{f["end"]} 고객수={len(cids)} 유형수={len(type_sel)}')
         if bundle is None or bundle.empty:
+            _render_diag_panel(diag)
             return
 
         df = _perf_common_merge_meta(bundle, meta)
+        _diag_add(diag, '메타병합', 'ok' if not df.empty else 'zero_data', len(df.index), 'meta_merge', 'campaign bundle + account meta')
         view = df.rename(columns={
             "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
             "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
@@ -665,7 +709,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 )
             with col_device:
                 st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
-                device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel)
+                device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel, diag=diag)
                 _render_device_share_panel(device_df)
         st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
@@ -684,7 +728,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             
             #  수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
             with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
-                kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id)
+                try:
+                    kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id, diag=diag)
+                except Exception as e:
+                    _diag_add(diag, '상세조회', 'error', 0, 'campaign_detail', f"{type(e).__name__}: {e}")
+                    kw_detail, ext_ads = pd.DataFrame(), pd.DataFrame()
+                    st.warning("상세 데이터를 불러오는 중 오류가 발생했습니다. 아래 조회 진단을 확인해 주세요.")
             
             st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
             with st.container(border=True):
@@ -957,3 +1006,5 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
                 pivot_df = pivot_df[cols]
 
             st.dataframe(pivot_df, width="stretch", hide_index=True)
+
+    _render_diag_panel(diag)
