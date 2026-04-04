@@ -1,5 +1,5 @@
-name: 과거 데이터 대량 백필
-run-name: 과거 데이터 대량 백필 실행
+name: 02_수동 백필
+run-name: 02_수동 백필 실행
 
 on:
   workflow_dispatch:

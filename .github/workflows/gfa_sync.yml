@@ -1,5 +1,5 @@
-name: GFA 성과 데이터 동기화
-run-name: GFA 성과 동기화 실행
+name: 05_GFA 성과 동기화
+run-name: 05_GFA 성과 동기화 실행
 
 on:
   schedule:

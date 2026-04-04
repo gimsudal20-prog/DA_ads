@@ -1,5 +1,5 @@
-name: 신규 업체 과거 데이터 수동 백필
-run-name: 신규 업체 과거 데이터 백필 실행
+name: 03_신규 업체 수동 백필
+run-name: 03_신규 업체 백필 실행
 
 on:
   workflow_dispatch:

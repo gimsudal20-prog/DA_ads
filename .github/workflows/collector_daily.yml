@@ -1,5 +1,5 @@
-name: 네이버 광고 성과 일일 수집
-run-name: 네이버 광고 일일 수집 실행
+name: 01_네이버 광고 메인 일일 수집
+run-name: 01_메인 일일 수집 실행
 
 on:
   schedule:
