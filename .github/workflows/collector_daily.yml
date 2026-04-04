@@ -1,5 +1,5 @@
-name: 01_네이버 광고 메인 일일 수집
-run-name: 01_메인 일일 수집 실행
+name: 01 메인 일일 수집 | 네이버 광고 성과
+run-name: 01 메인 일일 수집 | ${{ github.event_name == 'workflow_dispatch' && format('manual | {0} | fast={1}', github.event.inputs.collect_mode, github.event.inputs.fast) || 'schedule' }}
 
 on:
   schedule:
@@ -53,6 +53,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+
+      - name: Write workflow guide
+        if: always()
+        run: |
+          {
+            echo "## 01 메인 일일 수집"
+            echo
+            echo "- 용도: 매일 전일/당일 성과를 자동 갱신하는 본선 워크플로우"
+            echo "- 수동 실행 시 모드: `${{ github.event.inputs.collect_mode || '검색광고 전체+기기' }}`"
+            echo "- 수동 실행 시 fast: `${{ github.event.inputs.fast || '예' }}`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run collector (Yesterday / Today optimized)
         env:

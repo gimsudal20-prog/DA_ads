@@ -1,5 +1,5 @@
-name: 05_GFA 성과 동기화
-run-name: 05_GFA 성과 동기화 실행
+name: 05 GFA 성과 동기화
+run-name: 05 GFA 성과 동기화 | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'schedule' }}
 
 on:
   schedule:
@@ -40,6 +40,16 @@ jobs:
           pip install -r requirements.txt
           pip install pandas requests sqlalchemy psycopg2-binary openpyxl python-dotenv playwright
 
+
+      - name: Write workflow guide
+        if: always()
+        run: |
+          {
+            echo "## 05 GFA 성과 동기화"
+            echo
+            echo "- 용도: GFA 계정 성과 수집 전용 워크플로우"
+            echo "- 참고: 검색광고 메인 수집과 별도 축이라 문제 분리용으로 보기 좋음"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Chromium 설치
         run: |
           python -m playwright install --with-deps chromium

@@ -1,5 +1,5 @@
-name: 02_수동 백필
-run-name: 02_수동 백필 실행
+name: 02 수동 백필 | 과거 데이터 대량
+run-name: 02 수동 백필 | ${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }} | ${{ github.event.inputs.start_date }}~${{ github.event.inputs.end_date }}
 
 on:
   workflow_dispatch:
@@ -129,6 +129,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install requests python-dotenv sqlalchemy psycopg2-binary pandas openpyxl
+
+
+      - name: Write workflow guide
+        if: always()
+        run: |
+          {
+            echo "## 02 수동 백필"
+            echo
+            echo "- 용도: 과거 구간 재수집 / 특정 계정 점검 / 쇼핑검색·확장소재 백필"
+            echo "- 대상 계정: `${{ github.event.inputs.account_name || github.event.inputs.account_names || 'all' }}`"
+            echo "- 기간: `${{ github.event.inputs.start_date }}` ~ `${{ github.event.inputs.end_date }}`"
+            echo "- raw 입력값: collect_mode=`${{ github.event.inputs.collect_mode }}`, sa_scope=`${{ github.event.inputs.sa_scope }}`, run_target=`${{ github.event.inputs.run_target }}`, shop_ext_bucket=`${{ github.event.inputs.shop_ext_bucket }}`"
+            echo "- raw 입력값: fast=`${{ github.event.inputs.fast }}`, sync_dim_first_day=`${{ github.event.inputs.sync_dim_first_day }}`, shopping_only=`${{ github.event.inputs.shopping_only }}`, with_shop_ext=`${{ github.event.inputs.with_shop_ext }}`, with_gfa=`${{ github.event.inputs.with_gfa }}`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fast backfill
         run: |

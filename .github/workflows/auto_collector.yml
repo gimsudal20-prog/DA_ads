@@ -1,5 +1,5 @@
-name: 06_OFF 자동 점검
-run-name: 06_OFF 자동 점검 실행
+name: 06 자동 OFF 점검
+run-name: 06 자동 OFF 점검 | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'hourly' }}
 
 on:
   schedule:
@@ -29,6 +29,16 @@ jobs:
           pip install -r requirements.txt
           pip install psycopg2-binary SQLAlchemy pandas requests python-dotenv openpyxl
 
+
+      - name: Write workflow guide
+        if: always()
+        run: |
+          {
+            echo "## 06 자동 OFF 점검"
+            echo
+            echo "- 용도: 시간 단위 자동 점검 / OFF 상태 탐지"
+            echo "- 참고: 성과 수집이 아니라 점검 성격의 워크플로우"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Run OFF Scanner
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
