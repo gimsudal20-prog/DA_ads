@@ -58,6 +58,140 @@ SHOPPING_HINT_KEYS = ('shopping', '쇼핑', 'product', 'productcatalog', 'catalo
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+
+BACKFILL_RUN_RESULTS: List[Dict[str, Any]] = []
+BACKFILL_RUN_LOCK = threading.Lock()
+
+
+def _summary_icon(status: str) -> str:
+    return {
+        "ok": "✅",
+        "zero_data": "⚪",
+        "error": "❌",
+        "skipped": "⏭️",
+        "pending": "…",
+    }.get(str(status or ""), "•")
+
+
+def _markdown_escape(value: Any) -> str:
+    s = str(value if value is not None else "")
+    return s.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _report_df_status(df: pd.DataFrame | None) -> str:
+    if df is None:
+        return "failed"
+    if getattr(df, "empty", False):
+        return "empty"
+    return "ok"
+
+
+def _record_backfill_result(row: Dict[str, Any]):
+    with BACKFILL_RUN_LOCK:
+        BACKFILL_RUN_RESULTS.append(dict(row or {}))
+
+
+def emit_backfill_run_summary(results: List[Dict[str, Any]], target_date: date):
+    rows = [r for r in (results or []) if isinstance(r, dict)]
+    if not rows:
+        log("📊 백필 실행 요약을 생성할 결과가 없습니다.")
+        return
+
+    total = len(rows)
+    ok_cnt = sum(1 for r in rows if r.get("status") == "ok")
+    zero_cnt = sum(1 for r in rows if r.get("status") == "zero_data")
+    err_cnt = sum(1 for r in rows if r.get("status") == "error")
+    skip_cnt = sum(1 for r in rows if r.get("status") == "skipped")
+    fallback_cnt = sum(1 for r in rows if r.get("used_realtime_fallback"))
+    split_ok_cnt = sum(1 for r in rows if r.get("split_report_ok"))
+    device_ok_cnt = sum(1 for r in rows if r.get("device_status") == "ok")
+
+    log("=" * 72)
+    log(
+        f"📊 백필 실행 요약 | 대상일={target_date} | 정상={ok_cnt} | 0건={zero_cnt} | 오류={err_cnt} | 건너뜀={skip_cnt} | "
+        f"실시간대체={fallback_cnt} | split성공={split_ok_cnt} | PC/M성공={device_ok_cnt}"
+    )
+
+    interesting = []
+    for r in rows:
+        notes = []
+        if r.get("status") == "error":
+            notes.append(f"error={r.get('error')}")
+        else:
+            if r.get("used_realtime_fallback"):
+                notes.append(f"fallback={r.get('realtime_reason') or 'unknown'}")
+            if r.get("split_attempted") and not r.get("split_report_ok"):
+                notes.append("split=미확정")
+            device_status = r.get("device_status")
+            if device_status not in {"ok", "not_requested", "realtime_skipped"}:
+                notes.append(f"PC/M={device_status}")
+            if r.get("zero_data"):
+                notes.append("0건")
+        if notes or r.get("status") in {"error", "zero_data", "skipped"}:
+            interesting.append((r, notes))
+
+    if interesting:
+        log("🧾 점검 필요 계정")
+        for r, notes in interesting[:30]:
+            log(
+                f"   - {_summary_icon(r.get('status'))} [ {r.get('account_name')} ] "
+                f"C={r.get('campaign_rows_saved', 0)} K={r.get('keyword_rows_saved', 0)} A={r.get('ad_rows_saved', 0)} "
+                f"PC/M={r.get('device_campaign_rows_saved', 0)}/{r.get('device_ad_rows_saved', 0)} "
+                f"Q={r.get('query_rows_saved', 0)} | {'; '.join(notes) if notes else '확인 필요 없음'}"
+            )
+        if len(interesting) > 30:
+            log(f"   … 외 {len(interesting) - 30}개 계정은 GitHub Step Summary 표에서 확인하세요.")
+    else:
+        log("🧾 점검 필요 계정 없음")
+    log("=" * 72)
+
+    summary_path = (os.getenv("GITHUB_STEP_SUMMARY") or "").strip()
+    if not summary_path:
+        return
+
+    lines = [
+        f"## 백필 실행 요약 ({target_date})",
+        "",
+        f"- 대상 계정: **{total}개**",
+        f"- 정상 {ok_cnt} / 0건 {zero_cnt} / 오류 {err_cnt} / 건너뜀 {skip_cnt}",
+        f"- 실시간 대체 {fallback_cnt} / split 성공 {split_ok_cnt} / PC/M 성공 {device_ok_cnt}",
+        "",
+        "|업체|상태|캠페인|키워드|소재|PC/M 캠페인|PC/M 소재|검색어행|AD|AD_CONV|SHOP_KW_CONV|Split|실시간대체|비고|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        note_parts = []
+        if r.get("status") == "error" and r.get("error"):
+            note_parts.append(str(r.get("error")))
+        if r.get("split_attempted") and not r.get("split_report_ok"):
+            note_parts.append(f"split 미확정({r.get('split_reason') or '-'})")
+        if r.get("device_missing_campaign_rows"):
+            note_parts.append(f"PC/M 매핑누락 {r.get('device_missing_campaign_rows')}")
+        note_text = "; ".join(note_parts)
+        lines.append(
+            "|{account}|{status}|{c}|{k}|{a}|{dc}|{da}|{q}|{ad}|{ad_conv}|{shop_kw}|{split}|{fb}|{note}|".format(
+                account=_markdown_escape(r.get("account_name")),
+                status=_markdown_escape(f"{_summary_icon(r.get('status'))} {r.get('status') or ''}"),
+                c=int(r.get("campaign_rows_saved") or 0),
+                k=int(r.get("keyword_rows_saved") or 0),
+                a=int(r.get("ad_rows_saved") or 0),
+                dc=int(r.get("device_campaign_rows_saved") or 0),
+                da=int(r.get("device_ad_rows_saved") or 0),
+                q=int(r.get("query_rows_saved") or 0),
+                ad=_markdown_escape(r.get("ad_report_status")),
+                ad_conv=_markdown_escape(r.get("ad_conversion_status")),
+                shop_kw=_markdown_escape(r.get("shopping_keyword_conversion_status")),
+                split=_markdown_escape("ok" if r.get("split_report_ok") else ("skip" if not r.get("split_attempted") else "fail")),
+                fb=_markdown_escape(r.get("realtime_reason") if r.get("used_realtime_fallback") else "-"),
+                note=_markdown_escape(note_text),
+            )
+        )
+    try:
+        with open(summary_path, "a", encoding="utf-8") as fp:
+            fp.write("\n".join(lines) + "\n")
+    except Exception as e:
+        log(f"⚠️ GITHUB_STEP_SUMMARY 기록 실패: {e}")
+
 DEBUG_DIR = Path(os.getenv("DEBUG_REPORT_DIR", "debug_reports"))
 
 def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
@@ -1578,6 +1712,31 @@ def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date,
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
+    result: Dict[str, Any] = {
+        "account_name": account_name,
+        "customer_id": str(customer_id),
+        "target_date": str(target_date),
+        "status": "pending",
+        "zero_data": False,
+        "used_realtime_fallback": False,
+        "realtime_reason": "",
+        "ad_report_status": "not_requested",
+        "ad_conversion_status": "not_requested",
+        "shopping_keyword_conversion_status": "not_requested",
+        "split_attempted": False,
+        "split_report_ok": False,
+        "split_reason": "",
+        "device_status": "not_requested",
+        "device_missing_campaign_rows": 0,
+        "campaign_rows_saved": 0,
+        "keyword_rows_saved": 0,
+        "ad_rows_saved": 0,
+        "device_campaign_rows_saved": 0,
+        "device_ad_rows_saved": 0,
+        "query_rows_saved": 0,
+        "error": "",
+    }
+
     try:
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
@@ -1721,6 +1880,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
         if target_date >= kst_now.date():
             use_realtime_fallback = True
+            result["used_realtime_fallback"] = True
+            result["realtime_reason"] = "today"
+            result["ad_report_status"] = "realtime_only"
+            result["device_status"] = "realtime_skipped"
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
@@ -1729,16 +1892,27 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if split_enabled_for_date(target_date) and shopping_campaign_ids:
                 split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
                 report_types.extend(split_candidate_reports)
+                result["split_attempted"] = True
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
+            result["ad_report_status"] = _report_df_status(dfs.get("AD"))
+            result["ad_conversion_status"] = _report_df_status(dfs.get("AD_CONVERSION")) if "AD_CONVERSION" in report_types else "not_requested"
+            result["shopping_keyword_conversion_status"] = _report_df_status(dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL")) if "SHOPPINGKEYWORD_CONVERSION_DETAIL" in report_types else "not_requested"
 
             if dfs.get("AD") is None and all(dfs.get(tp) is None for tp in split_candidate_reports):
                 log(f"   ⚠️ [ {account_name} ] AD / 전환 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (purchase/cart 미분리)")
                 use_realtime_fallback = True
+                result["used_realtime_fallback"] = True
+                result["realtime_reason"] = "report_fetch_failed"
+                result["device_status"] = "realtime_skipped"
 
         if use_realtime_fallback:
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
+            result["campaign_rows_saved"] = int(c_cnt or 0)
+            result["keyword_rows_saved"] = int(k_cnt or 0)
+            result["ad_rows_saved"] = int(a_cnt or 0)
+            result["split_reason"] = "realtime_total_only"
             log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
             split_report_ok = False
@@ -1747,8 +1921,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             ad_report_df = dfs.get("AD")
 
             if not split_enabled_for_date(target_date):
+                result["split_reason"] = "date_before_enable"
                 log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart/wishlist 분리 수집을 시도하지 않습니다.")
             elif not shopping_campaign_ids:
+                result["split_reason"] = "no_shopping_campaign"
                 log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
             else:
                 # 핵심:
@@ -1834,12 +2010,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 final_split_summary = ad_summary if split_summary_has_values(ad_summary) else shop_summary
                 split_ok, split_reason = validate_shopping_split_summary(final_split_summary, ad_map)
                 if split_report_ok and not split_ok:
+                    result["split_reason"] = split_reason
                     log(f"   ⚠️ [ {account_name} ] shopping split 검증 실패 → 상세 split 저장을 건너뛰고 총합만 적재합니다. ({split_reason})")
                     camp_map, kw_map, ad_map = {}, {}, {}
                     shop_query_rows = []
                     split_report_ok = False
 
                 if split_report_ok:
+                    result["split_reason"] = "ok"
                     camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
                     kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
@@ -1852,6 +2030,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                         log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
                         if kw_src == 'none':
                             log(f"   ⚠️ [ {account_name} ] keyword split은 아직 미매핑 상태입니다. detail split 합계는 keyword별 적재값과 다를 수 있습니다.")
+                elif result.get("split_attempted") and not result.get("split_reason"):
+                    result["split_reason"] = "no_split_rows"
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
@@ -1870,6 +2050,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     ad_stat = {}
 
                     ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
+                    result["device_status"] = str(device_meta.get("status") or "unknown")
+                    result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
                     if device_meta.get("status") == "ok":
                         device_ad_cnt = save_device_stats(
                             engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
@@ -1920,25 +2102,47 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             f"status={device_meta.get('status')}{extra_msg}"
                         )
                 else:
+                    result["device_status"] = "ad_report_missing"
                     log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
                     a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map)
             else:
+                result["device_status"] = "not_requested"
                 a_cnt = 0
 
             replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
             if shop_query_rows:
                 log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
+            result["campaign_rows_saved"] = int(c_cnt or 0)
+            result["keyword_rows_saved"] = int(k_cnt or 0)
+            result["ad_rows_saved"] = int(a_cnt or 0)
+            result["device_campaign_rows_saved"] = int(device_campaign_cnt or 0)
+            result["device_ad_rows_saved"] = int(device_ad_cnt or 0)
+            result["query_rows_saved"] = int(len(shop_query_rows) or 0)
+            result["split_report_ok"] = bool(split_report_ok)
+            if not result.get("split_reason") and result.get("split_attempted"):
+                result["split_reason"] = "ok" if split_report_ok else "no_split_rows"
+
             if c_cnt == 0 and k_cnt == 0 and a_cnt == 0:
+                result["status"] = "zero_data"
+                result["zero_data"] = True
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else:
+                result["status"] = "ok"
                 mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
                 log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
+        result["status"] = "error"
+        result["error"] = str(e)
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
+    finally:
+        _record_backfill_result(result)
 
 def main():
+    with BACKFILL_RUN_LOCK:
+        BACKFILL_RUN_RESULTS.clear()
+
     engine = get_engine()
     ensure_tables(engine)
     parser = argparse.ArgumentParser()
@@ -2027,6 +2231,10 @@ def main():
         for future in concurrent.futures.as_completed(futures):
             try: future.result()
             except Exception: pass
+
+    with BACKFILL_RUN_LOCK:
+        summary_rows = list(BACKFILL_RUN_RESULTS)
+    emit_backfill_run_summary(summary_rows, target_date)
 
 if __name__ == "__main__":
     main()
