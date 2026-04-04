@@ -86,6 +86,18 @@ def _today_kst() -> date:
     except Exception:
         return date.today()
 
+
+def _normalize_filter_state(values: Dict) -> Dict:
+    out = dict(values)
+    out["q"] = str(out.get("q", "") or "")
+    out["manager"] = list(out.get("manager", []) or [])
+    out["account"] = list(out.get("account", []) or [])
+    out["type_sel"] = list(out.get("type_sel", []) or [])
+    out["top_n_campaign"] = int(out.get("top_n_campaign", 200) or 200)
+    out["top_n_keyword"] = int(out.get("top_n_keyword", 300) or 300)
+    out["top_n_ad"] = int(out.get("top_n_ad", 200) or 200)
+    return out
+
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
     today = _today_kst()
     default_end = today - timedelta(days=1)
@@ -184,16 +196,16 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
             top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
 
-        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
-        
-        if st.button("조회 적용", key="btn_apply_filters", use_container_width=True, type="primary"):
-            st.rerun()
+        st.caption("필터 변경 시 즉시 반영됩니다.")
 
-    sv.update({
-        "q": q or "", "manager": manager_sel or [], "account": account_sel or [], 
+    updated_filters = _normalize_filter_state({
+        "q": q or "", "manager": manager_sel or [], "account": account_sel or [],
         "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2,
-        "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad
+        "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad,
+        "prefetch_warm": sv.get("prefetch_warm", True),
     })
+    sv.clear()
+    sv.update(updated_filters)
     st.session_state["filters_v8"] = sv
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
