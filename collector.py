@@ -115,6 +115,190 @@ def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
     except Exception:
         pass
 
+
+def _df_state(df: pd.DataFrame | None) -> tuple[str, int]:
+    if df is None:
+        return "missing", 0
+    try:
+        rows = int(len(df.index))
+    except Exception:
+        rows = 0
+    return ("empty" if rows == 0 else "ok"), rows
+
+
+def _new_account_collect_result(customer_id: str, account_name: str, target_date: date, collect_mode: str, skip_dim: bool, fast_mode: bool, shopping_only: bool) -> Dict[str, Any]:
+    return {
+        "customer_id": str(customer_id),
+        "account_name": str(account_name),
+        "target_date": str(target_date),
+        "status": "pending",
+        "error": "",
+        "collect_mode": str(collect_mode or "sa_with_device"),
+        "collect_mode_label": label_collect_mode(collect_mode),
+        "collect_sa": False,
+        "collect_device": False,
+        "skip_dim": bool(skip_dim),
+        "fast_mode": bool(fast_mode),
+        "shopping_only": bool(shopping_only),
+        "campaign_targets": 0,
+        "keyword_targets": 0,
+        "ad_targets": 0,
+        "shopping_campaign_targets": 0,
+        "dim_campaigns": 0,
+        "dim_adgroups": 0,
+        "dim_keywords": 0,
+        "dim_ads": 0,
+        "used_realtime_fallback": False,
+        "realtime_reason": "",
+        "ad_report_status": "not_requested",
+        "ad_report_rows": 0,
+        "ad_conversion_status": "not_requested",
+        "ad_conversion_rows": 0,
+        "shopping_keyword_conversion_status": "not_requested",
+        "shopping_keyword_conversion_rows": 0,
+        "split_attempted": False,
+        "split_report_ok": False,
+        "split_source": "none",
+        "campaign_rows_saved": 0,
+        "keyword_rows_saved": 0,
+        "ad_rows_saved": 0,
+        "device_campaign_rows_saved": 0,
+        "device_ad_rows_saved": 0,
+        "media_rows_saved": 0,
+        "media_source": "not_requested",
+        "media_detail_rows": 0,
+        "media_summary_rows": 0,
+        "shopping_query_rows_saved": 0,
+        "device_status": "not_requested",
+        "device_missing_campaign_rows": 0,
+        "zero_data": False,
+        "notes": [],
+    }
+
+
+def _summary_icon(status: str) -> str:
+    return {
+        "ok": "✅",
+        "zero_data": "⚪",
+        "error": "❌",
+        "skipped": "⏭️",
+        "pending": "…",
+    }.get(str(status or ""), "•")
+
+
+def _markdown_escape(value: Any) -> str:
+    s = str(value if value is not None else "")
+    return s.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def emit_collection_run_summary(results: List[Dict[str, Any]], target_date: date, collect_mode: str, shopping_only: bool = False):
+    rows = [r for r in (results or []) if isinstance(r, dict)]
+    if not rows:
+        log("📊 실행 요약을 생성할 결과가 없습니다.")
+        return
+
+    total = len(rows)
+    ok_cnt = sum(1 for r in rows if r.get("status") == "ok")
+    zero_cnt = sum(1 for r in rows if r.get("status") == "zero_data")
+    err_cnt = sum(1 for r in rows if r.get("status") == "error")
+    skip_cnt = sum(1 for r in rows if r.get("status") == "skipped")
+    fallback_cnt = sum(1 for r in rows if r.get("used_realtime_fallback"))
+    split_ok_cnt = sum(1 for r in rows if r.get("split_report_ok"))
+    device_ok_cnt = sum(1 for r in rows if r.get("device_status") == "ok")
+
+    log("=" * 72)
+    log(
+        f"📊 수집 실행 요약 | 대상일={target_date} | 모드={label_collect_mode(collect_mode)} | "
+        f"정상={ok_cnt} | 0건={zero_cnt} | 오류={err_cnt} | 건너뜀={skip_cnt} | "
+        f"실시간대체={fallback_cnt} | split성공={split_ok_cnt} | PC/M성공={device_ok_cnt}"
+    )
+
+    interesting = []
+    for r in rows:
+        notes = []
+        if r.get("status") == "error":
+            notes.append(f"error={r.get('error')}")
+        else:
+            if r.get("used_realtime_fallback"):
+                notes.append(f"fallback={r.get('realtime_reason') or 'unknown'}")
+            ad_status = r.get("ad_report_status")
+            if ad_status not in {"ok", "realtime_only", "not_requested"}:
+                notes.append(f"AD={ad_status}")
+            device_status = r.get("device_status")
+            if r.get("collect_device") and device_status not in {"ok", "disabled", "not_requested", "not_applicable", "realtime_skipped"}:
+                notes.append(f"PC/M={device_status}")
+            media_source = r.get("media_source")
+            if media_source in {"empty", "fallback_total", "fallback_device"}:
+                notes.append(f"media={media_source}")
+            if r.get("split_attempted") and not r.get("split_report_ok"):
+                notes.append("split=미확정")
+            if r.get("zero_data"):
+                notes.append("0건")
+        if notes or r.get("status") in {"error", "zero_data", "skipped"}:
+            interesting.append((r, notes))
+
+    if interesting:
+        log("🧾 점검 필요 계정")
+        for r, notes in interesting[:30]:
+            log(
+                f"   - {_summary_icon(r.get('status'))} [ {r.get('account_name')} ] "
+                f"C={r.get('campaign_rows_saved', 0)} K={r.get('keyword_rows_saved', 0)} A={r.get('ad_rows_saved', 0)} "
+                f"PC/M={r.get('device_campaign_rows_saved', 0)}/{r.get('device_ad_rows_saved', 0)} "
+                f"media={r.get('media_rows_saved', 0)} | {'; '.join(notes) if notes else '확인 필요 없음'}"
+            )
+        if len(interesting) > 30:
+            log(f"   … 외 {len(interesting) - 30}개 계정은 GitHub Step Summary 표에서 확인하세요.")
+    else:
+        log("🧾 점검 필요 계정 없음")
+    log("=" * 72)
+
+    summary_path = (os.getenv("GITHUB_STEP_SUMMARY") or "").strip()
+    if not summary_path:
+        return
+
+    lines = [
+        f"## 수집 실행 요약 ({target_date})",
+        "",
+        f"- 수집 모드: **{_markdown_escape(label_collect_mode(collect_mode))}**",
+        f"- 쇼핑검색 전용: **{'예' if shopping_only else '아니오'}**",
+        f"- 대상 계정: **{total}개**",
+        f"- 정상 {ok_cnt} / 0건 {zero_cnt} / 오류 {err_cnt} / 건너뜀 {skip_cnt}",
+        f"- 실시간 대체 {fallback_cnt} / split 성공 {split_ok_cnt} / PC/M 성공 {device_ok_cnt}",
+        "",
+        "|업체|상태|캠페인|키워드|소재|PC/M 캠페인|PC/M 소재|매체행|AD|Split|실시간대체|비고|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|",
+    ]
+    for r in rows:
+        note_parts = []
+        if r.get("status") == "error" and r.get("error"):
+            note_parts.append(str(r.get("error")))
+        if r.get("split_attempted") and not r.get("split_report_ok"):
+            note_parts.append("split 미확정")
+        if r.get("device_missing_campaign_rows"):
+            note_parts.append(f"PC/M 매핑누락 {r.get('device_missing_campaign_rows')}")
+        note_text = "; ".join(note_parts)
+        lines.append(
+            "|{account}|{status}|{c}|{k}|{a}|{dc}|{da}|{m}|{ad}|{split}|{fb}|{note}|".format(
+                account=_markdown_escape(r.get("account_name")),
+                status=_markdown_escape(f"{_summary_icon(r.get('status'))} {r.get('status') or ''}"),
+                c=int(r.get("campaign_rows_saved") or 0),
+                k=int(r.get("keyword_rows_saved") or 0),
+                a=int(r.get("ad_rows_saved") or 0),
+                dc=int(r.get("device_campaign_rows_saved") or 0),
+                da=int(r.get("device_ad_rows_saved") or 0),
+                m=int(r.get("media_rows_saved") or 0),
+                ad=_markdown_escape(r.get("ad_report_status")),
+                split=_markdown_escape("ok" if r.get("split_report_ok") else ("skip" if not r.get("split_attempted") else "fail")),
+                fb=_markdown_escape(r.get("realtime_reason") if r.get("used_realtime_fallback") else "-"),
+                note=_markdown_escape(note_text),
+            )
+        )
+    try:
+        with open(summary_path, "a", encoding="utf-8") as fp:
+            fp.write("\n".join(lines) + "\n")
+    except Exception as e:
+        log(f"⚠️ GITHUB_STEP_SUMMARY 기록 실패: {e}")
+
 def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
@@ -2331,19 +2515,36 @@ def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_r
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
+    result = _new_account_collect_result(customer_id, account_name, target_date, collect_mode, skip_dim, fast_mode, shopping_only)
     job_lock = acquire_job_lock(engine, customer_id, target_date)
     if job_lock is False:
+        result["status"] = "skipped"
+        result["notes"].append("job_lock_busy")
         log(f"⏭️ [ {account_name} ] 동일 날짜/계정 수집이 이미 실행 중이라 건너뜁니다. ({target_date})")
-        return
+        return result
 
     try:
         collect_mode = (collect_mode or "sa_with_device").strip().lower()
         collect_sa = collect_mode in {"sa_only", "sa_with_device"}
         collect_device = collect_mode in {"device_only", "sa_with_device"}
+        result["collect_mode"] = collect_mode
+        result["collect_mode_label"] = label_collect_mode(collect_mode)
+        result["collect_sa"] = collect_sa
+        result["collect_device"] = collect_device
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
         shopping_adgroup_ids: set[str] = set()
         shopping_keyword_ids: set[str] = set()
+        c_cnt = k_cnt = a_cnt = 0
+        device_ad_cnt = device_campaign_cnt = 0
+        media_cnt = 0
+        media_meta: Dict[str, Any] = {}
+        device_meta: Dict[str, Any] = {"status": "not_requested"}
+        shop_query_rows: List[Dict[str, Any]] = []
+        split_report_ok = False
+        split_attempted = False
+        ad_report_df: pd.DataFrame | None = None
+        camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] = {}
         if shopping_only:
             log(f"   🛍️ [ {account_name} ] 쇼핑검색 전용 수집 모드")
 
@@ -2425,6 +2626,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             if not SKIP_AD_DIM:
                 upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
             shopping_keyword_ids = set(target_kw_ids) if shopping_adgroup_ids else set()
+            result["dim_campaigns"] = len(camp_rows)
+            result["dim_adgroups"] = len(ag_rows)
+            result["dim_keywords"] = len(kw_rows)
+            result["dim_ads"] = len(ad_rows)
             log(f"   ✅ [ {account_name} ] 구조 적재 완료")
 
         else:
@@ -2456,6 +2661,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
                     target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})] if collect_sa else []
                     target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
+
+        result["campaign_targets"] = len(target_camp_ids)
+        result["keyword_targets"] = len(target_kw_ids)
+        result["ad_targets"] = len(target_ad_ids)
+        result["shopping_campaign_targets"] = len(shopping_campaign_ids)
 
         keyword_lookup = {}
         keyword_unique_lookup = {}
@@ -2500,23 +2710,39 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
+        realtime_reason = ""
         dfs: Dict[str, pd.DataFrame | None] = {}
+        split_candidate_reports: List[str] = []
 
         if target_date >= kst_now.date():
             use_realtime_fallback = True
+            realtime_reason = "today"
+            result["ad_report_status"] = "realtime_only"
+            result["ad_conversion_status"] = "realtime_only"
+            result["shopping_keyword_conversion_status"] = "realtime_only"
             log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
         else:
             log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
             report_types = ["AD"]
-            split_candidate_reports = []
             if split_enabled_for_date(target_date) and shopping_campaign_ids:
                 split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
                 report_types.extend(split_candidate_reports)
+                split_attempted = bool(collect_sa)
             dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
+            result["ad_report_status"], result["ad_report_rows"] = _df_state(dfs.get("AD"))
+            ad_conv_df = dfs.get("AD_CONVERSION") if "AD_CONVERSION" in report_types else None
+            shop_kw_conv_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL") if "SHOPPINGKEYWORD_CONVERSION_DETAIL" in report_types else None
+            result["ad_conversion_status"], result["ad_conversion_rows"] = _df_state(ad_conv_df) if split_candidate_reports else ("not_requested", 0)
+            result["shopping_keyword_conversion_status"], result["shopping_keyword_conversion_rows"] = _df_state(shop_kw_conv_df) if split_candidate_reports else ("not_requested", 0)
 
             if dfs.get("AD") is None and all(dfs.get(tp) is None for tp in split_candidate_reports):
                 log(f"   ⚠️ [ {account_name} ] AD / 전환 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (purchase/cart 미분리)")
                 use_realtime_fallback = True
+                realtime_reason = "report_missing"
+
+        result["used_realtime_fallback"] = bool(use_realtime_fallback)
+        result["realtime_reason"] = realtime_reason
+        result["split_attempted"] = bool(split_attempted)
 
         if use_realtime_fallback:
             if collect_sa:
@@ -2532,6 +2758,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   ℹ️ [ {account_name} ] 당일/실시간 모드에서는 PC/M 전용 수집을 수행하지 않습니다.")
             device_ad_cnt = 0
             device_campaign_cnt = 0
+            result["device_status"] = "realtime_skipped" if collect_device else "not_applicable"
             media_cnt, media_meta = collect_media_fact(
                 engine, customer_id, target_date, None, ad_to_campaign_map, campaign_type_map, None,
                 allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
@@ -2623,6 +2850,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
                     summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
                     query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
+                    result["split_source"] = f"summary={summary_src},campaign/ad={camp_ad_src},keyword={kw_src},query={query_src}"
                     log(
                         f"   ✅ [ {account_name} ] shopping split 원천 사용: "
                         f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}, query={query_src}"
@@ -2669,7 +2897,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             camp_device_stat = filter_stat_result(camp_device_stat, set(target_camp_ids))
                     else:
                         ad_device_stat, camp_device_stat, device_meta = {}, {}, {"status": "disabled", "reason": "collect_mode=sa_only"}
+                        result["device_status"] = "disabled"
                     if collect_device and device_meta.get("status") == "ok":
+                        result["device_status"] = "ok"
+                        result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
                         device_ad_cnt = save_device_stats(
                             engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
                             data_source="report_device_total_only", source_report="AD"
@@ -2702,6 +2933,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                             f"{miss_msg} | parser={DEVICE_PARSER_VERSION}"
                         )
                     elif collect_device:
+                        result["device_status"] = str(device_meta.get("status") or "unknown")
+                        result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
                         debug_keys = [
                             "header_idx", "ad_idx", "camp_idx", "device_idx", "imp_idx", "clk_idx", "cost_idx",
                             "conv_idx", "sales_idx", "rank_idx", "scan_rows", "reject_short", "reject_empty_ad",
@@ -2725,8 +2958,11 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     else:
                         log(f"   ℹ️ [ {account_name} ] AD 리포트가 없어 PC/M 전용 적재를 건너뜁니다.")
                         a_cnt = 0
+                    if collect_device:
+                        result["device_status"] = "ad_report_missing"
             else:
                 a_cnt = 0
+                result["device_status"] = "not_requested"
 
             media_cnt, media_meta = collect_media_fact(
                 engine, customer_id, target_date, ad_report_df, ad_to_campaign_map, campaign_type_map, camp_device_stat,
@@ -2735,6 +2971,10 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             )
             detail_rows = int(media_meta.get('detail_rows', 0) or 0)
             summary_rows = int(media_meta.get('summary_rows', 0) or 0)
+            result["media_rows_saved"] = int(media_cnt or 0)
+            result["media_source"] = str(media_meta.get('status') or 'unknown')
+            result["media_detail_rows"] = detail_rows
+            result["media_summary_rows"] = summary_rows
             distinct_media_count = int(media_meta.get('distinct_media_count', 0) or 0)
             media_preview = media_meta.get('distinct_media_preview') or []
             preview_msg = f" | media_preview={media_preview}" if media_preview else ""
@@ -2754,9 +2994,20 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if shop_query_rows:
                     log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
-            if c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0:
+            result["campaign_rows_saved"] = int(c_cnt or 0)
+            result["keyword_rows_saved"] = int(k_cnt or 0)
+            result["ad_rows_saved"] = int(a_cnt or 0)
+            result["device_campaign_rows_saved"] = int(device_campaign_cnt or 0)
+            result["device_ad_rows_saved"] = int(device_ad_cnt or 0)
+            result["shopping_query_rows_saved"] = int(len(shop_query_rows) if shop_query_rows else 0)
+            result["split_report_ok"] = bool(split_report_ok)
+            result["zero_data"] = bool(c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0)
+
+            if result["zero_data"]:
+                result["status"] = "zero_data"
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
             else:
+                result["status"] = "ok"
                 if collect_mode == "device_only":
                     log(f"   ✅ [ {account_name} ] PC/M 전용 수집 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})")
                 else:
@@ -2766,10 +3017,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 
     except Exception as e:
+        result["status"] = "error"
+        result["error"] = str(e)
         log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
     finally:
         if job_lock is not False:
             release_job_lock(job_lock, customer_id, target_date)
+    return result
 
 def main():
     engine = get_engine()
@@ -2889,11 +3143,41 @@ def main():
         
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
 
+    results: List[Dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast, args.collect_mode, args.shopping_only) for acc in accounts_info]
         for future in concurrent.futures.as_completed(futures):
-            try: future.result()
-            except Exception: pass
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append({
+                    "customer_id": "",
+                    "account_name": "(future-error)",
+                    "target_date": str(target_date),
+                    "status": "error",
+                    "error": str(e),
+                    "collect_mode": args.collect_mode,
+                    "collect_mode_label": label_collect_mode(args.collect_mode),
+                    "collect_sa": args.collect_mode in {"sa_only", "sa_with_device"},
+                    "collect_device": args.collect_mode in {"device_only", "sa_with_device"},
+                    "shopping_only": bool(args.shopping_only),
+                    "campaign_rows_saved": 0,
+                    "keyword_rows_saved": 0,
+                    "ad_rows_saved": 0,
+                    "device_campaign_rows_saved": 0,
+                    "device_ad_rows_saved": 0,
+                    "media_rows_saved": 0,
+                    "ad_report_status": "unknown",
+                    "split_attempted": False,
+                    "split_report_ok": False,
+                    "used_realtime_fallback": False,
+                    "realtime_reason": "",
+                    "device_status": "unknown",
+                    "media_source": "unknown",
+                    "zero_data": False,
+                })
+
+    emit_collection_run_summary(results, target_date, args.collect_mode, args.shopping_only)
 
 if __name__ == "__main__":
     main()
