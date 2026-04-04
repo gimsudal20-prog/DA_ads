@@ -11,6 +11,7 @@ Optional extra checks:
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import py_compile
 import subprocess
@@ -51,6 +52,58 @@ def run_yaml_parse(root: Path) -> list[str]:
             yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception as exc:
             messages.append(f"workflow 파싱 실패 | {path.relative_to(root)} | {exc}")
+    return messages
+
+
+def _module_public_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[-1])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[-1])
+    return names
+
+
+def run_local_import_checks(root: Path) -> list[str]:
+    messages: list[str] = []
+    module_cache: dict[Path, set[str]] = {}
+
+    for path in iter_python_files(root):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except Exception as exc:
+            messages.append(f"import 체크 스킵 | {path.relative_to(root)} | 파싱 실패: {exc}")
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.level != 0 or not node.module or any(alias.name == "*" for alias in node.names):
+                continue
+            mod_path = root / (node.module.replace(".", os.sep) + ".py")
+            if not mod_path.exists():
+                continue
+            if mod_path not in module_cache:
+                module_cache[mod_path] = _module_public_names(mod_path)
+            exported = module_cache[mod_path]
+            for alias in node.names:
+                imported_name = alias.name
+                if imported_name not in exported:
+                    messages.append(
+                        f"import 체크 실패 | {path.relative_to(root)} | from {node.module} import {imported_name}"
+                    )
     return messages
 
 
@@ -98,6 +151,9 @@ def main() -> int:
             failures.append(msg)
         else:
             notes.append(msg)
+
+    import_messages = run_local_import_checks(root)
+    failures.extend(import_messages)
 
     if args.with_help:
         help_messages = run_help_checks(root)

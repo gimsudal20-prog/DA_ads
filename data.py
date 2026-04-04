@@ -135,6 +135,18 @@ def _normalize_filter_values(values) -> tuple:
             normalized.append(value_str)
     return tuple(normalized)
 
+
+def _sql_in_str_list(lst) -> str:
+    """Legacy compatibility helper for existing view modules.
+
+    Prefer parameterized filters for new code. This helper remains so existing
+    view modules can still import cleanly until their SQL is migrated.
+    """
+    normalized = _normalize_filter_values(lst)
+    if not normalized:
+        return "''"
+    return ",".join("'" + value.replace("'", "''") + "'" for value in normalized)
+
 def _build_in_filter(column_sql: str, values, param_prefix: str) -> tuple[str, dict]:
     normalized = _normalize_filter_values(values)
     if not normalized:
