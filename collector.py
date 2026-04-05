@@ -98,6 +98,33 @@ def label_collect_mode(value: str | None) -> str:
         "sa_with_device": "검색광고 전체+기기",
     }.get(normalized, normalized)
 
+
+def normalize_sa_scope(value: str | None) -> str:
+    raw = str(value or "full").strip()
+    if not raw:
+        return "full"
+    lowered = raw.lower()
+    alias = {
+        "full": "full",
+        "전체": "full",
+        "ad_only": "ad_only",
+        "소재만": "ad_only",
+    }
+    if raw in alias:
+        return alias[raw]
+    if lowered in alias:
+        return alias[lowered]
+    raise ValueError(f"sa_scope 값이 올바르지 않습니다: {value} (허용: full, ad_only, 전체, 소재만)")
+
+
+def label_sa_scope(value: str | None) -> str:
+    normalized = normalize_sa_scope(value)
+    return {
+        "full": "전체",
+        "ad_only": "소재만",
+    }.get(normalized, normalized)
+
+
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -181,7 +208,7 @@ def _df_state(df: pd.DataFrame | None) -> tuple[str, int]:
     return ("empty" if rows == 0 else "ok"), rows
 
 
-def _new_account_collect_result(customer_id: str, account_name: str, target_date: date, collect_mode: str, skip_dim: bool, fast_mode: bool, shopping_only: bool) -> Dict[str, Any]:
+def _new_account_collect_result(customer_id: str, account_name: str, target_date: date, collect_mode: str, sa_scope: str, skip_dim: bool, fast_mode: bool, shopping_only: bool) -> Dict[str, Any]:
     return {
         "customer_id": str(customer_id),
         "account_name": str(account_name),
@@ -190,6 +217,8 @@ def _new_account_collect_result(customer_id: str, account_name: str, target_date
         "error": "",
         "collect_mode": str(collect_mode or "sa_with_device"),
         "collect_mode_label": label_collect_mode(collect_mode),
+        "sa_scope": str(sa_scope or "full"),
+        "sa_scope_label": label_sa_scope(sa_scope),
         "collect_sa": False,
         "collect_device": False,
         "skip_dim": bool(skip_dim),
@@ -246,7 +275,7 @@ def _markdown_escape(value: Any) -> str:
     return s.replace("|", "\\|").replace("\n", " ").strip()
 
 
-def emit_collection_run_summary(results: List[Dict[str, Any]], target_date: date, collect_mode: str, shopping_only: bool = False):
+def emit_collection_run_summary(results: List[Dict[str, Any]], target_date: date, collect_mode: str, shopping_only: bool = False, sa_scope: str = "full"):
     rows = [r for r in (results or []) if isinstance(r, dict)]
     if not rows:
         log("📊 실행 요약을 생성할 결과가 없습니다.")
@@ -263,7 +292,7 @@ def emit_collection_run_summary(results: List[Dict[str, Any]], target_date: date
 
     log("=" * 72)
     log(
-        f"📊 수집 실행 요약 | 대상일={target_date} | 모드={label_collect_mode(collect_mode)} | "
+        f"📊 수집 실행 요약 | 대상일={target_date} | 모드={label_collect_mode(collect_mode)} | 범위={label_sa_scope(sa_scope)} | "
         f"정상={ok_cnt} | 0건={zero_cnt} | 오류={err_cnt} | 건너뜀={skip_cnt} | "
         f"실시간대체={fallback_cnt} | split성공={split_ok_cnt} | PC/M성공={device_ok_cnt}"
     )
@@ -316,6 +345,7 @@ def emit_collection_run_summary(results: List[Dict[str, Any]], target_date: date
         "",
         f"- 수집 모드: **{_markdown_escape(label_collect_mode(collect_mode))}**",
         f"- 쇼핑검색 전용: **{'예' if shopping_only else '아니오'}**",
+        f"- 검색광고 수집 범위: **{_markdown_escape(label_sa_scope(sa_scope))}**",
         f"- 대상 계정: **{total}개**",
         f"- 정상 {ok_cnt} / 0건 {zero_cnt} / 오류 {err_cnt} / 건너뜀 {skip_cnt}",
         f"- 실시간 대체 {fallback_cnt} / split 성공 {split_ok_cnt} / PC/M 성공 {device_ok_cnt}",
@@ -2910,6 +2940,19 @@ def _resolve_split_payload(
     return camp_map, kw_map, ad_map, shop_query_rows, split_report_ok
 
 
+def _is_ad_only_scope(sa_scope: str) -> bool:
+    return normalize_sa_scope(sa_scope) == "ad_only"
+
+
+def _scope_enabled_collectors(sa_scope: str, collect_sa: bool) -> tuple[bool, bool, bool]:
+    if not collect_sa:
+        return False, False, False
+    scope = normalize_sa_scope(sa_scope)
+    if scope == "ad_only":
+        return False, False, True
+    return True, True, True
+
+
 def _save_report_stats_and_breakdowns(
     engine: Engine,
     *,
@@ -2918,6 +2961,7 @@ def _save_report_stats_and_breakdowns(
     target_date: date,
     collect_sa: bool,
     collect_device: bool,
+    sa_scope: str,
     shopping_only: bool,
     target_camp_ids: List[str],
     target_kw_ids: List[str],
@@ -2930,12 +2974,16 @@ def _save_report_stats_and_breakdowns(
     ad_map: Dict[str, Dict[str, Any]],
     result: Dict[str, Any],
 ) -> Tuple[int, int, int, int, int, int, Dict[str, Any]]:
-    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map, scoped_replace=shopping_only) if collect_sa else 0
-    if shopping_only and target_kw_ids:
-        clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
-        k_cnt = 0
+    collect_campaign_stats, collect_keyword_stats, collect_ad_stats = _scope_enabled_collectors(sa_scope, collect_sa)
+    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map, scoped_replace=shopping_only) if collect_campaign_stats else 0
+    if collect_keyword_stats:
+        if shopping_only and target_kw_ids:
+            clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
+            k_cnt = 0
+        else:
+            k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if not SKIP_KEYWORD_STATS else 0
     else:
-        k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
+        k_cnt = 0
 
     device_ad_cnt = 0
     device_campaign_cnt = 0
@@ -2945,7 +2993,7 @@ def _save_report_stats_and_breakdowns(
 
     if not SKIP_AD_STATS:
         if ad_report_df is not None and not ad_report_df.empty:
-            if collect_sa:
+            if collect_ad_stats:
                 a_cnt = fetch_stats_fallback(
                     engine,
                     customer_id,
@@ -3024,7 +3072,7 @@ def _save_report_stats_and_breakdowns(
                     f"status={device_meta.get('status')} | parser={DEVICE_PARSER_VERSION}{extra_msg}"
                 )
         else:
-            if collect_sa:
+            if collect_ad_stats:
                 log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
                 a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map, scoped_replace=shopping_only)
             else:
@@ -3344,10 +3392,10 @@ def _finalize_account_result(
             if collect_device:
                 mode_msg += " + PC/M"
             log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
-def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
+def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", sa_scope: str = "full", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
-    result = _new_account_collect_result(customer_id, account_name, target_date, collect_mode, skip_dim, fast_mode, shopping_only)
+    result = _new_account_collect_result(customer_id, account_name, target_date, collect_mode, sa_scope, skip_dim, fast_mode, shopping_only)
     stage = "init"
     result["stage"] = stage
     job_lock = acquire_job_lock(engine, customer_id, target_date)
@@ -3361,10 +3409,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         stage = "normalize_collect_mode"
         result["stage"] = stage
         collect_mode = (collect_mode or "sa_with_device").strip().lower()
+        sa_scope = normalize_sa_scope(sa_scope)
         collect_sa = collect_mode in {"sa_only", "sa_with_device"}
         collect_device = collect_mode in {"device_only", "sa_with_device"}
         result["collect_mode"] = collect_mode
         result["collect_mode_label"] = label_collect_mode(collect_mode)
+        result["sa_scope"] = sa_scope
+        result["sa_scope_label"] = label_sa_scope(sa_scope)
         result["collect_sa"] = collect_sa
         result["collect_device"] = collect_device
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
@@ -3449,15 +3500,19 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         stage = "save_realtime_fallback" if use_realtime_fallback else "resolve_split_payload"
         result["stage"] = stage
         if use_realtime_fallback:
+            collect_campaign_stats, collect_keyword_stats, collect_ad_stats = _scope_enabled_collectors(sa_scope, collect_sa)
             if collect_sa:
-                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", scoped_replace=shopping_only)
-                if shopping_only and target_kw_ids:
-                    clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
-                    k_cnt = 0
+                c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", scoped_replace=shopping_only) if collect_campaign_stats else 0
+                if collect_keyword_stats:
+                    if shopping_only and target_kw_ids:
+                        clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
+                        k_cnt = 0
+                    else:
+                        k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", scoped_replace=shopping_only) if not SKIP_KEYWORD_STATS else 0
                 else:
-                    k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", scoped_replace=shopping_only) if not SKIP_KEYWORD_STATS else 0
-                a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", scoped_replace=shopping_only) if not SKIP_AD_STATS else 0
-                log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+                    k_cnt = 0
+                a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", scoped_replace=shopping_only) if (collect_ad_stats and not SKIP_AD_STATS) else 0
+                log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt}) | 범위={label_sa_scope(sa_scope)}")
             else:
                 log(f"   ℹ️ [ {account_name} ] 당일/실시간 모드에서는 PC/M 전용 수집을 수행하지 않습니다.")
             device_ad_cnt = 0
@@ -3497,6 +3552,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 target_date=target_date,
                 collect_sa=collect_sa,
                 collect_device=collect_device,
+                sa_scope=sa_scope,
                 shopping_only=shopping_only,
                 target_camp_ids=target_camp_ids,
                 target_kw_ids=target_kw_ids,
@@ -3510,7 +3566,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 result=result,
             )
 
-            if collect_sa:
+            if collect_sa and not _is_ad_only_scope(sa_scope):
                 stage = "save_shopping_query_split"
                 result["stage"] = stage
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
@@ -3559,6 +3615,7 @@ def build_main_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fast", action="store_true", help="빠른 수집 모드: skip_dim 강제, debug 저장 및 live keyword API fallback 비활성화")
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--collect_mode", type=str, default="sa_with_device", help="sa_only/device_only/sa_with_device 또는 검색광고 전체만/기기만/검색광고 전체+기기")
+    parser.add_argument("--sa_scope", type=str, default="full", help="full/ad_only 또는 전체/소재만")
     parser.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/재적재")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
     return parser
@@ -3577,6 +3634,7 @@ def emit_main_run_banner(target_date: date, args: argparse.Namespace):
     if FAST_MODE:
         print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
     print(f"🧭 수집 모드: {label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
+    print(f"🎯 검색광고 수집 범위: {label_sa_scope(args.sa_scope)} ({args.sa_scope})", flush=True)
     if args.shopping_only:
         print("🛍️ 쇼핑검색 전용 수집", flush=True)
     print("=" * 50 + "\n", flush=True)
@@ -3698,6 +3756,8 @@ def build_future_error_result(error: Exception, target_date: date, args: argpars
         "error": str(error),
         "collect_mode": args.collect_mode,
         "collect_mode_label": label_collect_mode(args.collect_mode),
+        "sa_scope": args.sa_scope,
+        "sa_scope_label": label_sa_scope(args.sa_scope),
         "collect_sa": args.collect_mode in {"sa_only", "sa_with_device"},
         "collect_device": args.collect_mode in {"device_only", "sa_with_device"},
         "shopping_only": bool(args.shopping_only),
@@ -3731,6 +3791,7 @@ def run_account_collection_tasks(engine: Engine, accounts_info: List[Dict[str, s
                 args.skip_dim,
                 args.fast,
                 args.collect_mode,
+                args.sa_scope,
                 args.shopping_only,
             )
             for acc in accounts_info
@@ -3749,6 +3810,7 @@ def main():
 
     try:
         args.collect_mode = normalize_collect_mode(args.collect_mode)
+        args.sa_scope = normalize_sa_scope(args.sa_scope)
     except ValueError as e:
         parser.error(str(e))
 
@@ -3776,7 +3838,7 @@ def main():
 
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
     results = run_account_collection_tasks(engine, accounts_info, target_date, args)
-    emit_collection_run_summary(results, target_date, args.collect_mode, args.shopping_only)
+    emit_collection_run_summary(results, target_date, args.collect_mode, args.shopping_only, args.sa_scope)
 
 
 if __name__ == "__main__":
