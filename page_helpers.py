@@ -21,16 +21,31 @@ TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
+def _all_customer_ids(meta: pd.DataFrame) -> list:
+    if meta is None or meta.empty or "customer_id" not in meta.columns:
+        return []
+    s = pd.to_numeric(meta["customer_id"], errors="coerce").dropna().astype("int64")
+    return sorted(s.drop_duplicates().tolist())
+
+
 def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
-    if meta is None or meta.empty: return []
+    if meta is None or meta.empty:
+        return []
+
+    manager_sel = [str(x).strip() for x in (manager_sel or []) if str(x).strip()]
+    account_sel = [str(x).strip() for x in (account_sel or []) if str(x).strip()]
+
+    # 아무 것도 선택하지 않았으면 전체 계정을 반환한다.
+    if not manager_sel and not account_sel:
+        return _all_customer_ids(meta)
+
     df = meta.copy()
     if manager_sel and "manager" in df.columns:
-        sel = [str(x).strip() for x in manager_sel if str(x).strip()]
-        if sel: df = df[df["manager"].astype(str).str.strip().isin(sel)]
+        df = df[df["manager"].astype(str).str.strip().isin(manager_sel)]
     if account_sel and "account_name" in df.columns:
-        sel = [str(x).strip() for x in account_sel if str(x).strip()]
-        if sel: df = df[df["account_name"].astype(str).str.strip().isin(sel)]
-    if "customer_id" not in df.columns: return []
+        df = df[df["account_name"].astype(str).str.strip().isin(account_sel)]
+    if "customer_id" not in df.columns:
+        return []
     s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
     return sorted(s.drop_duplicates().tolist())
 
@@ -93,9 +108,9 @@ def _normalize_filter_state(values: Dict) -> Dict:
     out["manager"] = list(out.get("manager", []) or [])
     out["account"] = list(out.get("account", []) or [])
     out["type_sel"] = list(out.get("type_sel", []) or [])
-    out["top_n_campaign"] = int(out.get("top_n_campaign", 100) or 100)
-    out["top_n_keyword"] = int(out.get("top_n_keyword", 150) or 150)
-    out["top_n_ad"] = int(out.get("top_n_ad", 100) or 100)
+    out["top_n_campaign"] = int(out.get("top_n_campaign", 200) or 200)
+    out["top_n_keyword"] = int(out.get("top_n_keyword", 300) or 300)
+    out["top_n_ad"] = int(out.get("top_n_ad", 200) or 200)
     return out
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
@@ -107,7 +122,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.session_state["filters_v8"] = {
             "q": "", "manager": [], "account": [], "type_sel": [],
             "period_mode": "어제", "d1": default_start, "d2": default_end,
-            "top_n_campaign": 100, "top_n_keyword": 150, "top_n_ad": 100, "prefetch_warm": True,
+            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True,
         }
     sv = st.session_state["filters_v8"]
 
@@ -192,9 +207,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
             st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
-            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 100)), step=50, key="f_top_n_campaign")
-            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 150)), step=50, key="f_top_n_keyword")
-            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 100)), step=50, key="f_top_n_ad")
+            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
+            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
+            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
 
         st.caption("필터 변경 시 즉시 반영됩니다.")
 
@@ -209,11 +224,13 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     st.session_state["filters_v8"] = sv
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
+    if not cids and not (manager_sel or account_sel):
+        cids = _all_customer_ids(meta)
 
     return {
         "q": sv["q"], "manager": sv["manager"], "account": sv["account"], "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
         "start": d1, "end": d2, "period_mode": period_mode, "customer_ids": cids, "selected_customer_ids": cids,
-        "top_n_keyword": int(sv.get("top_n_keyword", 150)), "top_n_ad": int(sv.get("top_n_ad", 100)), "top_n_campaign": int(sv.get("top_n_campaign", 100)),
+        "top_n_keyword": int(sv.get("top_n_keyword", 300)), "top_n_ad": int(sv.get("top_n_ad", 200)), "top_n_campaign": int(sv.get("top_n_campaign", 200)),
         "ready": True,
     }
 
