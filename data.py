@@ -648,6 +648,13 @@ def _compute_total_ratio_metrics(row: dict) -> dict:
     row["wishlist_roas"] = (wishlist_sales / cost * 100) if cost > 0 else 0
     return row
 
+def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
+    return _query_budget_bundle_cached(
+        _engine,
+        _normalize_cache_tuple(cids),
+        yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, avg_days
+    )
+
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def _query_budget_bundle_cached(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
