@@ -421,10 +421,52 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 150))
 
-    kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), include_dt=True)
-    ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), top_k=50, include_dt=True)
+    selected_tab = st.pills("분석 탭 선택", ["종합 성과", "기간 비교"], default="종합 성과")
+
+    if selected_tab == "기간 비교":
+        kw_bundle = query_keyword_bundle(
+            engine,
+            f["start"],
+            f["end"],
+            list(cids),
+            type_sel,
+            topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=False),
+            include_dt=False,
+        )
+        ad_bundle = query_ad_bundle(
+            engine,
+            f["start"],
+            f["end"],
+            cids,
+            type_sel,
+            topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=False),
+            top_k=50,
+            include_dt=False,
+        )
+    else:
+        kw_bundle = query_keyword_bundle(
+            engine,
+            f["start"],
+            f["end"],
+            list(cids),
+            type_sel,
+            topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True),
+            include_dt=True,
+        )
+        ad_bundle = query_ad_bundle(
+            engine,
+            f["start"],
+            f["end"],
+            cids,
+            type_sel,
+            topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True),
+            top_k=50,
+            include_dt=True,
+        )
+
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
 
-    selected_tab = st.pills("분석 탭 선택", ["종합 성과", "기간 비교"], default="종합 성과")
-    if selected_tab == "종합 성과": render_keyword_main(view, top_n)
-    elif selected_tab == "기간 비교": render_keyword_cmp(view, engine, cids, type_sel, top_n, f["start"], f["end"])
+    if selected_tab == "종합 성과":
+        render_keyword_main(view, top_n)
+    elif selected_tab == "기간 비교":
+        render_keyword_cmp(view, engine, cids, type_sel, top_n, f["start"], f["end"])

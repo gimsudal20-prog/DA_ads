@@ -26,18 +26,6 @@ FMT_DICT = {
     "ROAS(%)": "{:,.1f}%", "ROAS 증감": "{:+.1f}%"
 }
 
-
-def _ad_fetch_limit(top_n: int, compare_mode: bool = False) -> int:
-    try:
-        top_n = int(top_n or 0)
-    except Exception:
-        top_n = 0
-    top_n = max(top_n, 1)
-    base_limit = min(max(top_n * 3, 300), 1000)
-    if compare_mode:
-        return min(max(top_n * 4, 400), 1200)
-    return base_limit
-
 def _style_delta_numeric(val):
     try: v = float(val)
     except: return ''
@@ -190,6 +178,17 @@ FAST_AD_CONFIG = {
     "CVR(%)": st.column_config.NumberColumn("CVR(%)", format="%.2f %%"),
 }
 
+
+def _ad_fetch_limit(top_n: int, compare: bool = False) -> int:
+    try:
+        top_n = int(top_n or 0)
+    except Exception:
+        top_n = 0
+    top_n = max(top_n, 1)
+    if compare:
+        return min(max(top_n * 4, 400), 1200)
+    return min(max(top_n * 3, 300), 1000)
+
 def _render_ad_sticky_table(df, first_col: str, height: int = 500, col_config: dict = None):
     try:
         rows = len(df.index)
@@ -274,7 +273,7 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     st.markdown("</div>", unsafe_allow_html=True)
 
     b1, b2 = period_compare_range(start_dt, end_dt, cmp_mode)
-    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=_ad_fetch_limit(top_n, compare_mode=True), top_k=50)
+    base_ad_bundle = query_ad_bundle(engine, b1, b2, cids, type_sel, topn_cost=_ad_fetch_limit(top_n, compare=True), top_k=50)
 
     df_target = view[view["캠페인유형"] == "파워링크"].copy() if "파워링크" in cmp_sub_mode else view[view["캠페인유형"] == "쇼핑검색"].copy()
     df_target = _filter_by_ad_kind(df_target, ad_kind_cmp)
@@ -335,14 +334,22 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_ad", 100))
-    bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_ad_fetch_limit(top_n, compare_mode=False), top_k=50)
+    selected_tab = st.pills("분석 탭 선택", ["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"], default="파워링크")
+
+    bundle = query_ad_bundle(
+        engine,
+        f["start"],
+        f["end"],
+        cids,
+        type_sel,
+        topn_cost=_ad_fetch_limit(top_n, compare=(selected_tab == "기간 비교")),
+        top_k=50,
+    )
 
     view = compute_ad_view(bundle, meta)
     if view.empty:
         st.info("해당 기간에 분석할 유효한 광고 소재(카피) 데이터가 없습니다.")
         return
-
-    selected_tab = st.pills("분석 탭 선택", ["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"], default="파워링크")
 
     if selected_tab == "파워링크":
         df_pl = view[view["캠페인유형"] == "파워링크"].copy()
@@ -350,16 +357,16 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
         if ad_kind:
             df_pl = _filter_by_ad_kind(df_pl, ad_kind)
             _render_ad_tab(df_pl, f"파워링크 ({ad_kind})", top_n, f["start"], f["end"])
-            
+
     elif selected_tab == "쇼핑검색":
         df_shop = view[view["캠페인유형"] == "쇼핑검색"].copy()
         ad_kind = st.segmented_control("소재 유형 필터", ["일반 소재", "확장소재"], default="확장소재", key="shop_ad_kind")
         if ad_kind:
             df_shop = _filter_by_ad_kind(df_shop, ad_kind)
             _render_ad_tab(df_shop, f"쇼핑검색 ({ad_kind})", top_n, f["start"], f["end"])
-            
-    elif selected_tab == "랜딩페이지 효율": 
+
+    elif selected_tab == "랜딩페이지 효율":
         render_landing_tab(view)
-        
-    elif selected_tab == "기간 비교": 
+
+    elif selected_tab == "기간 비교":
         render_ad_cmp_tab(view, engine, cids, type_sel, top_n, f["start"], f["end"])
