@@ -15,6 +15,7 @@ import re
 import csv
 import threading
 import concurrent.futures
+import traceback
 from urllib.parse import urlparse
 from pathlib import Path
 from datetime import datetime, date, timedelta
@@ -100,6 +101,60 @@ def label_collect_mode(value: str | None) -> str:
 def log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+
+def _exc_label(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _traceback_tail(exc: Exception, limit: int = 3) -> str:
+    try:
+        lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    except Exception:
+        return ""
+    flat = [ln.strip() for part in lines for ln in str(part).splitlines() if ln.strip()]
+    return " | ".join(flat[-limit:])
+
+
+def _safe_rollback(raw_conn, *, ctx: str = ""):
+    if not raw_conn:
+        return
+    try:
+        raw_conn.rollback()
+    except Exception as rollback_exc:
+        extra = f" | {ctx}" if ctx else ""
+        log(f"⚠️ 롤백 실패{extra} | {_exc_label(rollback_exc)}")
+
+
+def _safe_close(resource, *, label: str, ctx: str = ""):
+    if not resource:
+        return
+    try:
+        resource.close()
+    except Exception as close_exc:
+        extra = f" | {ctx}" if ctx else ""
+        log(f"⚠️ {label} close 실패{extra} | {_exc_label(close_exc)}")
+
+
+def _log_retry_failure(action: str, attempt: int, total: int, exc: Exception, *, ctx: str = ""):
+    extra = f" | {ctx}" if ctx else ""
+    log(f"⚠️ {action} 실패 {attempt}/{total}{extra} | {_exc_label(exc)}")
+
+
+def _log_best_effort_failure(action: str, exc: Exception, *, ctx: str = ""):
+    extra = f" | {ctx}" if ctx else ""
+    log(f"⚠️ {action} 무시됨{extra} | {_exc_label(exc)}")
+
+
+def _raise_retry_failure(action: str, exc: Exception | None, *, ctx: str = ""):
+    msg = f"{action} 최종 실패"
+    if ctx:
+        msg += f" | {ctx}"
+    if exc is not None:
+        msg += f" | {_exc_label(exc)}"
+        raise RuntimeError(msg) from exc
+    raise RuntimeError(msg)
+
+
 DEBUG_DIR = Path(os.getenv("DEBUG_REPORT_DIR", "debug_reports"))
 
 def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
@@ -112,8 +167,8 @@ def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = DEBUG_DIR / f"{ts}_{customer_id}_{tp}_{job_id}.txt"
         fname.write_text(content or "", encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        _log_best_effort_failure("debug report 저장", e, ctx=f"tp={tp} customer_id={customer_id}")
 
 
 def _df_state(df: pd.DataFrame | None) -> tuple[str, int]:
@@ -347,8 +402,10 @@ def request_json(method: str, path: str, customer_id: str, params: dict | None =
                 time.sleep(2 + attempt + random.uniform(0.1, 1.5))
                 continue
             data = None
-            try: data = r.json()
-            except Exception: data = r.text
+            try:
+                data = r.json()
+            except ValueError:
+                data = r.text
             if raise_error and r.status_code >= 400:
                 raise requests.HTTPError(f"{r.status_code} Error: {data}", response=r)
             return r.status_code, data
@@ -362,7 +419,8 @@ def safe_call(method: str, path: str, customer_id: str, params: dict | None = No
     try:
         _, data = request_json(method, path, customer_id, params=params, raise_error=True)
         return True, data
-    except Exception:
+    except Exception as e:
+        _log_best_effort_failure("safe_call", e, ctx=f"method={method} path={path} customer_id={customer_id}")
         return False, None
 
 def lock_key_for_job(customer_id: str, target_date: date, scope: str = "collector_daily") -> int:
@@ -382,28 +440,14 @@ def acquire_job_lock(engine: Engine, customer_id: str, target_date: date):
         row = cur.fetchone()
         locked = bool(row[0]) if row else False
         if not locked:
-            try:
-                cur.close()
-            except Exception:
-                pass
-            try:
-                raw_conn.close()
-            except Exception:
-                pass
+            _safe_close(cur, label="cursor", ctx=f"lock customer_id={customer_id}")
+            _safe_close(raw_conn, label="connection", ctx=f"lock customer_id={customer_id}")
             return False
         return raw_conn
     except Exception as e:
         log(f"⚠️ 락 획득 실패 - 무락 모드로 진행합니다: {e}")
-        try:
-            if cur:
-                cur.close()
-        except Exception:
-            pass
-        try:
-            if raw_conn:
-                raw_conn.close()
-        except Exception:
-            pass
+        _safe_close(cur, label="cursor", ctx=f"lock customer_id={customer_id}")
+        _safe_close(raw_conn, label="connection", ctx=f"lock customer_id={customer_id}")
         return None
 
 def release_job_lock(raw_conn, customer_id: str, target_date: date):
@@ -414,21 +458,15 @@ def release_job_lock(raw_conn, customer_id: str, target_date: date):
         cur = raw_conn.cursor()
         lk = lock_key_for_job(customer_id, target_date)
         cur.execute("SELECT pg_advisory_unlock(%s)", (lk,))
-    except Exception:
-        pass
+    except Exception as e:
+        _log_best_effort_failure("advisory unlock", e, ctx=f"customer_id={customer_id} target_date={target_date}")
     finally:
-        try:
-            if cur:
-                cur.close()
-        except Exception:
-            pass
-        try:
-            raw_conn.close()
-        except Exception:
-            pass
+        _safe_close(cur, label="cursor", ctx=f"unlock customer_id={customer_id}")
+        _safe_close(raw_conn, label="connection", ctx=f"unlock customer_id={customer_id}")
 
 def get_engine() -> Engine:
-    if not DB_URL: return create_engine("sqlite:///:memory:", future=True)
+    if not DB_URL:
+        raise RuntimeError("DATABASE_URL이 설정되지 않았습니다. collector.py는 실제 DB 연결이 필요합니다.")
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return create_engine(
@@ -442,7 +480,11 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
     try:
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}"))
-    except Exception: pass
+    except Exception as e:
+        msg = str(e).lower()
+        if "already exists" in msg or "duplicate column" in msg:
+            return
+        _log_best_effort_failure("ensure_column", e, ctx=f"table={table} column={column}")
 
 def ensure_tables(engine: Engine):
     for attempt in range(3):
@@ -536,7 +578,8 @@ def ensure_tables(engine: Engine):
                 raise e
 
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
-    if not rows: return
+    if not rows:
+        return
     df = pd.DataFrame(rows).drop_duplicates(subset=pk_cols, keep='last').sort_values(by=pk_cols).astype(object).where(pd.notnull, None)
     cols = list(df.columns)
     update_cols = [c for c in cols if c not in pk_cols]
@@ -544,44 +587,50 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     pk_str = ", ".join([f'"{c}"' for c in pk_cols])
     conflict_clause = f'ON CONFLICT ({pk_str}) DO UPDATE SET ' + ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in update_cols]) if update_cols else f'ON CONFLICT ({pk_str}) DO NOTHING'
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
-    
+
     tuples = list(df.itertuples(index=False, name=None))
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} rows={len(tuples)} pk={pk_cols}"
+    for attempt in range(1, 4):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
-            break
+            return
         except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+            last_err = e
+            _safe_rollback(raw_conn, ctx=ctx)
+            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
             time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+            _safe_close(cur, label="cursor", ctx=ctx)
+            _safe_close(raw_conn, label="connection", ctx=ctx)
+    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
 
 def clear_fact_range(engine: Engine, table: str, customer_id: str, d1: date):
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} cid={customer_id} dt={d1}"
+    for attempt in range(1, 4):
         try:
             with engine.begin() as conn:
                 conn.execute(text(f"DELETE FROM {table} WHERE customer_id=:cid AND dt = :dt"), {"cid": str(customer_id), "dt": d1})
             return
-        except Exception:
+        except Exception as e:
+            last_err = e
+            _log_retry_failure("fact 범위 삭제", attempt, 3, e, ctx=ctx)
             time.sleep(3)
+    _raise_retry_failure("fact 범위 삭제", last_err, ctx=ctx)
+
 
 def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk: str, ids: List[str]):
     ids = [str(x).strip() for x in (ids or []) if str(x).strip()]
     if not ids:
         return
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} cid={customer_id} dt={d1} pk={pk} ids={len(ids)}"
+    for attempt in range(1, 4):
         try:
             with engine.begin() as conn:
                 conn.execute(
@@ -589,8 +638,11 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1: date, pk:
                     {"cid": str(customer_id), "dt": d1, "ids": ids},
                 )
             return
-        except Exception:
+        except Exception as e:
+            last_err = e
+            _log_retry_failure("fact 범위 삭제(scope)", attempt, 3, e, ctx=ctx)
             time.sleep(3)
+    _raise_retry_failure("fact 범위 삭제(scope)", last_err, ctx=ctx)
 
 def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     clear_fact_range(engine, table, customer_id, d1)
@@ -612,27 +664,25 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} rows={len(tuples)}"
+    for attempt in range(1, 4):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
-            break
+            return
         except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+            last_err = e
+            _safe_rollback(raw_conn, ctx=ctx)
+            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
             time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+            _safe_close(cur, label="cursor", ctx=ctx)
+            _safe_close(raw_conn, label="connection", ctx=ctx)
+    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
 
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1: date):
     table = "fact_shopping_query_daily"
@@ -655,27 +705,25 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} rows={len(tuples)}"
+    for attempt in range(1, 4):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
-            break
+            return
         except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+            last_err = e
+            _safe_rollback(raw_conn, ctx=ctx)
+            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
             time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+            _safe_close(cur, label="cursor", ctx=ctx)
+            _safe_close(raw_conn, label="connection", ctx=ctx)
+    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
 
 def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1: date, pk: str, ids: List[str]):
     clear_fact_scope(engine, table, customer_id, d1, pk, ids)
@@ -696,27 +744,25 @@ def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    for attempt in range(3):
+    last_err: Exception | None = None
+    ctx = f"table={table} rows={len(tuples)}"
+    for attempt in range(1, 4):
         raw_conn, cur = None, None
         try:
             raw_conn = engine.raw_connection()
             cur = raw_conn.cursor()
             psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
             raw_conn.commit()
-            break
+            return
         except Exception as e:
-            if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+            last_err = e
+            _safe_rollback(raw_conn, ctx=ctx)
+            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
             time.sleep(3)
-            if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+            _safe_close(cur, label="cursor", ctx=ctx)
+            _safe_close(raw_conn, label="connection", ctx=ctx)
+    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
 
 
 def filter_stat_result(stat_res: dict, allowed_ids: set[str] | None) -> dict:
@@ -1558,7 +1604,8 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             if not kw_obj_id and live_keyword_resolver:
                 try:
                     kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
-                except Exception:
+                except Exception as e:
+                    _log_best_effort_failure("live keyword resolve", e, ctx=f"row_gid={row_gid} kw_text={kw_text[:40]}")
                     kw_obj_id = ""
         if kw_obj_id:
             apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
@@ -1673,8 +1720,8 @@ def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id
             if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
                 try:
                     numeric_right.append((j, float(s)))
-                except Exception:
-                    pass
+                except ValueError:
+                    continue
         if not numeric_right:
             continue
 
@@ -2512,10 +2559,281 @@ def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_r
 
     return replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types), {'status': 'empty'}
 
+def _resolve_split_payload(
+    dfs: Dict[str, pd.DataFrame | None],
+    *,
+    collect_sa: bool,
+    target_date: date,
+    shopping_only: bool,
+    shopping_campaign_ids: set[str],
+    shopping_keyword_ids: set[str],
+    keyword_lookup: Dict[Tuple[str, str], str],
+    keyword_unique_lookup: Dict[str, List[Tuple[str, str]]],
+    live_keyword_resolver,
+    account_name: str,
+    customer_id: str,
+    result: Dict[str, Any],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], List[Dict[str, Any]], bool]:
+    camp_map: Dict[str, Dict[str, Any]] = {}
+    kw_map: Dict[str, Dict[str, Any]] = {}
+    ad_map: Dict[str, Dict[str, Any]] = {}
+    shop_query_rows: List[Dict[str, Any]] = []
+    split_report_ok = False
+
+    if not collect_sa:
+        return camp_map, kw_map, ad_map, shop_query_rows, split_report_ok
+
+    if not split_enabled_for_date(target_date):
+        log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart/wishlist 분리 수집을 시도하지 않습니다.")
+        return camp_map, kw_map, ad_map, shop_query_rows, split_report_ok
+
+    if not shopping_campaign_ids:
+        log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
+        return camp_map, kw_map, ad_map, shop_query_rows, split_report_ok
+
+    source_maps: Dict[str, Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]] = {}
+    report_candidates = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
+    for tp in report_candidates:
+        conv_df = dfs.get(tp)
+        if conv_df is None:
+            log(f"   ⚠️ [ {account_name} ] {tp} 리포트 실패 → 다음 전환 리포트로 진행합니다.")
+            continue
+        if conv_df.empty:
+            log(f"   ℹ️ [ {account_name} ] {tp} 리포트가 비어 있습니다. purchase/cart/wishlist 는 미확정(NULL)로 유지합니다.")
+            continue
+
+        report_allowed_campaign_ids = None
+        one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
+            conv_df,
+            allowed_campaign_ids=report_allowed_campaign_ids,
+            report_hint=tp,
+            keyword_lookup=keyword_lookup,
+            keyword_unique_lookup=keyword_unique_lookup,
+            live_keyword_resolver=live_keyword_resolver,
+            debug_account_name=account_name,
+            debug_target_date=str(target_date),
+        )
+
+        if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
+            log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
+            continue
+
+        source_maps[tp] = (one_camp_map, one_kw_map, one_ad_map, one_summary)
+
+    ad_conv_maps = source_maps.get("AD_CONVERSION", ({}, {}, {}, empty_split_summary()))
+    shop_kw_maps = source_maps.get("SHOPPINGKEYWORD_CONVERSION_DETAIL", ({}, {}, {}, empty_split_summary()))
+
+    ad_camp_map, ad_kw_map, ad_ad_map, ad_summary = ad_conv_maps
+    shop_camp_map, shop_kw_map, shop_ad_map, shop_summary = shop_kw_maps
+
+    shop_query_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL")
+    if shop_query_df is not None and not shop_query_df.empty:
+        try:
+            shop_query_rows = parse_shopping_query_report(shop_query_df, target_date, customer_id)
+        except Exception as _e:
+            log(f"   ⚠️ [ {account_name} ] 쇼핑검색어 분리 저장 파싱 실패: {_e}")
+            shop_query_rows = []
+
+    camp_map = ad_camp_map if ad_camp_map else shop_camp_map
+    ad_map = ad_ad_map if ad_ad_map else shop_ad_map
+    raw_kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
+    if shopping_only:
+        kw_map = {}
+    else:
+        kw_map = filter_split_map_excluding_ids(raw_kw_map, shopping_keyword_ids)
+        removed_kw = max(0, len(raw_kw_map) - len(kw_map))
+        if removed_kw:
+            log(f"   ℹ️ [ {account_name} ] 쇼핑 키워드 split {removed_kw}건은 fact_keyword_daily 적재에서 제외합니다.")
+
+    split_report_ok = bool(camp_map or kw_map or ad_map)
+
+    final_split_summary = ad_summary if split_summary_has_values(ad_summary) else shop_summary
+    if shopping_only and split_report_ok and split_summary_has_values(final_split_summary):
+        split_ok, split_reason = validate_shopping_split_summary(final_split_summary, ad_map)
+        if not split_ok:
+            log(f"   ⚠️ [ {account_name} ] shopping split 검증 실패 → 상세 split 저장을 건너뛰고 총합만 적재합니다. ({split_reason})")
+            camp_map, kw_map, ad_map = {}, {}, {}
+            shop_query_rows = []
+            stage = "resolve_split_payload"
+            result["stage"] = stage
+            split_report_ok = False
+
+    if split_report_ok:
+        camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
+        kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
+        summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
+        query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
+        result["split_source"] = f"summary={summary_src},campaign/ad={camp_ad_src},keyword={kw_src},query={query_src}"
+        log(
+            f"   ✅ [ {account_name} ] shopping split 원천 사용: "
+            f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}, query={query_src}"
+        )
+        if split_summary_has_values(final_split_summary):
+            log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
+
+    return camp_map, kw_map, ad_map, shop_query_rows, split_report_ok
+
+
+def _save_report_stats_and_breakdowns(
+    engine: Engine,
+    *,
+    customer_id: str,
+    account_name: str,
+    target_date: date,
+    collect_sa: bool,
+    collect_device: bool,
+    shopping_only: bool,
+    target_camp_ids: List[str],
+    target_kw_ids: List[str],
+    target_ad_ids: List[str],
+    ad_report_df: pd.DataFrame | None,
+    ad_to_campaign_map: Dict[str, str],
+    campaign_type_map: Dict[str, str],
+    camp_map: Dict[str, Dict[str, Any]],
+    kw_map: Dict[str, Dict[str, Any]],
+    ad_map: Dict[str, Dict[str, Any]],
+    result: Dict[str, Any],
+) -> Tuple[int, int, int, int, int, int, Dict[str, Any]]:
+    c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map, scoped_replace=shopping_only) if collect_sa else 0
+    if shopping_only and target_kw_ids:
+        clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
+        k_cnt = 0
+    else:
+        k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
+
+    device_ad_cnt = 0
+    device_campaign_cnt = 0
+    a_cnt = 0
+    ad_stat: Dict[str, Dict[str, Any]] = {}
+    camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    if not SKIP_AD_STATS:
+        if ad_report_df is not None and not ad_report_df.empty:
+            if collect_sa:
+                a_cnt = fetch_stats_fallback(
+                    engine,
+                    customer_id,
+                    target_date,
+                    target_ad_ids,
+                    "ad_id",
+                    "fact_ad_daily",
+                    split_map=ad_map,
+                    scoped_replace=shopping_only,
+                )
+                ad_stat = {}
+            else:
+                a_cnt = 0
+                ad_stat = {}
+
+            if collect_device:
+                ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
+                if shopping_only:
+                    ad_device_stat = filter_stat_result(ad_device_stat, set(target_ad_ids))
+                    camp_device_stat = filter_stat_result(camp_device_stat, set(target_camp_ids))
+            else:
+                ad_device_stat, camp_device_stat, device_meta = {}, {}, {"status": "disabled", "reason": "collect_mode=sa_only"}
+                result["device_status"] = "disabled"
+
+            if collect_device and device_meta.get("status") == "ok":
+                result["device_status"] = "ok"
+                result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
+                device_ad_cnt = save_device_stats(
+                    engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
+                    data_source="report_device_total_only", source_report="AD"
+                )
+                device_campaign_cnt = save_device_stats(
+                    engine, customer_id, target_date, "fact_campaign_device_daily", "campaign_id", camp_device_stat,
+                    data_source="report_device_total_only", source_report="AD"
+                )
+                if ad_stat:
+                    total_from_ad = {
+                        "imp": sum(int(v.get("imp", 0) or 0) for v in ad_stat.values()),
+                        "clk": sum(int(v.get("clk", 0) or 0) for v in ad_stat.values()),
+                        "cost": sum(int(v.get("cost", 0) or 0) for v in ad_stat.values()),
+                        "conv": sum(float(v.get("conv", 0.0) or 0.0) for v in ad_stat.values()),
+                        "sales": sum(int(v.get("sales", 0) or 0) for v in ad_stat.values()),
+                    }
+                    total_from_device = summarize_stat_res(ad_device_stat)
+                    diff_cost = total_from_ad["cost"] - total_from_device["cost"]
+                    diff_sales = total_from_ad["sales"] - total_from_device["sales"]
+                    diff_conv = round(total_from_ad["conv"] - total_from_device["conv"], 4)
+                    if diff_cost or diff_sales or diff_conv:
+                        log(
+                            f"   ⚠️ [ {account_name} ] PC/M 검증 차이 감지: cost={diff_cost}, sales={diff_sales}, conv={diff_conv} "
+                            f"(source_report=AD, device_rows={device_meta.get('ad_rows', 0)})"
+                        )
+                miss = int(device_meta.get("missing_campaign_rows", 0) or 0)
+                miss_msg = f", 캠페인 매핑누락={miss}건" if miss else ""
+                log(
+                    f"   ✅ [ {account_name} ] PC/M 분리 저장 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})"
+                    f"{miss_msg} | parser={DEVICE_PARSER_VERSION}"
+                )
+            elif collect_device:
+                result["device_status"] = str(device_meta.get("status") or "unknown")
+                result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
+                debug_keys = [
+                    "header_idx", "ad_idx", "camp_idx", "device_idx", "imp_idx", "clk_idx", "cost_idx",
+                    "conv_idx", "sales_idx", "rank_idx", "scan_rows", "reject_short", "reject_empty_ad",
+                    "reject_empty_device", "reject_zero_metrics", "sample_headers", "preview_rows"
+                ]
+                extra_parts = []
+                for _k in debug_keys:
+                    _v = device_meta.get(_k)
+                    if _v in (None, "", [], {}):
+                        continue
+                    extra_parts.append(f"{_k}={_v}")
+                extra_msg = f" | {' | '.join(extra_parts)}" if extra_parts else ""
+                log(
+                    f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. "
+                    f"status={device_meta.get('status')} | parser={DEVICE_PARSER_VERSION}{extra_msg}"
+                )
+        else:
+            if collect_sa:
+                log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
+                a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map, scoped_replace=shopping_only)
+            else:
+                log(f"   ℹ️ [ {account_name} ] AD 리포트가 없어 PC/M 전용 적재를 건너뜁니다.")
+                a_cnt = 0
+            if collect_device:
+                result["device_status"] = "ad_report_missing"
+    else:
+        a_cnt = 0
+        result["device_status"] = "not_requested"
+
+    media_cnt, media_meta = collect_media_fact(
+        engine, customer_id, target_date, ad_report_df, ad_to_campaign_map, campaign_type_map, camp_device_stat,
+        allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
+        scoped_campaign_types=['쇼핑검색'] if shopping_only else None,
+    )
+    detail_rows = int(media_meta.get('detail_rows', 0) or 0)
+    summary_rows = int(media_meta.get('summary_rows', 0) or 0)
+    result["media_rows_saved"] = int(media_cnt or 0)
+    result["media_source"] = str(media_meta.get('status') or 'unknown')
+    result["media_detail_rows"] = detail_rows
+    result["media_summary_rows"] = summary_rows
+    distinct_media_count = int(media_meta.get('distinct_media_count', 0) or 0)
+    media_preview = media_meta.get('distinct_media_preview') or []
+    preview_msg = f" | media_preview={media_preview}" if media_preview else ""
+    if media_cnt:
+        log(
+            f"   ✅ [ {account_name} ] 매체/지역/기기 저장 완료: total_rows={media_cnt} | detail_rows={detail_rows} | "
+            f"summary_rows={summary_rows} | media_codes={distinct_media_count} | source={media_meta.get('status')}{preview_msg}"
+        )
+    else:
+        log(
+            f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. "
+            f"source={media_meta.get('status')} | detail_rows={detail_rows} | summary_rows={summary_rows}"
+        )
+
+    return c_cnt, k_cnt, a_cnt, device_ad_cnt, device_campaign_cnt, media_cnt, media_meta
+
+
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
     result = _new_account_collect_result(customer_id, account_name, target_date, collect_mode, skip_dim, fast_mode, shopping_only)
+    stage = "init"
+    result["stage"] = stage
     job_lock = acquire_job_lock(engine, customer_id, target_date)
     if job_lock is False:
         result["status"] = "skipped"
@@ -2524,6 +2842,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         return result
 
     try:
+        stage = "normalize_collect_mode"
+        result["stage"] = stage
         collect_mode = (collect_mode or "sa_with_device").strip().lower()
         collect_sa = collect_mode in {"sa_only", "sa_with_device"}
         collect_device = collect_mode in {"device_only", "sa_with_device"}
@@ -2548,6 +2868,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         if shopping_only:
             log(f"   🛍️ [ {account_name} ] 쇼핑검색 전용 수집 모드")
 
+        stage = "load_dim_targets"
+        result["stage"] = stage
         if not skip_dim:
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
@@ -2667,6 +2989,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         result["ad_targets"] = len(target_ad_ids)
         result["shopping_campaign_targets"] = len(shopping_campaign_ids)
 
+        stage = "build_keyword_lookup"
+        result["stage"] = stage
         keyword_lookup = {}
         keyword_unique_lookup = {}
         try:
@@ -2699,12 +3023,15 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if kw_n and text_freq.get(kw_n) == 1:
                     unique_map.setdefault(kw_n, []).append(kid_s)
             keyword_unique_lookup = unique_map
-        except Exception:
+        except Exception as e:
+            _log_best_effort_failure("keyword lookup 빌드", e, ctx=f"customer_id={customer_id}")
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
         live_keyword_resolver = None if fast_mode else make_live_keyword_resolver(customer_id)
 
+        stage = "load_maps"
+        result["stage"] = stage
         ad_to_campaign_map = build_ad_to_campaign_map(engine, customer_id)
         campaign_type_map = build_campaign_type_map(engine, customer_id)
 
@@ -2714,6 +3041,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         dfs: Dict[str, pd.DataFrame | None] = {}
         split_candidate_reports: List[str] = []
 
+        stage = "fetch_reports"
+        result["stage"] = stage
         if target_date >= kst_now.date():
             use_realtime_fallback = True
             realtime_reason = "today"
@@ -2744,6 +3073,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         result["realtime_reason"] = realtime_reason
         result["split_attempted"] = bool(split_attempted)
 
+        stage = "save_realtime_fallback" if use_realtime_fallback else "resolve_split_payload"
+        result["stage"] = stage
         if use_realtime_fallback:
             if collect_sa:
                 c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", scoped_replace=shopping_only)
@@ -2768,228 +3099,47 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 log(f"   ✅ [ {account_name} ] 매체/지역/기기 요약 저장 완료: {media_cnt}건 | source={media_meta.get('status')}")
         else:
             split_report_ok = False
-            camp_map, kw_map, ad_map = {}, {}, {}
-            shop_query_rows: List[Dict[str, Any]] = []
             ad_report_df = dfs.get("AD")
-
-            if not collect_sa:
-                pass
-            elif not split_enabled_for_date(target_date):
-                log(f"   ℹ️ [ {account_name} ] 2026-03-11 이전 날짜는 purchase/cart/wishlist 분리 수집을 시도하지 않습니다.")
-            elif not shopping_campaign_ids:
-                log(f"   ℹ️ [ {account_name} ] 쇼핑검색 캠페인이 없어 purchase/cart/wishlist 분리 수집을 건너뜁니다.")
-            else:
-                source_maps = {}
-                report_candidates = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
-                for tp in report_candidates:
-                    conv_df = dfs.get(tp)
-                    if conv_df is None:
-                        log(f"   ⚠️ [ {account_name} ] {tp} 리포트 실패 → 다음 전환 리포트로 진행합니다.")
-                        continue
-                    if conv_df.empty:
-                        log(f"   ℹ️ [ {account_name} ] {tp} 리포트가 비어 있습니다. purchase/cart/wishlist 는 미확정(NULL)로 유지합니다.")
-                        continue
-
-                    report_allowed_campaign_ids = None
-
-                    one_camp_map, one_kw_map, one_ad_map, one_summary = process_conversion_report(
-                        conv_df,
-                        allowed_campaign_ids=report_allowed_campaign_ids,
-                        report_hint=tp,
-                        keyword_lookup=keyword_lookup,
-                        keyword_unique_lookup=keyword_unique_lookup,
-                        live_keyword_resolver=live_keyword_resolver,
-                        debug_account_name=account_name,
-                        debug_target_date=str(target_date),
-                    )
-                    
-                    if len(one_camp_map) == 0 and len(one_kw_map) == 0 and len(one_ad_map) == 0:
-                        log(f"   ⚠️ [ {account_name} ] {tp} 데이터는 있으나 shopping purchase/cart/wishlist 파싱에 실패했습니다. debug_reports 원본을 확인하세요.")
-                        continue
-
-                    source_maps[tp] = (one_camp_map, one_kw_map, one_ad_map, one_summary)
-
-                ad_conv_maps = source_maps.get("AD_CONVERSION", ({}, {}, {}, empty_split_summary()))
-                shop_kw_maps = source_maps.get("SHOPPINGKEYWORD_CONVERSION_DETAIL", ({}, {}, {}, empty_split_summary()))
-
-                ad_camp_map, ad_kw_map, ad_ad_map, ad_summary = ad_conv_maps
-                shop_camp_map, shop_kw_map, shop_ad_map, shop_summary = shop_kw_maps
-
-                shop_query_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL")
-                if shop_query_df is not None and not shop_query_df.empty:
-                    try:
-                        shop_query_rows = parse_shopping_query_report(shop_query_df, target_date, customer_id)
-                    except Exception as _e:
-                        log(f"   ⚠️ [ {account_name} ] 쇼핑검색어 분리 저장 파싱 실패: {_e}")
-                        shop_query_rows = []
-
-                camp_map = ad_camp_map if ad_camp_map else shop_camp_map
-                ad_map = ad_ad_map if ad_ad_map else shop_ad_map
-                raw_kw_map = merge_split_maps(ad_kw_map, shop_kw_map)
-                if shopping_only:
-                    kw_map = {}
-                else:
-                    kw_map = filter_split_map_excluding_ids(raw_kw_map, shopping_keyword_ids)
-                    removed_kw = max(0, len(raw_kw_map) - len(kw_map))
-                    if removed_kw:
-                        log(f"   ℹ️ [ {account_name} ] 쇼핑 키워드 split {removed_kw}건은 fact_keyword_daily 적재에서 제외합니다.")
-
-                split_report_ok = bool(camp_map or kw_map or ad_map)
-
-                final_split_summary = ad_summary if split_summary_has_values(ad_summary) else shop_summary
-                if shopping_only and split_report_ok and split_summary_has_values(final_split_summary):
-                    split_ok, split_reason = validate_shopping_split_summary(final_split_summary, ad_map)
-                    if not split_ok:
-                        log(f"   ⚠️ [ {account_name} ] shopping split 검증 실패 → 상세 split 저장을 건너뛰고 총합만 적재합니다. ({split_reason})")
-                        camp_map, kw_map, ad_map = {}, {}, {}
-                        shop_query_rows = []
-                        split_report_ok = False
-
-                if split_report_ok:
-                    camp_ad_src = 'AD_CONVERSION' if ad_camp_map or ad_ad_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_camp_map or shop_ad_map else 'none')
-                    kw_src = 'AD_CONVERSION+SHOPPINGKEYWORD_CONVERSION_DETAIL' if (ad_kw_map and shop_kw_map) else ('AD_CONVERSION' if ad_kw_map else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_kw_map else 'none'))
-                    summary_src = 'AD_CONVERSION' if split_summary_has_values(ad_summary) else ('SHOPPINGKEYWORD_CONVERSION_DETAIL' if split_summary_has_values(shop_summary) else 'none')
-                    query_src = 'SHOPPINGKEYWORD_CONVERSION_DETAIL' if shop_query_rows else 'none'
-                    result["split_source"] = f"summary={summary_src},campaign/ad={camp_ad_src},keyword={kw_src},query={query_src}"
-                    log(
-                        f"   ✅ [ {account_name} ] shopping split 원천 사용: "
-                        f"summary={summary_src}, campaign/ad={camp_ad_src}, keyword={kw_src}, query={query_src}"
-                    )
-                    if split_summary_has_values(final_split_summary):
-                        log(f"   ℹ️ [ {account_name} ] detail split 파싱: {format_split_summary(final_split_summary)}")
-
-            c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map, scoped_replace=shopping_only) if collect_sa else 0
-            if shopping_only and target_kw_ids:
-                clear_fact_scope(engine, "fact_keyword_daily", customer_id, target_date, "keyword_id", target_kw_ids)
-                k_cnt = 0
-            else:
-                k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map, scoped_replace=shopping_only) if (collect_sa and not SKIP_KEYWORD_STATS) else 0
-
-            device_ad_cnt = 0
-            device_campaign_cnt = 0
-            ad_stat = {}
-            camp_device_stat = {}
-
-            if not SKIP_AD_STATS:
-                if ad_report_df is not None and not ad_report_df.empty:
-                    if collect_sa:
-                        # 일반/쇼핑 소재 총합은 AD 리포트 컬럼 순서 영향이 커서 /stats 총합 기준으로 저장한다.
-                        # AD 리포트는 PC/M 기기 분리와 매체/지역 분해용으로만 사용한다.
-                        a_cnt = fetch_stats_fallback(
-                            engine,
-                            customer_id,
-                            target_date,
-                            target_ad_ids,
-                            "ad_id",
-                            "fact_ad_daily",
-                            split_map=ad_map,
-                            scoped_replace=shopping_only,
-                        )
-                        ad_stat = {}
-                    else:
-                        a_cnt = 0
-                        ad_stat = {}
-
-                    if collect_device:
-                        ad_device_stat, camp_device_stat, device_meta = parse_ad_device_report(ad_report_df, ad_to_campaign=ad_to_campaign_map)
-                        if shopping_only:
-                            ad_device_stat = filter_stat_result(ad_device_stat, set(target_ad_ids))
-                            camp_device_stat = filter_stat_result(camp_device_stat, set(target_camp_ids))
-                    else:
-                        ad_device_stat, camp_device_stat, device_meta = {}, {}, {"status": "disabled", "reason": "collect_mode=sa_only"}
-                        result["device_status"] = "disabled"
-                    if collect_device and device_meta.get("status") == "ok":
-                        result["device_status"] = "ok"
-                        result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
-                        device_ad_cnt = save_device_stats(
-                            engine, customer_id, target_date, "fact_ad_device_daily", "ad_id", ad_device_stat,
-                            data_source="report_device_total_only", source_report="AD"
-                        )
-                        device_campaign_cnt = save_device_stats(
-                            engine, customer_id, target_date, "fact_campaign_device_daily", "campaign_id", camp_device_stat,
-                            data_source="report_device_total_only", source_report="AD"
-                        )
-                        if ad_stat:
-                            total_from_ad = {
-                                "imp": sum(int(v.get("imp", 0) or 0) for v in ad_stat.values()),
-                                "clk": sum(int(v.get("clk", 0) or 0) for v in ad_stat.values()),
-                                "cost": sum(int(v.get("cost", 0) or 0) for v in ad_stat.values()),
-                                "conv": sum(float(v.get("conv", 0.0) or 0.0) for v in ad_stat.values()),
-                                "sales": sum(int(v.get("sales", 0) or 0) for v in ad_stat.values()),
-                            }
-                            total_from_device = summarize_stat_res(ad_device_stat)
-                            diff_cost = total_from_ad["cost"] - total_from_device["cost"]
-                            diff_sales = total_from_ad["sales"] - total_from_device["sales"]
-                            diff_conv = round(total_from_ad["conv"] - total_from_device["conv"], 4)
-                            if diff_cost or diff_sales or diff_conv:
-                                log(
-                                    f"   ⚠️ [ {account_name} ] PC/M 검증 차이 감지: cost={diff_cost}, sales={diff_sales}, conv={diff_conv} "
-                                    f"(source_report=AD, device_rows={device_meta.get('ad_rows', 0)})"
-                                )
-                        miss = int(device_meta.get("missing_campaign_rows", 0) or 0)
-                        miss_msg = f", 캠페인 매핑누락={miss}건" if miss else ""
-                        log(
-                            f"   ✅ [ {account_name} ] PC/M 분리 저장 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})"
-                            f"{miss_msg} | parser={DEVICE_PARSER_VERSION}"
-                        )
-                    elif collect_device:
-                        result["device_status"] = str(device_meta.get("status") or "unknown")
-                        result["device_missing_campaign_rows"] = int(device_meta.get("missing_campaign_rows", 0) or 0)
-                        debug_keys = [
-                            "header_idx", "ad_idx", "camp_idx", "device_idx", "imp_idx", "clk_idx", "cost_idx",
-                            "conv_idx", "sales_idx", "rank_idx", "scan_rows", "reject_short", "reject_empty_ad",
-                            "reject_empty_device", "reject_zero_metrics", "sample_headers", "preview_rows"
-                        ]
-                        extra_parts = []
-                        for _k in debug_keys:
-                            _v = device_meta.get(_k)
-                            if _v in (None, "", [], {}):
-                                continue
-                            extra_parts.append(f"{_k}={_v}")
-                        extra_msg = f" | {' | '.join(extra_parts)}" if extra_parts else ""
-                        log(
-                            f"   ℹ️ [ {account_name} ] AD 리포트에서 PC/M 컬럼을 확인하지 못해 기기 분리 저장은 건너뜁니다. "
-                            f"status={device_meta.get('status')} | parser={DEVICE_PARSER_VERSION}{extra_msg}"
-                        )
-                else:
-                    if collect_sa:
-                        log(f"   ⚠️ [ {account_name} ] AD 리포트 없음 → 소재만 실시간 stats 총합으로 대체합니다.")
-                        a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily", split_map=ad_map, scoped_replace=shopping_only)
-                    else:
-                        log(f"   ℹ️ [ {account_name} ] AD 리포트가 없어 PC/M 전용 적재를 건너뜁니다.")
-                        a_cnt = 0
-                    if collect_device:
-                        result["device_status"] = "ad_report_missing"
-            else:
-                a_cnt = 0
-                result["device_status"] = "not_requested"
-
-            media_cnt, media_meta = collect_media_fact(
-                engine, customer_id, target_date, ad_report_df, ad_to_campaign_map, campaign_type_map, camp_device_stat,
-                allowed_campaign_ids=set(target_camp_ids) if target_camp_ids else None,
-                scoped_campaign_types=['쇼핑검색'] if shopping_only else None,
+            camp_map, kw_map, ad_map, shop_query_rows, split_report_ok = _resolve_split_payload(
+                dfs,
+                collect_sa=collect_sa,
+                target_date=target_date,
+                shopping_only=shopping_only,
+                shopping_campaign_ids=shopping_campaign_ids,
+                shopping_keyword_ids=shopping_keyword_ids,
+                keyword_lookup=keyword_lookup,
+                keyword_unique_lookup=keyword_unique_lookup,
+                live_keyword_resolver=live_keyword_resolver,
+                account_name=account_name,
+                customer_id=customer_id,
+                result=result,
             )
-            detail_rows = int(media_meta.get('detail_rows', 0) or 0)
-            summary_rows = int(media_meta.get('summary_rows', 0) or 0)
-            result["media_rows_saved"] = int(media_cnt or 0)
-            result["media_source"] = str(media_meta.get('status') or 'unknown')
-            result["media_detail_rows"] = detail_rows
-            result["media_summary_rows"] = summary_rows
-            distinct_media_count = int(media_meta.get('distinct_media_count', 0) or 0)
-            media_preview = media_meta.get('distinct_media_preview') or []
-            preview_msg = f" | media_preview={media_preview}" if media_preview else ""
-            if media_cnt:
-                log(
-                    f"   ✅ [ {account_name} ] 매체/지역/기기 저장 완료: total_rows={media_cnt} | detail_rows={detail_rows} | "
-                    f"summary_rows={summary_rows} | media_codes={distinct_media_count} | source={media_meta.get('status')}{preview_msg}"
-                )
-            else:
-                log(
-                    f"   ℹ️ [ {account_name} ] 매체/지역 자동 분해 원천이 없어 요약 행만 유지합니다. "
-                    f"source={media_meta.get('status')} | detail_rows={detail_rows} | summary_rows={summary_rows}"
-                )
+
+            stage = "save_stats_and_breakdowns"
+            result["stage"] = stage
+            c_cnt, k_cnt, a_cnt, device_ad_cnt, device_campaign_cnt, media_cnt, media_meta = _save_report_stats_and_breakdowns(
+                engine,
+                customer_id=customer_id,
+                account_name=account_name,
+                target_date=target_date,
+                collect_sa=collect_sa,
+                collect_device=collect_device,
+                shopping_only=shopping_only,
+                target_camp_ids=target_camp_ids,
+                target_kw_ids=target_kw_ids,
+                target_ad_ids=target_ad_ids,
+                ad_report_df=ad_report_df,
+                ad_to_campaign_map=ad_to_campaign_map,
+                campaign_type_map=campaign_type_map,
+                camp_map=camp_map,
+                kw_map=kw_map,
+                ad_map=ad_map,
+                result=result,
+            )
 
             if collect_sa:
+                stage = "save_shopping_query_split"
+                result["stage"] = stage
                 replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
                 if shop_query_rows:
                     log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
@@ -3003,6 +3153,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             result["split_report_ok"] = bool(split_report_ok)
             result["zero_data"] = bool(c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0)
 
+            stage = "finalize_result"
+            result["stage"] = stage
             if result["zero_data"]:
                 result["status"] = "zero_data"
                 log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
@@ -3018,16 +3170,20 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
     except Exception as e:
         result["status"] = "error"
-        result["error"] = str(e)
-        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
+        result["stage"] = stage
+        result["error"] = f"stage={stage} | {_exc_label(e)}"
+        tb_tail = _traceback_tail(e, limit=4)
+        if tb_tail:
+            result["notes"].append(f"traceback={tb_tail}")
+        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생 | stage={stage} | {_exc_label(e)}")
+        if tb_tail:
+            log(f"   ↳ traceback: {tb_tail}")
     finally:
         if job_lock is not False:
             release_job_lock(job_lock, customer_id, target_date)
     return result
 
-def main():
-    engine = get_engine()
-    ensure_tables(engine)
+def build_main_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--customer_id", type=str, default="")
@@ -3039,6 +3195,190 @@ def main():
     parser.add_argument("--collect_mode", type=str, default="sa_with_device", help="sa_only/device_only/sa_with_device 또는 검색광고 전체만/기기만/검색광고 전체+기기")
     parser.add_argument("--shopping_only", action="store_true", help="쇼핑검색 캠페인만 수집/재적재")
     parser.add_argument("--include_gfa_accounts", action="store_true", help="이름 끝이 GFA 인 네이버 GFA 계정도 함께 대상으로 포함")
+    return parser
+
+
+def resolve_target_date(raw_date: str) -> date:
+    if raw_date:
+        return datetime.strptime(raw_date, "%Y-%m-%d").date()
+    return (datetime.utcnow() + timedelta(hours=9)).date() - timedelta(days=1)
+
+
+def emit_main_run_banner(target_date: date, args: argparse.Namespace):
+    print("\n" + "=" * 50, flush=True)
+    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
+    print("=" * 50, flush=True)
+    if FAST_MODE:
+        print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
+    print(f"🧭 수집 모드: {label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
+    if args.shopping_only:
+        print("🛍️ 쇼핑검색 전용 수집", flush=True)
+    print("=" * 50 + "\n", flush=True)
+
+
+def load_accounts_from_legacy_sheet(include_gfa_accounts: bool) -> List[Dict[str, str]]:
+    if not os.path.exists("accounts.xlsx"):
+        return []
+
+    try:
+        df_acc = pd.read_excel("accounts.xlsx")
+    except Exception as first_exc:
+        log(f"⚠️ accounts.xlsx 엑셀 로드 실패, CSV 재시도: {_exc_label(first_exc)}")
+        try:
+            df_acc = pd.read_csv("accounts.xlsx")
+        except Exception as second_exc:
+            _log_best_effort_failure("accounts.xlsx 로드", second_exc, ctx="loader=csv_fallback")
+            return []
+
+    id_col, name_col = None, None
+    for c in df_acc.columns:
+        c_clean = str(c).replace(" ", "").lower()
+        if c_clean in ["커스텀id", "customerid", "customer_id", "id"]:
+            id_col = c
+        if c_clean in ["업체명", "accountname", "account_name", "name"]:
+            name_col = c
+
+    if not id_col or not name_col:
+        return []
+
+    accounts_info: List[Dict[str, str]] = []
+    seen_ids = set()
+    for _, row in df_acc.iterrows():
+        cid = str(row[id_col]).strip()
+        nm = str(row[name_col]).strip()
+        if not include_gfa_accounts and nm.lower().endswith(" gfa"):
+            continue
+        if cid and cid.lower() != "nan" and cid not in seen_ids:
+            accounts_info.append({"id": cid, "name": nm})
+            seen_ids.add(cid)
+    return accounts_info
+
+
+def load_accounts_from_db(engine: Engine) -> List[Dict[str, str]]:
+    try:
+        with engine.connect() as conn:
+            return [
+                {"id": str(row[0]).strip(), "name": str(row[1])}
+                for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))
+            ]
+    except Exception as e:
+        _log_best_effort_failure("accounts DB 로드", e)
+        return []
+
+
+def resolve_accounts_info(engine: Engine, args: argparse.Namespace) -> List[Dict[str, str]]:
+    if args.customer_id:
+        return [{"id": args.customer_id, "name": "Target Account"}]
+
+    accounts_info: List[Dict[str, str]] = []
+    if load_naver_accounts is not None:
+        try:
+            accounts_info = load_naver_accounts(include_gfa=args.include_gfa_accounts)
+            if accounts_info:
+                excluded_msg = "포함" if args.include_gfa_accounts else "제외"
+                log(f"🗂️ account_master 기준 계정 로드: {len(accounts_info)}개 (GFA {excluded_msg})")
+        except Exception as e:
+            log(f"⚠️ account_master 로드 실패, 레거시 accounts.xlsx 로 폴백합니다: {e}")
+
+    if not accounts_info:
+        accounts_info = load_accounts_from_legacy_sheet(args.include_gfa_accounts)
+
+    if not accounts_info:
+        accounts_info = load_accounts_from_db(engine)
+
+    return accounts_info
+
+
+def apply_account_name_filters(accounts_info: List[Dict[str, str]], args: argparse.Namespace) -> List[Dict[str, str]]:
+    target_name_tokens: List[str] = []
+    if args.account_name and str(args.account_name).strip():
+        target_name_tokens.append(str(args.account_name).strip())
+    if args.account_names and str(args.account_names).strip():
+        target_name_tokens.extend([x.strip() for x in str(args.account_names).split(",") if x.strip()])
+
+    if not target_name_tokens:
+        return accounts_info
+
+    exact_set = {x for x in target_name_tokens}
+    filtered_exact = [acc for acc in accounts_info if str(acc.get("name", "")).strip() in exact_set]
+    if filtered_exact:
+        filtered = filtered_exact
+    else:
+        lowered = [x.lower() for x in target_name_tokens]
+        filtered = [
+            acc for acc in accounts_info
+            if any(tok in str(acc.get("name", "")).lower() for tok in lowered)
+        ]
+    log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(filtered)}개")
+    return filtered
+
+
+def dedupe_accounts_info(accounts_info: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    unique_accounts: Dict[str, Dict[str, str]] = {}
+    for acc in accounts_info:
+        acc_id = str(acc.get("id") or "").strip()
+        if not acc_id:
+            continue
+        unique_accounts[acc_id] = acc
+    return list(unique_accounts.values())
+
+
+def build_future_error_result(error: Exception, target_date: date, args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "customer_id": "",
+        "account_name": "(future-error)",
+        "target_date": str(target_date),
+        "status": "error",
+        "error": str(error),
+        "collect_mode": args.collect_mode,
+        "collect_mode_label": label_collect_mode(args.collect_mode),
+        "collect_sa": args.collect_mode in {"sa_only", "sa_with_device"},
+        "collect_device": args.collect_mode in {"device_only", "sa_with_device"},
+        "shopping_only": bool(args.shopping_only),
+        "campaign_rows_saved": 0,
+        "keyword_rows_saved": 0,
+        "ad_rows_saved": 0,
+        "device_campaign_rows_saved": 0,
+        "device_ad_rows_saved": 0,
+        "media_rows_saved": 0,
+        "ad_report_status": "unknown",
+        "split_attempted": False,
+        "split_report_ok": False,
+        "used_realtime_fallback": False,
+        "realtime_reason": "",
+        "device_status": "unknown",
+        "media_source": "unknown",
+        "zero_data": False,
+    }
+
+
+def run_account_collection_tasks(engine: Engine, accounts_info: List[Dict[str, str]], target_date: date, args: argparse.Namespace) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [
+            executor.submit(
+                process_account,
+                engine,
+                acc["id"],
+                acc["name"],
+                target_date,
+                args.skip_dim,
+                args.fast,
+                args.collect_mode,
+                args.shopping_only,
+            )
+            for acc in accounts_info
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append(build_future_error_result(e, target_date, args))
+    return results
+
+
+def main():
+    parser = build_main_arg_parser()
     args = parser.parse_args()
 
     try:
@@ -3051,133 +3391,27 @@ def main():
     if FAST_MODE:
         args.skip_dim = True
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else (datetime.utcnow() + timedelta(hours=9)).date() - timedelta(days=1)
-    
-    print("\n" + "="*50, flush=True)
-    print(f"🚀🚀🚀 [ 현재 수집 진행 날짜: {target_date} ] 🚀🚀🚀", flush=True)
-    print("="*50, flush=True)
-    if FAST_MODE:
-        print("⚡ 빠른 수집 모드: 구조 수집 스킵 / debug 저장 중지 / live keyword API fallback 비활성화", flush=True)
-    print(f"🧭 수집 모드: {label_collect_mode(args.collect_mode)} ({args.collect_mode})", flush=True)
-    if args.shopping_only:
-        print("🛍️ 쇼핑검색 전용 수집", flush=True)
-    print("="*50 + "\n", flush=True)
+    target_date = resolve_target_date(args.date)
+    emit_main_run_banner(target_date, args)
 
-    accounts_info = []
-    if args.customer_id:
-        accounts_info = [{"id": args.customer_id, "name": "Target Account"}]
-    else:
-        if load_naver_accounts is not None:
-            try:
-                accounts_info = load_naver_accounts(include_gfa=args.include_gfa_accounts)
-                if accounts_info:
-                    excluded_msg = "포함" if args.include_gfa_accounts else "제외"
-                    log(f"🗂️ account_master 기준 계정 로드: {len(accounts_info)}개 (GFA {excluded_msg})")
-            except Exception as e:
-                log(f"⚠️ account_master 로드 실패, 레거시 accounts.xlsx 로 폴백합니다: {e}")
+    try:
+        engine = get_engine()
+        ensure_tables(engine)
+    except Exception as e:
+        die(f"DB 초기화 실패: {_exc_label(e)}")
 
-        if not accounts_info and os.path.exists("accounts.xlsx"):
-            try:
-                df_acc = pd.read_excel("accounts.xlsx")
-            except Exception:
-                try:
-                    df_acc = pd.read_csv("accounts.xlsx")
-                except Exception:
-                    df_acc = None
+    accounts_info = resolve_accounts_info(engine, args)
+    accounts_info = apply_account_name_filters(accounts_info, args)
+    accounts_info = dedupe_accounts_info(accounts_info)
 
-            if df_acc is not None:
-                id_col, name_col = None, None
-                for c in df_acc.columns:
-                    c_clean = str(c).replace(" ", "").lower()
-                    if c_clean in ["커스텀id", "customerid", "customer_id", "id"]:
-                        id_col = c
-                    if c_clean in ["업체명", "accountname", "account_name", "name"]:
-                        name_col = c
-
-                if id_col and name_col:
-                    seen_ids = set()
-                    for _, row in df_acc.iterrows():
-                        cid = str(row[id_col]).strip()
-                        nm = str(row[name_col]).strip()
-                        if not args.include_gfa_accounts and nm.lower().endswith(" gfa"):
-                            continue
-                        if cid and cid.lower() != 'nan' and cid not in seen_ids:
-                            accounts_info.append({"id": cid, "name": nm})
-                            seen_ids.add(cid)
-
-        if not accounts_info:
-            try:
-                with engine.connect() as conn:
-                    accounts_info = [{"id": str(row[0]).strip(), "name": str(row[1])} for row in conn.execute(text("SELECT customer_id, MAX(account_name) FROM accounts WHERE customer_id IS NOT NULL GROUP BY customer_id"))]
-            except Exception:
-                pass
-
-
-    target_name_tokens = []
-    if args.account_name and str(args.account_name).strip():
-        target_name_tokens.append(str(args.account_name).strip())
-    if args.account_names and str(args.account_names).strip():
-        target_name_tokens.extend([x.strip() for x in str(args.account_names).split(",") if x.strip()])
-
-    if target_name_tokens:
-        exact_set = {x for x in target_name_tokens}
-        filtered_exact = [acc for acc in accounts_info if str(acc.get("name", "")).strip() in exact_set]
-        if filtered_exact:
-            accounts_info = filtered_exact
-        else:
-            lowered = [x.lower() for x in target_name_tokens]
-            accounts_info = [
-                acc for acc in accounts_info
-                if any(tok in str(acc.get("name", "")).lower() for tok in lowered)
-            ]
-        log(f"🎯 업체명 필터 적용: {', '.join(target_name_tokens)} -> {len(accounts_info)}개")
-
-    unique_accounts = {}
-    for acc in accounts_info:
-        unique_accounts[acc["id"]] = acc
-    accounts_info = list(unique_accounts.values())
-
-    if not accounts_info: 
+    if not accounts_info:
         log("⚠️ 수집할 계정이 없습니다.")
         return
-        
+
     log(f"📋 최종 수집 대상 계정: {len(accounts_info)}개 / 동시 작업: {args.workers}개")
-
-    results: List[Dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_account, engine, acc["id"], acc["name"], target_date, args.skip_dim, args.fast, args.collect_mode, args.shopping_only) for acc in accounts_info]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception as e:
-                results.append({
-                    "customer_id": "",
-                    "account_name": "(future-error)",
-                    "target_date": str(target_date),
-                    "status": "error",
-                    "error": str(e),
-                    "collect_mode": args.collect_mode,
-                    "collect_mode_label": label_collect_mode(args.collect_mode),
-                    "collect_sa": args.collect_mode in {"sa_only", "sa_with_device"},
-                    "collect_device": args.collect_mode in {"device_only", "sa_with_device"},
-                    "shopping_only": bool(args.shopping_only),
-                    "campaign_rows_saved": 0,
-                    "keyword_rows_saved": 0,
-                    "ad_rows_saved": 0,
-                    "device_campaign_rows_saved": 0,
-                    "device_ad_rows_saved": 0,
-                    "media_rows_saved": 0,
-                    "ad_report_status": "unknown",
-                    "split_attempted": False,
-                    "split_report_ok": False,
-                    "used_realtime_fallback": False,
-                    "realtime_reason": "",
-                    "device_status": "unknown",
-                    "media_source": "unknown",
-                    "zero_data": False,
-                })
-
+    results = run_account_collection_tasks(engine, accounts_info, target_date, args)
     emit_collection_run_summary(results, target_date, args.collect_mode, args.shopping_only)
+
 
 if __name__ == "__main__":
     main()
