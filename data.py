@@ -9,7 +9,7 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import NullPool, QueuePool
+from sqlalchemy.pool import NullPool
 from datetime import date
 
 # ==========================================
@@ -37,19 +37,9 @@ def get_engine():
         "keepalives_count": 5
     }
 
-    pool_size = max(1, int(os.getenv("DB_POOL_SIZE", "5") or 5))
-    max_overflow = max(0, int(os.getenv("DB_MAX_OVERFLOW", "10") or 10))
-    pool_timeout = max(5, int(os.getenv("DB_POOL_TIMEOUT", "30") or 30))
-    pool_recycle = max(60, int(os.getenv("DB_POOL_RECYCLE", "1800") or 1800))
-
     return create_engine(
         db_url,
-        poolclass=QueuePool,
-        pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
+        poolclass=NullPool,
         connect_args=connect_args,
         future=True
     )
@@ -522,6 +512,14 @@ def update_campaign_target_roas(_engine, cid, campaign_id, target_val, min_val):
         "camp_id": str(campaign_id)
     })
 
+
+
+def _normalize_cache_tuple(values) -> tuple:
+    norm = _normalize_filter_values(values)
+    if not norm:
+        return tuple()
+    return tuple(sorted(norm))
+
 def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
     prefix = f"{alias}." if alias else ""
     has_purchase = "purchase_conv" in fact_cols
@@ -650,8 +648,8 @@ def _compute_total_ratio_metrics(row: dict) -> dict:
     row["wishlist_roas"] = (wishlist_sales / cost * 100) if cost > 0 else 0
     return row
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
+@st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
+def _query_budget_bundle_cached(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
     if meta.empty:
         return pd.DataFrame()
@@ -734,8 +732,8 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
         {"d1": str(d1), "d2": str(d2), **cid_params},
     )
 
-@st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
-def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
+@st.cache_data(ttl=43200, max_entries=40, show_spinner=False)
+def _get_entity_totals_cached(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
 
@@ -772,8 +770,11 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     row["tot_sales"] = row.get("tot_sales", 0)
     return _compute_total_ratio_metrics(row)
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
+    return _get_entity_totals_cached(_engine, entity, d1, d2, _normalize_cache_tuple(cids), _normalize_cache_tuple(type_sel))
+
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def _query_campaign_bundle_cached(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -810,8 +811,11 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type")
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
+def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
+    return _query_campaign_bundle_cached(_engine, d1, d2, _normalize_cache_tuple(cids), _normalize_cache_tuple(type_sel), int(topn_cost or 0))
+
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def _query_keyword_bundle_cached(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -850,8 +854,11 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type_label")
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
+def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
+    return _query_keyword_bundle_cached(_engine, d1, d2, _normalize_cache_tuple(cids), _normalize_cache_tuple(type_sel), int(topn_cost or 0), bool(include_dt))
+
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def _query_ad_bundle_cached(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -891,8 +898,11 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type_label")
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
+    return _query_ad_bundle_cached(_engine, d1, d2, _normalize_cache_tuple(cids), _normalize_cache_tuple(type_sel), int(topn_cost or 0), int(top_k or 0), bool(include_dt))
+
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def _query_campaign_timeseries_cached(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -924,6 +934,9 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
     if not df.empty:
         df["dt"] = pd.to_datetime(df["dt"])
     return df
+
+def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    return _query_campaign_timeseries_cached(_engine, d1, d2, _normalize_cache_tuple(cids), _normalize_cache_tuple(type_sel))
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
