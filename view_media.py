@@ -238,9 +238,10 @@ def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
     _diag_add(diag, '매체 집계', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_media_daily', '매체/기기 기준 집계 완료')
     return out
 
-def _query_device(engine, f, diag: list | None = None) -> pd.DataFrame:
+def _query_device(engine, f, diag: list | None = None, media_df: pd.DataFrame | None = None) -> pd.DataFrame:
     # ✨ 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경 (오류 유발 SQL 완전 제거)
-    media_df = _query_media_region(engine, f, diag=diag)
+    if media_df is None:
+        media_df = _query_media_region(engine, f, diag=diag)
     if media_df.empty:
         _diag_add(diag, '기기 집계', 'zero_data', 0, 'fact_media_daily', '매체 원천이 비어 기기 집계를 만들 수 없습니다.')
         return pd.DataFrame()
@@ -273,7 +274,7 @@ def page_media(engine, f):
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
         media_region_df = _query_media_region(engine, f, diag=diag)
-        device_df = _query_device(engine, f, diag=diag)
+        device_df = _query_device(engine, f, diag=diag, media_df=media_region_df) if selected_tab == "기기" else pd.DataFrame()
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
@@ -289,8 +290,6 @@ def page_media(engine, f):
         df_device = _calc_metrics(device_df).sort_values(['ord', '광고비'], ascending=[True, False]).drop(columns=['ord'], errors='ignore').reset_index(drop=True)
     else:
         df_device = pd.DataFrame()
-
-    selected_tab = st.pills("분석 탭 선택", ["지면(매체)", "기기", "비용 누수 항목"], default="지면(매체)")
 
     if selected_tab == "지면(매체)":
         with st.container(border=True):
