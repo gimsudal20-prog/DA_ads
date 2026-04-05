@@ -9,6 +9,7 @@ Default checks:
 
 Optional extra checks:
 - --with-help / --with-runtime-help: run selected CLI scripts with --help
+- --with-regression: run regression_check.py when present
 """
 from __future__ import annotations
 
@@ -191,11 +192,31 @@ def run_help_checks(root: Path) -> tuple[list[str], list[str]]:
     return failures, notes
 
 
+
+
+def run_regression_check(root: Path) -> tuple[list[str], list[str]]:
+    script_path = root / 'regression_check.py'
+    if not script_path.exists():
+        return [], ['regression 체크 스킵 | regression_check.py 없음']
+    proc = subprocess.run(
+        [sys.executable, str(script_path), '--repo', str(root)],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    output = ((proc.stdout or '') + '\n' + (proc.stderr or '')).strip()
+    if proc.returncode == 0:
+        return [], []
+    last = output.splitlines()[-1] if output else '출력 없음'
+    return [f'regression 체크 실패 | {last}'], []
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run lightweight smoke checks.')
     parser.add_argument('--repo', default='.', help='repository root path')
     parser.add_argument('--with-help', action='store_true', help='also run selected scripts with --help')
     parser.add_argument('--with-runtime-help', action='store_true', help='alias of --with-help')
+    parser.add_argument('--with-regression', action='store_true', help='also run regression_check.py when present')
     args = parser.parse_args()
 
     root = Path(args.repo).resolve()
@@ -221,6 +242,11 @@ def main() -> int:
         help_failures, help_notes = run_help_checks(root)
         failures.extend(help_failures)
         notes.extend(help_notes)
+
+    if args.with_regression:
+        regression_failures, regression_notes = run_regression_check(root)
+        failures.extend(regression_failures)
+        notes.extend(regression_notes)
 
     print('=== smoke check summary ===')
     print(f'repo: {root}')
