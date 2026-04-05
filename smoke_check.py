@@ -192,12 +192,10 @@ def run_help_checks(root: Path) -> tuple[list[str], list[str]]:
     return failures, notes
 
 
-
-
-def run_regression_check(root: Path) -> tuple[list[str], list[str]]:
+def run_regression_checks(root: Path) -> tuple[list[str], list[str]]:
     script_path = root / 'regression_check.py'
     if not script_path.exists():
-        return [], ['regression 체크 스킵 | regression_check.py 없음']
+        return [], ['회귀 체크 스킵 | regression_check.py 없음']
     proc = subprocess.run(
         [sys.executable, str(script_path), '--repo', str(root)],
         cwd=str(root),
@@ -207,9 +205,15 @@ def run_regression_check(root: Path) -> tuple[list[str], list[str]]:
     )
     output = ((proc.stdout or '') + '\n' + (proc.stderr or '')).strip()
     if proc.returncode == 0:
-        return [], []
+        notes: list[str] = []
+        if output:
+            for line in output.splitlines():
+                if line.startswith('- '):
+                    notes.append(f'회귀 체크 참고 | {line[2:]}')
+        return [], notes
     last = output.splitlines()[-1] if output else '출력 없음'
-    return [f'regression 체크 실패 | {last}'], []
+    return [f'회귀 체크 실패 | {last}'], []
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run lightweight smoke checks.')
@@ -223,8 +227,7 @@ def main() -> int:
     failures: list[str] = []
     notes: list[str] = []
 
-    compile_errors = run_py_compile(root)
-    failures.extend(compile_errors)
+    failures.extend(run_py_compile(root))
 
     yaml_messages = run_yaml_parse(root)
     for msg in yaml_messages:
@@ -234,9 +237,7 @@ def main() -> int:
             notes.append(msg)
 
     failures.extend(run_key_file_checks(root))
-
-    import_messages = run_local_import_checks(root)
-    failures.extend(import_messages)
+    failures.extend(run_local_import_checks(root))
 
     if args.with_help or args.with_runtime_help:
         help_failures, help_notes = run_help_checks(root)
@@ -244,9 +245,9 @@ def main() -> int:
         notes.extend(help_notes)
 
     if args.with_regression:
-        regression_failures, regression_notes = run_regression_check(root)
-        failures.extend(regression_failures)
-        notes.extend(regression_notes)
+        reg_failures, reg_notes = run_regression_checks(root)
+        failures.extend(reg_failures)
+        notes.extend(reg_notes)
 
     print('=== smoke check summary ===')
     print(f'repo: {root}')

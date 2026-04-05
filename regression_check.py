@@ -35,13 +35,13 @@ def _install_stub_modules() -> None:
     sys.modules.setdefault('sqlalchemy', sqlalchemy)
 
     sqlalchemy_engine = types.ModuleType('sqlalchemy.engine')
-    class Engine:  # pragma: no cover - simple stub
+    class Engine:
         pass
     sqlalchemy_engine.Engine = Engine
     sys.modules.setdefault('sqlalchemy.engine', sqlalchemy_engine)
 
     sqlalchemy_pool = types.ModuleType('sqlalchemy.pool')
-    class NullPool:  # pragma: no cover - simple stub
+    class NullPool:
         pass
     sqlalchemy_pool.NullPool = NullPool
     sys.modules.setdefault('sqlalchemy.pool', sqlalchemy_pool)
@@ -115,13 +115,52 @@ def _test_base_report_split_map(collector, failures: list[str]) -> None:
     _assert_equal('base_report.cart_sales', row.get('cart_sales'), 1000, failures)
 
 
-def _test_sa_scope_contract(repo: Path, failures: list[str], notes: list[str]) -> None:
-    collector_src = (repo / 'collector.py').read_text(encoding='utf-8')
-    has_arg = '--sa_scope' in collector_src
-    has_normalizer = 'def normalize_sa_scope' in collector_src
-    if has_arg and has_normalizer:
+def _test_media_report_header_parser(collector, failures: list[str], notes: list[str]) -> None:
+    if not hasattr(collector, 'parse_media_report_rows'):
+        notes.append('media parser 체크 스킵 | collector.parse_media_report_rows 없음')
         return
-    notes.append('sa_scope 계약 점검 참고 | collector.py에 --sa_scope 직접 지원이 아직 없거나 정규화 함수가 없습니다.')
+    df = pd.DataFrame([
+        ['광고ID', '매체명', '디바이스', '노출수', '클릭수', '총비용', '전환수', '전환매출액'],
+        ['nad-a', '네이버검색', 'PC', '100', '5', '1000', '2', '3000'],
+    ])
+    try:
+        rows, diag = collector.parse_media_report_rows(
+            df,
+            date(2026, 4, 5),
+            'cust-1',
+            {'nad-a': 'cmp-1'},
+            {'cmp-1': '쇼핑검색'},
+        )
+    except NameError as exc:
+        notes.append(f'media parser 체크 참고 | 런타임 helper 누락으로 스킵: {exc}')
+        return
+    except Exception as exc:
+        failures.append(f'media_report.parse | {exc.__class__.__name__}: {exc}')
+        return
+
+    _assert_equal('media_report.status', diag.get('status'), 'ok', failures)
+    _assert_equal('media_report.row_count', len(rows), 1, failures)
+    if not rows:
+        return
+    row = rows[0]
+    _assert_equal('media_report.campaign_type', row.get('campaign_type'), '쇼핑검색', failures)
+    _assert_equal('media_report.media_name', row.get('media_name'), '네이버검색', failures)
+    _assert_equal('media_report.device_name', row.get('device_name'), 'PC', failures)
+    _assert_equal('media_report.imp', row.get('imp'), 100, failures)
+    _assert_equal('media_report.clk', row.get('clk'), 5, failures)
+    _assert_equal('media_report.cost', row.get('cost'), 1000, failures)
+
+
+def _test_sa_scope_contract(collector, notes: list[str], failures: list[str]) -> None:
+    if not hasattr(collector, 'normalize_sa_scope'):
+        notes.append('sa_scope 계약 점검 참고 | collector.py에 normalize_sa_scope가 아직 없습니다.')
+        return
+    try:
+        _assert_equal('sa_scope.full', collector.normalize_sa_scope('full'), 'full', failures)
+        _assert_equal('sa_scope.ad_only_en', collector.normalize_sa_scope('ad_only'), 'ad_only', failures)
+        _assert_equal('sa_scope.ad_only_ko', collector.normalize_sa_scope('소재만'), 'ad_only', failures)
+    except Exception as exc:
+        failures.append(f'sa_scope.normalize | {exc.__class__.__name__}: {exc}')
 
 
 def main() -> int:
@@ -146,7 +185,8 @@ def main() -> int:
 
     _test_shopping_query_parser(collector, failures)
     _test_base_report_split_map(collector, failures)
-    _test_sa_scope_contract(root, failures, notes)
+    _test_media_report_header_parser(collector, failures, notes)
+    _test_sa_scope_contract(collector, notes, failures)
 
     print('=== regression check summary ===')
     print(f'repo: {root}')
