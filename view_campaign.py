@@ -961,23 +961,30 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     diag: list[dict] = []
     if has_pre_patch_cur:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
-    with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
-        bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
-        _diag_add(diag, '캠페인집계', 'ok' if bundle is not None and not bundle.empty else 'zero_data', 0 if bundle is None else len(bundle.index), 'query_campaign_bundle', f'기간={f["start"]}~{f["end"]} 고객수={len(cids)} 유형수={len(type_sel)}')
-        if bundle is None or bundle.empty:
-            _render_diag_panel(diag)
-            return
-        df = _perf_common_merge_meta(bundle, meta)
-        _diag_add(diag, '메타병합', 'ok' if not df.empty else 'zero_data', len(df.index), 'meta_merge', 'campaign bundle + account meta')
-        view = df.rename(columns={
-            "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_name": "캠페인",
-            "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
-            "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출",
-        }).copy()
-        view = _add_perf_metrics(view)
-        if "avg_rank" in view.columns:
-            view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
     selected_tab = st.pills("분석 탭 선택", ["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"], default="종합 성과")
+
+    view = pd.DataFrame()
+    needs_summary_bundle = selected_tab in ("종합 성과", "기간 비교", "꺼짐 기록")
+    if needs_summary_bundle:
+        with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
+            bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
+            _diag_add(diag, '캠페인집계', 'ok' if bundle is not None and not bundle.empty else 'zero_data', 0 if bundle is None else len(bundle.index), 'query_campaign_bundle', f'기간={f["start"]}~{f["end"]} 고객수={len(cids)} 유형수={len(type_sel)}')
+            if bundle is None or bundle.empty:
+                _render_diag_panel(diag)
+                return
+            df = _perf_common_merge_meta(bundle, meta)
+            _diag_add(diag, '메타병합', 'ok' if not df.empty else 'zero_data', len(df.index), 'meta_merge', 'campaign bundle + account meta')
+            view = df.rename(columns={
+                "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_name": "캠페인",
+                "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
+                "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출",
+            }).copy()
+            view = _add_perf_metrics(view)
+            if "avg_rank" in view.columns:
+                view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+    else:
+        _diag_add(diag, '캠페인집계', 'warn', 0, 'lazy_skip', '선택 탭에서는 요약 bundle 조회를 생략했습니다.')
+
     if selected_tab == "종합 성과":
         _render_campaign_summary_tab(view, engine, f, diag, has_pre_patch_cur, top_n)
     elif selected_tab == "그룹 성과":

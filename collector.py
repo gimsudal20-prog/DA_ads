@@ -28,7 +28,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from device_collector_helpers import (
     DEVICE_PARSER_VERSION,
@@ -499,10 +499,19 @@ def get_engine() -> Engine:
         raise RuntimeError("DATABASE_URL이 설정되지 않았습니다. collector.py는 실제 DB 연결이 필요합니다.")
     db_url = DB_URL
     if "sslmode=" not in db_url: db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
+    pool_size = max(1, int(os.getenv("COLLECTOR_DB_POOL_SIZE", "6") or 6))
+    max_overflow = max(0, int(os.getenv("COLLECTOR_DB_MAX_OVERFLOW", "12") or 12))
+    pool_timeout = max(5, int(os.getenv("COLLECTOR_DB_POOL_TIMEOUT", "30") or 30))
+    pool_recycle = max(60, int(os.getenv("COLLECTOR_DB_POOL_RECYCLE", "1800") or 1800))
     return create_engine(
-        db_url, 
-        poolclass=NullPool, 
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"}, 
+        db_url,
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
+        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"},
         future=True
     )
 
@@ -2601,6 +2610,49 @@ def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_r
     meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
     _log_media_collect_choice(customer_id, target_date, meta)
     return saved, meta
+
+def _finalize_media_rows(agg: Dict[Tuple[str, str, str, str], Dict[str, Any]], target_date: date, customer_id: str, data_source: str = 'unknown') -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    total_imp = total_clk = total_cost = total_sales = 0
+    total_conv = 0.0
+    for (campaign_type, media_name, region_name, device_name), bucket in agg.items():
+        imp = int(round(float(bucket.get('imp', 0) or 0)))
+        clk = int(round(float(bucket.get('clk', 0) or 0)))
+        cost = int(round(float(bucket.get('cost', 0) or 0)))
+        conv = float(bucket.get('conv', 0.0) or 0.0)
+        sales = int(round(float(bucket.get('sales', 0) or 0)))
+        rows.append({
+            'dt': target_date,
+            'customer_id': str(customer_id),
+            'campaign_type': str(campaign_type or '기타'),
+            'media_name': str(media_name or '전체'),
+            'region_name': str(region_name or '전체'),
+            'device_name': str(device_name or '전체'),
+            'imp': imp,
+            'clk': clk,
+            'cost': cost,
+            'conv': conv,
+            'sales': sales,
+            'data_source': data_source,
+        })
+        total_imp += imp
+        total_clk += clk
+        total_cost += cost
+        total_conv += conv
+        total_sales += sales
+    diag = {
+        'detail_rows': len(rows),
+        'summary_rows': len(rows),
+        'distinct_media_count': len({(r['media_name'], r['region_name'], r['device_name']) for r in rows}),
+        'imp_sum': total_imp,
+        'clk_sum': total_clk,
+        'cost_sum': total_cost,
+        'conv_sum': total_conv,
+        'sales_sum': total_sales,
+        'data_source': data_source,
+    }
+    return rows, diag
+
 
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:

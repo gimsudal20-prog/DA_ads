@@ -32,8 +32,8 @@ def _keyword_fetch_limit(top_n: int, daily_breakdown: bool = False) -> int:
         top_n = 0
     top_n = max(top_n, 1)
     if daily_breakdown:
-        return min(max(top_n * 2, 600), 900)
-    return min(max(top_n * 3, 800), 1600)
+        return min(max(top_n * 2, 250), 700)
+    return min(max(top_n * 2, 300), 1000)
 
 def _style_delta_numeric(val):
     try: v = float(val)
@@ -419,7 +419,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
-    top_n = int(f.get("top_n_keyword", 300))
+    top_n = int(f.get("top_n_keyword", 150))
 
     kw_bundle = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), include_dt=True)
     ad_bundle = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_keyword_fetch_limit(top_n, daily_breakdown=True), top_k=50, include_dt=True)

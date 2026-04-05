@@ -9,7 +9,7 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
 from datetime import date
 
 # ==========================================
@@ -37,9 +37,19 @@ def get_engine():
         "keepalives_count": 5
     }
 
+    pool_size = max(1, int(os.getenv("DB_POOL_SIZE", "5") or 5))
+    max_overflow = max(0, int(os.getenv("DB_MAX_OVERFLOW", "10") or 10))
+    pool_timeout = max(5, int(os.getenv("DB_POOL_TIMEOUT", "30") or 30))
+    pool_recycle = max(60, int(os.getenv("DB_POOL_RECYCLE", "1800") or 1800))
+
     return create_engine(
         db_url,
-        poolclass=NullPool,
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
         connect_args=connect_args,
         future=True
     )

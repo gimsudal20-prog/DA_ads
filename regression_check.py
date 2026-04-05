@@ -43,7 +43,10 @@ def _install_stub_modules() -> None:
     sqlalchemy_pool = types.ModuleType('sqlalchemy.pool')
     class NullPool:
         pass
+    class QueuePool:
+        pass
     sqlalchemy_pool.NullPool = NullPool
+    sqlalchemy_pool.QueuePool = QueuePool
     sys.modules.setdefault('sqlalchemy.pool', sqlalchemy_pool)
 
     helpers = types.ModuleType('device_collector_helpers')

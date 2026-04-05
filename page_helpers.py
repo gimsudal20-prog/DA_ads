@@ -93,9 +93,9 @@ def _normalize_filter_state(values: Dict) -> Dict:
     out["manager"] = list(out.get("manager", []) or [])
     out["account"] = list(out.get("account", []) or [])
     out["type_sel"] = list(out.get("type_sel", []) or [])
-    out["top_n_campaign"] = int(out.get("top_n_campaign", 200) or 200)
-    out["top_n_keyword"] = int(out.get("top_n_keyword", 300) or 300)
-    out["top_n_ad"] = int(out.get("top_n_ad", 200) or 200)
+    out["top_n_campaign"] = int(out.get("top_n_campaign", 100) or 100)
+    out["top_n_keyword"] = int(out.get("top_n_keyword", 150) or 150)
+    out["top_n_ad"] = int(out.get("top_n_ad", 100) or 100)
     return out
 
 def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict:
@@ -107,7 +107,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.session_state["filters_v8"] = {
             "q": "", "manager": [], "account": [], "type_sel": [],
             "period_mode": "어제", "d1": default_start, "d2": default_end,
-            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True,
+            "top_n_campaign": 100, "top_n_keyword": 150, "top_n_ad": 100, "prefetch_warm": True,
         }
     sv = st.session_state["filters_v8"]
 
@@ -192,9 +192,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
             
             st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
-            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
-            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
-            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
+            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 100)), step=50, key="f_top_n_campaign")
+            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 150)), step=50, key="f_top_n_keyword")
+            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 100)), step=50, key="f_top_n_ad")
 
         st.caption("필터 변경 시 즉시 반영됩니다.")
 
@@ -213,7 +213,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     return {
         "q": sv["q"], "manager": sv["manager"], "account": sv["account"], "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
         "start": d1, "end": d2, "period_mode": period_mode, "customer_ids": cids, "selected_customer_ids": cids,
-        "top_n_keyword": int(sv.get("top_n_keyword", 300)), "top_n_ad": int(sv.get("top_n_ad", 200)), "top_n_campaign": int(sv.get("top_n_campaign", 200)),
+        "top_n_keyword": int(sv.get("top_n_keyword", 150)), "top_n_ad": int(sv.get("top_n_ad", 100)), "top_n_campaign": int(sv.get("top_n_campaign", 100)),
         "ready": True,
     }
 
