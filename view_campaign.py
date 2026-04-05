@@ -627,10 +627,331 @@ def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaig
     _diag_add(diag, '상세-분리결과', 'ok' if (not regular_detail.empty or not ext_ads.empty) else 'zero_data', len(regular_detail.index) + len(ext_ads.index), 'detail_split', f'일반={len(regular_detail.index)} 확장소재={len(ext_ads.index)}')
     return regular_detail, ext_ads
 
+
+
+def _summary_metric_config(has_pre_patch_cur: bool) -> tuple[list[str], str, str]:
+    if has_pre_patch_cur:
+        return ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"], "통합 ROAS(%)", "총 전환매출"
+    return [
+        "노출", "클릭", "CTR(%)", "CPC(원)", "광고비",
+        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+        "구매완료수", "구매완료 매출", "구매 ROAS(%)",
+        "총 전환수", "총 전환매출", "통합 ROAS(%)",
+    ], "구매 ROAS(%)", "구매완료 매출"
+
+
+def _render_campaign_type_device_summary(disp_main: pd.DataFrame, engine, f: Dict, diag: list[dict], roas_col: str, sales_col: str) -> None:
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("<div style='font-size:14px;font-weight:700;color:#1F2937;margin-bottom:10px;'>캠페인 유형 · 기기 요약</div>", unsafe_allow_html=True)
+        col_type, col_device = st.columns([1.45, 1], gap="medium")
+        with col_type:
+            st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>캠페인 유형별 데이터</div>", unsafe_allow_html=True)
+            type_grp = disp_main.groupby("캠페인유형").agg({"광고비": "sum", sales_col: "sum"}).reset_index()
+            total_cost = type_grp["광고비"].sum()
+            type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
+            type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
+            type_grp = type_grp.sort_values("광고비", ascending=False)
+            safe_fmt_type = {k: v for k, v in FMT_DICT.items() if k in type_grp.columns}
+            st.dataframe(
+                type_grp.style.format(safe_fmt_type),
+                width="stretch",
+                height=_compact_df_height(type_grp, min_height=74, max_height=220),
+                hide_index=True,
+                column_config={
+                    "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
+                },
+            )
+        with col_device:
+            st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
+            device_df = _query_device_breakdown(engine, f["start"], f["end"], tuple(f.get("selected_customer_ids", [])), tuple(f.get("type_sel", [])), diag=diag)
+            _render_device_share_panel(device_df)
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+
+
+def _normalize_detail_metric_frame(df: pd.DataFrame, item_col: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
+        if c not in df.columns:
+            df[c] = 0
+    renamed = df.rename(columns={
+        "adgroup_name": "광고그룹",
+        item_col: "항목명",
+        "imp": "노출",
+        "clk": "클릭",
+        "cost": "광고비",
+        "cart_conv": "장바구니수",
+        "cart_sales": "장바구니 매출액",
+        "wishlist_conv": "위시리스트수",
+        "wishlist_sales": "위시리스트 매출액",
+        "conv": "구매완료수",
+        "sales": "구매완료 매출",
+    }).copy()
+    renamed["광고그룹"] = renamed["광고그룹"].fillna("미분류").replace("", "미분류")
+    renamed["항목명"] = renamed["항목명"].fillna("미분류").replace("", "미분류")
+    group_value_cols = [c for c in [
+        "노출", "클릭", "광고비", "장바구니수", "장바구니 매출액", "위시리스트수", "위시리스트 매출액", "구매완료수", "구매완료 매출", "총 전환수", "총 전환매출"
+    ] if c in renamed.columns]
+    grouped = renamed.groupby(["광고그룹", "항목명"], as_index=False)[group_value_cols].sum()
+    return _add_perf_metrics(grouped)
+
+
+def _detail_display_columns(has_pre_patch_cur: bool, item_label: str) -> list[str]:
+    if has_pre_patch_cur:
+        return ["광고그룹", item_label, "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+    return [
+        "광고그룹", item_label, "노출", "클릭", "CTR(%)", "광고비",
+        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
+        "구매완료수", "구매완료 매출", "구매 ROAS(%)",
+        "총 전환수", "총 전환매출", "통합 ROAS(%)",
+    ]
+
+
+def _render_campaign_detail_table(title: str, df: pd.DataFrame, item_label: str, has_pre_patch_cur: bool) -> bool:
+    if df.empty:
+        return False
+    st.markdown(f"<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'> {escape(title)}</div>", unsafe_allow_html=True)
+    norm = _normalize_detail_metric_frame(df.copy(), item_label)
+    norm = norm.rename(columns={"항목명": item_label})
+    cols = [c for c in _detail_display_columns(has_pre_patch_cur, item_label) if c in norm.columns]
+    disp = norm[cols].sort_values("광고비", ascending=False).head(100)
+    safe_fmt = {k: v for k, v in FMT_DICT.items() if k in disp.columns}
+    st.dataframe(disp.style.format(safe_fmt), width="stretch", hide_index=True)
+    return True
+
+
+def _render_campaign_detail_section(selected_campaign: str, engine, f: Dict, selected_customer_id: str, selected_campaign_id: str, diag: list[dict], has_pre_patch_cur: bool) -> None:
+    with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
+        try:
+            kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id, diag=diag)
+        except Exception as e:
+            _diag_add(diag, '상세조회', 'error', 0, 'campaign_detail', f"{type(e).__name__}: {e}")
+            kw_detail, ext_ads = pd.DataFrame(), pd.DataFrame()
+            st.warning("상세 데이터를 불러오는 중 오류가 발생했습니다. 아래 조회 진단을 확인해 주세요.")
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 12px;'>[{escape(str(selected_campaign))}] 상세 분석</h5>", unsafe_allow_html=True)
+        has_data = False
+        has_data = _render_campaign_detail_table("확장소재 성과", ext_ads, "확장소재명", has_pre_patch_cur) or has_data
+        if not ext_ads.empty:
+            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        has_data = _render_campaign_detail_table("하위 그룹 / 소재 성과", kw_detail, "키워드/상품명", has_pre_patch_cur) or has_data
+        if not has_data:
+            st.info("해당 캠페인에 등록된 하위 키워드/소재 및 확장소재 데이터가 없습니다.")
+
+
+def _render_campaign_summary_tab(view: pd.DataFrame, engine, f: Dict, diag: list[dict], has_pre_patch_cur: bool, top_n: int) -> None:
+    camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
+    sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
+    disp_main = view.copy()
+    if sel_camp_main != "전체":
+        disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
+
+    base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
+    if "평균순위" in disp_main.columns:
+        base_cols.append("평균순위")
+    all_metrics_cols, roas_col, sales_col = _summary_metric_config(has_pre_patch_cur)
+    _render_campaign_type_device_summary(disp_main, engine, f, diag, roas_col, sales_col)
+
+    final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
+    disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
+    safe_fmt_main = {k: v for k, v in FMT_DICT.items() if k in disp_main_src.columns}
+    event = st.dataframe(disp_main_src[final_cols].style.format(safe_fmt_main), width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
+    selected_rows = event.selection.rows
+    if not selected_rows:
+        return
+    selected_idx = selected_rows[0]
+    selected_campaign = disp_main_src.iloc[selected_idx]["캠페인"]
+    selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
+    selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
+    _render_campaign_detail_section(selected_campaign, engine, f, selected_customer_id, selected_campaign_id, diag, has_pre_patch_cur)
+
+
+def _group_mode_columns(show_deltas_grp: bool, show_mode: str) -> list[str]:
+    if show_deltas_grp:
+        metrics_cols_grp = ["노출", "노출 증감", "노출 차이", "클릭", "클릭 증감", "클릭 차이", "광고비", "광고비 증감", "광고비 차이", "CPC(원)", "CPC 증감", "CPC 차이"]
+        if show_mode == "integrated_only":
+            metrics_cols_grp.extend(["총 전환수", "총 전환 증감", "총 전환 차이", "총 전환매출", "총 매출 증감", "총 매출 차이", "통합 ROAS(%)", "통합 ROAS 증감"])
+        else:
+            metrics_cols_grp.extend(["구매완료수", "구매 증감", "구매 차이", "구매완료 매출", "구매 매출 증감", "구매 매출 차이", "구매 ROAS(%)", "구매 ROAS 증감"])
+        return metrics_cols_grp
+    if show_mode == "integrated_only":
+        return ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+    return ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
+
+
+def _build_detail_source(kw_bundle: pd.DataFrame, ad_bundle: pd.DataFrame) -> pd.DataFrame:
+    kw_tmp = kw_bundle.rename(columns={"keyword": "item_name"}) if not kw_bundle.empty else pd.DataFrame()
+    if not ad_bundle.empty:
+        ad_tmp = ad_bundle.copy()
+        if "ad_title" in ad_tmp.columns:
+            ad_tmp["final_ad_name"] = ad_tmp["ad_title"].fillna("").astype(str).str.strip()
+            mask_empty = ad_tmp["final_ad_name"].isin(["", "nan", "None"])
+            ad_tmp.loc[mask_empty, "final_ad_name"] = ad_tmp.loc[mask_empty, "ad_name"].astype(str)
+        else:
+            ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
+        ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
+    else:
+        ad_tmp = pd.DataFrame()
+    return _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
+
+
+def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple, type_sel: tuple, top_n: int, patch_date: date, has_pre_patch_cur: bool) -> None:
+    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
+    show_deltas_grp = st.toggle(" 증감율 보기", value=False, key="grp_abs_toggle")
+    st.markdown("</div>", unsafe_allow_html=True)
+    cmp_mode_grp = None
+    b1_grp, b2_grp = None, None
+    if show_deltas_grp:
+        opts = get_dynamic_cmp_options(f["start"], f["end"])
+        cmp_opts = [o for o in opts if o != "비교 안함"]
+        cmp_mode_grp = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="grp_cmp_mode")
+        b1_grp, b2_grp = period_compare_range(f["start"], f["end"], cmp_mode_grp)
+    with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
+        kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
+        ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
+        base_detail_bundle_grp = pd.DataFrame()
+        if show_deltas_grp and b1_grp and b2_grp:
+            b_kw_bundle_grp = query_keyword_bundle(engine, b1_grp, b2_grp, list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
+            b_ad_bundle_grp = query_ad_bundle(engine, b1_grp, b2_grp, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
+            base_detail_bundle_grp = _build_detail_source(b_kw_bundle_grp, b_ad_bundle_grp)
+        detail_bundle_grp = _build_detail_source(kw_bundle_grp, ad_bundle_grp)
+    if detail_bundle_grp is None or detail_bundle_grp.empty:
+        st.info("광고그룹 성과 데이터가 없습니다.")
+        return
+    grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in detail_bundle_grp.columns]
+    val_cols = [c for c in ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"] if c in detail_bundle_grp.columns]
+    if not grp_cols or not val_cols:
+        st.info("광고그룹 성과 데이터가 없습니다.")
+        return
+    grp = detail_bundle_grp.groupby(grp_cols, as_index=False)[val_cols].sum()
+    grp = _perf_common_merge_meta(grp, meta)
+    grouped = grp.rename(columns={
+        "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹",
+        "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
+        "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출",
+    }).copy()
+    grouped = _add_perf_metrics(grouped)
+    valid_keys_grp = [k for k in ["customer_id", "campaign_id", "adgroup_id"] if k in grouped.columns]
+    if show_deltas_grp:
+        if not base_detail_bundle_grp.empty and valid_keys_grp:
+            b_grp_cols = [c for c in valid_keys_grp if c in base_detail_bundle_grp.columns]
+            b_grp = base_detail_bundle_grp.groupby(b_grp_cols, as_index=False)[val_cols].sum()
+            grouped = _apply_comparison_metrics(grouped, b_grp, valid_keys_grp)
+        else:
+            grouped = _apply_comparison_metrics(grouped, pd.DataFrame(), valid_keys_grp)
+    camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
+    sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
+    if sel_camp != "전체":
+        grouped = grouped[grouped["캠페인"] == sel_camp]
+    has_pre_patch_base = (b1_grp < patch_date) if (show_deltas_grp and b1_grp) else False
+    show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
+    if show_deltas_grp and show_mode == "integrated_only":
+        st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
+    metrics_cols_grp = _group_mode_columns(show_deltas_grp, show_mode)
+    base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
+    cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
+    disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
+    safe_fmt_grp = {k: v for k, v in FMT_DICT.items() if k in disp_grp.columns}
+    styled_grp = disp_grp.style.format(safe_fmt_grp)
+    if show_deltas_grp:
+        styled_grp = _apply_delta_styles(styled_grp, disp_grp)
+    st.dataframe(styled_grp, width="stretch", hide_index=True)
+
+
+def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
+    metrics_cols_cmp = []
+    metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
+    metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
+    metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
+    metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC(원)"])
+    if show_mode == "integrated_only":
+        metrics_cols_cmp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_deltas else ["총 전환수"])
+        metrics_cols_cmp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_deltas else ["총 전환매출"])
+        metrics_cols_cmp.extend(["통합 ROAS(%)", "통합 ROAS 증감"] if show_deltas else ["통합 ROAS(%)"])
+    else:
+        metrics_cols_cmp.extend(["구매완료수", "구매 증감", "구매 차이"] if show_deltas else ["구매완료수"])
+        metrics_cols_cmp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_deltas else ["구매완료 매출"])
+        metrics_cols_cmp.extend(["구매 ROAS(%)", "구매 ROAS 증감"] if show_deltas else ["구매 ROAS(%)"])
+    return metrics_cols_cmp
+
+
+def _render_campaign_compare_tab(view: pd.DataFrame, engine, f: Dict, cids: tuple, type_sel: tuple, top_n: int, patch_date: date, has_pre_patch_cur: bool) -> None:
+    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
+    show_deltas = st.toggle(" 증감율 보기", value=False, key="camp_abs_toggle")
+    st.markdown("</div>", unsafe_allow_html=True)
+    opts = get_dynamic_cmp_options(f["start"], f["end"])
+    cmp_opts = [o for o in opts if o != "비교 안함"]
+    cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
+    b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
+    with st.spinner("🔄 이전 기간의 데이터를 불러오는 중입니다..."):
+        base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
+    view_cmp = view.copy()
+    valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
+    if not base_bundle.empty and valid_keys:
+        view_cmp = _apply_comparison_metrics(view_cmp, base_bundle, valid_keys)
+    else:
+        view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns])
+    has_pre_patch_base = (b1 < patch_date) if b1 else False
+    show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
+    if show_mode == "integrated_only":
+        st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
+    metrics_cols_cmp = _compare_mode_columns(show_deltas, show_mode)
+    base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
+    if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
+        base_cols_cmp.append("평균순위")
+        if show_deltas:
+            metrics_cols_cmp.append("순위 변화")
+    final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
+    disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
+    safe_fmt_cmp = {k: v for k, v in FMT_DICT.items() if k in disp_cmp.columns}
+    styled_cmp = _apply_delta_styles(disp_cmp.style.format(safe_fmt_cmp), disp_cmp)
+    st.dataframe(styled_cmp, width="stretch", height=560, hide_index=True, column_config={
+        "캠페인": st.column_config.TextColumn("캠페인", pinned=True)
+    })
+
+
+def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: Dict, cids: tuple) -> None:
+    st.info("이 지면에서는 상세 퍼널보다 안정적인 광고 운영 여부가 중요합니다.")
+    try:
+        days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
+        if days_diff < 3:
+            st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다.")
+    except Exception:
+        pass
+    off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
+    if off_log.empty:
+        st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
+        return
+    dim_camp = load_dim_campaign(engine)
+    if not dim_camp.empty:
+        dim_camp["campaign_id"], off_log["campaign_id"] = dim_camp["campaign_id"].astype(str), off_log["campaign_id"].astype(str)
+        off_log = off_log.merge(dim_camp[["campaign_id", "campaign_name"]], on="campaign_id", how="left")
+    else:
+        off_log["campaign_name"] = off_log["campaign_id"]
+    if not meta.empty:
+        meta_copy = meta.copy()
+        meta_copy["customer_id"], off_log["customer_id"] = meta_copy["customer_id"].astype(str), off_log["customer_id"].astype(str)
+        off_log = off_log.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
+    else:
+        off_log["account_name"] = off_log["customer_id"]
+    off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
+    pivot_df = off_log.pivot_table(index=["account_name", "campaign_name"], columns="dt_str", values="off_time", aggfunc='first').reset_index()
+    pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인"}).fillna("-")
+    if not view.empty and "통합 ROAS(%)" in view.columns:
+        roas_df = view[["업체명", "캠페인", "통합 ROAS(%)"]].drop_duplicates()
+        pivot_df = pivot_df.merge(roas_df, on=["업체명", "캠페인"], how="left")
+        cols = pivot_df.columns.tolist()
+        cols.insert(2, cols.pop(cols.index('통합 ROAS(%)')))
+        pivot_df = pivot_df[cols]
+    st.dataframe(pivot_df, width="stretch", hide_index=True)
+
+
 @st.fragment
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
-    if not f.get("ready", False): return
-
+    if not f.get("ready", False):
+        return
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
@@ -638,373 +959,31 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     patch_date = date(2026, 3, 11)
     has_pre_patch_cur = (f["start"] < patch_date)
     diag: list[dict] = []
-
     if has_pre_patch_cur:
         st.info("💡 3월 11일 이전 데이터가 포함되어 있어 '통합 전환' 기준으로 성과가 표시됩니다.")
-
     with st.spinner("🔄 최신 필터 조건에 맞추어 데이터를 실시간으로 집계하고 있습니다..."):
         bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
         _diag_add(diag, '캠페인집계', 'ok' if bundle is not None and not bundle.empty else 'zero_data', 0 if bundle is None else len(bundle.index), 'query_campaign_bundle', f'기간={f["start"]}~{f["end"]} 고객수={len(cids)} 유형수={len(type_sel)}')
         if bundle is None or bundle.empty:
             _render_diag_panel(diag)
             return
-
         df = _perf_common_merge_meta(bundle, meta)
         _diag_add(diag, '메타병합', 'ok' if not df.empty else 'zero_data', len(df.index), 'meta_merge', 'campaign bundle + account meta')
         view = df.rename(columns={
-            "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형",
-            "campaign_name": "캠페인", "imp": "노출", "clk": "클릭", "cost": "광고비",
-            "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
-            "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액",
-            "conv": "구매완료수", "sales": "구매완료 매출"
+            "account_name": "업체명", "manager": "담당자", "campaign_type": "캠페인유형", "campaign_name": "캠페인",
+            "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액",
+            "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출",
         }).copy()
         view = _add_perf_metrics(view)
         if "avg_rank" in view.columns:
             view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
-
     selected_tab = st.pills("분석 탭 선택", ["종합 성과", "그룹 성과", "기간 비교", "꺼짐 기록"], default="종합 성과")
-
     if selected_tab == "종합 성과":
-        camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
-        sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
-        disp_main = view.copy()
-        if sel_camp_main != "전체": disp_main = disp_main[disp_main["캠페인"] == sel_camp_main]
-
-        base_cols = ["업체명", "담당자", "캠페인유형", "캠페인"]
-        if "평균순위" in disp_main.columns: base_cols.append("평균순위")
-
-        if has_pre_patch_cur:
-            all_metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-            roas_col, sales_col = "통합 ROAS(%)", "총 전환매출"
-        else:
-            all_metrics_cols = [
-                "노출", "클릭", "CTR(%)", "CPC(원)", "광고비", 
-                "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
-                "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
-                "총 전환수", "총 전환매출", "통합 ROAS(%)"
-            ]
-            roas_col, sales_col = "구매 ROAS(%)", "구매완료 매출"
-
-        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown("<div style='font-size:14px;font-weight:700;color:#1F2937;margin-bottom:10px;'>캠페인 유형 · 기기 요약</div>", unsafe_allow_html=True)
-            col_type, col_device = st.columns([1.45, 1], gap="medium")
-            with col_type:
-                st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>캠페인 유형별 데이터</div>", unsafe_allow_html=True)
-                type_grp = disp_main.groupby("캠페인유형").agg({"광고비": "sum", sales_col: "sum"}).reset_index()
-                total_cost = type_grp["광고비"].sum()
-                type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
-                type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
-                type_grp = type_grp.sort_values("광고비", ascending=False)
-                
-                safe_fmt_type = {k: v for k, v in FMT_DICT.items() if k in type_grp.columns}
-                st.dataframe(
-                    type_grp.style.format(safe_fmt_type),
-                    width="stretch",
-                    height=_compact_df_height(type_grp, min_height=74, max_height=220),
-                    hide_index=True,
-                    column_config={
-                        "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
-                    }
-                )
-            with col_device:
-                st.markdown("<div style='font-size:13px;color:#4B5563;margin-bottom:8px;'>기기별 광고비 지출 비중</div>", unsafe_allow_html=True)
-                device_df = _query_device_breakdown(engine, f["start"], f["end"], cids, type_sel, diag=diag)
-                _render_device_share_panel(device_df)
-        st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-
-        final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
-        disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
-        
-        safe_fmt_main = {k: v for k, v in FMT_DICT.items() if k in disp_main_src.columns}
-        event = st.dataframe(disp_main_src[final_cols].style.format(safe_fmt_main), width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
-
-        selected_rows = event.selection.rows
-        if selected_rows:
-            selected_idx = selected_rows[0]
-            selected_campaign = disp_main_src.iloc[selected_idx]["캠페인"]
-            selected_customer_id = str(disp_main_src.iloc[selected_idx].get("customer_id", ""))
-            selected_campaign_id = str(disp_main_src.iloc[selected_idx].get("campaign_id", ""))
-            
-            #  수정 2: 기존 그래프를 제거하고 확장소재와 일반 하위 항목으로 분할 렌더링
-            with st.spinner("🔄 선택한 캠페인의 하위 키워드/소재 성과를 불러오는 중입니다..."):
-                try:
-                    kw_detail, ext_ads = _query_detail_bundles_for_campaign(engine, f["start"], f["end"], selected_customer_id, selected_campaign_id, diag=diag)
-                except Exception as e:
-                    _diag_add(diag, '상세조회', 'error', 0, 'campaign_detail', f"{type(e).__name__}: {e}")
-                    kw_detail, ext_ads = pd.DataFrame(), pd.DataFrame()
-                    st.warning("상세 데이터를 불러오는 중 오류가 발생했습니다. 아래 조회 진단을 확인해 주세요.")
-            
-            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown(f"<h5 style='color: #335CFF; margin-bottom: 12px;'>[{selected_campaign}] 상세 분석</h5>", unsafe_allow_html=True)
-                
-                has_data = False
-                
-                # --- 1) 확장소재 테이블 렌더링 ---
-                if not ext_ads.empty:
-                    has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'> 확장소재 성과</div>", unsafe_allow_html=True)
-                    for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
-                        if c not in ext_ads.columns:
-                            ext_ads[c] = 0
-                    ext_view = ext_ads.rename(columns={"adgroup_name": "광고그룹", "item_name": "확장소재명", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"})
-                    ext_view['광고그룹'] = ext_view['광고그룹'].fillna('미분류').replace('', '미분류')
-                    ext_view['확장소재명'] = ext_view['확장소재명'].fillna('미분류').replace('', '미분류')
-                    group_value_cols = [c for c in ['노출', '클릭', '광고비', '장바구니수', '장바구니 매출액', '위시리스트수', '위시리스트 매출액', '구매완료수', '구매완료 매출', '총 전환수', '총 전환매출'] if c in ext_view.columns]
-                    grp_ext = ext_view.groupby(['광고그룹', '확장소재명'], as_index=False)[group_value_cols].sum()
-                    grp_ext = _add_perf_metrics(grp_ext)
-
-                    sub_cols = [
-                        "광고그룹", "확장소재명", "노출", "클릭", "CTR(%)", "광고비", 
-                        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
-                        "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
-                        "총 전환수", "총 전환매출", "통합 ROAS(%)"
-                    ]
-                    if has_pre_patch_cur:
-                        sub_cols = ["광고그룹", "확장소재명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-                    
-                    ext_disp = grp_ext[[c for c in sub_cols if c in grp_ext.columns]].sort_values("광고비", ascending=False).head(100)
-                    safe_fmt_ext = {k: v for k, v in FMT_DICT.items() if k in ext_disp.columns}
-                    st.dataframe(ext_disp.style.format(safe_fmt_ext), width="stretch", hide_index=True)
-                    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
-                
-                # --- 2) 일반 키워드/소재 테이블 렌더링 ---
-                if not kw_detail.empty:
-                    has_data = True
-                    st.markdown("<div style='font-size:14px;font-weight:700;color:#374151;margin-bottom:8px;'> 하위 그룹 / 소재 성과</div>", unsafe_allow_html=True)
-                    for c in ["cart_sales", "cart_conv", "wishlist_sales", "wishlist_conv"]:
-                        if c not in kw_detail.columns:
-                            kw_detail[c] = 0
-                    kw_view = kw_detail.rename(columns={"adgroup_name": "광고그룹", "item_name": "키워드/상품명", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"})
-                    kw_view['광고그룹'] = kw_view['광고그룹'].fillna('미분류').replace('', '미분류')
-                    kw_view['키워드/상품명'] = kw_view['키워드/상품명'].fillna('미분류').replace('', '미분류')
-                    group_value_cols = [c for c in ['노출', '클릭', '광고비', '장바구니수', '장바구니 매출액', '위시리스트수', '위시리스트 매출액', '구매완료수', '구매완료 매출', '총 전환수', '총 전환매출'] if c in kw_view.columns]
-                    grp_kw = kw_view.groupby(['광고그룹', '키워드/상품명'], as_index=False)[group_value_cols].sum()
-                    grp_kw = _add_perf_metrics(grp_kw)
-
-                    sub_cols = [
-                        "광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", 
-                        "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)",
-                        "구매완료수", "구매완료 매출", "구매 ROAS(%)", 
-                        "총 전환수", "총 전환매출", "통합 ROAS(%)"
-                    ]
-                    if has_pre_patch_cur:
-                        sub_cols = ["광고그룹", "키워드/상품명", "노출", "클릭", "CTR(%)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-                    
-                    kw_disp = grp_kw[[c for c in sub_cols if c in grp_kw.columns]].sort_values("광고비", ascending=False).head(100)
-                    safe_fmt_kw = {k: v for k, v in FMT_DICT.items() if k in kw_disp.columns}
-                    st.dataframe(kw_disp.style.format(safe_fmt_kw), width="stretch", hide_index=True)
-                
-                if not has_data:
-                    st.info("해당 캠페인에 등록된 하위 키워드/소재 및 확장소재 데이터가 없습니다.")
-
+        _render_campaign_summary_tab(view, engine, f, diag, has_pre_patch_cur, top_n)
     elif selected_tab == "그룹 성과":
-        st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        show_deltas_grp = st.toggle(" 증감율 보기", value=False, key="grp_abs_toggle")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        cmp_mode_grp = None
-        b1_grp, b2_grp = None, None
-        if show_deltas_grp:
-            opts = get_dynamic_cmp_options(f["start"], f["end"])
-            cmp_opts = [o for o in opts if o != "비교 안함"]
-            cmp_mode_grp = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="grp_cmp_mode")
-            b1_grp, b2_grp = period_compare_range(f["start"], f["end"], cmp_mode_grp)
-
-        with st.spinner("🔄 광고그룹 성과를 불러오는 중입니다..."):
-            kw_bundle_grp = query_keyword_bundle(engine, f["start"], f["end"], list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
-            ad_bundle_grp = query_ad_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
-            
-            # 비교 기준 데이터 불러오기 (증감율 토글 활성화 시)
-            base_detail_bundle_grp = pd.DataFrame()
-            if show_deltas_grp and b1_grp and b2_grp:
-                b_kw_bundle_grp = query_keyword_bundle(engine, b1_grp, b2_grp, list(cids), type_sel, topn_cost=_campaign_fetch_limit(top_n))
-                b_ad_bundle_grp = query_ad_bundle(engine, b1_grp, b2_grp, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n), top_k=50)
-                
-                b_kw_tmp = b_kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not b_kw_bundle_grp.empty else pd.DataFrame()
-                if not b_ad_bundle_grp.empty:
-                    b_ad_tmp = b_ad_bundle_grp.copy()
-                    if "ad_title" in b_ad_tmp.columns:
-                        b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_title"].fillna("").astype(str).str.strip()
-                        mask_empty = b_ad_tmp["final_ad_name"].isin(["", "nan", "None"])
-                        b_ad_tmp.loc[mask_empty, "final_ad_name"] = b_ad_tmp.loc[mask_empty, "ad_name"].astype(str)
-                    else:
-                        b_ad_tmp["final_ad_name"] = b_ad_tmp["ad_name"].astype(str)
-                    b_ad_tmp = b_ad_tmp.rename(columns={"final_ad_name": "item_name"})
-                else:
-                    b_ad_tmp = pd.DataFrame()
-                base_detail_bundle_grp = _prefer_detail_source_by_campaign(b_kw_tmp, b_ad_tmp)
-
-            kw_tmp = kw_bundle_grp.rename(columns={"keyword": "item_name"}) if not kw_bundle_grp.empty else pd.DataFrame()
-            if not ad_bundle_grp.empty:
-                ad_tmp = ad_bundle_grp.copy()
-                if "ad_title" in ad_tmp.columns:
-                    ad_tmp["final_ad_name"] = ad_tmp["ad_title"].fillna("").astype(str).str.strip()
-                    mask_empty = ad_tmp["final_ad_name"].isin(["", "nan", "None"])
-                    ad_tmp.loc[mask_empty, "final_ad_name"] = ad_tmp.loc[mask_empty, "ad_name"].astype(str)
-                else:
-                    ad_tmp["final_ad_name"] = ad_tmp["ad_name"].astype(str)
-                ad_tmp = ad_tmp.rename(columns={"final_ad_name": "item_name"})
-            else:
-                ad_tmp = pd.DataFrame()
-            detail_bundle_grp = _prefer_detail_source_by_campaign(kw_tmp, ad_tmp)
-
-        if detail_bundle_grp is None or detail_bundle_grp.empty:
-            st.info("광고그룹 성과 데이터가 없습니다.")
-        else:
-            grp_cols = [c for c in ["customer_id", "campaign_id", "adgroup_id", "campaign_type_label", "campaign_name", "adgroup_name"] if c in detail_bundle_grp.columns]
-            val_cols = [c for c in ["imp", "clk", "cost", "cart_conv", "cart_sales", "wishlist_conv", "wishlist_sales", "conv", "sales", "tot_conv", "tot_sales"] if c in detail_bundle_grp.columns]
-            if not grp_cols or not val_cols:
-                st.info("광고그룹 성과 데이터가 없습니다.")
-            else:
-                grp = detail_bundle_grp.groupby(grp_cols, as_index=False)[val_cols].sum()
-                grp = _perf_common_merge_meta(grp, meta)
-                grouped = grp.rename(columns={"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "imp": "노출", "clk": "클릭", "cost": "광고비", "cart_conv": "장바구니수", "cart_sales": "장바구니 매출액", "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출"}).copy()
-                grouped = _add_perf_metrics(grouped)
-
-                valid_keys_grp = [k for k in ["customer_id", "campaign_id", "adgroup_id"] if k in grouped.columns]
-                
-                # 증감 계산
-                if show_deltas_grp:
-                    if not base_detail_bundle_grp.empty and valid_keys_grp:
-                        b_grp_cols = [c for c in valid_keys_grp if c in base_detail_bundle_grp.columns]
-                        b_grp = base_detail_bundle_grp.groupby(b_grp_cols, as_index=False)[val_cols].sum()
-                        grouped = _apply_comparison_metrics(grouped, b_grp, valid_keys_grp)
-                    else:
-                        grouped = _apply_comparison_metrics(grouped, pd.DataFrame(), valid_keys_grp)
-
-                camps = ["전체"] + sorted([str(x) for x in grouped["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in grouped.columns else ["전체"]
-                sel_camp = st.selectbox("캠페인 필터", camps, key="camp_group_filter")
-                if sel_camp != "전체":
-                    grouped = grouped[grouped["캠페인"] == sel_camp]
-
-                has_pre_patch_base = (b1_grp < patch_date) if (show_deltas_grp and b1_grp) else False
-                show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
-                
-                if show_deltas_grp and show_mode == "integrated_only":
-                    st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
-
-                metrics_cols_grp = []
-                if show_deltas_grp:
-                    metrics_cols_grp.extend(["노출", "노출 증감", "노출 차이"])
-                    metrics_cols_grp.extend(["클릭", "클릭 증감", "클릭 차이"])
-                    metrics_cols_grp.extend(["광고비", "광고비 증감", "광고비 차이"])
-                    metrics_cols_grp.extend(["CPC(원)", "CPC 증감", "CPC 차이"])
-
-                    if show_mode == "integrated_only":
-                        metrics_cols_grp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"])
-                        metrics_cols_grp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"])
-                        metrics_cols_grp.extend(["통합 ROAS(%)", "통합 ROAS 증감"])
-                    else:
-                        metrics_cols_grp.extend(["구매완료수", "구매 증감", "구매 차이"])
-                        metrics_cols_grp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"])
-                        metrics_cols_grp.extend(["구매 ROAS(%)", "구매 ROAS 증감"])
-                else:
-                    if show_mode == "integrated_only":
-                         metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-                    else:
-                         metrics_cols_grp = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "장바구니수", "장바구니 매출액", "장바구니 ROAS(%)", "구매완료수", "구매완료 매출", "구매 ROAS(%)", "총 전환수", "총 전환매출", "통합 ROAS(%)"]
-
-                base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
-                cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
-                disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
-                
-                safe_fmt_grp = {k: v for k, v in FMT_DICT.items() if k in disp_grp.columns}
-                styled_grp = disp_grp.style.format(safe_fmt_grp)
-                
-                if show_deltas_grp:
-                    styled_grp = _apply_delta_styles(styled_grp, disp_grp)
-                    
-                st.dataframe(styled_grp, width="stretch", hide_index=True)
-
+        _render_campaign_group_tab(meta, engine, f, cids, type_sel, top_n, patch_date, has_pre_patch_cur)
     elif selected_tab == "기간 비교":
-        st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
-        show_deltas = st.toggle(" 증감율 보기", value=False, key="camp_abs_toggle")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        opts = get_dynamic_cmp_options(f["start"], f["end"])
-        cmp_opts = [o for o in opts if o != "비교 안함"]
-        cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
-        b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
-
-        with st.spinner("🔄 이전 기간의 데이터를 불러오는 중입니다..."):
-            base_bundle = query_campaign_bundle(engine, b1, b2, cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
-
-        view_cmp = view.copy()
-        valid_keys = [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns and k in base_bundle.columns]
-        if not base_bundle.empty and valid_keys: view_cmp = _apply_comparison_metrics(view_cmp, base_bundle, valid_keys)
-        else: view_cmp = _apply_comparison_metrics(view_cmp, pd.DataFrame(), [k for k in ["customer_id", "campaign_id"] if k in view_cmp.columns])
-
-        has_pre_patch_base = (b1 < patch_date) if b1 else False
-        show_mode = "integrated_only" if (has_pre_patch_base or has_pre_patch_cur) else "purchase_default"
-        if show_mode == "integrated_only": st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
-
-        metrics_cols_cmp = []
-        metrics_cols_cmp.extend(["노출", "노출 증감", "노출 차이"] if show_deltas else ["노출"])
-        metrics_cols_cmp.extend(["클릭", "클릭 증감", "클릭 차이"] if show_deltas else ["클릭"])
-        metrics_cols_cmp.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
-        metrics_cols_cmp.extend(["CPC(원)", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC(원)"])
-
-        if show_mode == "integrated_only":
-            metrics_cols_cmp.extend(["총 전환수", "총 전환 증감", "총 전환 차이"] if show_deltas else ["총 전환수"])
-            metrics_cols_cmp.extend(["총 전환매출", "총 매출 증감", "총 매출 차이"] if show_deltas else ["총 전환매출"])
-            metrics_cols_cmp.extend(["통합 ROAS(%)", "통합 ROAS 증감"] if show_deltas else ["통합 ROAS(%)"])
-        else:
-            metrics_cols_cmp.extend(["구매완료수", "구매 증감", "구매 차이"] if show_deltas else ["구매완료수"])
-            metrics_cols_cmp.extend(["구매완료 매출", "구매 매출 증감", "구매 매출 차이"] if show_deltas else ["구매완료 매출"])
-            metrics_cols_cmp.extend(["구매 ROAS(%)", "구매 ROAS 증감"] if show_deltas else ["구매 ROAS(%)"])
-
-        base_cols_cmp = ["업체명", "담당자", "캠페인유형", "캠페인"]
-        if "avg_rank" in view_cmp.columns or "평균순위" in view_cmp.columns:
-            base_cols_cmp.append("평균순위")
-            if show_deltas: 
-                metrics_cols_cmp.append("순위 변화")
-
-        final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
-        disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
-
-        safe_fmt_cmp = {k: v for k, v in FMT_DICT.items() if k in disp_cmp.columns}
-        styled_cmp = disp_cmp.style.format(safe_fmt_cmp)
-        styled_cmp = _apply_delta_styles(styled_cmp, disp_cmp)
-
-        st.dataframe(styled_cmp, width="stretch", height=560, hide_index=True, column_config={
-            "캠페인": st.column_config.TextColumn("캠페인", pinned=True)
-        })
-
+        _render_campaign_compare_tab(view, engine, f, cids, type_sel, top_n, patch_date, has_pre_patch_cur)
     elif selected_tab == "꺼짐 기록":
-        st.info("이 지면에서는 상세 퍼널보다 안정적인 광고 운영 여부가 중요합니다.")
-        try:
-            days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
-            if days_diff < 3: st.warning("단기 데이터(3일 미만) 기반 예산 증액 주의: 일시적인 효율 상승일 수 있습니다.")
-        except: pass
-
-        off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
-        if off_log.empty: st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
-        else:
-            dim_camp = load_dim_campaign(engine)
-            if not dim_camp.empty:
-                dim_camp["campaign_id"], off_log["campaign_id"] = dim_camp["campaign_id"].astype(str), off_log["campaign_id"].astype(str)
-                off_log = off_log.merge(dim_camp[["campaign_id", "campaign_name"]], on="campaign_id", how="left")
-            else: off_log["campaign_name"] = off_log["campaign_id"]
-
-            if not meta.empty:
-                meta_copy = meta.copy()
-                meta_copy["customer_id"], off_log["customer_id"] = meta_copy["customer_id"].astype(str), off_log["customer_id"].astype(str)
-                off_log = off_log.merge(meta_copy[["customer_id", "account_name"]], on="customer_id", how="left")
-            else: off_log["account_name"] = off_log["customer_id"]
-
-            off_log["dt_str"] = pd.to_datetime(off_log["dt"]).dt.strftime("%m/%d")
-            pivot_df = off_log.pivot_table(index=["account_name", "campaign_name"], columns="dt_str", values="off_time", aggfunc='first').reset_index()
-            pivot_df = pivot_df.rename(columns={"account_name": "업체명", "campaign_name": "캠페인"}).fillna("-")
-
-            if not view.empty and "통합 ROAS(%)" in view.columns:
-                roas_df = view[["업체명", "캠페인", "통합 ROAS(%)"]].drop_duplicates()
-                pivot_df = pivot_df.merge(roas_df, on=["업체명", "캠페인"], how="left")
-                cols = pivot_df.columns.tolist()
-                cols.insert(2, cols.pop(cols.index('통합 ROAS(%)')))
-                pivot_df = pivot_df[cols]
-
-            st.dataframe(pivot_df, width="stretch", hide_index=True)
-
+        _render_campaign_off_tab(view, meta, engine, f, cids)
     _render_diag_panel(diag)

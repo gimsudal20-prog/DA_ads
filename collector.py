@@ -1286,136 +1286,170 @@ def format_split_summary(summary: dict) -> str:
         f"위시리스트 {fmt(summary.get('wishlist_conv', 0))}건"
     )
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, live_keyword_resolver=None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
-    camp_map, kw_map, ad_map = {}, {}, {}
-    summary = empty_split_summary()
-    debug_rows = []
-    allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
-    keyword_lookup = keyword_lookup or {}
-    keyword_unique_lookup = keyword_unique_lookup or {}
-    if df is None or df.empty:
-        return camp_map, kw_map, ad_map, summary
+def _conv_empty_maps_and_summary() -> tuple[dict, dict, dict, dict]:
+    return {}, {}, {}, empty_split_summary()
 
-    def ensure_split_bucket(m_dict: dict, obj_id: str):
-        if obj_id not in m_dict:
-            m_dict[obj_id] = {
-                "purchase_conv": 0.0,
-                "purchase_sales": 0,
-                "cart_conv": 0.0,
-                "cart_sales": 0,
-                "wishlist_conv": 0.0,
-                "wishlist_sales": 0,
-            }
 
-    def apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
-        obj_id = str(obj_id).strip()
-        if not obj_id or obj_id == "-":
-            return
-        ensure_split_bucket(m_dict, obj_id)
-        if is_purchase:
-            m_dict[obj_id]["purchase_conv"] += c_val
-            m_dict[obj_id]["purchase_sales"] += s_val
-        elif is_cart:
-            m_dict[obj_id]["cart_conv"] += c_val
-            m_dict[obj_id]["cart_sales"] += s_val
-        elif is_wishlist:
-            m_dict[obj_id]["wishlist_conv"] += c_val
-            m_dict[obj_id]["wishlist_sales"] += s_val
+def _conv_ensure_split_bucket(m_dict: dict, obj_id: str):
+    if obj_id not in m_dict:
+        m_dict[obj_id] = {
+            "purchase_conv": 0.0,
+            "purchase_sales": 0,
+            "cart_conv": 0.0,
+            "cart_sales": 0,
+            "wishlist_conv": 0.0,
+            "wishlist_sales": 0,
+        }
 
-    def classify_conversion_value(v) -> tuple[bool, bool, bool]:
-        ctype = str(v).strip().lower()
-        ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
-        is_purchase = (
-            '구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'}
-        )
-        is_cart = (
-            '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
-        )
-        is_wishlist = (
-            '위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'}
-        )
-        return is_purchase, is_cart, is_wishlist
 
-    def maybe_numeric(v: str) -> float | None:
-        s = str(v).strip().replace(',', '')
-        if not s or s == '-':
-            return None
-        if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
-            try:
-                return float(s)
-            except Exception:
-                return None
+def _conv_apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
+    obj_id = str(obj_id).strip()
+    if not obj_id or obj_id == '-':
+        return
+    _conv_ensure_split_bucket(m_dict, obj_id)
+    if is_purchase:
+        m_dict[obj_id]["purchase_conv"] += c_val
+        m_dict[obj_id]["purchase_sales"] += s_val
+    elif is_cart:
+        m_dict[obj_id]["cart_conv"] += c_val
+        m_dict[obj_id]["cart_sales"] += s_val
+    elif is_wishlist:
+        m_dict[obj_id]["wishlist_conv"] += c_val
+        m_dict[obj_id]["wishlist_sales"] += s_val
+
+
+def _conv_classify_conversion_value(v) -> tuple[bool, bool, bool]:
+    ctype = str(v).strip().lower()
+    ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
+    is_purchase = (
+        '구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'}
+    )
+    is_cart = (
+        '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
+    )
+    is_wishlist = (
+        '위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'}
+    )
+    return is_purchase, is_cart, is_wishlist
+
+
+def _conv_maybe_numeric(v: str) -> float | None:
+    s = str(v).strip().replace(',', '')
+    if not s or s == '-':
         return None
+    if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
 
-    def looks_like_id(v: str) -> bool:
+
+def _conv_looks_like_id(v: str) -> bool:
+    s = str(v).strip().lower()
+    return s.startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-'))
+
+
+def _conv_row_allowed(row_campaign_id: str | None, allowed_campaign_ids: set[str]) -> bool:
+    if not allowed_campaign_ids:
+        return True
+    row_campaign_id = str(row_campaign_id or "").strip()
+    return bool(row_campaign_id) and row_campaign_id in allowed_campaign_ids
+
+
+def _conv_add_debug_row(debug_rows: list[dict], report_hint: str, debug_account_name: str, debug_target_date: str,
+                        vals, parsed_type, c_val, s_val, kept, reason,
+                        row_cid="", row_gid="", row_kid="", row_adid="", kw_text="", kw_obj_id=""):
+    debug_rows.append({
+        "report_tp": report_hint,
+        "date": str(debug_target_date or ""),
+        "account_name": str(debug_account_name or ""),
+        "campaign_id": str(row_cid or ""),
+        "adgroup_id": str(row_gid or ""),
+        "keyword_id": str(row_kid or ""),
+        "keyword_text": str(kw_text or ""),
+        "keyword_mapped_id": str(kw_obj_id or ""),
+        "ad_id": str(row_adid or ""),
+        "parsed_type": str(parsed_type or ""),
+        "parsed_count": c_val,
+        "parsed_sales": s_val,
+        "kept": 1 if kept else 0,
+        "reason": reason,
+        "row": " | ".join([str(x) for x in vals]),
+    })
+
+
+def _conv_flush_debug_rows(debug_rows: list[dict], report_hint: str, debug_account_name: str, debug_target_date: str):
+    if FAST_MODE or not debug_rows or not debug_account_name or not debug_target_date:
+        return
+    dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
+    os.makedirs(dbg_dir, exist_ok=True)
+    safe_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(debug_account_name))
+    out_path = os.path.join(dbg_dir, f"{debug_target_date}_{safe_name}_{report_hint}.csv")
+    fields = [
+        "report_tp", "date", "account_name", "campaign_id", "adgroup_id", "keyword_id", "keyword_text", "keyword_mapped_id", "ad_id",
+        "parsed_type", "parsed_count", "parsed_sales", "kept", "reason", "row"
+    ]
+    with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(debug_rows)
+
+
+def _conv_guess_campaign_id_from_row(vals: list[str]) -> str:
+    for v in vals:
         s = str(v).strip().lower()
-        return s.startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-'))
+        if s.startswith('cmp-'):
+            return str(v).strip()
+    return ""
 
-    def row_allowed(row_campaign_id: str | None) -> bool:
-        if not allowed_campaign_ids:
-            return True
-        row_campaign_id = str(row_campaign_id or "").strip()
-        return bool(row_campaign_id) and row_campaign_id in allowed_campaign_ids
 
-    def add_debug_row(vals, parsed_type, c_val, s_val, kept, reason, row_cid="", row_gid="", row_kid="", row_adid="", kw_text="", kw_obj_id=""):
-        debug_rows.append({
-            "report_tp": report_hint,
-            "date": str(debug_target_date or ""),
-            "account_name": str(debug_account_name or ""),
-            "campaign_id": str(row_cid or ""),
-            "adgroup_id": str(row_gid or ""),
-            "keyword_id": str(row_kid or ""),
-            "keyword_text": str(kw_text or ""),
-            "keyword_mapped_id": str(kw_obj_id or ""),
-            "ad_id": str(row_adid or ""),
-            "parsed_type": str(parsed_type or ""),
-            "parsed_count": c_val,
-            "parsed_sales": s_val,
-            "kept": 1 if kept else 0,
-            "reason": reason,
-            "row": " | ".join([str(x) for x in vals]),
-        })
+def _conv_first_value_with_prefix(vals: list[str], prefix: str) -> str:
+    for v in vals:
+        s = str(v).strip()
+        if s.lower().startswith(prefix):
+            return s
+    return ""
 
-    def flush_debug_rows():
-        if FAST_MODE or not debug_rows or not debug_account_name or not debug_target_date:
-            return
-        dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
-        os.makedirs(dbg_dir, exist_ok=True)
-        safe_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(debug_account_name))
-        out_path = os.path.join(dbg_dir, f"{debug_target_date}_{safe_name}_{report_hint}.csv")
-        fields = [
-            "report_tp","date","account_name","campaign_id","adgroup_id","keyword_id","keyword_text","keyword_mapped_id","ad_id",
-            "parsed_type","parsed_count","parsed_sales","kept","reason","row"
-        ]
-        with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(debug_rows)
 
-    def guess_campaign_id_from_row(vals: list[str]) -> str:
-        for v in vals:
-            s = str(v).strip().lower()
-            if s.startswith('cmp-'):
-                return str(v).strip()
-        return ""
+def _conv_value_from_idx_or_scan(vals: list[str], idx: int, prefix: str, allow_dash: bool = False) -> str:
+    if 0 <= idx < len(vals):
+        v = str(vals[idx]).strip()
+        if v.lower().startswith(prefix):
+            return v
+        if allow_dash and v == '-':
+            return v
+    return _conv_first_value_with_prefix(vals, prefix)
 
-    def first_value_with_prefix(vals: list[str], prefix: str) -> str:
-        for v in vals:
-            s = str(v).strip()
-            if s.lower().startswith(prefix):
-                return s
-        return ""
 
-    def value_from_idx_or_scan(vals: list[str], idx: int, prefix: str, allow_dash: bool = False) -> str:
-        if 0 <= idx < len(vals):
-            v = str(vals[idx]).strip()
-            if v.lower().startswith(prefix):
-                return v
-            if allow_dash and v == '-':
-                return v
-        return first_value_with_prefix(vals, prefix)
+def _conv_best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    best_idx, best_score, best_prefix_hits = -1, -1, 0
+    for i in range(max_cols):
+        score = 0
+        prefix_hits = 0
+        dash_hits = 0
+        for r in sample_rows:
+            if len(r) <= i:
+                continue
+            v = str(r.iloc[i]).strip().lower()
+            if v.startswith(target_prefix):
+                score += 5
+                prefix_hits += 1
+            elif allow_dash and v == '-':
+                dash_hits += 1
+        if prefix_hits > 0:
+            score += min(dash_hits, prefix_hits)
+        if preferred_after >= 0 and i <= preferred_after:
+            score -= 2
+        if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
+            best_idx, best_score, best_prefix_hits = i, score, prefix_hits
+    return best_idx if best_prefix_hits > 0 else -1
 
+
+def _conv_extract_header_rows(df: pd.DataFrame) -> tuple[int, list[str]]:
     header_idx = -1
+    headers: list[str] = []
     for i in range(min(20, len(df))):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
         if (
@@ -1423,74 +1457,75 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             '총전환수' in row_vals or 'conversioncount' in row_vals
         ):
             header_idx = i
+            headers = row_vals
             break
+    return header_idx, headers
 
-    if header_idx != -1:
-        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        cid_idx = get_col_idx(headers, ['캠페인id', 'campaignid', 'ncccampaignid'])
-        kid_idx = get_col_idx(headers, ['키워드id', 'keywordid', 'ncckeywordid'])
-        adid_idx = get_col_idx(headers, ['광고id', '소재id', 'adid', 'nccadid'])
-        type_idx = get_col_idx(headers, ['전환유형', 'conversiontype', 'convtp'])
-        cnt_idx = get_col_idx(headers, ['총전환수', '전환수', 'conversions', 'conversioncount', 'ccnt'])
-        sales_idx = get_col_idx(headers, ['총전환매출액(원)', '전환매출액', 'conversionvalue', 'sales', 'salesbyconversion', 'convamt'])
 
-        if type_idx != -1 and cnt_idx != -1:
-            data_df = df.iloc[header_idx + 1:]
-            for _, r in data_df.iterrows():
-                if len(r) <= max(type_idx, cnt_idx, sales_idx if sales_idx != -1 else -1):
-                    continue
-                row_campaign_id = r.iloc[cid_idx] if cid_idx != -1 and len(r) > cid_idx else ''
-                if not row_allowed(row_campaign_id):
-                    add_debug_row([str(x) for x in r.tolist()], "", 0, 0, False, "campaign_filtered_header")
-                    continue
-                is_purchase, is_cart, is_wishlist = classify_conversion_value(r.iloc[type_idx])
-                if not (is_purchase or is_cart or is_wishlist):
-                    continue
-                c_val = safe_float(r.iloc[cnt_idx])
-                s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
-                add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
-                add_debug_row([str(x) for x in r.tolist()], "purchase" if is_purchase else ("cart" if is_cart else "wishlist"), c_val, s_val, True, "header_keep")
-                if cid_idx != -1 and len(r) > cid_idx:
-                    apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
-                if kid_idx != -1 and len(r) > kid_idx:
-                    apply_row(kw_map, r.iloc[kid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
-                if adid_idx != -1 and len(r) > adid_idx:
-                    apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+def _conv_resolve_header_indexes(headers: list[str]) -> dict[str, int]:
+    return {
+        'cid_idx': get_col_idx(headers, ['캠페인id', 'campaignid', 'ncccampaignid']),
+        'kid_idx': get_col_idx(headers, ['키워드id', 'keywordid', 'ncckeywordid']),
+        'adid_idx': get_col_idx(headers, ['광고id', '소재id', 'adid', 'nccadid']),
+        'type_idx': get_col_idx(headers, ['전환유형', 'conversiontype', 'convtp']),
+        'cnt_idx': get_col_idx(headers, ['총전환수', '전환수', 'conversions', 'conversioncount', 'ccnt']),
+        'sales_idx': get_col_idx(headers, ['총전환매출액(원)', '전환매출액', 'conversionvalue', 'sales', 'salesbyconversion', 'convamt']),
+    }
 
-            if camp_map or kw_map or ad_map:
-                flush_debug_rows()
-                return camp_map, kw_map, ad_map, summary
 
+def _conv_try_header_mode(df: pd.DataFrame, allowed_campaign_ids: set[str], report_hint: str,
+                          debug_account_name: str, debug_target_date: str) -> tuple[dict, dict, dict, dict] | None:
+    camp_map, kw_map, ad_map, summary = _conv_empty_maps_and_summary()
+    debug_rows: list[dict] = []
+    header_idx, headers = _conv_extract_header_rows(df)
+    if header_idx == -1:
+        return None
+    idxs = _conv_resolve_header_indexes(headers)
+    type_idx = idxs['type_idx']
+    cnt_idx = idxs['cnt_idx']
+    sales_idx = idxs['sales_idx']
+    if type_idx == -1 or cnt_idx == -1:
+        return None
+
+    data_df = df.iloc[header_idx + 1:]
+    for _, r in data_df.iterrows():
+        need_max = max(type_idx, cnt_idx, sales_idx if sales_idx != -1 else -1)
+        if len(r) <= need_max:
+            continue
+        row_campaign_id = r.iloc[idxs['cid_idx']] if idxs['cid_idx'] != -1 and len(r) > idxs['cid_idx'] else ''
+        vals = [str(x) for x in r.tolist()]
+        if not _conv_row_allowed(row_campaign_id, allowed_campaign_ids):
+            _conv_add_debug_row(debug_rows, report_hint, debug_account_name, debug_target_date, vals, "", 0, 0, False, "campaign_filtered_header")
+            continue
+        is_purchase, is_cart, is_wishlist = _conv_classify_conversion_value(r.iloc[type_idx])
+        if not (is_purchase or is_cart or is_wishlist):
+            continue
+        c_val = safe_float(r.iloc[cnt_idx])
+        s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
+        add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
+        _conv_add_debug_row(
+            debug_rows, report_hint, debug_account_name, debug_target_date, vals,
+            "purchase" if is_purchase else ("cart" if is_cart else "wishlist"), c_val, s_val, True, "header_keep"
+        )
+        if idxs['cid_idx'] != -1 and len(r) > idxs['cid_idx']:
+            _conv_apply_row(camp_map, r.iloc[idxs['cid_idx']], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        if idxs['kid_idx'] != -1 and len(r) > idxs['kid_idx']:
+            _conv_apply_row(kw_map, r.iloc[idxs['kid_idx']], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        if idxs['adid_idx'] != -1 and len(r) > idxs['adid_idx']:
+            _conv_apply_row(ad_map, r.iloc[idxs['adid_idx']], is_purchase, is_cart, is_wishlist, c_val, s_val)
+
+    if camp_map or kw_map or ad_map:
+        _conv_flush_debug_rows(debug_rows, report_hint, debug_account_name, debug_target_date)
+        return camp_map, kw_map, ad_map, summary
+    return None
+
+
+def _conv_detect_heuristic_indexes(df: pd.DataFrame, report_hint: str) -> dict[str, int]:
     sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
-
-    def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
-        max_cols = max((len(r) for r in sample_rows), default=0)
-        best_idx, best_score, best_prefix_hits = -1, -1, 0
-        for i in range(max_cols):
-            score = 0
-            prefix_hits = 0
-            dash_hits = 0
-            for r in sample_rows:
-                if len(r) <= i:
-                    continue
-                v = str(r.iloc[i]).strip().lower()
-                if v.startswith(target_prefix):
-                    score += 5
-                    prefix_hits += 1
-                elif allow_dash and v == '-':
-                    dash_hits += 1
-            if prefix_hits > 0:
-                score += min(dash_hits, prefix_hits)
-            if preferred_after >= 0 and i <= preferred_after:
-                score -= 2
-            if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
-                best_idx, best_score, best_prefix_hits = i, score, prefix_hits
-        return best_idx if best_prefix_hits > 0 else -1
-
-    cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
-    gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
-    kid_idx = best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=max(cid_idx, gid_idx))
-    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx, kid_idx))
+    cid_idx = _conv_best_prefixed_idx(sample_rows, 'cmp-')
+    gid_idx = _conv_best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
+    kid_idx = _conv_best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=max(cid_idx, gid_idx))
+    adid_idx = _conv_best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx, kid_idx))
 
     kw_text_idx = -1
     if report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
@@ -1502,10 +1537,104 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
                 if len(r) <= candidate:
                     continue
                 v = str(r.iloc[candidate]).strip()
-                if v and v != '-' and not looks_like_id(v) and maybe_numeric(v) is None:
+                if v and v != '-' and not _conv_looks_like_id(v) and _conv_maybe_numeric(v) is None:
                     text_score += 1
             if text_score > 0:
                 kw_text_idx = candidate
+
+    return {
+        'cid_idx': cid_idx,
+        'gid_idx': gid_idx,
+        'kid_idx': kid_idx,
+        'adid_idx': adid_idx,
+        'kw_text_idx': kw_text_idx,
+    }
+
+
+def _conv_find_type_hits(vals: list[str], report_hint: str) -> list[tuple[int, bool, bool, bool]]:
+    n = len(vals)
+    text_type_hits = []
+    numeric_type_hits = []
+    for idx, v in enumerate(vals):
+        s_raw = str(v).strip()
+        is_purchase, is_cart, is_wishlist = _conv_classify_conversion_value(v)
+        if not (is_purchase or is_cart or is_wishlist):
+            continue
+        if s_raw in {'1', '3'}:
+            if idx >= max(0, n - 6):
+                numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+        else:
+            text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+    type_hits = text_type_hits if text_type_hits else numeric_type_hits
+    if not type_hits and report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
+        return []
+    return type_hits
+
+
+def _conv_pick_numeric_payload(vals: list[str], type_hits: list[tuple[int, bool, bool, bool]]) -> tuple[bool, bool, bool, float, int] | None:
+    n = len(vals)
+    for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
+        anchor_idx = type_idx
+        anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
+        raw_tok = str(vals[type_idx]).strip().lower()
+        if raw_tok in {'1', '2', '3'} and type_idx + 1 < n:
+            n_is_purchase, n_is_cart, n_is_wishlist = _conv_classify_conversion_value(vals[type_idx + 1])
+            if n_is_purchase or n_is_cart or n_is_wishlist:
+                anchor_idx = type_idx + 1
+                anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = n_is_purchase, n_is_cart, n_is_wishlist
+
+        numeric_right = []
+        for j in range(anchor_idx + 1, n):
+            vv = vals[j]
+            if _conv_looks_like_id(vv):
+                continue
+            num = _conv_maybe_numeric(vv)
+            if num is not None:
+                numeric_right.append((j, num))
+        if not numeric_right:
+            continue
+
+        c_val = float(numeric_right[0][1])
+        s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
+        return anchor_is_purchase, anchor_is_cart, anchor_is_wishlist, c_val, s_val
+    return None
+
+
+def _conv_resolve_keyword_object_id(row_kid: str, row_gid: str, kw_text_idx: int, vals: list[str],
+                                    keyword_lookup: dict, live_keyword_resolver) -> tuple[str, str, str]:
+    kw_obj_id = ""
+    kw_text = ""
+    row_kid_s = str(row_kid).strip()
+    if row_kid_s not in {"", "-"} and row_kid_s.lower().startswith("nkw-"):
+        kw_obj_id = row_kid_s
+    elif kw_text_idx != -1 and kw_text_idx < len(vals) and row_gid:
+        kw_text = str(vals[kw_text_idx]).strip()
+        kw_norm = normalize_keyword_text(kw_text)
+        kw_obj_id = (
+            keyword_lookup.get((row_gid, kw_text), "")
+            or keyword_lookup.get((row_gid, kw_text.lower()), "")
+            or keyword_lookup.get((row_gid, kw_norm), "")
+        )
+        if not kw_obj_id:
+            group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
+            cands = keyword_text_candidates(kw_norm, group_rows)
+            if len(cands) == 1:
+                kw_obj_id = cands[0]
+        if not kw_obj_id and live_keyword_resolver:
+            try:
+                kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
+            except Exception as e:
+                _log_best_effort_failure("live keyword resolve", e, ctx=f"row_gid={row_gid} kw_text={kw_text[:40]}")
+                kw_obj_id = ""
+    return kw_obj_id, kw_text, row_kid_s
+
+
+def _conv_try_heuristic_mode(df: pd.DataFrame, allowed_campaign_ids: set[str], report_hint: str,
+                             keyword_lookup: dict, live_keyword_resolver,
+                             debug_account_name: str, debug_target_date: str) -> tuple[dict, dict, dict, dict]:
+    camp_map, kw_map, ad_map, summary = _conv_empty_maps_and_summary()
+    debug_rows: list[dict] = []
+    idxs = _conv_detect_heuristic_indexes(df, report_hint)
 
     for _, r in df.iterrows():
         vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
@@ -1513,107 +1642,47 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         if n < 2:
             continue
 
-        text_type_hits = []
-        numeric_type_hits = []
-        for idx, v in enumerate(vals):
-            s_raw = str(v).strip()
-            s = s_raw.lower()
-            is_purchase, is_cart, is_wishlist = classify_conversion_value(v)
-            if not (is_purchase or is_cart or is_wishlist):
-                continue
-            if s_raw in {'1', '3'}:
-                if idx >= max(0, n - 6):
-                    numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-            else:
-                text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-
-        type_hits = text_type_hits if text_type_hits else numeric_type_hits
-
-        if not type_hits and report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
-            pass
+        type_hits = _conv_find_type_hits(vals, report_hint)
         if not type_hits:
-            add_debug_row(vals, "", 0, 0, False, "no_type_hit")
+            _conv_add_debug_row(debug_rows, report_hint, debug_account_name, debug_target_date, vals, "", 0, 0, False, "no_type_hit")
             continue
 
-        row_campaign_id = guess_campaign_id_from_row(vals)
-        if not row_allowed(row_campaign_id):
-            add_debug_row(vals, "", 0, 0, False, "campaign_filtered")
+        row_campaign_id = _conv_guess_campaign_id_from_row(vals)
+        if not _conv_row_allowed(row_campaign_id, allowed_campaign_ids):
+            _conv_add_debug_row(debug_rows, report_hint, debug_account_name, debug_target_date, vals, "", 0, 0, False, "campaign_filtered")
             continue
 
-        picked = None
-        for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
-            anchor_idx = type_idx
-            anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
-            raw_tok = str(vals[type_idx]).strip().lower()
-            if raw_tok in {'1', '2', '3'} and type_idx + 1 < n:
-                n_is_purchase, n_is_cart, n_is_wishlist = classify_conversion_value(vals[type_idx + 1])
-                if n_is_purchase or n_is_cart or n_is_wishlist:
-                    anchor_idx = type_idx + 1
-                    anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = n_is_purchase, n_is_cart, n_is_wishlist
-
-            numeric_right = []
-            for j in range(anchor_idx + 1, n):
-                vv = vals[j]
-                if looks_like_id(vv):
-                    continue
-                num = maybe_numeric(vv)
-                if num is not None:
-                    numeric_right.append((j, num))
-            if not numeric_right:
-                continue
-
-            c_val = float(numeric_right[0][1])
-            s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
-
-            picked = (anchor_is_purchase, anchor_is_cart, anchor_is_wishlist, c_val, s_val)
-            break
-
+        picked = _conv_pick_numeric_payload(vals, type_hits)
         if not picked:
-            add_debug_row(vals, "", 0, 0, False, "no_numeric_right")
+            _conv_add_debug_row(debug_rows, report_hint, debug_account_name, debug_target_date, vals, "", 0, 0, False, "no_numeric_right")
             continue
 
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
         add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
-        row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-') or extract_prefixed_token(vals, 'cmp-')
-        row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-') or extract_prefixed_token(vals, 'grp-')
-        row_kid = value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
+        row_cid = _conv_value_from_idx_or_scan(vals, idxs['cid_idx'], 'cmp-') or extract_prefixed_token(vals, 'cmp-')
+        row_gid = _conv_value_from_idx_or_scan(vals, idxs['gid_idx'], 'grp-') or extract_prefixed_token(vals, 'grp-')
+        row_kid = _conv_value_from_idx_or_scan(vals, idxs['kid_idx'], 'nkw-', allow_dash=True)
         if row_kid in {'', '-'}:
             row_kid = extract_prefixed_token(vals, 'nkw-')
-        row_adid = value_from_idx_or_scan(vals, adid_idx, 'nad-') or extract_prefixed_token(vals, 'nad-')
+        row_adid = _conv_value_from_idx_or_scan(vals, idxs['adid_idx'], 'nad-') or extract_prefixed_token(vals, 'nad-')
 
         if row_cid:
-            apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
+            _conv_apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
-        kw_obj_id = ""
-        row_kid_s = str(row_kid).strip()
-        if row_kid_s not in {"", "-"} and row_kid_s.lower().startswith("nkw-"):
-            kw_obj_id = row_kid_s
-        elif kw_text_idx != -1 and kw_text_idx < n and row_gid:
-            kw_text = str(vals[kw_text_idx]).strip()
-            kw_norm = normalize_keyword_text(kw_text)
-            kw_obj_id = (
-                keyword_lookup.get((row_gid, kw_text), "")
-                or keyword_lookup.get((row_gid, kw_text.lower()), "")
-                or keyword_lookup.get((row_gid, kw_norm), "")
-            )
-            if not kw_obj_id:
-                group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
-                cands = keyword_text_candidates(kw_norm, group_rows)
-                if len(cands) == 1:
-                    kw_obj_id = cands[0]
-            if not kw_obj_id and live_keyword_resolver:
-                try:
-                    kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
-                except Exception as e:
-                    _log_best_effort_failure("live keyword resolve", e, ctx=f"row_gid={row_gid} kw_text={kw_text[:40]}")
-                    kw_obj_id = ""
+        kw_obj_id, kw_text, row_kid_s = _conv_resolve_keyword_object_id(
+            row_kid, row_gid, idxs['kw_text_idx'], vals, keyword_lookup, live_keyword_resolver
+        )
         if kw_obj_id:
-            apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
+            _conv_apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
         if row_adid:
-            apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
+            _conv_apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
 
-        add_debug_row(
+        _conv_add_debug_row(
+            debug_rows,
+            report_hint,
+            debug_account_name,
+            debug_target_date,
             vals,
             "purchase" if is_purchase else ("cart" if is_cart else "wishlist"),
             c_val,
@@ -1624,105 +1693,166 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
             row_gid=row_gid,
             row_kid=row_kid_s,
             row_adid=row_adid,
-            kw_text=(str(vals[kw_text_idx]).strip() if kw_text_idx != -1 and kw_text_idx < n else ""),
+            kw_text=kw_text,
             kw_obj_id=kw_obj_id,
         )
 
-    flush_debug_rows()
+    _conv_flush_debug_rows(debug_rows, report_hint, debug_account_name, debug_target_date)
     return camp_map, kw_map, ad_map, summary
+
+
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, live_keyword_resolver=None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
+    allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
+    keyword_lookup = keyword_lookup or {}
+    keyword_unique_lookup = keyword_unique_lookup or {}
+    if df is None or df.empty:
+        return _conv_empty_maps_and_summary()
+
+    header_result = _conv_try_header_mode(
+        df,
+        allowed_campaign_ids=allowed_campaign_ids,
+        report_hint=report_hint,
+        debug_account_name=debug_account_name,
+        debug_target_date=debug_target_date,
+    )
+    if header_result is not None:
+        return header_result
+
+    return _conv_try_heuristic_mode(
+        df,
+        allowed_campaign_ids=allowed_campaign_ids,
+        report_hint=report_hint,
+        keyword_lookup=keyword_lookup,
+        live_keyword_resolver=live_keyword_resolver,
+        debug_account_name=debug_account_name,
+        debug_target_date=debug_target_date,
+    )
+
+def _sq_classify_conversion_type(v) -> tuple[bool, bool, bool]:
+    ctype = str(v).strip().lower()
+    ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
+    is_purchase = ('구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'})
+    is_cart = ('장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'})
+    is_wishlist = ('위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'})
+    return is_purchase, is_cart, is_wishlist
+
+
+def _sq_best_prefixed_idx(sample_rows, target_prefix: str, preferred_after: int = -1) -> int:
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    best_idx, best_score, best_prefix_hits = -1, -1, 0
+    for i in range(max_cols):
+        score = 0
+        prefix_hits = 0
+        for r in sample_rows:
+            if len(r) <= i:
+                continue
+            v = str(r.iloc[i]).strip().lower()
+            if v.startswith(target_prefix):
+                score += 5
+                prefix_hits += 1
+        if preferred_after >= 0 and i <= preferred_after:
+            score -= 2
+        if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
+            best_idx, best_score, best_prefix_hits = i, score, prefix_hits
+    return best_idx if best_prefix_hits > 0 else -1
+
+
+def _sq_detect_query_text_idx(sample_rows, gid_idx: int) -> int:
+    candidate = gid_idx + 1 if gid_idx != -1 else -1
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    if not (0 <= candidate < max_cols):
+        return -1
+    text_score = 0
+    for r in sample_rows:
+        if len(r) <= candidate:
+            continue
+        v = str(r.iloc[candidate]).strip()
+        if v and v != '-' and not v.lower().startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-')):
+            vv = v.replace(',', '')
+            if not re.fullmatch(r'-?\d+(?:\.\d+)?', vv):
+                text_score += 1
+    return candidate if text_score > 0 else -1
+
+
+def _sq_find_type_hits(vals: List[str]):
+    text_type_hits = []
+    numeric_type_hits = []
+    n = len(vals)
+    for idx, v in enumerate(vals):
+        s_raw = str(v).strip()
+        is_purchase, is_cart, is_wishlist = _sq_classify_conversion_type(v)
+        if not (is_purchase or is_cart or is_wishlist):
+            continue
+        hit = (idx, is_purchase, is_cart, is_wishlist)
+        if s_raw in {'1', '3'}:
+            if idx >= max(0, n - 6):
+                numeric_type_hits.append(hit)
+        else:
+            text_type_hits.append(hit)
+    return text_type_hits if text_type_hits else numeric_type_hits
+
+
+def _sq_extract_numeric_right(vals: List[str], anchor_idx: int):
+    numeric_right = []
+    for j in range(anchor_idx + 1, min(anchor_idx + 4, len(vals))):
+        s = str(vals[j]).strip().replace(',', '')
+        if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+            try:
+                numeric_right.append((j, float(s)))
+            except ValueError:
+                continue
+    return numeric_right
+
+
+def _log_shopping_query_parse_diag(diag: Dict[str, Any]):
+    log(
+        "🧩 SHOPPINGKEYWORD_CONVERSION_DETAIL 파서 | "
+        f"rows={diag.get('rows', 0)} kept={diag.get('kept', 0)} unique={diag.get('unique', 0)} "
+        f"short={diag.get('short', 0)} no_type={diag.get('no_type', 0)} no_numeric={diag.get('no_numeric', 0)} "
+        f"missing_id={diag.get('missing_id', 0)} idx=(cid:{diag.get('cid_idx', -1)}, gid:{diag.get('gid_idx', -1)}, ad:{diag.get('adid_idx', -1)}, q:{diag.get('kw_text_idx', -1)})"
+    )
+
 
 def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id: str) -> List[Dict[str, Any]]:
     if df is None or df.empty:
         return []
 
     rows_map: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
-
-    def classify(v) -> tuple[bool, bool, bool]:
-        ctype = str(v).strip().lower()
-        ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
-        is_purchase = ('구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'})
-        is_cart = ('장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'})
-        is_wishlist = ('위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'})
-        return is_purchase, is_cart, is_wishlist
-
     sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
+    cid_idx = _sq_best_prefixed_idx(sample_rows, 'cmp-')
+    gid_idx = _sq_best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
+    adid_idx = _sq_best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx))
+    kw_text_idx = _sq_detect_query_text_idx(sample_rows, gid_idx)
 
-    def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
-        max_cols = max((len(r) for r in sample_rows), default=0)
-        best_idx, best_score, best_prefix_hits = -1, -1, 0
-        for i in range(max_cols):
-            score = 0
-            prefix_hits = 0
-            dash_hits = 0
-            for r in sample_rows:
-                if len(r) <= i:
-                    continue
-                v = str(r.iloc[i]).strip().lower()
-                if v.startswith(target_prefix):
-                    score += 5
-                    prefix_hits += 1
-                elif allow_dash and v == '-':
-                    dash_hits += 1
-            if prefix_hits > 0:
-                score += min(dash_hits, prefix_hits)
-            if preferred_after >= 0 and i <= preferred_after:
-                score -= 2
-            if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
-                best_idx, best_score, best_prefix_hits = i, score, prefix_hits
-        return best_idx if best_prefix_hits > 0 else -1
-
-    cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
-    gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
-    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx))
-
-    kw_text_idx = -1
-    candidate = gid_idx + 1 if gid_idx != -1 else -1
-    max_cols = max((len(r) for r in sample_rows), default=0)
-    if 0 <= candidate < max_cols:
-        text_score = 0
-        for r in sample_rows:
-            if len(r) <= candidate:
-                continue
-            v = str(r.iloc[candidate]).strip()
-            if v and v != '-' and not v.lower().startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-')):
-                vv = v.replace(',', '')
-                if not re.fullmatch(r'-?\d+(?:\.\d+)?', vv):
-                    text_score += 1
-        if text_score > 0:
-            kw_text_idx = candidate
+    diag = {
+        'rows': 0,
+        'kept': 0,
+        'short': 0,
+        'no_type': 0,
+        'no_numeric': 0,
+        'missing_id': 0,
+        'cid_idx': cid_idx,
+        'gid_idx': gid_idx,
+        'adid_idx': adid_idx,
+        'kw_text_idx': kw_text_idx,
+    }
 
     for _, r in df.iterrows():
+        diag['rows'] += 1
         vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
         if len(vals) < 2:
+            diag['short'] += 1
             continue
 
-        text_type_hits = []
-        numeric_type_hits = []
-        n = len(vals)
-        for idx, v in enumerate(vals):
-            s_raw = str(v).strip()
-            is_purchase, is_cart, is_wishlist = classify(v)
-            if not (is_purchase or is_cart or is_wishlist):
-                continue
-            if s_raw in {'1', '3'}:
-                if idx >= max(0, n - 6):
-                    numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-            else:
-                text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-        type_hits = text_type_hits if text_type_hits else numeric_type_hits
+        type_hits = _sq_find_type_hits(vals)
         if not type_hits:
+            diag['no_type'] += 1
             continue
 
         anchor_idx, is_purchase, is_cart, is_wishlist = type_hits[-1]
-        numeric_right = []
-        for j in range(anchor_idx + 1, min(anchor_idx + 4, len(vals))):
-            s = str(vals[j]).strip().replace(',', '')
-            if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
-                try:
-                    numeric_right.append((j, float(s)))
-                except ValueError:
-                    continue
+        numeric_right = _sq_extract_numeric_right(vals, anchor_idx)
         if not numeric_right:
+            diag['no_numeric'] += 1
             continue
 
         c_val = float(numeric_right[0][1])
@@ -1732,6 +1862,7 @@ def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id
         row_adid = vals[adid_idx].strip() if 0 <= adid_idx < len(vals) else ""
         query_text = vals[kw_text_idx].strip() if 0 <= kw_text_idx < len(vals) else ""
         if not row_gid or not row_adid or not query_text or query_text == '-':
+            diag['missing_id'] += 1
             continue
 
         key = (row_cid, row_gid, row_adid, query_text)
@@ -1764,7 +1895,10 @@ def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id
         elif is_wishlist:
             row["wishlist_conv"] += c_val
             row["wishlist_sales"] += s_val
+        diag['kept'] += 1
 
+    diag['unique'] = len(rows_map)
+    _log_shopping_query_parse_diag(diag)
     return list(rows_map.values())
 
 def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, dict]:
@@ -1824,52 +1958,108 @@ def build_keyword_lookup_from_keyword_report(df: pd.DataFrame) -> tuple[dict, di
             unique_lookup.setdefault(kw_n, []).append(kid_s)
     return lookup, unique_lookup
 
-def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = None, has_conv_report: bool = False) -> dict:
-    if df is None or df.empty:
-        return {}
-
-    header_idx = -1
-    pk_cands = []
+def _resolve_base_report_pk_candidates(report_tp: str) -> List[str]:
     if "CAMPAIGN" in report_tp:
-        pk_cands = ["캠페인id", "campaignid"]
-    elif "KEYWORD" in report_tp:
-        pk_cands = ["키워드id", "keywordid", "ncckeywordid"]
-    elif "AD" in report_tp:
-        pk_cands = ["광고id", "소재id", "adid"]
+        return ["캠페인id", "campaignid"]
+    if "KEYWORD" in report_tp:
+        return ["키워드id", "keywordid", "ncckeywordid"]
+    if "AD" in report_tp:
+        return ["광고id", "소재id", "adid"]
+    return []
 
+
+
+def _detect_base_report_layout(df: pd.DataFrame, report_tp: str) -> Dict[str, Any]:
+    pk_cands = _resolve_base_report_pk_candidates(report_tp)
+    header_idx = -1
     for i in range(min(20, len(df))):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
         if any(c in row_vals for c in [normalize_header(x) for x in pk_cands]) or "노출수" in row_vals or "impressions" in row_vals:
             header_idx = i
             break
-
     if header_idx != -1:
         headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        data_df = df.iloc[header_idx + 1:]
-        pk_idx = get_col_idx(headers, pk_cands)
-        imp_idx = get_col_idx(headers, ["노출수", "impressions", "impcnt"])
-        clk_idx = get_col_idx(headers, ["클릭수", "clicks", "clkcnt"])
-        cost_idx = get_col_idx(headers, ["총비용", "cost", "salesamt"])
-        conv_idx = get_col_idx(headers, ["전환수", "conversions", "ccnt"])
-        sales_idx = get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"])
-        rank_idx = get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"])
-    else:
-        data_df = df.iloc[1:] if ("date" in str(df.iloc[0, 0]).lower() or "id" in str(df.iloc[0, 0]).lower()) else df
-        pk_idx = 2 if "CAMPAIGN" in report_tp else 5
-        imp_idx = 5 if "CAMPAIGN" in report_tp else 8
-        clk_idx = 6 if "CAMPAIGN" in report_tp else 9
-        cost_idx = 7 if "CAMPAIGN" in report_tp else 10
-        conv_idx = 8 if "CAMPAIGN" in report_tp else 11
-        sales_idx = 9 if "CAMPAIGN" in report_tp else 12
-        rank_idx = 11 if "CAMPAIGN" in report_tp else 14
+        return {
+            'mode': 'header',
+            'header_idx': header_idx,
+            'data_df': df.iloc[header_idx + 1:],
+            'pk_idx': get_col_idx(headers, pk_cands),
+            'imp_idx': get_col_idx(headers, ["노출수", "impressions", "impcnt"]),
+            'clk_idx': get_col_idx(headers, ["클릭수", "clicks", "clkcnt"]),
+            'cost_idx': get_col_idx(headers, ["총비용", "cost", "salesamt"]),
+            'conv_idx': get_col_idx(headers, ["전환수", "conversions", "ccnt"]),
+            'sales_idx': get_col_idx(headers, ["전환매출액", "conversionvalue", "sales", "convamt"]),
+            'rank_idx': get_col_idx(headers, ["평균노출순위", "averageposition", "avgrnk"]),
+        }
+    return {
+        'mode': 'fallback',
+        'header_idx': -1,
+        'data_df': df.iloc[1:] if ("date" in str(df.iloc[0, 0]).lower() or "id" in str(df.iloc[0, 0]).lower()) else df,
+        'pk_idx': 2 if "CAMPAIGN" in report_tp else 5,
+        'imp_idx': 5 if "CAMPAIGN" in report_tp else 8,
+        'clk_idx': 6 if "CAMPAIGN" in report_tp else 9,
+        'cost_idx': 7 if "CAMPAIGN" in report_tp else 10,
+        'conv_idx': 8 if "CAMPAIGN" in report_tp else 11,
+        'sales_idx': 9 if "CAMPAIGN" in report_tp else 12,
+        'rank_idx': 11 if "CAMPAIGN" in report_tp else 14,
+    }
+
+
+
+def _is_base_report_invalid_id(obj_id: str) -> bool:
+    return (not obj_id or obj_id == '-' or obj_id.lower() in ['id', 'keywordid', 'adid', 'campaignid'])
+
+
+
+def _log_base_report_diag(report_tp: str, diag: Dict[str, Any]):
+    log(
+        f"📊 {report_tp} 파서 | mode={diag.get('mode')} rows={diag.get('rows', 0)} kept={diag.get('kept', 0)} "
+        f"short={diag.get('short', 0)} invalid_id={diag.get('invalid_id', 0)} split={diag.get('split_applied', 0)} "
+        f"idx=(pk:{diag.get('pk_idx', -1)}, imp:{diag.get('imp_idx', -1)}, clk:{diag.get('clk_idx', -1)}, cost:{diag.get('cost_idx', -1)}, conv:{diag.get('conv_idx', -1)}, sales:{diag.get('sales_idx', -1)}, rank:{diag.get('rank_idx', -1)})"
+    )
+
+
+
+def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = None, has_conv_report: bool = False) -> dict:
+    if df is None or df.empty:
+        return {}
+
+    layout = _detect_base_report_layout(df, report_tp)
+    data_df = layout['data_df']
+    pk_idx = layout['pk_idx']
+    imp_idx = layout['imp_idx']
+    clk_idx = layout['clk_idx']
+    cost_idx = layout['cost_idx']
+    conv_idx = layout['conv_idx']
+    sales_idx = layout['sales_idx']
+    rank_idx = layout['rank_idx']
+
+    diag = {
+        'mode': layout.get('mode'),
+        'rows': 0,
+        'kept': 0,
+        'short': 0,
+        'invalid_id': 0,
+        'split_applied': 0,
+        'pk_idx': pk_idx,
+        'imp_idx': imp_idx,
+        'clk_idx': clk_idx,
+        'cost_idx': cost_idx,
+        'conv_idx': conv_idx,
+        'sales_idx': sales_idx,
+        'rank_idx': rank_idx,
+    }
 
     res = {}
     for _, r in data_df.iterrows():
+        diag['rows'] += 1
         if len(r) <= pk_idx:
+            diag['short'] += 1
             continue
 
         obj_id = str(r.iloc[pk_idx]).strip()
-        if not obj_id or obj_id == "-" or obj_id.lower() in ["id", "keywordid", "adid", "campaignid"]:
+        if _is_base_report_invalid_id(obj_id):
+            diag['invalid_id'] += 1
             continue
 
         if obj_id not in res:
@@ -1907,6 +2097,7 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
             if rnk > 0 and imp > 0:
                 res[obj_id]["rank_sum"] += (rnk * imp)
                 res[obj_id]["rank_cnt"] += imp
+        diag['kept'] += 1
 
     if has_conv_report and conv_map is not None:
         for obj_id, bucket in res.items():
@@ -1918,66 +2109,56 @@ def parse_base_report(df: pd.DataFrame, report_tp: str, conv_map: dict | None = 
                 bucket["cart_sales"] = split.get("cart_sales", 0)
                 bucket["wishlist_conv"] = split.get("wishlist_conv", 0.0)
                 bucket["wishlist_sales"] = split.get("wishlist_sales", 0)
+                diag['split_applied'] += 1
 
+    _log_base_report_diag(report_tp, diag)
     return res
 
-def merge_and_save_combined(engine: Engine, customer_id: str, target_date: date, table_name: str, pk_name: str, stat_res: dict, data_source: str, scoped_ids: List[str] | None = None) -> int:
-    if not stat_res:
-        return 0
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
 
-    rows = []
-    for k, s in stat_res.items():
-        cost = s["cost"]
-        total_sales = s["sales"]
-        total_roas = (total_sales / cost * 100.0) if cost > 0 else 0.0
-        avg_rnk = (s.get("rank_sum", 0) / s.get("rank_cnt", 1)) if s.get("rank_cnt", 0) > 0 else 0.0
 
-        purchase_sales = s.get("purchase_sales")
-        purchase_roas = None if purchase_sales is None or cost <= 0 else (purchase_sales / cost * 100.0)
 
-        cart_sales = s.get("cart_sales")
-        cart_roas = None if cart_sales is None or cost <= 0 else (cart_sales / cost * 100.0)
-        wishlist_sales = s.get("wishlist_sales")
-        wishlist_roas = None if wishlist_sales is None or cost <= 0 else (wishlist_sales / cost * 100.0)
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
 
-        primary_conv = s.get("purchase_conv") if s.get("purchase_conv") is not None else s["conv"]
-        primary_sales = purchase_sales if purchase_sales is not None else total_sales
-        primary_roas = None if primary_sales is None or cost <= 0 else (primary_sales / cost * 100.0)
 
-        row = {
-            "dt": target_date,
-            "customer_id": str(customer_id),
-            pk_name: k,
-            "imp": s["imp"],
-            "clk": s["clk"],
-            "cost": cost,
-            "conv": s["conv"],
-            "sales": total_sales,
-            "roas": total_roas,
-            "purchase_conv": s.get("purchase_conv"),
-            "purchase_sales": purchase_sales,
-            "purchase_roas": purchase_roas,
-            "cart_conv": s.get("cart_conv"),
-            "cart_sales": cart_sales,
-            "cart_roas": cart_roas,
-            "wishlist_conv": s.get("wishlist_conv"),
-            "wishlist_sales": wishlist_sales,
-            "wishlist_roas": wishlist_roas,
-            "primary_conv": primary_conv,
-            "primary_sales": primary_sales,
-            "primary_roas": primary_roas,
-            "split_available": s.get("split_available", False),
-            "data_source": data_source,
-        }
-        if pk_name in ["campaign_id", "keyword_id", "ad_id"]:
-            row["avg_rnk"] = round(avg_rnk, 2)
-        rows.append(row)
 
-    if scoped_ids is not None:
-        replace_fact_scope(engine, table_name, rows, customer_id, target_date, pk_name, scoped_ids)
-    else:
-        replace_fact_range(engine, table_name, rows, customer_id, target_date)
-    return len(rows)
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
 
 
 
@@ -2214,23 +2395,12 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
         except Exception as e:
             last_upsert_err = e
             if raw_conn:
-                try:
-                    raw_conn.rollback()
-                except Exception:
-                    pass
+                _safe_rollback(raw_conn)
             log(f"⚠️ fact_media_daily 적재 실패 {attempt}/3 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(e).__name__}: {e}")
             time.sleep(2)
         finally:
-            if cur:
-                try:
-                    cur.close()
-                except Exception:
-                    pass
-            if raw_conn:
-                try:
-                    raw_conn.close()
-                except Exception:
-                    pass
+            _safe_close(cur)
+            _safe_close(raw_conn)
     raise RuntimeError(f"fact_media_daily 적재 최종 실패 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(last_upsert_err).__name__}: {last_upsert_err}") from last_upsert_err
 
 def _detect_media_header_idx(df: pd.DataFrame) -> int:
@@ -2288,78 +2458,119 @@ def _filter_nonzero_media_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any
             out.append(r)
     return out
 
-def _build_media_rows_from_noheader(raw_df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None):
-    if raw_df is None or raw_df.empty:
-        return [], {'status': 'empty'}
-    preview = raw_df.head(5).fillna('').astype(str).values.tolist()
-    agg = {}
-    row_count = 0
-    mapped_rows = 0
-    for _, row in raw_df.iterrows():
-        vals = [str(x).strip() for x in row.fillna('').tolist()]
-        # ✨ 수정 2: index 14(전환매출액)까지 안전하게 파싱하도록 최소 길이를 14로 수정 (기존 14 미만 스킵)
-        if len(vals) < 14:
-            continue
-            
-        row_count += 1
-        campaign_id = vals[2].strip()
-        if not campaign_id or not campaign_id.startswith('cmp-'):
-            continue
-        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
-            continue
-        mapped_rows += 1
-        campaign_type = campaign_type_map.get(campaign_id, '기타')
-        media_name = vals[7].strip() or '전체'
-        device_name = normalize_device_name(vals[8]) or '전체'
-        region_name = '전체'
-        clk = int(round(_m_safe_float(vals[10]))) if len(vals) > 10 else 0
-        cost = int(round(_m_safe_float(vals[11]))) if len(vals) > 11 else 0
-        imp = int(round(_m_safe_float(vals[12]))) if len(vals) > 12 else 0
-        conv = float(_m_safe_float(vals[13])) if len(vals) > 13 else 0.0
-        
-        # ✨ 수정 2: 강제로 0으로 하드코딩되던 sales 부분 파싱 추가
-        sales = int(round(_m_safe_float(vals[14]))) if len(vals) > 14 else 0  
-        
-        key = (campaign_type, media_name, region_name, device_name)
-        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
-        bucket['imp'] += imp
-        bucket['clk'] += clk
-        bucket['cost'] += cost
-        bucket['conv'] += conv
-        bucket['sales'] += sales
-        
-    rows = []
-    for (campaign_type, media_name, region_name, device_name), s in agg.items():
-        rows.append({
-            'dt': target_date,
-            'customer_id': str(customer_id),
-            'campaign_type': campaign_type,
-            'media_name': media_name,
-            'region_name': region_name,
-            'device_name': device_name,
-            'imp': int(s['imp']),
-            'clk': int(s['clk']),
-            'cost': int(s['cost']),
-            'conv': float(round(s['conv'], 4)),
-            'sales': int(s['sales']),
-            'data_source': 'ad_report_dimension_noheader',
-            'source_report': 'AD',
-        })
-    rows = _filter_nonzero_media_rows(rows)
-    rows = _filter_nonzero_media_rows(rows)
-    detail_rows = sum(1 for r in rows if str(r.get('media_name', '전체')) != '전체' or str(r.get('region_name', '전체')) != '전체')
-    summary_rows = len(rows) - detail_rows
-    distinct_media = sorted({str(r.get('media_name', '') or '') for r in rows if str(r.get('media_name', '전체')) != '전체'})
-    return rows, {
-        'status': 'ok_no_header' if rows else 'no_header',
-        'row_count': row_count,
-        'mapped_rows': mapped_rows,
-        'header_preview': preview,
-        'detail_rows': detail_rows,
-        'summary_rows': summary_rows,
-        'distinct_media_count': len(distinct_media),
-        'distinct_media_preview': distinct_media[:10],
-    }
+def _log_media_parse_diag(diag: Dict[str, Any]):
+    log(
+        "📺 매체 파서 | "
+        f"status={diag.get('status')} mode={diag.get('mode')} rows={diag.get('row_count', 0)} mapped={diag.get('mapped_rows', 0)} "
+        f"detail={diag.get('detail_rows', 0)} summary={diag.get('summary_rows', 0)} distinct_media={diag.get('distinct_media_count', 0)}"
+    )
+
+
+
+def _resolve_media_campaign_id(row, ad_idx: int, camp_idx: int, ad_to_campaign: Dict[str, str]) -> str:
+    campaign_id = ''
+    if ad_idx != -1 and len(row) > ad_idx:
+        ad_id = str(row.iloc[ad_idx]).strip()
+        campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
+    if not campaign_id and camp_idx != -1 and len(row) > camp_idx:
+        campaign_id = str(row.iloc[camp_idx]).strip()
+    return campaign_id
+
+
+
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
+
+
+
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
+
+
+
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
+
+
+
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
+
+
+
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
+
+
+
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
 
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:
@@ -2385,39 +2596,37 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
     conv_idx = _m_get_col_idx(headers, CONV_HEADER_CANDIDATES_LOCAL)
     sales_idx = _m_get_col_idx(headers, SALES_HEADER_CANDIDATES_LOCAL)
 
-    # ✨ 수정 3: ad_id가 무조건 있어야만 통과시키던 로직에서 camp_id가 있는 경우도 허용하도록 완화 (전체 유실 방지)
     if ad_idx == -1 and camp_idx == -1:
-        return [], {'status': 'no_ad_or_camp_id', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        diag = {'status': 'no_ad_or_camp_id', 'mode': 'header', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        _log_media_parse_diag(diag)
+        return [], diag
 
     if media_idx == -1 and region_idx == -1 and device_idx == -1:
-        return [], {'status': 'no_dimension', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        diag = {'status': 'no_dimension', 'mode': 'header', 'header_idx': header_idx, 'headers': headers_raw[:20]}
+        _log_media_parse_diag(diag)
+        return [], diag
 
     agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
     row_count = 0
     mapped_rows = 0
+    short_rows = 0
+    missing_campaign_rows = 0
+    filtered_rows = 0
+    max_idx = max([x for x in [ad_idx, camp_idx, media_idx, region_idx, device_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx] if x != -1], default=0)
     for _, row in data_df.iterrows():
         row_count += 1
-        max_idx = max([x for x in [ad_idx, camp_idx, media_idx, region_idx, device_idx, imp_idx, clk_idx, cost_idx, conv_idx, sales_idx] if x != -1], default=0)
         if len(row) <= max_idx:
+            short_rows += 1
             continue
-            
-        campaign_id = ''
-        
-        # 1. 소재 ID를 통한 캠페인 추적 (기존 로직)
-        if ad_idx != -1 and len(row) > ad_idx:
-            ad_id = str(row.iloc[ad_idx]).strip()
-            campaign_id = str(ad_to_campaign.get(ad_id, '') or '').strip()
-            
-        # 2. 매체 리포트에 캠페인 ID가 직접 박혀있는 경우의 Fallback
-        if not campaign_id and camp_idx != -1 and len(row) > camp_idx:
-            campaign_id = str(row.iloc[camp_idx]).strip()
-            
+
+        campaign_id = _resolve_media_campaign_id(row, ad_idx, camp_idx, ad_to_campaign)
         if not campaign_id:
+            missing_campaign_rows += 1
             continue
-            
         if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            filtered_rows += 1
             continue
-            
+
         mapped_rows += 1
         campaign_type = campaign_type_map.get(campaign_id, '기타')
         media_name = _m_safe_text(row.iloc[media_idx] if media_idx != -1 and len(row) > media_idx else '', '전체')
@@ -2432,132 +2641,159 @@ def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: st
         bucket['conv'] += float(_m_safe_float(row.iloc[conv_idx]) if conv_idx != -1 and len(row) > conv_idx else 0)
         bucket['sales'] += int(round(_m_safe_float(row.iloc[sales_idx]) if sales_idx != -1 and len(row) > sales_idx else 0))
 
-    rows = []
-    for (campaign_type, media_name, region_name, device_name), s in agg.items():
-        rows.append({
-            'dt': target_date,
-            'customer_id': str(customer_id),
-            'campaign_type': campaign_type,
-            'media_name': media_name,
-            'region_name': region_name,
-            'device_name': device_name or '전체',
-            'imp': int(s['imp']),
-            'clk': int(s['clk']),
-            'cost': int(s['cost']),
-            'conv': float(round(s['conv'], 4)),
-            'sales': int(s['sales']),
-            'data_source': 'ad_report_dimension',
-            'source_report': 'AD',
-        })
-    detail_rows = sum(1 for r in rows if str(r.get('media_name', '전체')) != '전체' or str(r.get('region_name', '전체')) != '전체')
-    summary_rows = len(rows) - detail_rows
-    distinct_media = sorted({str(r.get('media_name', '') or '') for r in rows if str(r.get('media_name', '전체')) != '전체'})
-    return rows, {
+    rows, agg_diag = _finalize_media_rows(agg, target_date, customer_id, data_source='ad_report_dimension')
+    diag = {
         'status': 'ok' if rows else 'no_rows',
+        'mode': 'header',
         'header_idx': header_idx,
         'row_count': row_count,
         'mapped_rows': mapped_rows,
+        'short_rows': short_rows,
+        'missing_campaign_rows': missing_campaign_rows,
+        'filtered_rows': filtered_rows,
         'dim_cols': {'media': media_idx, 'region': region_idx, 'device': device_idx},
-        'detail_rows': detail_rows,
-        'summary_rows': summary_rows,
-        'distinct_media_count': len(distinct_media),
-        'distinct_media_preview': distinct_media[:10],
     }
+    diag.update(agg_diag)
+    _log_media_parse_diag(diag)
+    return rows, diag
 
-def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
-    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
-    for (campaign_id, device_name), s in (camp_device_stat or {}).items():
-        campaign_id = str(campaign_id or '').strip()
-        if not campaign_id:
-            continue
-        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
-            continue
-        campaign_type = campaign_type_map.get(campaign_id, '기타')
-        device_label = normalize_device_name(device_name) or _m_safe_text(device_name, '전체')
-        key = (campaign_type, '전체', '전체', device_label)
-        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
-        bucket['imp'] += int(s.get('imp', 0) or 0)
-        bucket['clk'] += int(s.get('clk', 0) or 0)
-        bucket['cost'] += int(s.get('cost', 0) or 0)
-        bucket['conv'] += float(s.get('conv', 0.0) or 0.0)
-        bucket['sales'] += int(s.get('sales', 0) or 0)
-    rows = []
-    for (campaign_type, media_name, region_name, device_name), s in agg.items():
-        rows.append({
-            'dt': target_date,
-            'customer_id': str(customer_id),
-            'campaign_type': campaign_type,
-            'media_name': media_name,
-            'region_name': region_name,
-            'device_name': device_name,
-            'imp': int(s['imp']),
-            'clk': int(s['clk']),
-            'cost': int(s['cost']),
-            'conv': float(round(s['conv'], 4)),
-            'sales': int(s['sales']),
-            'data_source': 'campaign_device_fallback',
-            'source_report': 'AD',
-        })
-    return _filter_nonzero_media_rows(rows)
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
 
-def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, target_date: date, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
-    sql = "SELECT campaign_id, imp, clk, cost, conv, sales FROM fact_campaign_daily WHERE customer_id = :cid AND dt = :dt"
-    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(text(sql), {'cid': str(customer_id), 'dt': target_date}).fetchall()
-    except Exception:
-        rows = []
-    for campaign_id, imp, clk, cost, conv, sales in rows:
-        camp_id = str(campaign_id or '').strip()
-        if not camp_id:
-            continue
-        if allowed_campaign_ids is not None and camp_id not in allowed_campaign_ids:
-            continue
-        campaign_type = campaign_type_map.get(camp_id, '기타')
-        key = (campaign_type, '전체', '전체', '전체')
-        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
-        bucket['imp'] += int(imp or 0)
-        bucket['clk'] += int(clk or 0)
-        bucket['cost'] += int(cost or 0)
-        bucket['conv'] += float(conv or 0.0)
-        bucket['sales'] += int(sales or 0)
-    out = []
-    for (campaign_type, media_name, region_name, device_name), s in agg.items():
-        out.append({
-            'dt': target_date,
-            'customer_id': str(customer_id),
-            'campaign_type': campaign_type,
-            'media_name': media_name,
-            'region_name': region_name,
-            'device_name': device_name,
-            'imp': int(s['imp']),
-            'clk': int(s['clk']),
-            'cost': int(s['cost']),
-            'conv': float(round(s['conv'], 4)),
-            'sales': int(s['sales']),
-            'data_source': 'campaign_total_fallback',
-            'source_report': 'STATS',
-        })
-    return _filter_nonzero_media_rows(out)
+
+
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
+
+
 
 def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
     media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
     if media_rows:
-        return replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
 
     if camp_device_stat:
         fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
         if fb_rows:
-            meta = {'status': 'fallback_device', **(meta or {})}
-            return replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
 
     total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
     if total_rows:
-        meta = {'status': 'fallback_total', **(meta or {})}
-        return replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types), meta
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
 
-    return replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types), {'status': 'empty'}
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
+
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
+
+
+
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
+
+
+
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
+
+def _build_media_collect_meta(base_meta: Dict[str, Any] | None, *, status: str, selected_source: str, saved_rows: int) -> Dict[str, Any]:
+    meta = dict(base_meta or {})
+    meta['status'] = status
+    meta['selected_source'] = selected_source
+    meta['saved_rows'] = int(saved_rows or 0)
+    return meta
+
+
+
+def _log_media_collect_choice(customer_id: str, target_date: date, meta: Dict[str, Any]):
+    log(
+        "📺 매체 저장 선택 | "
+        f"cid={customer_id} dt={target_date} status={meta.get('status')} selected={meta.get('selected_source')} saved={meta.get('saved_rows', 0)} "
+        f"detail={meta.get('detail_rows', 0)} summary={meta.get('summary_rows', 0)} distinct_media={meta.get('distinct_media_count', 0)}"
+    )
+
+
+
+def collect_media_fact(engine: Engine, customer_id: str, target_date: date, ad_report_df: pd.DataFrame | None, ad_to_campaign_map: Dict[str, str], campaign_type_map: Dict[str, str], camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None = None, allowed_campaign_ids: set[str] | None = None, scoped_campaign_types: List[str] | None = None) -> Tuple[int, Dict[str, Any]]:
+    media_rows, meta = parse_media_report_rows(ad_report_df, target_date, customer_id, ad_to_campaign_map, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if media_rows:
+        saved = replace_media_fact_range(engine, media_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status=str(meta.get('status') or 'ok'), selected_source='report', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    if camp_device_stat:
+        fb_rows = build_media_rows_from_campaign_device(target_date, customer_id, camp_device_stat, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+        if fb_rows:
+            saved = replace_media_fact_range(engine, fb_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+            meta = _build_media_collect_meta(meta, status='fallback_device', selected_source='campaign_device_fallback', saved_rows=saved)
+            _log_media_collect_choice(customer_id, target_date, meta)
+            return saved, meta
+
+    total_rows = build_media_rows_from_campaign_total_db(engine, customer_id, target_date, campaign_type_map, allowed_campaign_ids=allowed_campaign_ids)
+    if total_rows:
+        saved = replace_media_fact_range(engine, total_rows, customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+        meta = _build_media_collect_meta(meta, status='fallback_total', selected_source='campaign_total_fallback', saved_rows=saved)
+        _log_media_collect_choice(customer_id, target_date, meta)
+        return saved, meta
+
+    saved = replace_media_fact_range(engine, [], customer_id, target_date, scoped_campaign_types=scoped_campaign_types)
+    meta = _build_media_collect_meta(meta, status='empty', selected_source='none', saved_rows=saved)
+    _log_media_collect_choice(customer_id, target_date, meta)
+    return saved, meta
 
 def _resolve_split_payload(
     dfs: Dict[str, pd.DataFrame | None],
@@ -2828,6 +3064,286 @@ def _save_report_stats_and_breakdowns(
     return c_cnt, k_cnt, a_cnt, device_ad_cnt, device_campaign_cnt, media_cnt, media_meta
 
 
+
+
+def _sync_structure_and_collect_targets(
+    engine: Engine,
+    customer_id: str,
+    account_name: str,
+    collect_sa: bool,
+    collect_device: bool,
+    shopping_only: bool,
+    result: Dict[str, Any],
+):
+    target_camp_ids: List[str] = []
+    target_kw_ids: List[str] = []
+    target_ad_ids: List[str] = []
+    shopping_campaign_ids: set[str] = set()
+    shopping_adgroup_ids: set[str] = set()
+    shopping_keyword_ids: set[str] = set()
+    camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
+
+    log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
+    camps = list_campaigns(customer_id)
+    for c in camps:
+        cid = str(c.get("nccCampaignId"))
+        camp_tp = str(c.get("campaignTp", ""))
+        is_shopping = is_shopping_campaign_obj(c)
+        if shopping_only and not is_shopping:
+            continue
+
+        target_camp_ids.append(cid)
+        if is_shopping:
+            shopping_campaign_ids.add(cid)
+        camp_rows.append({
+            "customer_id": str(customer_id),
+            "campaign_id": cid,
+            "campaign_name": str(c.get("name", "")),
+            "campaign_tp": camp_tp,
+            "status": str(c.get("status", "")),
+        })
+
+        groups = list_adgroups(customer_id, cid)
+        for g in groups:
+            gid = str(g.get("nccAdgroupId"))
+            if is_shopping:
+                shopping_adgroup_ids.add(gid)
+            ag_rows.append({
+                "customer_id": str(customer_id),
+                "adgroup_id": gid,
+                "campaign_id": cid,
+                "adgroup_name": str(g.get("name", "")),
+                "status": str(g.get("status", "")),
+            })
+
+            if collect_sa and not SKIP_KEYWORD_DIM:
+                kws = list_keywords(customer_id, gid)
+                for k in kws:
+                    kid = str(k.get("nccKeywordId"))
+                    target_kw_ids.append(kid)
+                    kw_rows.append({
+                        "customer_id": str(customer_id),
+                        "keyword_id": kid,
+                        "adgroup_id": gid,
+                        "keyword": extract_keyword_text_from_obj(k),
+                        "status": str(k.get("status", "")),
+                    })
+
+            if (collect_sa or collect_device) and not SKIP_AD_DIM:
+                ads = list_ads(customer_id, gid)
+                for ad in ads:
+                    adid = str(ad.get("nccAdId"))
+                    target_ad_ids.append(adid)
+                    ext = extract_ad_creative_fields(ad)
+                    ad_rows.append({
+                        "customer_id": str(customer_id),
+                        "ad_id": adid,
+                        "adgroup_id": gid,
+                        "ad_name": str(ad.get("name") or ad.get("adName") or ""),
+                        "status": str(ad.get("status", "")),
+                        "ad_title": ext["ad_title"],
+                        "ad_desc": ext["ad_desc"],
+                        "pc_landing_url": ext["pc_landing_url"],
+                        "mobile_landing_url": ext["mobile_landing_url"],
+                        "creative_text": ext["creative_text"],
+                        "image_url": ext["image_url"],
+                    })
+
+    upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+    upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+    if not SKIP_KEYWORD_DIM:
+        upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
+        kw_text_filled = sum(1 for r in kw_rows if str(r.get("keyword") or "").strip())
+        log(f"   🔎 [ {account_name} ] 구조 키워드 텍스트 적재: {kw_text_filled}/{len(kw_rows)}")
+    if not SKIP_AD_DIM:
+        upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+    shopping_keyword_ids = set(target_kw_ids) if shopping_adgroup_ids else set()
+    result["dim_campaigns"] = len(camp_rows)
+    result["dim_adgroups"] = len(ag_rows)
+    result["dim_keywords"] = len(kw_rows)
+    result["dim_ads"] = len(ad_rows)
+    log(f"   ✅ [ {account_name} ] 구조 적재 완료")
+    return {
+        "target_camp_ids": target_camp_ids,
+        "target_kw_ids": target_kw_ids,
+        "target_ad_ids": target_ad_ids,
+        "shopping_campaign_ids": shopping_campaign_ids,
+        "shopping_adgroup_ids": shopping_adgroup_ids,
+        "shopping_keyword_ids": shopping_keyword_ids,
+    }
+
+
+
+def _load_targets_from_dims(
+    engine: Engine,
+    customer_id: str,
+    collect_sa: bool,
+    shopping_only: bool,
+    shopping_campaign_ids: set[str],
+    shopping_adgroup_ids: set[str],
+    shopping_keyword_ids: set[str],
+):
+    with engine.connect() as conn:
+        shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
+        shopping_adgroup_ids = {
+            str(r[0]) for r in conn.execute(
+                text("SELECT adgroup_id FROM dim_adgroup WHERE customer_id = :cid AND campaign_id = ANY(:cids)"),
+                {"cid": customer_id, "cids": list(shopping_campaign_ids)},
+            )
+        } if shopping_campaign_ids else set()
+        shopping_keyword_ids = {
+            str(r[0]) for r in conn.execute(
+                text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
+                {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
+            )
+        } if shopping_adgroup_ids else set()
+
+        if shopping_only:
+            target_camp_ids = sorted(shopping_campaign_ids)
+            target_kw_ids = sorted(shopping_keyword_ids) if collect_sa else []
+            target_ad_ids = [
+                str(r[0]) for r in conn.execute(
+                    text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
+                    {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
+                )
+            ] if shopping_adgroup_ids else []
+        else:
+            target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
+            target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})] if collect_sa else []
+            target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
+
+    return {
+        "target_camp_ids": target_camp_ids,
+        "target_kw_ids": target_kw_ids,
+        "target_ad_ids": target_ad_ids,
+        "shopping_campaign_ids": shopping_campaign_ids,
+        "shopping_adgroup_ids": shopping_adgroup_ids,
+        "shopping_keyword_ids": shopping_keyword_ids,
+    }
+
+
+
+def _build_keyword_lookup_bundle(
+    engine: Engine,
+    customer_id: str,
+    shopping_only: bool,
+    shopping_adgroup_ids: set[str],
+):
+    keyword_lookup = {}
+    keyword_unique_lookup = {}
+    text_freq = {}
+    temp_rows = []
+    group_rows = {}
+    with engine.connect() as conn:
+        kw_sql = "SELECT keyword_id, adgroup_id, keyword FROM dim_keyword WHERE customer_id = :cid"
+        kw_params = {"cid": customer_id}
+        if shopping_only and shopping_adgroup_ids:
+            kw_sql += " AND adgroup_id = ANY(:gids)"
+            kw_params["gids"] = list(shopping_adgroup_ids)
+        for kid, gid, kw in conn.execute(text(kw_sql), kw_params):
+            if kid and gid and kw:
+                gid_s = str(gid)
+                kw_s = str(kw).strip()
+                kw_l = kw_s.lower()
+                kw_n = normalize_keyword_text(kw_s)
+                kid_s = str(kid)
+                keyword_lookup[(gid_s, kw_s)] = kid_s
+                keyword_lookup[(gid_s, kw_l)] = kid_s
+                keyword_lookup[(gid_s, kw_n)] = kid_s
+                group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
+                text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
+                temp_rows.append((kw_n, kid_s))
+    for gid_s, rows in group_rows.items():
+        keyword_lookup[(gid_s, '__rows__')] = rows
+    unique_map = {}
+    for kw_n, kid_s in temp_rows:
+        if kw_n and text_freq.get(kw_n) == 1:
+            unique_map.setdefault(kw_n, []).append(kid_s)
+    keyword_unique_lookup = unique_map
+    return keyword_lookup, keyword_unique_lookup
+
+
+
+def _prepare_account_report_fetch_plan(
+    customer_id: str,
+    account_name: str,
+    target_date: date,
+    collect_sa: bool,
+    shopping_campaign_ids: set[str],
+    result: Dict[str, Any],
+):
+    kst_now = datetime.utcnow() + timedelta(hours=9)
+    use_realtime_fallback = False
+    realtime_reason = ""
+    dfs: Dict[str, pd.DataFrame | None] = {}
+    split_candidate_reports: List[str] = []
+    split_attempted = False
+
+    if target_date >= kst_now.date():
+        use_realtime_fallback = True
+        realtime_reason = "today"
+        result["ad_report_status"] = "realtime_only"
+        result["ad_conversion_status"] = "realtime_only"
+        result["shopping_keyword_conversion_status"] = "realtime_only"
+        log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
+    else:
+        log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
+        report_types = ["AD"]
+        if split_enabled_for_date(target_date) and shopping_campaign_ids:
+            split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
+            report_types.extend(split_candidate_reports)
+            split_attempted = bool(collect_sa)
+        dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
+        result["ad_report_status"], result["ad_report_rows"] = _df_state(dfs.get("AD"))
+        ad_conv_df = dfs.get("AD_CONVERSION") if "AD_CONVERSION" in report_types else None
+        shop_kw_conv_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL") if "SHOPPINGKEYWORD_CONVERSION_DETAIL" in report_types else None
+        result["ad_conversion_status"], result["ad_conversion_rows"] = _df_state(ad_conv_df) if split_candidate_reports else ("not_requested", 0)
+        result["shopping_keyword_conversion_status"], result["shopping_keyword_conversion_rows"] = _df_state(shop_kw_conv_df) if split_candidate_reports else ("not_requested", 0)
+
+        if dfs.get("AD") is None and all(dfs.get(tp) is None for tp in split_candidate_reports):
+            log(f"   ⚠️ [ {account_name} ] AD / 전환 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (purchase/cart 미분리)")
+            use_realtime_fallback = True
+            realtime_reason = "report_missing"
+
+    result["used_realtime_fallback"] = bool(use_realtime_fallback)
+    result["realtime_reason"] = realtime_reason
+    result["split_attempted"] = bool(split_attempted)
+    return dfs, split_candidate_reports, split_attempted, use_realtime_fallback, realtime_reason
+
+
+
+def _finalize_account_result(
+    result: Dict[str, Any],
+    account_name: str,
+    collect_mode: str,
+    collect_device: bool,
+    split_report_ok: bool,
+    c_cnt: int,
+    k_cnt: int,
+    a_cnt: int,
+    device_campaign_cnt: int,
+    device_ad_cnt: int,
+):
+    result["campaign_rows_saved"] = int(c_cnt or 0)
+    result["keyword_rows_saved"] = int(k_cnt or 0)
+    result["ad_rows_saved"] = int(a_cnt or 0)
+    result["device_campaign_rows_saved"] = int(device_campaign_cnt or 0)
+    result["device_ad_rows_saved"] = int(device_ad_cnt or 0)
+    result["split_report_ok"] = bool(split_report_ok)
+    result["zero_data"] = bool(c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0)
+
+    if result["zero_data"]:
+        result["status"] = "zero_data"
+        log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
+    else:
+        result["status"] = "ok"
+        if collect_mode == "device_only":
+            log(f"   ✅ [ {account_name} ] PC/M 전용 수집 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})")
+        else:
+            mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
+            if collect_device:
+                mode_msg += " + PC/M"
+            log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
 def process_account(engine: Engine, customer_id: str, account_name: str, target_date: date, skip_dim: bool = False, fast_mode: bool = False, collect_mode: str = "sa_with_device", shopping_only: bool = False):
     log(f"▶️ [ {account_name} ] 업체 데이터 조회 시작...")
 
@@ -2870,120 +3386,29 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
         stage = "load_dim_targets"
         result["stage"] = stage
-        if not skip_dim:
-            log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
-            camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
-
-            camps = list_campaigns(customer_id)
-            for c in camps:
-                cid = str(c.get("nccCampaignId"))
-                camp_tp = str(c.get("campaignTp", ""))
-                is_shopping = is_shopping_campaign_obj(c)
-                if shopping_only and not is_shopping:
-                    continue
-
-                target_camp_ids.append(cid)
-                if is_shopping:
-                    shopping_campaign_ids.add(cid)
-                camp_rows.append({
-                    "customer_id": str(customer_id),
-                    "campaign_id": cid,
-                    "campaign_name": str(c.get("name", "")),
-                    "campaign_tp": camp_tp,
-                    "status": str(c.get("status", "")),
-                })
-
-                groups = list_adgroups(customer_id, cid)
-                for g in groups:
-                    gid = str(g.get("nccAdgroupId"))
-                    if is_shopping:
-                        shopping_adgroup_ids.add(gid)
-                    ag_rows.append({
-                        "customer_id": str(customer_id),
-                        "adgroup_id": gid,
-                        "campaign_id": cid,
-                        "adgroup_name": str(g.get("name", "")),
-                        "status": str(g.get("status", "")),
-                    })
-
-                    if collect_sa and not SKIP_KEYWORD_DIM:
-                        kws = list_keywords(customer_id, gid)
-                        for k in kws:
-                            kid = str(k.get("nccKeywordId"))
-                            target_kw_ids.append(kid)
-                            kw_rows.append({
-                                "customer_id": str(customer_id),
-                                "keyword_id": kid,
-                                "adgroup_id": gid,
-                                "keyword": extract_keyword_text_from_obj(k),
-                                "status": str(k.get("status", "")),
-                            })
-
-                    if (collect_sa or collect_device) and not SKIP_AD_DIM:
-                        ads = list_ads(customer_id, gid)
-                        for ad in ads:
-                            adid = str(ad.get("nccAdId"))
-                            target_ad_ids.append(adid)
-                            ext = extract_ad_creative_fields(ad)
-                            ad_rows.append({
-                                "customer_id": str(customer_id),
-                                "ad_id": adid,
-                                "adgroup_id": gid,
-                                "ad_name": str(ad.get("name") or ad.get("adName") or ""),
-                                "status": str(ad.get("status", "")),
-                                "ad_title": ext["ad_title"],
-                                "ad_desc": ext["ad_desc"],
-                                "pc_landing_url": ext["pc_landing_url"],
-                                "mobile_landing_url": ext["mobile_landing_url"],
-                                "creative_text": ext["creative_text"],
-                                "image_url": ext["image_url"],
-                            })
-
-            upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
-            upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-            if not SKIP_KEYWORD_DIM:
-                upsert_many(engine, "dim_keyword", kw_rows, ["customer_id", "keyword_id"])
-                kw_text_filled = sum(1 for r in kw_rows if str(r.get("keyword") or "").strip())
-                log(f"   🔎 [ {account_name} ] 구조 키워드 텍스트 적재: {kw_text_filled}/{len(kw_rows)}")
-            if not SKIP_AD_DIM:
-                upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
-            shopping_keyword_ids = set(target_kw_ids) if shopping_adgroup_ids else set()
-            result["dim_campaigns"] = len(camp_rows)
-            result["dim_adgroups"] = len(ag_rows)
-            result["dim_keywords"] = len(kw_rows)
-            result["dim_ads"] = len(ad_rows)
-            log(f"   ✅ [ {account_name} ] 구조 적재 완료")
-
-        else:
-            with engine.connect() as conn:
-                shopping_campaign_ids = {str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid AND lower(coalesce(campaign_tp,'')) LIKE :kw"), {"cid": customer_id, "kw": '%shopping%'})}
-                shopping_adgroup_ids = {
-                    str(r[0]) for r in conn.execute(
-                        text("SELECT adgroup_id FROM dim_adgroup WHERE customer_id = :cid AND campaign_id = ANY(:cids)"),
-                        {"cid": customer_id, "cids": list(shopping_campaign_ids)},
-                    )
-                } if shopping_campaign_ids else set()
-                shopping_keyword_ids = {
-                    str(r[0]) for r in conn.execute(
-                        text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
-                        {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
-                    )
-                } if shopping_adgroup_ids else set()
-
-                if shopping_only:
-                    target_camp_ids = sorted(shopping_campaign_ids)
-                    target_kw_ids = sorted(shopping_keyword_ids) if collect_sa else []
-                    target_ad_ids = [
-                        str(r[0]) for r in conn.execute(
-                            text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid AND adgroup_id = ANY(:gids)"),
-                            {"cid": customer_id, "gids": list(shopping_adgroup_ids)},
-                        )
-                    ] if shopping_adgroup_ids else []
-                else:
-                    target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
-                    target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})] if collect_sa else []
-                    target_ad_ids = [str(r[0]) for r in conn.execute(text("SELECT ad_id FROM dim_ad WHERE customer_id = :cid"), {"cid": customer_id})]
-
+        target_bundle = _sync_structure_and_collect_targets(
+            engine,
+            customer_id=customer_id,
+            account_name=account_name,
+            collect_sa=collect_sa,
+            collect_device=collect_device,
+            shopping_only=shopping_only,
+            result=result,
+        ) if not skip_dim else _load_targets_from_dims(
+            engine,
+            customer_id=customer_id,
+            collect_sa=collect_sa,
+            shopping_only=shopping_only,
+            shopping_campaign_ids=shopping_campaign_ids,
+            shopping_adgroup_ids=shopping_adgroup_ids,
+            shopping_keyword_ids=shopping_keyword_ids,
+        )
+        target_camp_ids = target_bundle["target_camp_ids"]
+        target_kw_ids = target_bundle["target_kw_ids"]
+        target_ad_ids = target_bundle["target_ad_ids"]
+        shopping_campaign_ids = target_bundle["shopping_campaign_ids"]
+        shopping_adgroup_ids = target_bundle["shopping_adgroup_ids"]
+        shopping_keyword_ids = target_bundle["shopping_keyword_ids"]
         result["campaign_targets"] = len(target_camp_ids)
         result["keyword_targets"] = len(target_kw_ids)
         result["ad_targets"] = len(target_ad_ids)
@@ -2991,38 +3416,13 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
         stage = "build_keyword_lookup"
         result["stage"] = stage
-        keyword_lookup = {}
-        keyword_unique_lookup = {}
         try:
-            text_freq = {}
-            temp_rows = []
-            group_rows = {}
-            with engine.connect() as conn:
-                kw_sql = "SELECT keyword_id, adgroup_id, keyword FROM dim_keyword WHERE customer_id = :cid"
-                kw_params = {"cid": customer_id}
-                if shopping_only and shopping_adgroup_ids:
-                    kw_sql += " AND adgroup_id = ANY(:gids)"
-                    kw_params["gids"] = list(shopping_adgroup_ids)
-                for kid, gid, kw in conn.execute(text(kw_sql), kw_params):
-                    if kid and gid and kw:
-                        gid_s = str(gid)
-                        kw_s = str(kw).strip()
-                        kw_l = kw_s.lower()
-                        kw_n = normalize_keyword_text(kw_s)
-                        kid_s = str(kid)
-                        keyword_lookup[(gid_s, kw_s)] = kid_s
-                        keyword_lookup[(gid_s, kw_l)] = kid_s
-                        keyword_lookup[(gid_s, kw_n)] = kid_s
-                        group_rows.setdefault(gid_s, []).append((kw_n, kid_s))
-                        text_freq[kw_n] = text_freq.get(kw_n, 0) + 1
-                        temp_rows.append((kw_n, kid_s))
-            for gid_s, rows in group_rows.items():
-                keyword_lookup[(gid_s, '__rows__')] = rows
-            unique_map = {}
-            for kw_n, kid_s in temp_rows:
-                if kw_n and text_freq.get(kw_n) == 1:
-                    unique_map.setdefault(kw_n, []).append(kid_s)
-            keyword_unique_lookup = unique_map
+            keyword_lookup, keyword_unique_lookup = _build_keyword_lookup_bundle(
+                engine,
+                customer_id=customer_id,
+                shopping_only=shopping_only,
+                shopping_adgroup_ids=shopping_adgroup_ids,
+            )
         except Exception as e:
             _log_best_effort_failure("keyword lookup 빌드", e, ctx=f"customer_id={customer_id}")
             keyword_lookup = {}
@@ -3035,43 +3435,16 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         ad_to_campaign_map = build_ad_to_campaign_map(engine, customer_id)
         campaign_type_map = build_campaign_type_map(engine, customer_id)
 
-        kst_now = datetime.utcnow() + timedelta(hours=9)
-        use_realtime_fallback = False
-        realtime_reason = ""
-        dfs: Dict[str, pd.DataFrame | None] = {}
-        split_candidate_reports: List[str] = []
-
         stage = "fetch_reports"
         result["stage"] = stage
-        if target_date >= kst_now.date():
-            use_realtime_fallback = True
-            realtime_reason = "today"
-            result["ad_report_status"] = "realtime_only"
-            result["ad_conversion_status"] = "realtime_only"
-            result["shopping_keyword_conversion_status"] = "realtime_only"
-            log(f"   ℹ️ [ {account_name} ] 당일 데이터는 실시간 stats 총합만 수집합니다.")
-        else:
-            log(f"   ⏳ [ {account_name} ] 리포트 생성 대기 중...")
-            report_types = ["AD"]
-            if split_enabled_for_date(target_date) and shopping_campaign_ids:
-                split_candidate_reports = ["AD_CONVERSION", "SHOPPINGKEYWORD_CONVERSION_DETAIL"]
-                report_types.extend(split_candidate_reports)
-                split_attempted = bool(collect_sa)
-            dfs = fetch_multiple_stat_reports(customer_id, report_types, target_date)
-            result["ad_report_status"], result["ad_report_rows"] = _df_state(dfs.get("AD"))
-            ad_conv_df = dfs.get("AD_CONVERSION") if "AD_CONVERSION" in report_types else None
-            shop_kw_conv_df = dfs.get("SHOPPINGKEYWORD_CONVERSION_DETAIL") if "SHOPPINGKEYWORD_CONVERSION_DETAIL" in report_types else None
-            result["ad_conversion_status"], result["ad_conversion_rows"] = _df_state(ad_conv_df) if split_candidate_reports else ("not_requested", 0)
-            result["shopping_keyword_conversion_status"], result["shopping_keyword_conversion_rows"] = _df_state(shop_kw_conv_df) if split_candidate_reports else ("not_requested", 0)
-
-            if dfs.get("AD") is None and all(dfs.get(tp) is None for tp in split_candidate_reports):
-                log(f"   ⚠️ [ {account_name} ] AD / 전환 리포트가 모두 실패 → 실시간 stats 총합으로 대체합니다. (purchase/cart 미분리)")
-                use_realtime_fallback = True
-                realtime_reason = "report_missing"
-
-        result["used_realtime_fallback"] = bool(use_realtime_fallback)
-        result["realtime_reason"] = realtime_reason
-        result["split_attempted"] = bool(split_attempted)
+        dfs, split_candidate_reports, split_attempted, use_realtime_fallback, realtime_reason = _prepare_account_report_fetch_plan(
+            customer_id=customer_id,
+            account_name=account_name,
+            target_date=target_date,
+            collect_sa=collect_sa,
+            shopping_campaign_ids=shopping_campaign_ids,
+            result=result,
+        )
 
         stage = "save_realtime_fallback" if use_realtime_fallback else "resolve_split_payload"
         result["stage"] = stage
@@ -3144,29 +3517,22 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 if shop_query_rows:
                     log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
 
-            result["campaign_rows_saved"] = int(c_cnt or 0)
-            result["keyword_rows_saved"] = int(k_cnt or 0)
-            result["ad_rows_saved"] = int(a_cnt or 0)
-            result["device_campaign_rows_saved"] = int(device_campaign_cnt or 0)
-            result["device_ad_rows_saved"] = int(device_ad_cnt or 0)
             result["shopping_query_rows_saved"] = int(len(shop_query_rows) if shop_query_rows else 0)
-            result["split_report_ok"] = bool(split_report_ok)
-            result["zero_data"] = bool(c_cnt == 0 and k_cnt == 0 and a_cnt == 0 and device_ad_cnt == 0 and device_campaign_cnt == 0)
 
             stage = "finalize_result"
             result["stage"] = stage
-            if result["zero_data"]:
-                result["status"] = "zero_data"
-                log(f"❌ [ {account_name} ] 수집된 데이터가 0건입니다! (해당 날짜에 발생한 클릭/노출 성과가 없음)")
-            else:
-                result["status"] = "ok"
-                if collect_mode == "device_only":
-                    log(f"   ✅ [ {account_name} ] PC/M 전용 수집 완료: 캠페인({device_campaign_cnt}) | 소재({device_ad_cnt})")
-                else:
-                    mode_msg = "총합 + purchase/cart/wishlist 분리" if split_report_ok else "총합만 저장 / purchase.cart.wishlist 미분리"
-                    if collect_device:
-                        mode_msg += " + PC/M"
-                    log(f"   ✅ [ {account_name} ] 리포트 수집 완료 ({mode_msg}): 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
+            _finalize_account_result(
+                result,
+                account_name=account_name,
+                collect_mode=collect_mode,
+                collect_device=collect_device,
+                split_report_ok=split_report_ok,
+                c_cnt=c_cnt,
+                k_cnt=k_cnt,
+                a_cnt=a_cnt,
+                device_campaign_cnt=device_campaign_cnt,
+                device_ad_cnt=device_ad_cnt,
+            )
 
     except Exception as e:
         result["status"] = "error"

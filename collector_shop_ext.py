@@ -117,7 +117,13 @@ def _new_run_result(customer_id: str, target_date: date, ext_bucket: str) -> dic
         "stats_status": "skipped",
         "delete_status": "pending",
         "upsert_status": "pending",
+        "stage": "init",
     }
+
+
+def _set_result_stage(result: dict, stage: str) -> str:
+    result["stage"] = str(stage or "")
+    return result["stage"]
 
 
 def _finalize_run_result(result: dict, status: str, reason: str = "") -> dict:
@@ -218,6 +224,38 @@ def save_debug_report(tp: str, customer_id: str, job_id: str, content: str):
         pass
 
 
+def _report_parse_delimiters(lines: list[str]) -> list[str]:
+    sample = [ln for ln in (lines or [])[:20] if str(ln).strip()]
+    tab_hits = sum(ln.count("	") for ln in sample)
+    comma_hits = sum(ln.count(",") for ln in sample)
+    primary = "	" if tab_hits >= comma_hits else ","
+    return ["	", ","] if primary == "	" else [",", "	"]
+
+
+def _manual_report_parse(txt: str, delim: str) -> pd.DataFrame:
+    rows = []
+    reader = csv.reader(io.StringIO(txt), delimiter=delim)
+    max_cols = 0
+    for row in reader:
+        row = [str(c).strip() for c in row]
+        rows.append(row)
+        max_cols = max(max_cols, len(row))
+    if not rows:
+        return pd.DataFrame()
+    norm_rows = [r + [""] * (max_cols - len(r)) for r in rows]
+    return pd.DataFrame(norm_rows)
+
+
+def _pandas_report_parse(txt: str, delim: str) -> pd.DataFrame:
+    return pd.read_csv(io.StringIO(txt), sep=delim, header=None, dtype=str, on_bad_lines="skip").fillna("")
+
+
+def _log_report_parse_diag(mode: str, delim: str, df: pd.DataFrame):
+    rows, cols = (0, 0) if df is None or df.empty else (int(df.shape[0]), int(df.shape[1]))
+    delim_name = "TAB" if delim == "	" else "COMMA"
+    log(f"   ↪ 리포트 원문 파싱: mode={mode} | delim={delim_name} | rows={rows} | cols={cols}")
+
+
 def parse_report_text_to_df(txt: str) -> pd.DataFrame:
     txt = (txt or "").replace("﻿", "").strip()
     if not txt:
@@ -227,46 +265,28 @@ def parse_report_text_to_df(txt: str) -> pd.DataFrame:
     if not lines:
         return pd.DataFrame()
 
-    sample = [ln for ln in lines[:20] if str(ln).strip()]
-    sep = "\t" if sum(ln.count("\t") for ln in sample) >= sum(ln.count(",") for ln in sample) else ","
-
-    def _manual_parse(delim: str) -> pd.DataFrame:
-        rows = []
-        reader = csv.reader(io.StringIO(txt), delimiter=delim)
-        max_cols = 0
-        for row in reader:
-            row = [str(c).strip() for c in row]
-            rows.append(row)
-            max_cols = max(max_cols, len(row))
-        if not rows:
-            return pd.DataFrame()
-        norm_rows = [r + [""] * (max_cols - len(r)) for r in rows]
-        return pd.DataFrame(norm_rows)
-
-    tries = []
-    if sep == "\t":
-        tries = ["\t", ","]
-    else:
-        tries = [",", "\t"]
+    tries = _report_parse_delimiters(lines)
 
     for delim in tries:
         try:
-            df = _manual_parse(delim)
+            df = _manual_report_parse(txt, delim)
             if not df.empty and max(df.shape) > 1:
+                _log_report_parse_diag("manual", delim, df)
                 return df
         except Exception:
             pass
 
     for delim in tries:
         try:
-            df = pd.read_csv(io.StringIO(txt), sep=delim, header=None, dtype=str, on_bad_lines="skip")
+            df = _pandas_report_parse(txt, delim)
             if not df.empty:
-                return df.fillna("")
+                _log_report_parse_diag("pandas", delim, df)
+                return df
         except Exception:
             pass
 
+    log("⚠️ 리포트 원문 파싱 실패: 지원 가능한 구분자/TXT 구조를 찾지 못했습니다.")
     return pd.DataFrame()
-
 
 def resolve_download_url(dl_url: str) -> str:
     if not dl_url:
@@ -626,40 +646,29 @@ def _looks_like_fixed_adext_report(df: pd.DataFrame) -> bool:
     return ext_hits >= 2 and num_tail_hits >= 2
 
 
-def _guess_fixed_adext_columns(df: pd.DataFrame, base_cols: dict | None = None) -> dict:
-    # 기본 포맷(로그 preview 기준)
-    # [0]dt [1]customer_id [2]campaign_id [3]adgroup_id [4]keyword_id/- [5]ad_id(nad-*) [6]ext_id(ext-*) ... [9]device [10]imp [11]clk
-    cols = dict(base_cols or SHOPPING_ADEXTENSION_FIXED_DEFAULTS)
+def _scan_prefixed_id_hits(df: pd.DataFrame, prefixes: tuple[str, ...], scan_rows: int) -> tuple[int, int]:
+    best = (-1, -1)
     if df is None or df.empty:
-        return cols
-    scan_rows = min(50, len(df))
-    # ext-id / nad-id는 패턴으로 다시 탐지
-    ext_best = (-1, -1)
-    nad_best = (-1, -1)
+        return best
     for col_idx in range(df.shape[1]):
-        ext_hits = 0
-        nad_hits = 0
+        hits = 0
         for i in range(scan_rows):
             try:
                 v = str(df.iloc[i, col_idx]).strip().lower()
             except Exception:
                 continue
-            if v.startswith('ext-'):
-                ext_hits += 1
-            if v.startswith('nad-'):
-                nad_hits += 1
-        if ext_hits > ext_best[1]:
-            ext_best = (col_idx, ext_hits)
-        if nad_hits > nad_best[1]:
-            nad_best = (col_idx, nad_hits)
-    if ext_best[1] >= 2:
-        cols['id_idx'] = ext_best[0]
-    if nad_best[1] >= 2:
-        cols['ad_idx'] = nad_best[0]
+            if any(v.startswith(p) for p in prefixes):
+                hits += 1
+        if hits > best[1]:
+            best = (col_idx, hits)
+    return best
 
-    # 노출/클릭은 뒤에서 가까운 숫자 2개를 우선 사용
+
+def _guess_tail_numeric_pair(df: pd.DataFrame, scan_rows: int) -> tuple[int | None, int | None]:
     imp_guess = None
     clk_guess = None
+    if df is None or df.empty:
+        return imp_guess, clk_guess
     for i in range(scan_rows):
         vals = [str(x).strip() for x in df.iloc[i].fillna("").tolist()]
         num_cols = []
@@ -671,11 +680,39 @@ def _guess_fixed_adext_columns(df: pd.DataFrame, base_cols: dict | None = None) 
             imp_guess = num_cols[-2]
             clk_guess = num_cols[-1]
             break
+    return imp_guess, clk_guess
+
+
+def _log_fixed_adext_diag(cols: dict, ext_best: tuple[int, int], nad_best: tuple[int, int], imp_guess, clk_guess):
+    log(
+        "   ↪ 고정포맷 컬럼 추정: "
+        f"ext_col={ext_best[0]}({ext_best[1]}hits) | "
+        f"ad_col={nad_best[0]}({nad_best[1]}hits) | "
+        f"imp_guess={imp_guess} | clk_guess={clk_guess} | "
+        f"final={{ad:{cols.get('ad_idx')}, ext:{cols.get('id_idx')}, imp:{cols.get('imp_idx')}, clk:{cols.get('clk_idx')}}}"
+    )
+
+
+def _guess_fixed_adext_columns(df: pd.DataFrame, base_cols: dict | None = None) -> dict:
+    # 기본 포맷(로그 preview 기준)
+    # [0]dt [1]customer_id [2]campaign_id [3]adgroup_id [4]keyword_id/- [5]ad_id(nad-*) [6]ext_id(ext-*) ... [9]device [10]imp [11]clk
+    cols = dict(base_cols or SHOPPING_ADEXTENSION_FIXED_DEFAULTS)
+    if df is None or df.empty:
+        return cols
+    scan_rows = min(50, len(df))
+    ext_best = _scan_prefixed_id_hits(df, ("ext-",), scan_rows)
+    nad_best = _scan_prefixed_id_hits(df, ("nad-",), scan_rows)
+    if ext_best[1] >= 2:
+        cols['id_idx'] = ext_best[0]
+    if nad_best[1] >= 2:
+        cols['ad_idx'] = nad_best[0]
+
+    imp_guess, clk_guess = _guess_tail_numeric_pair(df, scan_rows)
     if imp_guess is not None and clk_guess is not None:
         cols['imp_idx'] = imp_guess
         cols['clk_idx'] = clk_guess
+    _log_fixed_adext_diag(cols, ext_best, nad_best, imp_guess, clk_guess)
     return cols
-
 
 def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool, fixed_cols: dict | None = None, dump_label: str = "") -> dict:
     cols = _guess_fixed_adext_columns(df, base_cols=fixed_cols)
@@ -703,11 +740,66 @@ def _parse_fixed_adext_report(df: pd.DataFrame, include_conv_cols: bool, fixed_c
             bucket['sales'] += int(safe_float(vals[cols['sales_idx']]))
     return out
 
+def _detect_metric_report_layout(df: pd.DataFrame, id_candidates: list[str]) -> dict:
+    header_idx = _find_header_row(df, id_candidates)
+    if header_idx == -1:
+        return {"header_idx": -1, "raw_headers": [], "headers": [], "data_df": pd.DataFrame(), "idxs": {}}
+
+    raw_headers = [str(x).strip() for x in df.iloc[header_idx].fillna("")]
+    headers = [normalize_header(str(x)) for x in raw_headers]
+    data_df = df.iloc[header_idx + 1:].reset_index(drop=True)
+    idxs = {
+        "id_idx": get_col_idx(headers, REPORT_ID_ALIASES + id_candidates),
+        "imp_idx": get_col_idx(headers, REPORT_IMP_ALIASES),
+        "clk_idx": get_col_idx(headers, REPORT_CLK_ALIASES),
+        "cost_idx": get_col_idx(headers, REPORT_COST_ALIASES),
+        "conv_idx": get_col_idx(headers, REPORT_CONV_ALIASES),
+        "sales_idx": get_col_idx(headers, REPORT_SALES_ALIASES),
+    }
+    return {"header_idx": header_idx, "raw_headers": raw_headers, "headers": headers, "data_df": data_df, "idxs": idxs}
+
+
+def _metric_should_skip_id(obj_id: str) -> bool:
+    obj_id_l = str(obj_id or "").strip().lower()
+    if not obj_id_l or obj_id_l == "-":
+        return True
+    if obj_id_l in {"id", "adid", "adextensionid", "nccadextensionid", "확장소재id", "광고id", "소재id"}:
+        return True
+    return not (obj_id_l.startswith("ext-") or obj_id_l.startswith("nad-"))
+
+
+def _accumulate_metric_bucket(bucket: dict, row, idxs: dict, include_conv_cols: bool):
+    imp_idx = idxs.get("imp_idx", -1)
+    clk_idx = idxs.get("clk_idx", -1)
+    cost_idx = idxs.get("cost_idx", -1)
+    conv_idx = idxs.get("conv_idx", -1)
+    sales_idx = idxs.get("sales_idx", -1)
+    if imp_idx != -1 and len(row) > imp_idx:
+        bucket["imp"] += int(safe_float(row.iloc[imp_idx]))
+    if clk_idx != -1 and len(row) > clk_idx:
+        bucket["clk"] += int(safe_float(row.iloc[clk_idx]))
+    if cost_idx != -1 and len(row) > cost_idx:
+        bucket["cost"] += int(safe_float(row.iloc[cost_idx]))
+    if include_conv_cols and conv_idx != -1 and len(row) > conv_idx:
+        bucket["conv"] += safe_float(row.iloc[conv_idx])
+    if include_conv_cols and sales_idx != -1 and len(row) > sales_idx:
+        bucket["sales"] += int(safe_float(row.iloc[sales_idx]))
+
+
+def _log_metric_report_diag(report_name: str, bucket: str, mode: str, row_count: int, kept: int, idxs: dict):
+    log(
+        "   ↪ 확장소재 리포트 파싱: "
+        f"report={report_name or '-'} | bucket={bucket or '-'} | mode={mode} | rows={row_count} | kept={kept} | "
+        f"id={idxs.get('id_idx', -1)} imp={idxs.get('imp_idx', -1)} clk={idxs.get('clk_idx', -1)} cost={idxs.get('cost_idx', -1)} conv={idxs.get('conv_idx', -1)} sales={idxs.get('sales_idx', -1)}"
+    )
+
+
 def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_conv_cols: bool, report_name: str = "", bucket: str = "") -> dict:
     if df is None or df.empty:
         return {}
-    header_idx = _find_header_row(df, id_candidates)
-    if header_idx == -1:
+
+    layout = _detect_metric_report_layout(df, id_candidates)
+    if layout["header_idx"] == -1:
         if _looks_like_fixed_adext_report(df):
             log("⚠️ 리포트 헤더를 찾지 못했습니다. 쇼핑검색 ADEXTENSION 고정포맷 fallback으로 계속 진행합니다.")
             _debug_preview_rows(df)
@@ -715,57 +807,41 @@ def _parse_metric_report(df: pd.DataFrame, id_candidates: list[str], include_con
                 _debug_fixed_row_dump(df)
                 fixed_cols = _load_shopping_fixed_override()
                 log(f"   ↪ 쇼핑검색 ADEXTENSION 전용 인덱스 준비판: {fixed_cols}")
-                return _parse_fixed_adext_report(df, include_conv_cols, fixed_cols=fixed_cols, dump_label="shopping_ADEXTENSION")
-            return _parse_fixed_adext_report(df, include_conv_cols, dump_label=report_name or bucket)
+                out = _parse_fixed_adext_report(df, include_conv_cols, fixed_cols=fixed_cols, dump_label="shopping_ADEXTENSION")
+            else:
+                out = _parse_fixed_adext_report(df, include_conv_cols, dump_label=report_name or bucket)
+            _log_metric_report_diag(report_name, bucket, "fixed_fallback", len(df), len(out), {"id_idx": -1, "imp_idx": -1, "clk_idx": -1, "cost_idx": -1, "conv_idx": -1, "sales_idx": -1})
+            return out
         log("⚠️ 리포트 헤더를 찾지 못했습니다. preview를 남기고 이 리포트는 건너뜁니다.")
         _debug_preview_rows(df)
         return {}
 
-    raw_headers = [str(x).strip() for x in df.iloc[header_idx].fillna("")]
-    headers = [normalize_header(str(x)) for x in raw_headers]
-    data_df = df.iloc[header_idx + 1:].reset_index(drop=True)
-
-    id_idx = get_col_idx(headers, REPORT_ID_ALIASES + id_candidates)
-    imp_idx = get_col_idx(headers, REPORT_IMP_ALIASES)
-    clk_idx = get_col_idx(headers, REPORT_CLK_ALIASES)
-    cost_idx = get_col_idx(headers, REPORT_COST_ALIASES)
-    conv_idx = get_col_idx(headers, REPORT_CONV_ALIASES)
-    sales_idx = get_col_idx(headers, REPORT_SALES_ALIASES)
-
-    if id_idx == -1:
-        id_idx = _guess_id_col_from_rows(data_df)
-        if id_idx != -1:
-            log(f"   ↪ 확장소재 ID 컬럼 fallback 적용: col={id_idx} header='{raw_headers[id_idx] if id_idx < len(raw_headers) else ''}'")
-    if id_idx == -1:
+    raw_headers = layout["raw_headers"]
+    data_df = layout["data_df"]
+    idxs = layout["idxs"]
+    if idxs["id_idx"] == -1:
+        idxs["id_idx"] = _guess_id_col_from_rows(data_df)
+        if idxs["id_idx"] != -1:
+            header_name = raw_headers[idxs['id_idx']] if idxs['id_idx'] < len(raw_headers) else ''
+            log(f"   ↪ 확장소재 ID 컬럼 fallback 적용: col={idxs['id_idx']} header='{header_name}'")
+    if idxs["id_idx"] == -1:
         log("⚠️ 리포트에 확장소재 ID 컬럼을 찾지 못했습니다. preview를 남깁니다.")
         _debug_preview_rows(df)
         return {}
 
     out = {}
+    kept = 0
     for _, r in data_df.iterrows():
-        if len(r) <= id_idx:
+        if len(r) <= idxs["id_idx"]:
             continue
-        obj_id = str(r.iloc[id_idx]).strip()
-        if not obj_id or obj_id == "-":
+        obj_id = str(r.iloc[idxs["id_idx"]]).strip()
+        if _metric_should_skip_id(obj_id):
             continue
-        obj_id_l = obj_id.lower()
-        if obj_id_l in {"id", "adid", "adextensionid", "nccadextensionid", "확장소재id", "광고id", "소재id"}:
-            continue
-        if not (obj_id_l.startswith("ext-") or obj_id_l.startswith("nad-")):
-            continue
-        bucket = out.setdefault(obj_id, {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0})
-        if imp_idx != -1 and len(r) > imp_idx:
-            bucket["imp"] += int(safe_float(r.iloc[imp_idx]))
-        if clk_idx != -1 and len(r) > clk_idx:
-            bucket["clk"] += int(safe_float(r.iloc[clk_idx]))
-        if cost_idx != -1 and len(r) > cost_idx:
-            bucket["cost"] += int(safe_float(r.iloc[cost_idx]))
-        if include_conv_cols and conv_idx != -1 and len(r) > conv_idx:
-            bucket["conv"] += safe_float(r.iloc[conv_idx])
-        if include_conv_cols and sales_idx != -1 and len(r) > sales_idx:
-            bucket["sales"] += int(safe_float(r.iloc[sales_idx]))
+        kept += 1
+        bucket_row = out.setdefault(obj_id, {"imp": 0, "clk": 0, "cost": 0, "conv": 0.0, "sales": 0})
+        _accumulate_metric_bucket(bucket_row, r, idxs, include_conv_cols)
+    _log_metric_report_diag(report_name, bucket, "header", len(data_df), kept, idxs)
     return out
-
 
 def _merge_metric_maps(base_map: dict, conv_map: dict) -> dict:
     out = {}
@@ -876,84 +952,52 @@ def _report_sample(metric_map: dict, label: str):
         log(f"   ↪ 샘플[{label}] ad_id={ad_id} imp={m.get('imp',0)} clk={m.get('clk',0)} cost={m.get('cost',0)} conv={m.get('conv',0)} sales={m.get('sales',0)}")
 
 
-def process_account(engine, customer_id: str, target_date: date, ext_bucket: str = "shopping"):
-    result = _new_run_result(customer_id, target_date, ext_bucket)
-    log(f"--- [ {customer_id} ] {bucket_label(ext_bucket)} 확장소재 수집 시작 ({target_date}) ---")
-    try:
-        status, camps = request_json("GET", "/ncc/campaigns", customer_id)
-        if status != 200 or not isinstance(camps, list):
-            log("⚠️ 캠페인 조회 실패")
-            return _finalize_run_result(result, "error", f"campaign_fetch_failed:{status}")
+def _fetch_selected_campaigns(customer_id: str, ext_bucket: str, result: dict):
+    _set_result_stage(result, "fetch_campaigns")
+    status, camps = request_json("GET", "/ncc/campaigns", customer_id)
+    if status != 200 or not isinstance(camps, list):
+        log("⚠️ 캠페인 조회 실패")
+        return None, f"campaign_fetch_failed:{status}"
 
-        selected_camps = [c for c in camps if match_bucket(c.get("campaignTp"), ext_bucket)]
-        shopping_cnt = sum(1 for c in selected_camps if campaign_bucket(c.get("campaignTp")) == "shopping")
-        non_shopping_cnt = len(selected_camps) - shopping_cnt
-        result["campaign_count"] = len(selected_camps)
-        result["shopping_campaign_count"] = shopping_cnt
-        result["non_shopping_campaign_count"] = non_shopping_cnt
-        log(f"   ▶ 대상 캠페인 {len(selected_camps)}개 | 쇼핑검색 {shopping_cnt}개 | 파워링크외 {non_shopping_cnt}개")
+    selected_camps = [c for c in camps if match_bucket(c.get("campaignTp"), ext_bucket)]
+    shopping_cnt = sum(1 for c in selected_camps if campaign_bucket(c.get("campaignTp")) == "shopping")
+    non_shopping_cnt = len(selected_camps) - shopping_cnt
+    result["campaign_count"] = len(selected_camps)
+    result["shopping_campaign_count"] = shopping_cnt
+    result["non_shopping_campaign_count"] = non_shopping_cnt
+    log(f"   ▶ 대상 캠페인 {len(selected_camps)}개 | 쇼핑검색 {shopping_cnt}개 | 파워링크외 {non_shopping_cnt}개")
+    return selected_camps, ""
 
-        camp_rows, ag_rows, ad_rows = [], [], []
-        ad_bucket_map = {}
-        target_ad_ids = []
 
-        for c in selected_camps:
-            cid = str(c.get("nccCampaignId"))
-            bucket = campaign_bucket(c.get("campaignTp"))
-            camp_rows.append({
-                "customer_id": str(customer_id),
-                "campaign_id": cid,
-                "campaign_name": c.get("name"),
-                "campaign_tp": c.get("campaignTp"),
-                "status": c.get("status"),
-            })
+def _collect_extension_targets(customer_id: str, selected_camps: list, result: dict):
+    _set_result_stage(result, "collect_extension_targets")
+    camp_rows, ag_rows, ad_rows = [], [], []
+    ad_bucket_map = {}
+    target_ad_ids = []
 
-            for owner_id, agid, agname in [(cid, f"CAMP_{cid}", "[캠페인 공통 소재]")]:
-                s, camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": owner_id})
-                camp_exts = camp_exts if s == 200 and isinstance(camp_exts, list) else []
-                if camp_exts:
-                    ag_rows.append({
-                        "customer_id": str(customer_id),
-                        "adgroup_id": agid,
-                        "campaign_id": cid,
-                        "adgroup_name": agname,
-                        "status": "ELIGIBLE",
-                    })
-                    for ext in camp_exts:
-                        ext_id = str(ext.get("nccAdExtensionId") or "").strip()
-                        if not ext_id:
-                            continue
-                        target_ad_ids.append(ext_id)
-                        ad_bucket_map[ext_id] = bucket
-                        ext_info = _normalize_ext_info(ext)
-                        display_name = parse_ext_name(ext)
-                        ad_rows.append({
-                            "customer_id": str(customer_id),
-                            "ad_id": ext_id,
-                            "adgroup_id": agid,
-                            "ad_name": display_name,
-                            "status": ext.get("status"),
-                            "ad_title": display_name,
-                            "ad_desc": display_name,
-                            "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
-                            "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
-                            "creative_text": display_name[:500],
-                        })
+    for c in selected_camps:
+        cid = str(c.get("nccCampaignId"))
+        bucket = campaign_bucket(c.get("campaignTp"))
+        camp_rows.append({
+            "customer_id": str(customer_id),
+            "campaign_id": cid,
+            "campaign_name": c.get("name"),
+            "campaign_tp": c.get("campaignTp"),
+            "status": c.get("status"),
+        })
 
-            s_groups, groups = request_json("GET", "/ncc/adgroups", customer_id, params={"nccCampaignId": cid})
-            groups = groups if s_groups == 200 and isinstance(groups, list) else []
-            for g in groups:
-                gid = str(g.get("nccAdgroupId"))
+        for owner_id, agid, agname in [(cid, f"CAMP_{cid}", "[캠페인 공통 소재]")]:
+            s, camp_exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": owner_id})
+            camp_exts = camp_exts if s == 200 and isinstance(camp_exts, list) else []
+            if camp_exts:
                 ag_rows.append({
                     "customer_id": str(customer_id),
-                    "adgroup_id": gid,
+                    "adgroup_id": agid,
                     "campaign_id": cid,
-                    "adgroup_name": g.get("name"),
-                    "status": g.get("status"),
+                    "adgroup_name": agname,
+                    "status": "ELIGIBLE",
                 })
-                s_exts, exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": gid})
-                exts = exts if s_exts == 200 and isinstance(exts, list) else []
-                for ext in exts:
+                for ext in camp_exts:
                     ext_id = str(ext.get("nccAdExtensionId") or "").strip()
                     if not ext_id:
                         continue
@@ -964,7 +1008,7 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                     ad_rows.append({
                         "customer_id": str(customer_id),
                         "ad_id": ext_id,
-                        "adgroup_id": gid,
+                        "adgroup_id": agid,
                         "ad_name": display_name,
                         "status": ext.get("status"),
                         "ad_title": display_name,
@@ -974,65 +1018,183 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
                         "creative_text": display_name[:500],
                     })
 
-        result["campaign_rows"] = len(camp_rows)
-        result["adgroup_rows"] = len(ag_rows)
-        result["extension_rows"] = len(ad_rows)
-        upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
-        upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
-        upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+        s_groups, groups = request_json("GET", "/ncc/adgroups", customer_id, params={"nccCampaignId": cid})
+        groups = groups if s_groups == 200 and isinstance(groups, list) else []
+        for g in groups:
+            gid = str(g.get("nccAdgroupId"))
+            ag_rows.append({
+                "customer_id": str(customer_id),
+                "adgroup_id": gid,
+                "campaign_id": cid,
+                "adgroup_name": g.get("name"),
+                "status": g.get("status"),
+            })
+            s_exts, exts = request_json("GET", "/ncc/ad-extensions", customer_id, params={"ownerId": gid})
+            exts = exts if s_exts == 200 and isinstance(exts, list) else []
+            for ext in exts:
+                ext_id = str(ext.get("nccAdExtensionId") or "").strip()
+                if not ext_id:
+                    continue
+                target_ad_ids.append(ext_id)
+                ad_bucket_map[ext_id] = bucket
+                ext_info = _normalize_ext_info(ext)
+                display_name = parse_ext_name(ext)
+                ad_rows.append({
+                    "customer_id": str(customer_id),
+                    "ad_id": ext_id,
+                    "adgroup_id": gid,
+                    "ad_name": display_name,
+                    "status": ext.get("status"),
+                    "ad_title": display_name,
+                    "ad_desc": display_name,
+                    "pc_landing_url": _first_non_empty(ext_info, ["pcLandingUrl", "landingUrl", "pcUrl", "url"]),
+                    "mobile_landing_url": _first_non_empty(ext_info, ["mobileLandingUrl", "landingUrl", "mobileUrl", "url"]),
+                    "creative_text": display_name[:500],
+                })
+
+    result["campaign_rows"] = len(camp_rows)
+    result["adgroup_rows"] = len(ag_rows)
+    result["extension_rows"] = len(ad_rows)
+    result["target_ad_ids"] = len({x for x in target_ad_ids if x})
+    return camp_rows, ag_rows, ad_rows, sorted({x for x in target_ad_ids if x}), ad_bucket_map
+
+
+def _persist_extension_dimensions(engine, camp_rows: list, ag_rows: list, ad_rows: list):
+    upsert_many(engine, "dim_campaign", camp_rows, ["customer_id", "campaign_id"])
+    upsert_many(engine, "dim_adgroup", ag_rows, ["customer_id", "adgroup_id"])
+    upsert_many(engine, "dim_ad", ad_rows, ["customer_id", "ad_id"])
+
+
+def _load_extension_report_metrics(customer_id: str, target_date: date, target_ad_ids: list[str], ext_bucket: str, result: dict):
+    _set_result_stage(result, "fetch_reports")
+    log(f"   ▶ ADEXTENSION / ADEXTENSION_CONVERSION 리포트 수집 중...")
+    base_df = fetch_stat_report(customer_id, "ADEXTENSION", target_date)
+    conv_df = fetch_stat_report(customer_id, "ADEXTENSION_CONVERSION", target_date)
+    result["report_base_rows"] = int(len(base_df) if base_df is not None else 0)
+    result["report_conv_rows"] = int(len(conv_df) if conv_df is not None else 0)
+    result["report_status"] = "ok" if (result["report_base_rows"] > 0 or result["report_conv_rows"] > 0) else "zero_data"
+
+    id_candidates = REPORT_ID_ALIASES
+    base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False, report_name="ADEXTENSION", bucket=ext_bucket)
+    conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True, report_name="ADEXTENSION_CONVERSION", bucket=ext_bucket)
+    metric_map = _merge_metric_maps(base_map, conv_map)
+    metric_map = {ad_id: m for ad_id, m in metric_map.items() if ad_id in target_ad_ids}
+
+    if base_map:
+        _report_sample({k: v for k, v in base_map.items() if k in target_ad_ids}, "ADEXTENSION")
+    if conv_map:
+        _report_sample({k: v for k, v in conv_map.items() if k in target_ad_ids}, "ADEXTENSION_CONVERSION")
+    return metric_map, base_map, conv_map, base_df, conv_df
+
+
+def _should_fetch_extension_stats(metric_map: dict, conv_map: dict) -> bool:
+    return (
+        not metric_map
+        or not conv_map
+        or not any(int(m.get("cost", 0) or 0) > 0 or float(m.get("conv", 0.0) or 0.0) > 0 or int(m.get("sales", 0) or 0) > 0 for m in metric_map.values())
+        or sum(1 for m in metric_map.values() if int(m.get("clk", 0) or 0) > 0) < max(1, len(metric_map) // 20)
+    )
+
+
+def _enrich_extension_metrics_with_stats(customer_id: str, target_ad_ids: list[str], target_date: date, metric_map: dict, conv_map: dict, result: dict):
+    _set_result_stage(result, "maybe_fetch_stats")
+    stats_needed = _should_fetch_extension_stats(metric_map, conv_map)
+    stats_map = {}
+    if stats_needed:
+        result["stats_status"] = "started"
+        log(f"   ↪ /stats 확장소재 보강 조회 시작: target_ids={len(target_ad_ids)}")
+        stats_map = fetch_extension_stats_map(customer_id, target_ad_ids, target_date)
+        result["stats_rows"] = len(stats_map)
+        result["stats_status"] = "ok" if stats_map else "zero_data"
+        if stats_map:
+            _report_sample({k: v for k, v in stats_map.items() if k in target_ad_ids}, "ADEXTENSION_STATS")
+        log(f"   ↪ /stats 확장소재 보강 조회 완료: rows={len(stats_map)}")
+        metric_map, source_counts = _combine_report_and_stats_metrics(metric_map, stats_map)
+        log(
+            "   ↪ 확장소재 metric 결합 결과: "
+            f"report_only={source_counts['report_only']} | stats_only={source_counts['stats_only']} | "
+            f"stats_enriched={source_counts['stats_enriched']} | report_preferred={source_counts['report_preferred']}"
+        )
+    else:
+        result["stats_status"] = "skipped"
+    return metric_map, stats_map
+
+
+def _build_extension_fact_rows(metric_map: dict, ad_bucket_map: dict, result: dict):
+    _set_result_stage(result, "build_fact_rows")
+    fact_rows = []
+    shopping_zero = 0
+    target_date = datetime.strptime(str(result.get("target_date")), "%Y-%m-%d").date()
+    for ad_id, m in metric_map.items():
+        imp = int(m.get("imp", 0) or 0)
+        clk = int(m.get("clk", 0) or 0)
+        cost = int(m.get("cost", 0) or 0)
+        conv = float(m.get("conv", 0.0) or 0.0)
+        sales = int(m.get("sales", 0) or 0)
+        if imp == 0 and clk == 0 and cost == 0 and conv == 0 and sales == 0:
+            continue
+        if ad_bucket_map.get(ad_id) == "shopping" and imp > 0 and clk == 0:
+            shopping_zero += 1
+        fact_rows.append({
+            "dt": target_date,
+            "customer_id": str(result.get("customer_id")),
+            "ad_id": str(ad_id),
+            "imp": imp,
+            "clk": clk,
+            "cost": cost,
+            "conv": conv,
+            "sales": sales,
+            "roas": (sales / cost * 100.0) if cost > 0 else 0.0,
+        })
+    result["fact_rows"] = len(fact_rows)
+    result["shopping_zero_clk"] = shopping_zero
+    return fact_rows
+
+
+def _log_extension_fact_quality(fact_rows: list[dict], result: dict):
+    nonzero_clk = sum(1 for r in fact_rows if int(r.get("clk", 0) or 0) > 0)
+    nonzero_cost = sum(1 for r in fact_rows if int(r.get("cost", 0) or 0) > 0)
+    nonzero_conv = sum(1 for r in fact_rows if float(r.get("conv", 0.0) or 0.0) > 0 or int(r.get("sales", 0) or 0) > 0)
+    result["nonzero_clk_rows"] = nonzero_clk
+    result["nonzero_cost_rows"] = nonzero_cost
+    result["nonzero_conv_rows"] = nonzero_conv
+    log(f"   ↪ 확장소재 최종 품질: rows={len(fact_rows)} | clk>0 {nonzero_clk} | cost>0 {nonzero_cost} | conv/sales>0 {nonzero_conv}")
+
+
+def _persist_extension_fact(engine, customer_id: str, target_date: date, target_ad_ids: list[str], fact_rows: list[dict], result: dict):
+    _set_result_stage(result, "persist_fact")
+    if not clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
+        result["delete_status"] = "error"
+        log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단합니다.")
+        return False
+    result["delete_status"] = "ok"
+    upsert_many(engine, "fact_ad_daily", fact_rows, ["dt", "customer_id", "ad_id"])
+    result["upsert_status"] = "ok"
+    log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
+    if result.get("shopping_zero_clk"):
+        log(f"   ↪ 쇼핑검색(SSA)에서 imp>0 이지만 clk=0 인 확장소재 {int(result.get('shopping_zero_clk', 0) or 0)}건")
+    return True
+
+
+def process_account(engine, customer_id: str, target_date: date, ext_bucket: str = "shopping"):
+    result = _new_run_result(customer_id, target_date, ext_bucket)
+    log(f"--- [ {customer_id} ] {bucket_label(ext_bucket)} 확장소재 수집 시작 ({target_date}) ---")
+    try:
+        selected_camps, reason = _fetch_selected_campaigns(customer_id, ext_bucket, result)
+        if selected_camps is None:
+            return _finalize_run_result(result, "error", reason)
+
+        camp_rows, ag_rows, ad_rows, target_ad_ids, ad_bucket_map = _collect_extension_targets(customer_id, selected_camps, result)
+        _set_result_stage(result, "persist_dimensions")
+        _persist_extension_dimensions(engine, camp_rows, ag_rows, ad_rows)
         log(f"   ▶ 캠페인({len(camp_rows)}), 광고그룹({len(ag_rows)}), 확장소재({len(ad_rows)}) 매핑 완료!")
 
-        target_ad_ids = sorted({x for x in target_ad_ids if x})
-        result["target_ad_ids"] = len(target_ad_ids)
         if not target_ad_ids:
             log("   ⚠️ 수집 대상 확장소재가 없습니다.")
             return _finalize_run_result(result, "zero_data", "no_target_extensions")
 
-        # 공식 대용량 리포트 기반 수집
-        log(f"   ▶ ADEXTENSION / ADEXTENSION_CONVERSION 리포트 수집 중...")
-        base_df = fetch_stat_report(customer_id, "ADEXTENSION", target_date)
-        conv_df = fetch_stat_report(customer_id, "ADEXTENSION_CONVERSION", target_date)
-        result["report_base_rows"] = int(len(base_df) if base_df is not None else 0)
-        result["report_conv_rows"] = int(len(conv_df) if conv_df is not None else 0)
-        result["report_status"] = "ok" if (result["report_base_rows"] > 0 or result["report_conv_rows"] > 0) else "zero_data"
-
-        id_candidates = REPORT_ID_ALIASES
-        base_map = _parse_metric_report(base_df, id_candidates, include_conv_cols=False, report_name="ADEXTENSION", bucket=ext_bucket)
-        conv_map = _parse_metric_report(conv_df, id_candidates, include_conv_cols=True, report_name="ADEXTENSION_CONVERSION", bucket=ext_bucket)
-        metric_map = _merge_metric_maps(base_map, conv_map)
-
-        # 대상 버킷으로만 필터
-        metric_map = {ad_id: m for ad_id, m in metric_map.items() if ad_id in target_ad_ids}
-
-        if base_map:
-            _report_sample({k: v for k, v in base_map.items() if k in target_ad_ids}, "ADEXTENSION")
-        if conv_map:
-            _report_sample({k: v for k, v in conv_map.items() if k in target_ad_ids}, "ADEXTENSION_CONVERSION")
-
-        stats_needed = (
-            not metric_map
-            or not conv_map
-            or not any(int(m.get("cost", 0) or 0) > 0 or float(m.get("conv", 0.0) or 0.0) > 0 or int(m.get("sales", 0) or 0) > 0 for m in metric_map.values())
-            or sum(1 for m in metric_map.values() if int(m.get("clk", 0) or 0) > 0) < max(1, len(metric_map) // 20)
-        )
-        stats_map = {}
-        if stats_needed:
-            result["stats_status"] = "started"
-            log(f"   ↪ /stats 확장소재 보강 조회 시작: target_ids={len(target_ad_ids)}")
-            stats_map = fetch_extension_stats_map(customer_id, target_ad_ids, target_date)
-            result["stats_rows"] = len(stats_map)
-            result["stats_status"] = "ok" if stats_map else "zero_data"
-            if stats_map:
-                _report_sample({k: v for k, v in stats_map.items() if k in target_ad_ids}, "ADEXTENSION_STATS")
-            log(f"   ↪ /stats 확장소재 보강 조회 완료: rows={len(stats_map)}")
-            metric_map, source_counts = _combine_report_and_stats_metrics(metric_map, stats_map)
-            log(
-                "   ↪ 확장소재 metric 결합 결과: "
-                f"report_only={source_counts['report_only']} | stats_only={source_counts['stats_only']} | "
-                f"stats_enriched={source_counts['stats_enriched']} | report_preferred={source_counts['report_preferred']}"
-            )
-        else:
-            result["stats_status"] = "skipped"
+        metric_map, base_map, conv_map, base_df, conv_df = _load_extension_report_metrics(customer_id, target_date, target_ad_ids, ext_bucket, result)
+        metric_map, stats_map = _enrich_extension_metrics_with_stats(customer_id, target_ad_ids, target_date, metric_map, conv_map, result)
 
         result["metric_rows"] = len(metric_map)
         if not metric_map:
@@ -1048,59 +1210,21 @@ def process_account(engine, customer_id: str, target_date: date, ext_bucket: str
             for ad_id in missing[:10]:
                 log(f"      missing ad_id={ad_id} bucket={ad_bucket_map.get(ad_id)}")
 
-        fact_rows = []
-        shopping_zero = 0
-        for ad_id, m in metric_map.items():
-            imp = int(m.get("imp", 0) or 0)
-            clk = int(m.get("clk", 0) or 0)
-            cost = int(m.get("cost", 0) or 0)
-            conv = float(m.get("conv", 0.0) or 0.0)
-            sales = int(m.get("sales", 0) or 0)
-            if imp == 0 and clk == 0 and cost == 0 and conv == 0 and sales == 0:
-                continue
-            if ad_bucket_map.get(ad_id) == "shopping" and imp > 0 and clk == 0:
-                shopping_zero += 1
-            fact_rows.append({
-                "dt": target_date,
-                "customer_id": str(customer_id),
-                "ad_id": str(ad_id),
-                "imp": imp,
-                "clk": clk,
-                "cost": cost,
-                "conv": conv,
-                "sales": sales,
-                "roas": (sales / cost * 100.0) if cost > 0 else 0.0,
-            })
-
-        result["fact_rows"] = len(fact_rows)
-        result["shopping_zero_clk"] = shopping_zero
+        fact_rows = _build_extension_fact_rows(metric_map, ad_bucket_map, result)
         if not fact_rows:
             log("   ⚠️ 리포트상 성과가 있는 확장소재가 없습니다.")
             return _finalize_run_result(result, "zero_data", "fact_rows_empty")
 
-        nonzero_clk = sum(1 for r in fact_rows if int(r.get("clk", 0) or 0) > 0)
-        nonzero_cost = sum(1 for r in fact_rows if int(r.get("cost", 0) or 0) > 0)
-        nonzero_conv = sum(1 for r in fact_rows if float(r.get("conv", 0.0) or 0.0) > 0 or int(r.get("sales", 0) or 0) > 0)
-        result["nonzero_clk_rows"] = nonzero_clk
-        result["nonzero_cost_rows"] = nonzero_cost
-        result["nonzero_conv_rows"] = nonzero_conv
-        log(f"   ↪ 확장소재 최종 품질: rows={len(fact_rows)} | clk>0 {nonzero_clk} | cost>0 {nonzero_cost} | conv/sales>0 {nonzero_conv}")
-
-        if not clear_fact_scope(engine, customer_id, target_date, target_ad_ids):
-            result["delete_status"] = "error"
-            log("   ❌ fact_ad_daily 범위 삭제 실패로 적재를 중단합니다.")
+        _log_extension_fact_quality(fact_rows, result)
+        if not _persist_extension_fact(engine, customer_id, target_date, target_ad_ids, fact_rows, result):
             return _finalize_run_result(result, "error", "clear_fact_scope_failed")
-        result["delete_status"] = "ok"
 
-        upsert_many(engine, "fact_ad_daily", fact_rows, ["dt", "customer_id", "ad_id"])
-        result["upsert_status"] = "ok"
-        log(f"   ✅ 통계가 있는 확장소재 {len(fact_rows)}건 DB 적재 성공!")
-        if shopping_zero:
-            log(f"   ↪ 쇼핑검색(SSA)에서 imp>0 이지만 clk=0 인 확장소재 {shopping_zero}건")
+        _set_result_stage(result, "finalize")
         return _finalize_run_result(result, "ok")
     except Exception as e:
-        log(f"❌ 확장소재 수집 중 예외 발생: {e}")
-        return _finalize_run_result(result, "error", str(e))
+        stage = result.get("stage") or "unknown"
+        log(f"❌ 확장소재 수집 중 예외 발생 | stage={stage}: {type(e).__name__}: {e}")
+        return _finalize_run_result(result, "error", f"stage={stage} | {type(e).__name__}: {e}")
 
 
 def normalize_ext_bucket(v: str) -> str:
@@ -1188,7 +1312,7 @@ def main():
     for r in results:
         log(
             "   - "
-            f"{r.get('customer_id')} | status={r.get('status')} | "
+            f"{r.get('customer_id')} | status={r.get('status')} | stage={r.get('stage')} | "
             f"campaigns={r.get('campaign_count', 0)} | ext={r.get('extension_rows', 0)} | "
             f"target_ids={r.get('target_ad_ids', 0)} | base={r.get('report_base_rows', 0)} | "
             f"conv={r.get('report_conv_rows', 0)} | stats={r.get('stats_rows', 0)} | fact={r.get('fact_rows', 0)}"
