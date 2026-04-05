@@ -22,6 +22,64 @@ def _cached_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, a
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _prepare_biz_view(bundle: pd.DataFrame) -> pd.DataFrame:
+    if bundle is None or bundle.empty:
+        return pd.DataFrame()
+    biz_view = bundle.copy()
+    m = biz_view["avg_cost"].astype(float) > 0
+    biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
+    biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
+    biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
+    return biz_view
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _prepare_alert_view(alert_bundle: pd.DataFrame) -> pd.DataFrame:
+    if alert_bundle is None or alert_bundle.empty:
+        return pd.DataFrame()
+    alert_view = alert_bundle.copy()
+    m_alert = alert_view["avg_cost"].astype(float) > 0
+    alert_view.loc[m_alert, "days_cover"] = alert_view.loc[m_alert, "bizmoney_balance"].astype(float) / alert_view.loc[m_alert, "avg_cost"].astype(float)
+    return alert_view
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float, override_items: tuple) -> pd.DataFrame:
+    if biz_view is None or biz_view.empty:
+        return pd.DataFrame()
+    budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]].copy()
+    for cid, new_val in override_items:
+        m_cid = budget_view["customer_id"].astype(str) == str(cid)
+        budget_view.loc[m_cid, "monthly_budget"] = new_val
+
+    budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
+    budget_view["prev_month_cost_val"] = pd.to_numeric(budget_view.get("prev_month_cost", 0), errors="coerce").fillna(0).astype(int)
+    budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
+
+    budget_view["usage_rate"] = 0.0
+    m2 = budget_view["monthly_budget_val"] > 0
+    budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
+    budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
+
+    cond_zero = budget_view["monthly_budget_val"] == 0
+    cond_over = budget_view["usage_rate"] >= 1.0
+    cond_fast = budget_view["usage_rate"] > target_pacing_rate + 0.1
+    cond_slow = budget_view["usage_rate"] < target_pacing_rate - 0.1
+
+    budget_view["상태"] = np.select(
+        [cond_zero, cond_over, cond_fast, cond_slow],
+        ["미설정", "예산 초과", "과속 소진", "과소 소진"],
+        default="적정 페이스"
+    )
+    budget_view["_rank"] = np.select(
+        [cond_zero, cond_over, cond_fast, cond_slow],
+        [4, 0, 1, 3],
+        default=2
+    )
+    budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+    return budget_view
+
 
 @st.fragment
 def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
@@ -235,21 +293,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
     alert_bundle = _cached_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
     
-    if bundle is None or bundle.empty:
-        biz_view = pd.DataFrame()
-    else:
-        biz_view = bundle.copy()
-        m = biz_view["avg_cost"].astype(float) > 0
-        biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
-        biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
-        biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
-
-    if alert_bundle is None or alert_bundle.empty:
-        alert_view = pd.DataFrame()
-    else:
-        alert_view = alert_bundle.copy()
-        m_alert = alert_view["avg_cost"].astype(float) > 0
-        alert_view.loc[m_alert, "days_cover"] = alert_view.loc[m_alert, "bizmoney_balance"].astype(float) / alert_view.loc[m_alert, "avg_cost"].astype(float)
+    biz_view = _prepare_biz_view(bundle)
+    alert_view = _prepare_alert_view(alert_bundle)
 
     with tab_budget:
         if biz_view.empty:
@@ -258,41 +303,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             render_budget_kpis(biz_view.copy(), end_dt)
             st.divider()
 
-            budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]].copy()
-            
-            if "local_budget_overrides" in st.session_state:
-                for cid, new_val in st.session_state["local_budget_overrides"].items():
-                    m_cid = budget_view["customer_id"].astype(str) == str(cid)
-                    budget_view.loc[m_cid, "monthly_budget"] = new_val
-
-            budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
-            budget_view["prev_month_cost_val"] = pd.to_numeric(budget_view.get("prev_month_cost", 0), errors="coerce").fillna(0).astype(int)
-            budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
-
-            budget_view["usage_rate"] = 0.0
-            m2 = budget_view["monthly_budget_val"] > 0
-            budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
-            budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
-
-            # ⚡ 고속 연산을 위한 Vectorization 적용 (apply 제거)
-            cond_zero = budget_view["monthly_budget_val"] == 0
-            cond_over = budget_view["usage_rate"] >= 1.0
-            cond_fast = budget_view["usage_rate"] > target_pacing_rate + 0.1
-            cond_slow = budget_view["usage_rate"] < target_pacing_rate - 0.1
-
-            budget_view["상태"] = np.select(
-                [cond_zero, cond_over, cond_fast, cond_slow],
-                ["미설정", "예산 초과", "과속 소진", "과소 소진"],
-                default="적정 페이스"
-            )
-            budget_view["_rank"] = np.select(
-                [cond_zero, cond_over, cond_fast, cond_slow],
-                [4, 0, 1, 3],
-                default=2
-            )
-
-            budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
-
+            override_items = tuple(sorted((st.session_state.get("local_budget_overrides") or {}).items(), key=lambda x: str(x[0])))
+            budget_view = _build_budget_editor_view(biz_view, target_pacing_rate, override_items)
             render_budget_editor(budget_view, engine, end_dt, target_pacing_rate)
 
     with tab_alert:
