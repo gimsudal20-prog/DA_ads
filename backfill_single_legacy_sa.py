@@ -64,12 +64,13 @@ def daterange(start: date, end: date):
 
 
 def main() -> None:
+    args = parse_args()
+
     api_key = clean(os.getenv("NAVER_ADS_API_KEY") or os.getenv("NAVER_API_KEY"))
     if not api_key:
         print("❌ [FATAL] NAVER_ADS_API_KEY / NAVER_API_KEY 환경변수가 없습니다.", flush=True)
         sys.exit(1)
 
-    args = parse_args()
     try:
         start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
         end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
