@@ -994,136 +994,145 @@ def format_split_summary(summary: dict) -> str:
         f"위시리스트 {fmt(summary.get('wishlist_conv', 0))}건"
     )
 
-def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, live_keyword_resolver=None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
-    camp_map, kw_map, ad_map = {}, {}, {}
-    summary = empty_split_summary()
-    debug_rows = []
-    allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
-    keyword_lookup = keyword_lookup or {}
-    keyword_unique_lookup = keyword_unique_lookup or {}
-    if df is None or df.empty:
-        return camp_map, kw_map, ad_map, summary
+def _conv_ensure_split_bucket(m_dict: dict, obj_id: str):
+    if obj_id not in m_dict:
+        m_dict[obj_id] = {
+            "purchase_conv": 0.0,
+            "purchase_sales": 0,
+            "cart_conv": 0.0,
+            "cart_sales": 0,
+            "wishlist_conv": 0.0,
+            "wishlist_sales": 0,
+        }
 
-    def ensure_split_bucket(m_dict: dict, obj_id: str):
-        if obj_id not in m_dict:
-            m_dict[obj_id] = {
-                "purchase_conv": 0.0,
-                "purchase_sales": 0,
-                "cart_conv": 0.0,
-                "cart_sales": 0,
-                "wishlist_conv": 0.0,
-                "wishlist_sales": 0,
-            }
 
-    def apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
-        obj_id = str(obj_id).strip()
-        if not obj_id or obj_id == "-":
-            return
-        ensure_split_bucket(m_dict, obj_id)
-        if is_purchase:
-            m_dict[obj_id]["purchase_conv"] += c_val
-            m_dict[obj_id]["purchase_sales"] += s_val
-        elif is_cart:
-            m_dict[obj_id]["cart_conv"] += c_val
-            m_dict[obj_id]["cart_sales"] += s_val
-        elif is_wishlist:
-            m_dict[obj_id]["wishlist_conv"] += c_val
-            m_dict[obj_id]["wishlist_sales"] += s_val
+def _conv_apply_row(m_dict: dict, obj_id: str, is_purchase: bool, is_cart: bool, is_wishlist: bool, c_val: float, s_val: int):
+    obj_id = str(obj_id).strip()
+    if not obj_id or obj_id == "-":
+        return
+    _conv_ensure_split_bucket(m_dict, obj_id)
+    if is_purchase:
+        m_dict[obj_id]["purchase_conv"] += c_val
+        m_dict[obj_id]["purchase_sales"] += s_val
+    elif is_cart:
+        m_dict[obj_id]["cart_conv"] += c_val
+        m_dict[obj_id]["cart_sales"] += s_val
+    elif is_wishlist:
+        m_dict[obj_id]["wishlist_conv"] += c_val
+        m_dict[obj_id]["wishlist_sales"] += s_val
 
-    def classify_conversion_value(v) -> tuple[bool, bool, bool]:
-        ctype = str(v).strip().lower()
-        ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
-        is_purchase = (
-            '구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'}
-        )
-        is_cart = (
-            '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
-        )
-        is_wishlist = (
-            '위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'}
-        )
-        return is_purchase, is_cart, is_wishlist
 
-    def maybe_numeric(v: str) -> float | None:
-        s = str(v).strip().replace(',', '')
-        if not s or s == '-':
-            return None
-        if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
-            try:
-                return float(s)
-            except Exception:
-                return None
+def _conv_classify_conversion_value(v) -> tuple[bool, bool, bool]:
+    ctype = str(v).strip().lower()
+    ctype_norm = ctype.replace('_', '').replace('-', '').replace(' ', '')
+    is_purchase = (
+        '구매완료' in ctype_norm or ctype_norm == '구매' or ctype_norm in {'1', 'purchase', 'purchasing'}
+    )
+    is_cart = (
+        '장바구니담기' in ctype_norm or '장바구니' in ctype_norm or ctype_norm in {'3', 'cart', 'addtocart', 'addtocarts'}
+    )
+    is_wishlist = (
+        '위시리스트추가' in ctype_norm or '위시리스트' in ctype_norm or '상품찜' in ctype_norm or ctype_norm in {'wishlist', 'addtowishlist', 'wishlistadd', 'wish'}
+    )
+    return is_purchase, is_cart, is_wishlist
+
+
+def _conv_maybe_numeric(v: str) -> float | None:
+    s = str(v).strip().replace(',', '')
+    if not s or s == '-':
         return None
+    if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
 
-    def looks_like_id(v: str) -> bool:
+
+def _conv_looks_like_id(v: str) -> bool:
+    s = str(v).strip().lower()
+    return s.startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-'))
+
+
+def _conv_row_allowed(allowed_campaign_ids: set[str], row_campaign_id: str | None) -> bool:
+    if not allowed_campaign_ids:
+        return True
+    row_campaign_id = str(row_campaign_id or '').strip()
+    return bool(row_campaign_id) and row_campaign_id in allowed_campaign_ids
+
+
+def _conv_add_debug_row(debug_rows: list[dict], report_hint: str, debug_target_date: str, debug_account_name: str, vals, parsed_type, c_val, s_val, kept, reason, row_cid="", row_gid="", row_kid="", row_adid="", kw_text="", kw_obj_id=""):
+    debug_rows.append({
+        "report_tp": report_hint,
+        "date": str(debug_target_date or ""),
+        "account_name": str(debug_account_name or ""),
+        "campaign_id": str(row_cid or ""),
+        "adgroup_id": str(row_gid or ""),
+        "keyword_id": str(row_kid or ""),
+        "keyword_text": str(kw_text or ""),
+        "keyword_mapped_id": str(kw_obj_id or ""),
+        "ad_id": str(row_adid or ""),
+        "parsed_type": str(parsed_type or ""),
+        "parsed_count": c_val,
+        "parsed_sales": s_val,
+        "kept": 1 if kept else 0,
+        "reason": reason,
+        "row": " | ".join([str(x) for x in vals]),
+    })
+
+
+def _conv_flush_debug_rows(debug_rows: list[dict], debug_account_name: str, debug_target_date: str, report_hint: str):
+    if not debug_rows or not debug_account_name or not debug_target_date:
+        return
+    dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
+    os.makedirs(dbg_dir, exist_ok=True)
+    safe_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(debug_account_name))
+    out_path = os.path.join(dbg_dir, f"{debug_target_date}_{safe_name}_{report_hint}.csv")
+    fields = [
+        "report_tp","date","account_name","campaign_id","adgroup_id","keyword_id","keyword_text","keyword_mapped_id","ad_id",
+        "parsed_type","parsed_count","parsed_sales","kept","reason","row"
+    ]
+    with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(debug_rows)
+
+
+def _conv_guess_campaign_id_from_row(vals: list[str]) -> str:
+    for v in vals:
         s = str(v).strip().lower()
-        return s.startswith(('cmp-', 'grp-', 'nkw-', 'nad-', 'bsn-'))
+        if s.startswith('cmp-'):
+            return str(v).strip()
+    return ""
 
-    def row_allowed(row_campaign_id: str | None) -> bool:
-        if not allowed_campaign_ids:
-            return True
-        row_campaign_id = str(row_campaign_id or "").strip()
-        return bool(row_campaign_id) and row_campaign_id in allowed_campaign_ids
 
-    def add_debug_row(vals, parsed_type, c_val, s_val, kept, reason, row_cid="", row_gid="", row_kid="", row_adid="", kw_text="", kw_obj_id=""):
-        debug_rows.append({
-            "report_tp": report_hint,
-            "date": str(debug_target_date or ""),
-            "account_name": str(debug_account_name or ""),
-            "campaign_id": str(row_cid or ""),
-            "adgroup_id": str(row_gid or ""),
-            "keyword_id": str(row_kid or ""),
-            "keyword_text": str(kw_text or ""),
-            "keyword_mapped_id": str(kw_obj_id or ""),
-            "ad_id": str(row_adid or ""),
-            "parsed_type": str(parsed_type or ""),
-            "parsed_count": c_val,
-            "parsed_sales": s_val,
-            "kept": 1 if kept else 0,
-            "reason": reason,
-            "row": " | ".join([str(x) for x in vals]),
-        })
+def _conv_first_value_with_prefix(vals: list[str], prefix: str) -> str:
+    for v in vals:
+        s = str(v).strip()
+        if s.lower().startswith(prefix):
+            return s
+    return ""
 
-    def flush_debug_rows():
-        if not debug_rows or not debug_account_name or not debug_target_date:
-            return
-        dbg_dir = os.path.join(os.getcwd(), "debug_split_rows")
-        os.makedirs(dbg_dir, exist_ok=True)
-        safe_name = re.sub(r'[^0-9A-Za-z가-힣._-]+', '_', str(debug_account_name))
-        out_path = os.path.join(dbg_dir, f"{debug_target_date}_{safe_name}_{report_hint}.csv")
-        fields = [
-            "report_tp","date","account_name","campaign_id","adgroup_id","keyword_id","keyword_text","keyword_mapped_id","ad_id",
-            "parsed_type","parsed_count","parsed_sales","kept","reason","row"
-        ]
-        with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(debug_rows)
 
-    def guess_campaign_id_from_row(vals: list[str]) -> str:
-        for v in vals:
-            s = str(v).strip().lower()
-            if s.startswith('cmp-'):
-                return str(v).strip()
-        return ""
+def _conv_value_from_idx_or_scan(vals: list[str], idx: int, prefix: str, allow_dash: bool = False) -> str:
+    if 0 <= idx < len(vals):
+        v = str(vals[idx]).strip()
+        if v.lower().startswith(prefix):
+            return v
+        if allow_dash and v == '-':
+            return v
+    return _conv_first_value_with_prefix(vals, prefix)
 
-    def first_value_with_prefix(vals: list[str], prefix: str) -> str:
-        for v in vals:
-            s = str(v).strip()
-            if s.lower().startswith(prefix):
-                return s
-        return ""
 
-    def value_from_idx_or_scan(vals: list[str], idx: int, prefix: str, allow_dash: bool = False) -> str:
-        if 0 <= idx < len(vals):
-            v = str(vals[idx]).strip()
-            if v.lower().startswith(prefix):
-                return v
-            if allow_dash and v == '-':
-                return v
-        return first_value_with_prefix(vals, prefix)
+def _log_backfill_conv_diag(report_hint: str, mode: str, stats: dict, extra: dict | None = None):
+    payload = {"report": report_hint, "mode": mode, **(stats or {}), **(extra or {})}
+    try:
+        print("[BACKFILL-CONV-DIAG] " + " | ".join(f"{k}={payload[k]}" for k in payload))
+    except Exception:
+        pass
 
-    # 1) 헤더가 있는 형식 우선 처리
+
+def _conv_process_header_mode(df: pd.DataFrame, allowed_campaign_ids: set[str], report_hint: str, summary: dict, camp_map: dict, kw_map: dict, ad_map: dict, debug_rows: list[dict], debug_account_name: str, debug_target_date: str):
     header_idx = -1
     for i in range(min(20, len(df))):
         row_vals = [normalize_header(str(x)) for x in df.iloc[i].fillna("")]
@@ -1133,231 +1142,274 @@ def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] |
         ):
             header_idx = i
             break
+    if header_idx == -1:
+        return False
 
-    if header_idx != -1:
-        headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
-        cid_idx = get_col_idx(headers, ['캠페인id', 'campaignid', 'ncccampaignid'])
-        kid_idx = get_col_idx(headers, ['키워드id', 'keywordid', 'ncckeywordid'])
-        adid_idx = get_col_idx(headers, ['광고id', '소재id', 'adid', 'nccadid'])
-        type_idx = get_col_idx(headers, ['전환유형', 'conversiontype', 'convtp'])
-        cnt_idx = get_col_idx(headers, ['총전환수', '전환수', 'conversions', 'conversioncount', 'ccnt'])
-        sales_idx = get_col_idx(headers, ['총전환매출액(원)', '전환매출액', 'conversionvalue', 'sales', 'salesbyconversion', 'convamt'])
+    headers = [normalize_header(str(x)) for x in df.iloc[header_idx].fillna("")]
+    cid_idx = get_col_idx(headers, ['캠페인id', 'campaignid', 'ncccampaignid'])
+    kid_idx = get_col_idx(headers, ['키워드id', 'keywordid', 'ncckeywordid'])
+    adid_idx = get_col_idx(headers, ['광고id', '소재id', 'adid', 'nccadid'])
+    type_idx = get_col_idx(headers, ['전환유형', 'conversiontype', 'convtp'])
+    cnt_idx = get_col_idx(headers, ['총전환수', '전환수', 'conversions', 'conversioncount', 'ccnt'])
+    sales_idx = get_col_idx(headers, ['총전환매출액(원)', '전환매출액', 'conversionvalue', 'sales', 'salesbyconversion', 'convamt'])
 
-        if type_idx != -1 and cnt_idx != -1:
-            data_df = df.iloc[header_idx + 1:]
-            for _, r in data_df.iterrows():
-                if len(r) <= max(type_idx, cnt_idx, sales_idx if sales_idx != -1 else -1):
-                    continue
-                row_campaign_id = r.iloc[cid_idx] if cid_idx != -1 and len(r) > cid_idx else ''
-                if not row_allowed(row_campaign_id):
-                    add_debug_row([str(x) for x in r.tolist()], "", 0, 0, False, "campaign_filtered_header")
-                    continue
-                is_purchase, is_cart, is_wishlist = classify_conversion_value(r.iloc[type_idx])
-                if not (is_purchase or is_cart or is_wishlist):
-                    continue
-                c_val = safe_float(r.iloc[cnt_idx])
-                s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
-                add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
-                add_debug_row([str(x) for x in r.tolist()], "purchase" if is_purchase else ("cart" if is_cart else "wishlist"), c_val, s_val, True, "header_keep")
-                if cid_idx != -1 and len(r) > cid_idx:
-                    apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
-                if kid_idx != -1 and len(r) > kid_idx:
-                    apply_row(kw_map, r.iloc[kid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
-                if adid_idx != -1 and len(r) > adid_idx:
-                    apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+    if type_idx == -1 or cnt_idx == -1:
+        _log_backfill_conv_diag(report_hint, 'header_skip', {"reason": "missing_required_idx", "type_idx": type_idx, "cnt_idx": cnt_idx})
+        return False
 
-            if camp_map or kw_map or ad_map:
-                flush_debug_rows()
-                return camp_map, kw_map, ad_map, summary
+    data_df = df.iloc[header_idx + 1:]
+    kept = 0
+    filtered = 0
+    no_type = 0
+    for _, r in data_df.iterrows():
+        if len(r) <= max(type_idx, cnt_idx, sales_idx if sales_idx != -1 else -1):
+            continue
+        row_campaign_id = r.iloc[cid_idx] if cid_idx != -1 and len(r) > cid_idx else ''
+        if not _conv_row_allowed(allowed_campaign_ids, row_campaign_id):
+            filtered += 1
+            _conv_add_debug_row(debug_rows, report_hint, debug_target_date, debug_account_name, [str(x) for x in r.tolist()], "", 0, 0, False, "campaign_filtered_header")
+            continue
+        is_purchase, is_cart, is_wishlist = _conv_classify_conversion_value(r.iloc[type_idx])
+        if not (is_purchase or is_cart or is_wishlist):
+            no_type += 1
+            continue
+        c_val = safe_float(r.iloc[cnt_idx])
+        s_val = int(safe_float(r.iloc[sales_idx])) if sales_idx != -1 else 0
+        add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
+        _conv_add_debug_row(debug_rows, report_hint, debug_target_date, debug_account_name, [str(x) for x in r.tolist()], "purchase" if is_purchase else ("cart" if is_cart else "wishlist"), c_val, s_val, True, "header_keep")
+        if cid_idx != -1 and len(r) > cid_idx:
+            _conv_apply_row(camp_map, r.iloc[cid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        if kid_idx != -1 and len(r) > kid_idx:
+            _conv_apply_row(kw_map, r.iloc[kid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        if adid_idx != -1 and len(r) > adid_idx:
+            _conv_apply_row(ad_map, r.iloc[adid_idx], is_purchase, is_cart, is_wishlist, c_val, s_val)
+        kept += 1
 
-    # 2) 헤더 없는 TSV 형식 처리
-    # 샘플: 20260311 | accountId | cmp-... | grp-... | nkw-.../- | nad-... | bsn-... | ...
+    _log_backfill_conv_diag(report_hint, 'header', {
+        "rows": int(len(data_df)), "kept": kept, "campaign_filtered": filtered, "no_type": no_type,
+        "cid_idx": cid_idx, "kid_idx": kid_idx, "adid_idx": adid_idx, "type_idx": type_idx,
+        "cnt_idx": cnt_idx, "sales_idx": sales_idx,
+    }, {
+        "camp_keys": len(camp_map), "kw_keys": len(kw_map), "ad_keys": len(ad_map),
+        "purchase": int(summary.get('purchase_conv', 0) or 0), "cart": int(summary.get('cart_conv', 0) or 0), "wish": int(summary.get('wishlist_conv', 0) or 0),
+    })
+    return bool(camp_map or kw_map or ad_map)
+
+
+def _conv_best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    best_idx, best_score, best_prefix_hits = -1, -1, 0
+    for i in range(max_cols):
+        score = 0
+        prefix_hits = 0
+        dash_hits = 0
+        for r in sample_rows:
+            if len(r) <= i:
+                continue
+            v = str(r.iloc[i]).strip().lower()
+            if v.startswith(target_prefix):
+                score += 5
+                prefix_hits += 1
+            elif allow_dash and v == '-':
+                dash_hits += 1
+        if prefix_hits > 0:
+            score += min(dash_hits, prefix_hits)
+        if preferred_after >= 0 and i <= preferred_after:
+            score -= 2
+        if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
+            best_idx, best_score, best_prefix_hits = i, score, prefix_hits
+    return best_idx if best_prefix_hits > 0 else -1
+
+
+def _conv_detect_kw_text_idx(sample_rows, gid_idx: int, report_hint: str) -> int:
+    if report_hint.upper() != 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
+        return -1
+    candidate = gid_idx + 1 if gid_idx != -1 else -1
+    max_cols = max((len(r) for r in sample_rows), default=0)
+    if not (0 <= candidate < max_cols):
+        return -1
+    text_score = 0
+    for r in sample_rows:
+        if len(r) <= candidate:
+            continue
+        v = str(r.iloc[candidate]).strip()
+        if v and v != '-' and not _conv_looks_like_id(v) and _conv_maybe_numeric(v) is None:
+            text_score += 1
+    return candidate if text_score > 0 else -1
+
+
+def _conv_collect_type_hits(vals: list[str]) -> list[tuple[int, bool, bool, bool]]:
+    text_type_hits = []
+    numeric_type_hits = []
+    n = len(vals)
+    for idx, v in enumerate(vals):
+        s_raw = str(v).strip()
+        is_purchase, is_cart, is_wishlist = _conv_classify_conversion_value(v)
+        if not (is_purchase or is_cart or is_wishlist):
+            continue
+        if s_raw in {'1', '3'}:
+            if idx >= max(0, n - 6):
+                numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+        else:
+            text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
+    return text_type_hits if text_type_hits else numeric_type_hits
+
+
+def _conv_pick_numeric_payload(vals: list[str], type_hits: list[tuple[int, bool, bool, bool]]):
+    n = len(vals)
+    for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
+        anchor_idx = type_idx
+        anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
+        raw_tok = str(vals[type_idx]).strip().lower()
+        if raw_tok in {'1', '2', '3'} and type_idx + 1 < n:
+            n_is_purchase, n_is_cart, n_is_wishlist = _conv_classify_conversion_value(vals[type_idx + 1])
+            if n_is_purchase or n_is_cart or n_is_wishlist:
+                anchor_idx = type_idx + 1
+                anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = n_is_purchase, n_is_cart, n_is_wishlist
+        numeric_right = []
+        for j in range(anchor_idx + 1, n):
+            vv = vals[j]
+            if _conv_looks_like_id(vv):
+                continue
+            num = _conv_maybe_numeric(vv)
+            if num is not None:
+                numeric_right.append((j, num))
+        if not numeric_right:
+            continue
+        c_val = float(numeric_right[0][1])
+        s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
+        return anchor_is_purchase, anchor_is_cart, anchor_is_wishlist, c_val, s_val
+    return None
+
+
+def _conv_resolve_keyword_object_id(vals: list[str], kw_text_idx: int, row_gid: str, row_kid: str, keyword_lookup: dict, live_keyword_resolver):
+    row_kid_s = str(row_kid).strip()
+    kw_obj_id = ""
+    kw_text = ""
+    match_mode = ""
+    if row_kid_s not in {"", "-"} and row_kid_s.lower().startswith("nkw-"):
+        kw_obj_id = row_kid_s
+        match_mode = "direct"
+    elif kw_text_idx != -1 and kw_text_idx < len(vals) and row_gid:
+        kw_text = str(vals[kw_text_idx]).strip()
+        kw_norm = normalize_keyword_text(kw_text)
+        kw_obj_id = (
+            keyword_lookup.get((row_gid, kw_text), "")
+            or keyword_lookup.get((row_gid, kw_text.lower()), "")
+            or keyword_lookup.get((row_gid, kw_norm), "")
+        )
+        if kw_obj_id:
+            match_mode = "lookup"
+        if not kw_obj_id:
+            group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
+            cands = keyword_text_candidates(kw_norm, group_rows)
+            if len(cands) == 1:
+                kw_obj_id = cands[0]
+                match_mode = "unique"
+        if not kw_obj_id and live_keyword_resolver:
+            try:
+                kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
+                if kw_obj_id:
+                    match_mode = "live"
+            except Exception:
+                kw_obj_id = ""
+    return kw_obj_id, kw_text, match_mode
+
+
+def _conv_process_heuristic_mode(df: pd.DataFrame, allowed_campaign_ids: set[str], report_hint: str, keyword_lookup: dict, live_keyword_resolver, summary: dict, camp_map: dict, kw_map: dict, ad_map: dict, debug_rows: list[dict], debug_account_name: str, debug_target_date: str):
     sample_rows = [df.iloc[i].fillna("") for i in range(min(20, len(df)))]
+    cid_idx = _conv_best_prefixed_idx(sample_rows, 'cmp-')
+    gid_idx = _conv_best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
+    kid_idx = _conv_best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=max(cid_idx, gid_idx))
+    adid_idx = _conv_best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx, kid_idx))
+    kw_text_idx = _conv_detect_kw_text_idx(sample_rows, gid_idx, report_hint)
 
-    def best_prefixed_idx(sample_rows, target_prefix: str, allow_dash: bool = False, preferred_after: int = -1) -> int:
-        max_cols = max((len(r) for r in sample_rows), default=0)
-        best_idx, best_score, best_prefix_hits = -1, -1, 0
-        for i in range(max_cols):
-            score = 0
-            prefix_hits = 0
-            dash_hits = 0
-            for r in sample_rows:
-                if len(r) <= i:
-                    continue
-                v = str(r.iloc[i]).strip().lower()
-                if v.startswith(target_prefix):
-                    score += 5
-                    prefix_hits += 1
-                elif allow_dash and v == '-':
-                    dash_hits += 1
-            # '-' 는 보조 힌트로만 사용하고, 실제 prefix hit 가 한 번도 없는 컬럼은 선택하지 않는다.
-            if prefix_hits > 0:
-                score += min(dash_hits, prefix_hits)
-            if preferred_after >= 0 and i <= preferred_after:
-                score -= 2
-            if prefix_hits > best_prefix_hits or (prefix_hits == best_prefix_hits and score > best_score):
-                best_idx, best_score, best_prefix_hits = i, score, prefix_hits
-        return best_idx if best_prefix_hits > 0 else -1
-
-    cid_idx = best_prefixed_idx(sample_rows, 'cmp-')
-    gid_idx = best_prefixed_idx(sample_rows, 'grp-', preferred_after=cid_idx)
-    kid_idx = best_prefixed_idx(sample_rows, 'nkw-', allow_dash=True, preferred_after=max(cid_idx, gid_idx))
-    adid_idx = best_prefixed_idx(sample_rows, 'nad-', preferred_after=max(cid_idx, gid_idx, kid_idx))
-
-    kw_text_idx = -1
-    if report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
-        candidate = gid_idx + 1 if gid_idx != -1 else -1
-        max_cols = max((len(r) for r in sample_rows), default=0)
-        if 0 <= candidate < max_cols:
-            text_score = 0
-            for r in sample_rows:
-                if len(r) <= candidate:
-                    continue
-                v = str(r.iloc[candidate]).strip()
-                if v and v != '-' and not looks_like_id(v) and maybe_numeric(v) is None:
-                    text_score += 1
-            if text_score > 0:
-                kw_text_idx = candidate
-
+    kept = filtered = no_type = no_numeric = kw_direct = kw_lookup = kw_unique = kw_live = kw_unresolved = 0
     for _, r in df.iterrows():
         vals = ["" if pd.isna(x) else str(x).strip() for x in r.tolist()]
         n = len(vals)
         if n < 2:
             continue
-
-        # 행 내 전환유형 탐지
-        # 중요: 일부 원시 TSV는 `... | 1 | add_to_cart | 30 | 0` 형태로 내려오는데,
-        # 여기서 앞의 `1`은 conversion method 같은 다른 코드일 수 있다.
-        # 따라서 텍스트형 전환유형(add_to_cart/purchase/장바구니/구매완료)을 우선하고,
-        # 숫자 코드 1/3은 텍스트형이 전혀 없을 때만 보조적으로 사용한다.
-        text_type_hits = []
-        numeric_type_hits = []
-        for idx, v in enumerate(vals):
-            s_raw = str(v).strip()
-            s = s_raw.lower()
-            is_purchase, is_cart, is_wishlist = classify_conversion_value(v)
-            if not (is_purchase or is_cart or is_wishlist):
-                continue
-            if s_raw in {'1', '3'}:
-                # 숫자 코드 1/3은 오탐이 많아서 뒤쪽 6칸 안에서만 인정하고,
-                # 텍스트형 전환유형이 하나도 없을 때만 후보로 사용한다.
-                if idx >= max(0, n - 6):
-                    numeric_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-            else:
-                text_type_hits.append((idx, is_purchase, is_cart, is_wishlist))
-
-        type_hits = text_type_hits if text_type_hits else numeric_type_hits
-
-        if not type_hits and report_hint.upper() == 'SHOPPINGKEYWORD_CONVERSION_DETAIL':
-            # 일부 쇼핑 전환 리포트는 헤더/타입 컬럼이 불명확할 수 있어 뒤쪽 숫자만 보이는 경우가 있다.
-            # 이 경우 안전하게 스킵하고 총합만 유지한다.
-            pass
+        type_hits = _conv_collect_type_hits(vals)
         if not type_hits:
-            add_debug_row(vals, "", 0, 0, False, "no_type_hit")
+            no_type += 1
+            _conv_add_debug_row(debug_rows, report_hint, debug_target_date, debug_account_name, vals, "", 0, 0, False, "no_type_hit")
             continue
-
-        row_campaign_id = guess_campaign_id_from_row(vals)
-        if not row_allowed(row_campaign_id):
-            add_debug_row(vals, "", 0, 0, False, "campaign_filtered")
+        row_campaign_id = _conv_guess_campaign_id_from_row(vals)
+        if not _conv_row_allowed(allowed_campaign_ids, row_campaign_id):
+            filtered += 1
+            _conv_add_debug_row(debug_rows, report_hint, debug_target_date, debug_account_name, vals, "", 0, 0, False, "campaign_filtered")
             continue
-
-        picked = None
-        for type_idx, is_purchase, is_cart, is_wishlist in type_hits:
-            # 원시 TSV는 `... | 2 | purchase | 1 | 64400` 또는
-            # `... | 1 | add_to_cart | 30 | 0` 형태가 많다.
-            # 여기서 앞의 1/2는 전환방식(직접/간접)일 가능성이 크므로,
-            # 전환유형 문자열(purchase/add_to_cart/wishlist) 바로 오른쪽 숫자를
-            # 전환수로, 그 다음 숫자를 전환매출액으로 본다.
-            anchor_idx = type_idx
-            anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = is_purchase, is_cart, is_wishlist
-            raw_tok = str(vals[type_idx]).strip().lower()
-            if raw_tok in {'1', '2', '3'} and type_idx + 1 < n:
-                n_is_purchase, n_is_cart, n_is_wishlist = classify_conversion_value(vals[type_idx + 1])
-                if n_is_purchase or n_is_cart or n_is_wishlist:
-                    anchor_idx = type_idx + 1
-                    anchor_is_purchase, anchor_is_cart, anchor_is_wishlist = n_is_purchase, n_is_cart, n_is_wishlist
-
-            numeric_right = []
-            for j in range(anchor_idx + 1, n):
-                vv = vals[j]
-                if looks_like_id(vv):
-                    continue
-                num = maybe_numeric(vv)
-                if num is not None:
-                    numeric_right.append((j, num))
-            if not numeric_right:
-                continue
-
-            # 전환유형 문자열 바로 오른쪽 첫 숫자 = 전환수
-            # 다음 숫자 = 전환매출액
-            c_val = float(numeric_right[0][1])
-            s_val = int(numeric_right[1][1]) if len(numeric_right) >= 2 else 0
-
-            picked = (anchor_is_purchase, anchor_is_cart, anchor_is_wishlist, c_val, s_val)
-            break
-
+        picked = _conv_pick_numeric_payload(vals, type_hits)
         if not picked:
-            add_debug_row(vals, "", 0, 0, False, "no_numeric_right")
+            no_numeric += 1
+            _conv_add_debug_row(debug_rows, report_hint, debug_target_date, debug_account_name, vals, "", 0, 0, False, "no_numeric_right")
             continue
-
         is_purchase, is_cart, is_wishlist, c_val, s_val = picked
         add_split_summary(summary, is_purchase, is_cart, is_wishlist, c_val, s_val)
-        row_cid = value_from_idx_or_scan(vals, cid_idx, 'cmp-') or extract_prefixed_token(vals, 'cmp-')
-        row_gid = value_from_idx_or_scan(vals, gid_idx, 'grp-') or extract_prefixed_token(vals, 'grp-')
-        row_kid = value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
+        row_cid = _conv_value_from_idx_or_scan(vals, cid_idx, 'cmp-') or extract_prefixed_token(vals, 'cmp-')
+        row_gid = _conv_value_from_idx_or_scan(vals, gid_idx, 'grp-') or extract_prefixed_token(vals, 'grp-')
+        row_kid = _conv_value_from_idx_or_scan(vals, kid_idx, 'nkw-', allow_dash=True)
         if row_kid in {'', '-'}:
             row_kid = extract_prefixed_token(vals, 'nkw-')
-        row_adid = value_from_idx_or_scan(vals, adid_idx, 'nad-') or extract_prefixed_token(vals, 'nad-')
-
+        row_adid = _conv_value_from_idx_or_scan(vals, adid_idx, 'nad-') or extract_prefixed_token(vals, 'nad-')
         if row_cid:
-            apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
-
-        kw_obj_id = ""
-        row_kid_s = str(row_kid).strip()
-        if row_kid_s not in {"", "-"} and row_kid_s.lower().startswith("nkw-"):
-            kw_obj_id = row_kid_s
-        elif kw_text_idx != -1 and kw_text_idx < n and row_gid:
-            kw_text = str(vals[kw_text_idx]).strip()
-            kw_norm = normalize_keyword_text(kw_text)
-            kw_obj_id = (
-                keyword_lookup.get((row_gid, kw_text), "")
-                or keyword_lookup.get((row_gid, kw_text.lower()), "")
-                or keyword_lookup.get((row_gid, kw_norm), "")
-            )
-            if not kw_obj_id:
-                group_rows = keyword_lookup.get((row_gid, '__rows__'), [])
-                cands = keyword_text_candidates(kw_norm, group_rows)
-                if len(cands) == 1:
-                    kw_obj_id = cands[0]
-            if not kw_obj_id and live_keyword_resolver:
-                try:
-                    kw_obj_id = live_keyword_resolver(row_gid, kw_text) or ""
-                except Exception:
-                    kw_obj_id = ""
+            _conv_apply_row(camp_map, row_cid, is_purchase, is_cart, is_wishlist, c_val, s_val)
+        kw_obj_id, kw_text, match_mode = _conv_resolve_keyword_object_id(vals, kw_text_idx, row_gid, row_kid, keyword_lookup, live_keyword_resolver)
         if kw_obj_id:
-            apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
-
+            _conv_apply_row(kw_map, kw_obj_id, is_purchase, is_cart, is_wishlist, c_val, s_val)
+            if match_mode == 'direct':
+                kw_direct += 1
+            elif match_mode == 'lookup':
+                kw_lookup += 1
+            elif match_mode == 'unique':
+                kw_unique += 1
+            elif match_mode == 'live':
+                kw_live += 1
+        elif kw_text_idx != -1:
+            kw_unresolved += 1
         if row_adid:
-            apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
-
-        add_debug_row(
-            vals,
+            _conv_apply_row(ad_map, row_adid, is_purchase, is_cart, is_wishlist, c_val, s_val)
+        _conv_add_debug_row(
+            debug_rows, report_hint, debug_target_date, debug_account_name, vals,
             "purchase" if is_purchase else ("cart" if is_cart else "wishlist"),
-            c_val,
-            s_val,
-            True,
-            "keep",
-            row_cid=row_cid,
-            row_gid=row_gid,
-            row_kid=row_kid_s,
-            row_adid=row_adid,
-            kw_text=(str(vals[kw_text_idx]).strip() if kw_text_idx != -1 and kw_text_idx < n else ""),
-            kw_obj_id=kw_obj_id,
+            c_val, s_val, True, "keep",
+            row_cid=row_cid, row_gid=row_gid, row_kid=str(row_kid).strip(), row_adid=row_adid,
+            kw_text=kw_text, kw_obj_id=kw_obj_id,
         )
+        kept += 1
 
-    flush_debug_rows()
+    _log_backfill_conv_diag(report_hint, 'heuristic', {
+        "rows": int(len(df)), "kept": kept, "campaign_filtered": filtered, "no_type": no_type, "no_numeric": no_numeric,
+        "kw_direct": kw_direct, "kw_lookup": kw_lookup, "kw_unique": kw_unique, "kw_live": kw_live, "kw_unresolved": kw_unresolved,
+        "cid_idx": cid_idx, "gid_idx": gid_idx, "kid_idx": kid_idx, "adid_idx": adid_idx, "kw_text_idx": kw_text_idx,
+    }, {
+        "camp_keys": len(camp_map), "kw_keys": len(kw_map), "ad_keys": len(ad_map),
+        "purchase": int(summary.get('purchase_conv', 0) or 0), "cart": int(summary.get('cart_conv', 0) or 0), "wish": int(summary.get('wishlist_conv', 0) or 0),
+    })
+
+
+def process_conversion_report(df: pd.DataFrame, allowed_campaign_ids: set[str] | None = None, report_hint: str = "", keyword_lookup: dict | None = None, keyword_unique_lookup: dict | None = None, live_keyword_resolver=None, debug_account_name: str = "", debug_target_date: str = "") -> Tuple[dict, dict, dict, dict]:
+    camp_map, kw_map, ad_map = {}, {}, {}
+    summary = empty_split_summary()
+    debug_rows: list[dict] = []
+    allowed_campaign_ids = set(str(x).strip() for x in (allowed_campaign_ids or set()) if str(x).strip())
+    keyword_lookup = keyword_lookup or {}
+    keyword_unique_lookup = keyword_unique_lookup or {}
+    if df is None or df.empty:
+        return camp_map, kw_map, ad_map, summary
+
+    header_ok = _conv_process_header_mode(
+        df, allowed_campaign_ids, report_hint, summary, camp_map, kw_map, ad_map,
+        debug_rows, debug_account_name, debug_target_date,
+    )
+    if not header_ok:
+        _conv_process_heuristic_mode(
+            df, allowed_campaign_ids, report_hint, keyword_lookup, live_keyword_resolver,
+            summary, camp_map, kw_map, ad_map, debug_rows, debug_account_name, debug_target_date,
+        )
+    _conv_flush_debug_rows(debug_rows, debug_account_name, debug_target_date, report_hint)
     return camp_map, kw_map, ad_map, summary
-
 
 def parse_shopping_query_report(df: pd.DataFrame, target_date: date, customer_id: str) -> List[Dict[str, Any]]:
     if df is None or df.empty:
