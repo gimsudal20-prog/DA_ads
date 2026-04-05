@@ -14,6 +14,36 @@ import altair as alt
 
 from data import sql_read, get_table_columns, table_exists, _sql_in_str_list
 
+
+
+def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, source: str = "", note: str = "") -> None:
+    if diag is None:
+        return
+    row_txt = "-" if rows is None else str(rows)
+    diag.append({
+        "step": str(step),
+        "status": str(status),
+        "rows": row_txt,
+        "source": str(source or "-"),
+        "note": str(note or "-")[:300],
+    })
+
+
+def _render_diag_panel(diag: list | None) -> None:
+    if not diag:
+        return
+    df = pd.DataFrame(diag)
+    if df.empty:
+        return
+    status_order = {"error": 0, "zero_data": 1, "warn": 2, "ok": 3}
+    if "status" in df.columns:
+        df["_ord"] = df["status"].map(status_order).fillna(9)
+        df = df.sort_values(["_ord", "step"], ascending=[True, True]).drop(columns=["_ord"])
+    df = df.rename(columns={"step": "단계", "status": "상태", "rows": "건수", "source": "원천", "note": "메모"})
+    with st.expander("조회 진단", expanded=False):
+        st.caption("트렌드 화면에서 내부 노출 데이터와 데이터랩 조회 상태를 함께 확인하는 용도입니다.")
+        st.dataframe(df, width="stretch", hide_index=True)
+
 try:
     from streamlit_echarts import st_echarts
     HAS_ECHARTS = True
@@ -21,8 +51,10 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
-def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date) -> pd.DataFrame:
-    if not client_id or not client_secret: return pd.DataFrame()
+def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date, diag: list | None = None) -> pd.DataFrame:
+    if not client_id or not client_secret:
+        _diag_add(diag, "데이터랩 인증", "error", 0, "NAVER_DATALAB_CLIENT_ID/SECRET", "API 키가 비어 있습니다.")
+        return pd.DataFrame()
     client_id = client_id.replace('"', '').replace("'", "").strip()
     client_secret = client_secret.replace('"', '').replace("'", "").strip()
 
@@ -52,13 +84,16 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
                 df = pd.DataFrame(data["results"][0]["data"])
                 df = df.rename(columns={"period": "dt", "ratio": "트렌드지수(%)"})
                 df["dt"] = pd.to_datetime(df["dt"])
+                _diag_add(diag, '데이터랩 조회', 'ok' if not df.empty else 'zero_data', len(df.index), 'Naver DataLab', f'검색어={keyword}')
                 return df
     except Exception as e:
-        pass
-    
+        _diag_add(diag, '데이터랩 조회', 'error', 0, 'Naver DataLab', f'{type(e).__name__}: {e}')
+        return pd.DataFrame()
+
+    _diag_add(diag, '데이터랩 조회', 'zero_data', 0, 'Naver DataLab', f'검색어={keyword} 결과 없음')
     return pd.DataFrame()
 
-def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
+def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple, diag: list | None = None) -> pd.DataFrame:
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
@@ -67,6 +102,7 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
     has_grp = table_exists(_engine, "dim_adgroup")
     
     if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
+        _diag_add(diag, "내부 원천", "ok", None, "fact_keyword_daily + dim_keyword", "키워드 일별 상세 기준")
         f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
         
@@ -84,12 +120,23 @@ def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.Da
         """
         try:
             df1 = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-            if df1 is not None and not df1.empty: df_list.append(df1)
-        except Exception: pass
+            if df1 is not None and not df1.empty:
+                df_list.append(df1)
+                _diag_add(diag, "내부 원천 조회", "ok", len(df1.index), "fact_keyword_daily", "내부 키워드 일별 로우 조회 성공")
+            else:
+                _diag_add(diag, "내부 원천 조회", "zero_data", 0, "fact_keyword_daily", "기간/필터 기준 데이터 없음")
+        except Exception as e:
+            _diag_add(diag, "내부 원천 조회", "error", 0, "fact_keyword_daily", f"{type(e).__name__}: {e}")
+
+    else:
+        _diag_add(diag, "내부 원천", "error", 0, "fact_keyword_daily + dim_keyword", "필수 테이블이 없어 내부 일별 상세를 만들 수 없습니다.")
 
     if df_list:
         res = pd.concat(df_list, ignore_index=True)
-        return res.groupby(["dt", "campaign_name", "adgroup_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
+        out = res.groupby(["dt", "campaign_name", "adgroup_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
+        _diag_add(diag, "내부 일별 집계", "ok" if not out.empty else "zero_data", len(out.index), "fact_keyword_daily", "캠페인/광고그룹 기준 일별 집계")
+        return out
+    _diag_add(diag, "내부 일별 집계", "zero_data", 0, "fact_keyword_daily", "집계 가능한 내부 데이터가 없습니다.")
     return pd.DataFrame()
 
 def render_trend_chart(df: pd.DataFrame, datalab_name: str, ad_type_label: str):
@@ -127,6 +174,12 @@ def render_trend_chart(df: pd.DataFrame, datalab_name: str, ad_type_label: str):
 
 def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
+    diag: list[dict] = []
+    cids = tuple(f.get("selected_customer_ids", []))
+    d1, d2 = f["start"], f["end"]
+    type_sel = tuple(f.get("type_sel", []) or ())
+    _diag_add(diag, '필터', 'ok', len(cids), 'filters', f"기간={d1}~{d2} | 유형={', '.join(type_sel) if type_sel else '전체'}")
+
     st.markdown("<div class='nv-sec-title'>시장 트렌드 비교</div>", unsafe_allow_html=True)
     st.divider()
 
@@ -134,13 +187,15 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     client_secret = os.getenv("NAVER_DATALAB_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         st.warning("네이버 데이터랩 API 키가 설정되지 않았습니다.")
+        _diag_add(diag, '데이터랩 인증', 'error', 0, 'NAVER_DATALAB_CLIENT_ID/SECRET', 'API 키가 설정되지 않았습니다.')
+        _render_diag_panel(diag)
         return
 
-    cids = tuple(f.get("selected_customer_ids", []))
-    d1, d2 = f["start"], f["end"]
-    
-    df_raw = get_internal_daily_detail(engine, d1, d2, cids)
-    if df_raw.empty: return
+    df_raw = get_internal_daily_detail(engine, d1, d2, cids, diag=diag)
+    if df_raw.empty:
+        st.info("선택한 기간의 내부 노출 데이터가 없어 트렌드 비교를 진행할 수 없습니다.")
+        _render_diag_panel(diag)
+        return
 
     c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
     with c1: datalab_kw = st.text_input("데이터랩 검색어", placeholder="예: 나이키운동화").strip()
@@ -152,19 +207,29 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         else: grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
         sel_grp = st.selectbox("비교할 광고그룹", grps)
 
-    if not datalab_kw: return
+    if not datalab_kw:
+        _diag_add(diag, "검색어 입력", "warn", 0, "st.text_input", "데이터랩 검색어를 입력하면 비교가 시작됩니다.")
+        _render_diag_panel(diag)
+        return
 
     df_filtered = df_raw.copy()
     if sel_camp != "전체": df_filtered = df_filtered[df_filtered["campaign_name"] == sel_camp]
     if sel_grp != "전체": df_filtered = df_filtered[df_filtered["adgroup_name"] == sel_grp]
-    if df_filtered.empty: return
+    _diag_add(diag, "내부 필터 적용", "ok" if not df_filtered.empty else "zero_data", len(df_filtered.index), "fact_keyword_daily", f"캠페인={sel_camp} | 광고그룹={sel_grp}")
+    if df_filtered.empty:
+        st.info("선택한 캠페인/광고그룹 조건에서 내부 데이터가 없습니다.")
+        _render_diag_panel(diag)
+        return
 
     df_daily = df_filtered.groupby("dt", as_index=False)[["imp", "clk", "cost", "sales"]].sum()
     df_daily["dt"] = pd.to_datetime(df_daily["dt"])
     df_daily = df_daily.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
 
-    trend_df = get_datalab_trend(client_id, client_secret, datalab_kw, d1, d2)
-    if trend_df.empty: return
+    trend_df = get_datalab_trend(client_id, client_secret, datalab_kw, d1, d2, diag=diag)
+    if trend_df.empty:
+        st.info("데이터랩 결과가 없어 비교 그래프를 만들 수 없습니다. 조회 진단을 확인해 주세요.")
+        _render_diag_panel(diag)
+        return
 
     merged_df = pd.merge(trend_df, df_daily, on="dt", how="left").fillna(0)
 
@@ -177,3 +242,5 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         }),
         use_container_width=True, hide_index=True
     )
+
+    _render_diag_panel(diag)

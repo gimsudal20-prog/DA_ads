@@ -22,6 +22,36 @@ FAST_COL_CONFIG = {
     "CTR(%)": st.column_config.NumberColumn("CTR(%)", format="%.2f %%"),
 }
 
+
+
+def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, source: str = "", note: str = "") -> None:
+    if diag is None:
+        return
+    row_txt = "-" if rows is None else str(rows)
+    diag.append({
+        "step": str(step),
+        "status": str(status),
+        "rows": row_txt,
+        "source": str(source or "-"),
+        "note": str(note or "-")[:300],
+    })
+
+
+def _render_diag_panel(diag: list | None) -> None:
+    if not diag:
+        return
+    df = pd.DataFrame(diag)
+    if df.empty:
+        return
+    status_order = {"error": 0, "zero_data": 1, "warn": 2, "ok": 3}
+    if "status" in df.columns:
+        df["_ord"] = df["status"].map(status_order).fillna(9)
+        df = df.sort_values(["_ord", "step"], ascending=[True, True]).drop(columns=["_ord"])
+    df = df.rename(columns={"step": "단계", "status": "상태", "rows": "건수", "source": "원천", "note": "메모"})
+    with st.expander("조회 진단", expanded=False):
+        st.caption("매체/기기 화면에서 어떤 원천을 썼고 어디서 비었는지 확인하는 용도입니다.")
+        st.dataframe(df, width="stretch", hide_index=True)
+
 NAVER_MEDIA_MAP = {
     # 공식/사용자 대조 기반 확정 매핑
     "8753": "네이버 통합검색 - 모바일",
@@ -130,11 +160,13 @@ def _metric_expr(cols: set[str], *candidates: str) -> str:
             return f"COALESCE({c}, 0)"
     return "0"
 
-def _query_media_region(engine, f) -> pd.DataFrame:
+def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
     if not table_exists(engine, 'fact_media_daily'):
+        _diag_add(diag, '매체 원천', 'error', 0, 'fact_media_daily', '테이블이 존재하지 않습니다.')
         return pd.DataFrame()
 
     cols = set(get_table_columns(engine, 'fact_media_daily'))
+    _diag_add(diag, '매체 원천', 'ok' if cols else 'warn', len(cols), 'fact_media_daily', '컬럼 목록 확인')
     params = {'d1': str(f['start']), 'd2': str(f['end'])}
     type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
     cids = tuple(f.get('selected_customer_ids', []) or ())
@@ -172,17 +204,22 @@ def _query_media_region(engine, f) -> pd.DataFrame:
     """
     try:
         raw = sql_read(engine, sql, params)
-    except Exception:
+    except Exception as e:
+        _diag_add(diag, '매체 원천 조회', 'error', 0, 'fact_media_daily', f'{type(e).__name__}: {e}')
         return pd.DataFrame()
     if raw is None or raw.empty:
+        _diag_add(diag, '매체 원천 조회', 'zero_data', 0, 'fact_media_daily', '기간/필터 기준 원천 데이터 없음')
         return pd.DataFrame()
+    _diag_add(diag, '매체 원천 조회', 'ok', len(raw.index), 'fact_media_daily', '원천 로우 조회 성공')
 
     cp_candidates = [c for c in ['campaign_type', 'campaign_tp', 'campaign_type_label'] if c in raw.columns]
     if type_vals and cp_candidates:
         cp_series = raw[cp_candidates].bfill(axis=1).iloc[:, 0].fillna('').astype(str)
         raw = raw[cp_series.isin(type_vals)]
         if raw.empty:
+            _diag_add(diag, '유형 필터', 'zero_data', 0, 'fact_media_daily', '유형 필터 적용 후 데이터 없음')
             return pd.DataFrame()
+        _diag_add(diag, '유형 필터', 'ok', len(raw.index), 'fact_media_daily', '유형 필터 적용 후 잔존')
 
     def _media_from_row(r: pd.Series) -> str:
         return _pick_first_nonempty(r, ['media_name', 'placement_name', 'media_code', 'placement_code', 'media_tp', 'placement_tp'], '전체')
@@ -198,14 +235,18 @@ def _query_media_region(engine, f) -> pd.DataFrame:
 
     out = raw.groupby(['매체이름', '기기명'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
     out = out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
+    _diag_add(diag, '매체 집계', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_media_daily', '매체/기기 기준 집계 완료')
     return out
 
-def _query_device(engine, f) -> pd.DataFrame:
+def _query_device(engine, f, diag: list | None = None) -> pd.DataFrame:
     # ✨ 매체/기기 탭의 총합이 100% 일치하도록 fact_media_daily 단일 원천을 공유하도록 변경 (오류 유발 SQL 완전 제거)
-    media_df = _query_media_region(engine, f)
+    media_df = _query_media_region(engine, f, diag=diag)
     if media_df.empty:
+        _diag_add(diag, '기기 집계', 'zero_data', 0, 'fact_media_daily', '매체 원천이 비어 기기 집계를 만들 수 없습니다.')
         return pd.DataFrame()
-    return media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
+    out = media_df.groupby('기기명', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()
+    _diag_add(diag, '기기 집계', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_media_daily', '매체 원천 기반 기기 집계 완료')
+    return out
 
 def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -222,15 +263,21 @@ def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
 def page_media(engine, f):
     if not f.get("ready", False): return
 
+    diag: list[dict] = []
+    cids = tuple(f.get("selected_customer_ids", []) or ())
+    type_sel = tuple(f.get("type_sel", []) or ())
+    _diag_add(diag, '필터', 'ok', len(cids), 'filters', f"기간={f['start']}~{f['end']} | 유형={', '.join(type_sel) if type_sel else '전체'}")
+
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
     st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 확인된 코드부터 한글 지면명으로 변환되어 합산 표출됩니다. 미확인 코드는 코드값 그대로 유지됩니다.</div>", unsafe_allow_html=True)
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
-        media_region_df = _query_media_region(engine, f)
-        device_df = _query_device(engine, f)
+        media_region_df = _query_media_region(engine, f, diag=diag)
+        device_df = _query_device(engine, f, diag=diag)
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
+        _render_diag_panel(diag)
         return
 
     df_media = _calc_metrics(media_region_df.groupby('매체이름', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()) if media_region_df is not None and not media_region_df.empty else pd.DataFrame()
@@ -273,3 +320,5 @@ def page_media(engine, f):
                     st.success('비용 누수 매체가 없습니다!')
             else:
                 st.info('매체 수집 데이터가 없어 계산할 수 없습니다.')
+
+    _render_diag_panel(diag)

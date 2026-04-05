@@ -35,6 +35,37 @@ def _inject_overview_css():
     """, unsafe_allow_html=True)
 
 
+
+
+def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, source: str = "", note: str = "") -> None:
+    if diag is None:
+        return
+    row_txt = "-" if rows is None else str(rows)
+    diag.append({
+        "step": str(step),
+        "status": str(status),
+        "rows": row_txt,
+        "source": str(source or "-"),
+        "note": str(note or "-")[:300],
+    })
+
+
+def _render_diag_panel(diag: list | None) -> None:
+    if not diag:
+        return
+    df = pd.DataFrame(diag)
+    if df.empty:
+        return
+    status_order = {"error": 0, "zero_data": 1, "warn": 2, "ok": 3}
+    if "status" in df.columns:
+        df["_ord"] = df["status"].map(status_order).fillna(9)
+        df = df.sort_values(["_ord", "step"], ascending=[True, True]).drop(columns=["_ord"])
+    rename_map = {"step": "단계", "status": "상태", "rows": "건수", "source": "원천", "note": "메모"}
+    df = df.rename(columns=rename_map)
+    with st.expander("조회 진단", expanded=False):
+        st.caption("개요 화면에서 어떤 조회 단계가 비었거나 실패했는지 확인하는 용도입니다.")
+        st.dataframe(df, width="stretch", hide_index=True)
+
 def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
@@ -387,20 +418,57 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     _inject_overview_css()
 
+    diag: list[dict] = []
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_mode = opts[1] if len(opts) > 1 else "이전 같은 기간 대비"
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
+    _diag_add(diag, "필터", "ok", len(cids), "filters", f"기간={f['start']}~{f['end']} | 비교={cmp_mode} | 유형={', '.join(type_sel) if type_sel else '전체'}")
 
     with st.spinner("데이터를 집계 중입니다... (최적화 모드)"):
-        cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
-        base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
-        cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
-        base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
-        kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-        daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
-        base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+        try:
+            cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "요약(현재)", "ok" if cur_summary else "zero_data", 1 if cur_summary else 0, "get_entity_totals", "현재 기간 캠페인 합계")
+        except Exception as e:
+            cur_summary = {}
+            _diag_add(diag, "요약(현재)", "error", 0, "get_entity_totals", f"{type(e).__name__}: {e}")
+        try:
+            base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+            _diag_add(diag, "요약(비교)", "ok" if base_summary else "zero_data", 1 if base_summary else 0, "get_entity_totals", f"비교 기간 {b1}~{b2}")
+        except Exception as e:
+            base_summary = {}
+            _diag_add(diag, "요약(비교)", "error", 0, "get_entity_totals", f"{type(e).__name__}: {e}")
+        try:
+            cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "캠페인 번들(현재)", "ok" if cur_camp is not None and not cur_camp.empty else "zero_data", 0 if cur_camp is None else len(cur_camp.index), "query_campaign_bundle", "현재 기간 캠페인 상세")
+        except Exception as e:
+            cur_camp = pd.DataFrame()
+            _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
+        try:
+            base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+            _diag_add(diag, "캠페인 번들(비교)", "ok" if base_camp is not None and not base_camp.empty else "zero_data", 0 if base_camp is None else len(base_camp.index), "query_campaign_bundle", f"비교 기간 {b1}~{b2}")
+        except Exception as e:
+            base_camp = pd.DataFrame()
+            _diag_add(diag, "캠페인 번들(비교)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
+        try:
+            kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "키워드 번들", "ok" if kw_bundle is not None and not kw_bundle.empty else "zero_data", 0 if kw_bundle is None else len(kw_bundle.index), "query_keyword_bundle", "현재 기간 키워드 상세")
+        except Exception as e:
+            kw_bundle = pd.DataFrame()
+            _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
+        try:
+            daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "일자 추이(현재)", "ok" if daily_ts is not None and not daily_ts.empty else "zero_data", 0 if daily_ts is None else len(daily_ts.index), "query_campaign_timeseries", "현재 기간 시계열")
+        except Exception as e:
+            daily_ts = pd.DataFrame()
+            _diag_add(diag, "일자 추이(현재)", "error", 0, "query_campaign_timeseries", f"{type(e).__name__}: {e}")
+        try:
+            base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+            _diag_add(diag, "일자 추이(비교)", "ok" if base_daily_ts is not None and not base_daily_ts.empty else "zero_data", 0 if base_daily_ts is None else len(base_daily_ts.index), "query_campaign_timeseries", f"비교 기간 {b1}~{b2}")
+        except Exception as e:
+            base_daily_ts = pd.DataFrame()
+            _diag_add(diag, "일자 추이(비교)", "error", 0, "query_campaign_timeseries", f"{type(e).__name__}: {e}")
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -806,3 +874,5 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             ])
             
         st.code(report_text, language="text")
+
+    _render_diag_panel(diag)
