@@ -2434,12 +2434,12 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
         except Exception as e:
             last_upsert_err = e
             if raw_conn:
-                _safe_rollback(raw_conn)
+                _safe_rollback(raw_conn, ctx=f"fact_media_daily upsert cid={customer_id} dt={d1}")
             log(f"⚠️ fact_media_daily 적재 실패 {attempt}/3 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(e).__name__}: {e}")
             time.sleep(2)
         finally:
-            _safe_close(cur, label="cursor", ctx=f"fact_media_daily cid={customer_id} dt={d1}")
-            _safe_close(raw_conn, label="connection", ctx=f"fact_media_daily cid={customer_id} dt={d1}")
+            _safe_close(cur, label="cursor", ctx=f"fact_media_daily upsert cid={customer_id} dt={d1}")
+            _safe_close(raw_conn, label="connection", ctx=f"fact_media_daily upsert cid={customer_id} dt={d1}")
     raise RuntimeError(f"fact_media_daily 적재 최종 실패 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(last_upsert_err).__name__}: {last_upsert_err}") from last_upsert_err
 
 def _detect_media_header_idx(df: pd.DataFrame) -> int:
@@ -2653,6 +2653,176 @@ def _finalize_media_rows(agg: Dict[Tuple[str, str, str, str], Dict[str, Any]], t
     }
     return rows, diag
 
+
+
+
+def _m_find_prefixed_value(values: List[str], prefixes: Tuple[str, ...]) -> str:
+    for raw in values:
+        s = str(raw or '').strip()
+        sl = s.lower()
+        if any(sl.startswith(p) for p in prefixes):
+            return s
+    return ''
+
+
+def _m_numeric_candidates(values: List[str]) -> List[float]:
+    out: List[float] = []
+    for raw in values:
+        s = str(raw or '').strip().replace(',', '')
+        if not s or s == '-':
+            continue
+        if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+            try:
+                out.append(float(s))
+            except Exception:
+                continue
+    return out
+
+
+def _m_guess_dim_tokens(values: List[str]) -> Tuple[str, str, str]:
+    media_name = '전체'
+    region_name = '전체'
+    device_name = '전체'
+    text_tokens: List[str] = []
+    for raw in values:
+        s = str(raw or '').strip()
+        if not s or s == '-':
+            continue
+        sl = s.lower()
+        if sl.startswith(('cmp-', 'nad-', 'grp-', 'nkw-', 'ad-')):
+            continue
+        if re.fullmatch(r'-?\d+(?:\.\d+)?', s.replace(',', '')):
+            continue
+        norm_device = normalize_device_name(s)
+        if norm_device:
+            device_name = norm_device
+            continue
+        text_tokens.append(s)
+    if text_tokens:
+        media_name = _m_safe_text(text_tokens[0], '전체')
+    if len(text_tokens) >= 2:
+        region_name = _m_safe_text(text_tokens[1], '전체')
+    return media_name, region_name, device_name
+
+
+def _build_media_rows_from_noheader(df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if df is None or df.empty:
+        diag = {'status': 'empty', 'mode': 'noheader'}
+        _log_media_parse_diag(diag)
+        return [], diag
+
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    row_count = 0
+    mapped_rows = 0
+    short_rows = 0
+    invalid_campaign_rows = 0
+    filtered_rows = 0
+
+    for _, row in df.iterrows():
+        row_count += 1
+        values = [str(x).strip() for x in row.fillna('').tolist()]
+        if not any(values):
+            short_rows += 1
+            continue
+
+        campaign_id = _m_find_prefixed_value(values, ('cmp-',))
+        if not campaign_id:
+            invalid_campaign_rows += 1
+            continue
+        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            filtered_rows += 1
+            continue
+
+        nums = _m_numeric_candidates(values)
+        if len(nums) >= 5:
+            imp, clk, cost, conv, sales = nums[-5:]
+        elif len(nums) == 4:
+            imp, clk, cost, conv = nums[-4:]
+            sales = 0.0
+        elif len(nums) == 3:
+            imp, clk, cost = nums[-3:]
+            conv, sales = 0.0, 0.0
+        else:
+            short_rows += 1
+            continue
+
+        media_name, region_name, device_name = _m_guess_dim_tokens(values)
+        campaign_type = campaign_type_map.get(campaign_id, '기타')
+        key = (campaign_type, media_name, region_name, device_name)
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(imp))
+        bucket['clk'] += int(round(clk))
+        bucket['cost'] += int(round(cost))
+        bucket['conv'] += float(conv)
+        bucket['sales'] += int(round(sales))
+        mapped_rows += 1
+
+    rows, agg_diag = _finalize_media_rows(agg, target_date, customer_id, data_source='ad_report_noheader')
+    diag = {
+        'status': 'ok' if rows else 'no_rows',
+        'mode': 'noheader',
+        'row_count': row_count,
+        'mapped_rows': mapped_rows,
+        'short_rows': short_rows,
+        'invalid_campaign_rows': invalid_campaign_rows,
+        'filtered_rows': filtered_rows,
+    }
+    diag.update(agg_diag)
+    _log_media_parse_diag(diag)
+    return rows, diag
+
+
+def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    for (campaign_id, raw_device), stat in (camp_device_stat or {}).items():
+        cid = str(campaign_id or '').strip()
+        if not cid:
+            continue
+        if allowed_campaign_ids is not None and cid not in allowed_campaign_ids:
+            continue
+        device_name = normalize_device_name(raw_device) or '전체'
+        campaign_type = campaign_type_map.get(cid, '기타')
+        key = (campaign_type, '전체', '전체', device_name)
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(float(stat.get('imp', 0) or 0)))
+        bucket['clk'] += int(round(float(stat.get('clk', 0) or 0)))
+        bucket['cost'] += int(round(float(stat.get('cost', 0) or 0)))
+        bucket['conv'] += float(stat.get('conv', 0) or 0.0)
+        bucket['sales'] += int(round(float(stat.get('sales', 0) or 0)))
+    rows, _ = _finalize_media_rows(agg, target_date, customer_id, data_source='campaign_device_fallback')
+    return rows
+
+
+def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, target_date: date, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    sql = text("""
+        SELECT campaign_id, imp, clk, cost, conv, sales
+        FROM fact_campaign_daily
+        WHERE customer_id = :cid AND dt = :dt
+    """)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql, {'cid': str(customer_id), 'dt': target_date}).mappings().all()
+    except Exception as e:
+        _log_best_effort_failure('campaign total fallback 조회', e, ctx=f'cid={customer_id} dt={target_date}')
+        return []
+
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    for r in rows:
+        cid = str(r.get('campaign_id') or '').strip()
+        if not cid:
+            continue
+        if allowed_campaign_ids is not None and cid not in allowed_campaign_ids:
+            continue
+        campaign_type = campaign_type_map.get(cid, '기타')
+        key = (campaign_type, '전체', '전체', '전체')
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(float(r.get('imp', 0) or 0)))
+        bucket['clk'] += int(round(float(r.get('clk', 0) or 0)))
+        bucket['cost'] += int(round(float(r.get('cost', 0) or 0)))
+        bucket['conv'] += float(r.get('conv', 0) or 0.0)
+        bucket['sales'] += int(round(float(r.get('sales', 0) or 0)))
+    rows, _ = _finalize_media_rows(agg, target_date, customer_id, data_source='campaign_total_fallback')
+    return rows
 
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:
