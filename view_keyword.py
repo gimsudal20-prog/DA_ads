@@ -260,6 +260,7 @@ def render_keyword_main(view, top_n):
     exact_match_main = col3.checkbox("완전 일치", key="kw_exact_main")
     
     col4.markdown("<div style='margin-top: 32px;'></div>", unsafe_allow_html=True)
+    agg_period = col4.checkbox("선택 기간 합산 (일자 통합)", key="kw_agg_period_main", help="조회된 여러 날짜의 데이터를 기간 전체 성과로 합산하여 보여줍니다.", value=True)
     agg_kw = col4.checkbox("동일 키워드 합산 (PC/MO 통합)", key="kw_agg_main", help="캠페인·광고그룹이 달라도 이름이 같은 키워드의 성과를 하나로 합산합니다.")
     
     disp = filtered_for_grp.copy()
@@ -276,6 +277,16 @@ def render_keyword_main(view, top_n):
     if "평균순위" in disp.columns: base_cols.append("평균순위")
     
     metrics_cols = ["노출", "클릭", "CTR(%)", "CPC(원)", "광고비", "전환", "CPA(원)", "전환매출", "ROAS(%)"]
+
+    # 기간 합산(Agg) 처리
+    if agg_period and "일자" in disp.columns:
+        grp_cols_period = [c for c in disp.columns if c not in ["일자", "노출", "클릭", "광고비", "전환", "전환매출", "CTR(%)", "CPC(원)", "CPA(원)", "ROAS(%)", "avg_rank", "평균순위"]]
+        agg_dict_period = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
+        if "avg_rank" in disp.columns: agg_dict_period["avg_rank"] = "mean"
+        disp = disp.groupby(grp_cols_period, as_index=False).agg(agg_dict_period)
+        disp = _add_perf_metrics(disp)
+        if "avg_rank" in disp.columns: disp["평균순위"] = disp["avg_rank"].apply(_format_avg_rank)
+        if "일자" in base_cols: base_cols.remove("일자")
 
     # 키워드 합산(Agg) 처리
     if agg_kw:
