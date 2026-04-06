@@ -37,8 +37,8 @@ def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, sourc
     })
 
 
-def _render_diag_panel(diag: list | None) -> None:
-    if not diag:
+def _render_diag_panel(diag: list | None, enabled: bool = False) -> None:
+    if (not enabled) or (not diag):
         return
     df = pd.DataFrame(diag)
     if df.empty:
@@ -278,7 +278,7 @@ def page_media(engine, f):
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
-        _render_diag_panel(diag)
+        _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
         return
 
     df_media = _calc_metrics(media_region_df.groupby('매체이름', as_index=False)[['노출수', '클릭수', '광고비', '전환수', '전환매출']].sum()) if media_region_df is not None and not media_region_df.empty else pd.DataFrame()
@@ -320,4 +320,4 @@ def page_media(engine, f):
             else:
                 st.info('매체 수집 데이터가 없어 계산할 수 없습니다.')
 
-    _render_diag_panel(diag)
+    _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))

@@ -122,7 +122,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.session_state["filters_v8"] = {
             "q": "", "manager": [], "account": [], "type_sel": [],
             "period_mode": "어제", "d1": default_start, "d2": default_end,
-            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True,
+            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True, "show_diagnostics": False,
         }
     sv = st.session_state["filters_v8"]
 
@@ -210,6 +210,8 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
             top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
             top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
             top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
+            st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>관리자 옵션</div>", unsafe_allow_html=True)
+            show_diagnostics = st.checkbox("조회 진단 보기", value=bool(sv.get("show_diagnostics", False)), key="f_show_diagnostics")
 
         st.caption("필터 변경 시 즉시 반영됩니다.")
 
@@ -217,7 +219,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "q": q or "", "manager": manager_sel or [], "account": account_sel or [],
         "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2,
         "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad,
-        "prefetch_warm": sv.get("prefetch_warm", True),
+        "prefetch_warm": sv.get("prefetch_warm", True), "show_diagnostics": bool(show_diagnostics),
     })
     sv.clear()
     sv.update(updated_filters)
@@ -231,6 +233,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "q": sv["q"], "manager": sv["manager"], "account": sv["account"], "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
         "start": d1, "end": d2, "period_mode": period_mode, "customer_ids": cids, "selected_customer_ids": cids,
         "top_n_keyword": int(sv.get("top_n_keyword", 300)), "top_n_ad": int(sv.get("top_n_ad", 200)), "top_n_campaign": int(sv.get("top_n_campaign", 200)),
+        "show_diagnostics": bool(sv.get("show_diagnostics", False)),
         "ready": True,
     }
 

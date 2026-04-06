@@ -44,8 +44,8 @@ def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, sourc
     })
 
 
-def _render_diag_panel(diag: list | None) -> None:
-    if not diag:
+def _render_diag_panel(diag: list | None, enabled: bool = False) -> None:
+    if (not enabled) or (not diag):
         return
     df = pd.DataFrame(diag)
     if df.empty:
@@ -688,6 +688,26 @@ def _normalize_detail_metric_frame(df: pd.DataFrame, item_col: str) -> pd.DataFr
         "conv": "구매완료수",
         "sales": "구매완료 매출",
     }).copy()
+
+    if "광고그룹" not in renamed.columns:
+        for cand in ["group_name", "adgroup", "adgroup_nm"]:
+            if cand in df.columns:
+                renamed["광고그룹"] = df[cand]
+                break
+    if "광고그룹" not in renamed.columns:
+        renamed["광고그룹"] = "미분류"
+
+    if "항목명" not in renamed.columns:
+        for cand in [item_col, "item_name", "final_ad_name", "ad_name", "ad_title", "keyword", "keyword_name", "extension_name", "소재명", "키워드"]:
+            if cand in renamed.columns:
+                renamed["항목명"] = renamed[cand]
+                break
+            if cand in df.columns:
+                renamed["항목명"] = df[cand]
+                break
+    if "항목명" not in renamed.columns:
+        renamed["항목명"] = "미분류"
+
     renamed["광고그룹"] = renamed["광고그룹"].fillna("미분류").replace("", "미분류")
     renamed["항목명"] = renamed["항목명"].fillna("미분류").replace("", "미분류")
     group_value_cols = [c for c in [
@@ -970,7 +990,7 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             bundle = query_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, topn_cost=_campaign_fetch_limit(top_n))
             _diag_add(diag, '캠페인집계', 'ok' if bundle is not None and not bundle.empty else 'zero_data', 0 if bundle is None else len(bundle.index), 'query_campaign_bundle', f'기간={f["start"]}~{f["end"]} 고객수={len(cids)} 유형수={len(type_sel)}')
             if bundle is None or bundle.empty:
-                _render_diag_panel(diag)
+                _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
                 return
             df = _perf_common_merge_meta(bundle, meta)
             _diag_add(diag, '메타병합', 'ok' if not df.empty else 'zero_data', len(df.index), 'meta_merge', 'campaign bundle + account meta')
@@ -993,4 +1013,4 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_campaign_compare_tab(view, engine, f, cids, type_sel, top_n, patch_date, has_pre_patch_cur)
     elif selected_tab == "꺼짐 기록":
         _render_campaign_off_tab(view, meta, engine, f, cids)
-    _render_diag_panel(diag)
+    _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))

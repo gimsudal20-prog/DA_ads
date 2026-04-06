@@ -50,8 +50,8 @@ def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, sourc
     })
 
 
-def _render_diag_panel(diag: list | None) -> None:
-    if not diag:
+def _render_diag_panel(diag: list | None, enabled: bool = False) -> None:
+    if (not enabled) or (not diag):
         return
     df = pd.DataFrame(diag)
     if df.empty:
@@ -857,30 +857,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         kw_state_key = f"overview_text_kw::{f['start']}::{f['end']}::{','.join(map(str, cids))}::{','.join(type_sel)}"
         if kw_state_key not in st.session_state:
             st.session_state[kw_state_key] = None
-
-        is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
-
-        def _load_text_keyword_bundle(force_refresh: bool = False):
-            current = st.session_state.get(kw_state_key)
-            if (not force_refresh) and current is not None:
-                return current
+        if st.button("텍스트 보고서 생성", key="overview_generate_text_report", use_container_width=True):
             try:
-                loaded = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-                st.session_state[kw_state_key] = loaded
-                rows = 0 if loaded is None else len(loaded.index)
-                _diag_add(diag, "키워드 번들", "ok" if rows else "zero_data", rows, "query_keyword_bundle", "텍스트 보고서 생성 영역에서 조회")
-                return loaded
+                st.session_state[kw_state_key] = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+                rows = 0 if st.session_state[kw_state_key] is None else len(st.session_state[kw_state_key].index)
+                _diag_add(diag, "키워드 번들", "ok" if rows else "zero_data", rows, "query_keyword_bundle", "텍스트 보고서 생성 버튼으로 지연 조회")
             except Exception as e:
                 st.session_state[kw_state_key] = pd.DataFrame()
                 _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
-                return st.session_state[kw_state_key]
-
-        if st.button("텍스트 보고서 생성", key="overview_generate_text_report", use_container_width=True):
-            _load_text_keyword_bundle(force_refresh=True)
-
         kw_bundle = st.session_state.get(kw_state_key)
-        if not is_shopping_only and kw_bundle is None:
-            kw_bundle = _load_text_keyword_bundle(force_refresh=False)
         top_kw_str = _get_top_keyword_report_text(kw_bundle) if kw_bundle is not None else "없음"
 
         shop_kw_str = "없음"
@@ -894,6 +879,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     shop_kw_str = ", ".join([f"{r['query_text']}({int(r['conv']):,}회)" for _, r in df_shop_q.iterrows()])
             except Exception:
                 pass
+
+        is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
 
         if is_shopping_only:
             report_text = "\n".join([
@@ -931,4 +918,4 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
         st.code(report_text, language="text")
 
-    _render_diag_panel(diag)
+    _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
