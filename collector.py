@@ -2434,12 +2434,12 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
         except Exception as e:
             last_upsert_err = e
             if raw_conn:
-                _safe_rollback(raw_conn, ctx=f"table={table} cid={customer_id} dt={d1}")
+                _safe_rollback(raw_conn)
             log(f"⚠️ fact_media_daily 적재 실패 {attempt}/3 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(e).__name__}: {e}")
             time.sleep(2)
         finally:
-            _safe_close(cur, label="cursor", ctx=f"table={table} cid={customer_id} dt={d1}")
-            _safe_close(raw_conn, label="connection", ctx=f"table={table} cid={customer_id} dt={d1}")
+            _safe_close(cur, label="cursor", ctx=f"fact_media_daily cid={customer_id} dt={d1}")
+            _safe_close(raw_conn, label="connection", ctx=f"fact_media_daily cid={customer_id} dt={d1}")
     raise RuntimeError(f"fact_media_daily 적재 최종 실패 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(last_upsert_err).__name__}: {last_upsert_err}") from last_upsert_err
 
 def _detect_media_header_idx(df: pd.DataFrame) -> int:
