@@ -50,8 +50,8 @@ def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, sourc
     })
 
 
-def _render_diag_panel(diag: list | None, enabled: bool = False) -> None:
-    if (not enabled) or (not diag):
+def _render_diag_panel(diag: list | None) -> None:
+    if not diag:
         return
     df = pd.DataFrame(diag)
     if df.empty:
@@ -107,7 +107,7 @@ def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tu
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=300)
+    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1000)
     except Exception: return pd.DataFrame()
 
 
@@ -117,66 +117,29 @@ def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel
     except Exception: return pd.DataFrame()
 
 
-def _attach_account_names(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame() if df is None else df
-    out = df.copy()
-    if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
-        mapping = dict(zip(meta['customer_id'].astype(str), meta['account_name']))
-        out['account_name'] = out['customer_id'].astype(str).map(mapping).fillna(out['customer_id'].astype(str))
-    else:
-        out['account_name'] = out['customer_id'].astype(str)
-    return out
-
-
-def _build_overview_campaign_frames(cur_camp: pd.DataFrame, base_camp: pd.DataFrame, meta: pd.DataFrame):
-    df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    cur_camp = _attach_account_names(cur_camp, meta)
-    base_camp = _attach_account_names(base_camp, meta)
-    if cur_camp.empty and base_camp.empty:
-        return df_display, df_type_display, camp_disp
-    df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '계정명')
-    type_kor_map = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
-    type_col = 'campaign_tp' if 'campaign_tp' in cur_camp.columns else ('campaign_type' if 'campaign_type' in cur_camp.columns else None)
-    if type_col:
-        df_type_display = _build_comparison_df(cur_camp, base_camp, type_col, '캠페인 유형', type_kor_map)
-    camp_col = 'campaign_name' if 'campaign_name' in cur_camp.columns else None
-    if camp_col:
-        camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
-    return df_display, df_type_display, camp_disp
-
-
-def _build_overview_timeseries_frames(daily_ts: pd.DataFrame, base_daily_ts: pd.DataFrame):
-    daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    if daily_ts is None or daily_ts.empty:
-        return daily_disp, dow_disp, weekly_disp
-    daily_copy = daily_ts.copy()
-    base_daily_copy = base_daily_ts.copy() if base_daily_ts is not None and not base_daily_ts.empty else pd.DataFrame()
-    daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
-    if not base_daily_copy.empty:
-        base_daily_copy['일자'] = base_daily_copy['dt'].dt.strftime('%Y-%m-%d')
-    daily_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '일자', '일자', align_mode="sequence").sort_values('일자', ascending=False)
-    daily_copy['요일'] = daily_copy['dt'].dt.dayofweek
-    if not base_daily_copy.empty:
-        base_daily_copy['요일'] = base_daily_copy['dt'].dt.dayofweek
-    dow_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '요일', '요일', align_mode="label").sort_values('요일')
-    dow_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
-    dow_disp['요일명'] = dow_disp['요일'].map(dow_map)
-    daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
-    if not base_daily_copy.empty:
-        base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
-    weekly_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '주차', '주차', align_mode="sequence").sort_values('주차', ascending=False)
-    return daily_disp, dow_disp, weekly_disp
-
-
-def _get_top_keyword_report_text(kw_bundle: pd.DataFrame) -> str:
-    top_kw_str = "없음"
+def _resolve_report_keyword_bundle(engine, start_dt, end_dt, cids: tuple, type_sel: tuple, kw_bundle: pd.DataFrame | None) -> pd.DataFrame:
     if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
-        kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
-        top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
-        if not top_kws.empty:
-            top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
-    return top_kw_str
+        return kw_bundle
+
+    # 텍스트 보고서의 주요 유입 키워드는 파워링크 기준을 우선 사용한다.
+    preferred_type_sel = ("파워링크",)
+    try:
+        report_kw = _cached_keyword_bundle(engine, start_dt, end_dt, cids, preferred_type_sel)
+        if report_kw is not None and not report_kw.empty and "keyword" in report_kw.columns and "clk" in report_kw.columns:
+            return report_kw
+    except Exception:
+        pass
+
+    normalized_types = tuple(type_sel or ())
+    if normalized_types and normalized_types != preferred_type_sel:
+        try:
+            report_kw = _cached_keyword_bundle(engine, start_dt, end_dt, cids, normalized_types)
+            if report_kw is not None and not report_kw.empty and "keyword" in report_kw.columns and "clk" in report_kw.columns:
+                return report_kw
+        except Exception:
+            pass
+
+    return pd.DataFrame()
 
 
 def format_for_csv(df):
@@ -507,18 +470,30 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         except Exception as e:
             cur_camp = pd.DataFrame()
             _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
-        base_camp = pd.DataFrame()
-        kw_bundle = None
-        _diag_add(diag, "캠페인 번들(비교)", "warn", 0, "query_campaign_bundle", f"비교 기간 {b1}~{b2} | 상세 패널 필요 시 지연 조회")
-        _diag_add(diag, "키워드 번들", "warn", 0, "query_keyword_bundle", "텍스트 보고서 생성 시 지연 조회")
+        try:
+            base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+            _diag_add(diag, "캠페인 번들(비교)", "ok" if base_camp is not None and not base_camp.empty else "zero_data", 0 if base_camp is None else len(base_camp.index), "query_campaign_bundle", f"비교 기간 {b1}~{b2}")
+        except Exception as e:
+            base_camp = pd.DataFrame()
+            _diag_add(diag, "캠페인 번들(비교)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
+        try:
+            kw_bundle = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "키워드 번들", "ok" if kw_bundle is not None and not kw_bundle.empty else "zero_data", 0 if kw_bundle is None else len(kw_bundle.index), "query_keyword_bundle", "현재 기간 키워드 상세")
+        except Exception as e:
+            kw_bundle = pd.DataFrame()
+            _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
         try:
             daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
             _diag_add(diag, "일자 추이(현재)", "ok" if daily_ts is not None and not daily_ts.empty else "zero_data", 0 if daily_ts is None else len(daily_ts.index), "query_campaign_timeseries", "현재 기간 시계열")
         except Exception as e:
             daily_ts = pd.DataFrame()
             _diag_add(diag, "일자 추이(현재)", "error", 0, "query_campaign_timeseries", f"{type(e).__name__}: {e}")
-        base_daily_ts = pd.DataFrame()
-        _diag_add(diag, "일자 추이(비교)", "warn", 0, "query_campaign_timeseries", f"비교 기간 {b1}~{b2} | 기간별 상세 필요 시 지연 조회")
+        try:
+            base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+            _diag_add(diag, "일자 추이(비교)", "ok" if base_daily_ts is not None and not base_daily_ts.empty else "zero_data", 0 if base_daily_ts is None else len(base_daily_ts.index), "query_campaign_timeseries", f"비교 기간 {b1}~{b2}")
+        except Exception as e:
+            base_daily_ts = pd.DataFrame()
+            _diag_add(diag, "일자 추이(비교)", "error", 0, "query_campaign_timeseries", f"{type(e).__name__}: {e}")
 
     account_name = "전체 계정"
     if cids and not meta.empty:
@@ -695,10 +670,44 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
 
     # ----------------------------------------------------
-    # 상세 데이터 전처리 (지연 조회 전 기본값만 준비)
+    # 상세 데이터 전처리
     # ----------------------------------------------------
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    if not cur_camp.empty or not base_camp.empty:
+        if not meta.empty and 'customer_id' in meta.columns and 'account_name' in meta.columns:
+            mapping = dict(zip(meta['customer_id'].astype(str), meta['account_name']))
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str).map(mapping).fillna(cur_camp['customer_id'].astype(str))
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str).map(mapping).fillna(base_camp['customer_id'].astype(str))
+        else:
+            if not cur_camp.empty: cur_camp['account_name'] = cur_camp['customer_id'].astype(str)
+            if not base_camp.empty: base_camp['account_name'] = base_camp['customer_id'].astype(str)
+
+        df_display = _build_comparison_df(cur_camp, base_camp, 'account_name', '계정명')
+        type_kor_map = {"WEB_SITE": "파워링크", "SHOPPING": "쇼핑검색", "POWER_CONTENTS": "파워컨텐츠", "BRAND_SEARCH": "브랜드검색", "PLACE": "플레이스"}
+        type_col = 'campaign_tp' if 'campaign_tp' in cur_camp.columns else ('campaign_type' if 'campaign_type' in cur_camp.columns else None)
+        if type_col: df_type_display = _build_comparison_df(cur_camp, base_camp, type_col, '캠페인 유형', type_kor_map)
+        camp_col = 'campaign_name' if 'campaign_name' in cur_camp.columns else None
+        if camp_col: camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
+
+    if daily_ts is not None and not daily_ts.empty:
+        daily_copy = daily_ts.copy()
+        base_daily_copy = base_daily_ts.copy() if base_daily_ts is not None and not base_daily_ts.empty else pd.DataFrame()
+
+        daily_copy['일자'] = daily_copy['dt'].dt.strftime('%Y-%m-%d')
+        if not base_daily_copy.empty: base_daily_copy['일자'] = base_daily_copy['dt'].dt.strftime('%Y-%m-%d')
+        daily_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '일자', '일자', align_mode="sequence").sort_values('일자', ascending=False)
+
+        daily_copy['요일'] = daily_copy['dt'].dt.dayofweek
+        if not base_daily_copy.empty: base_daily_copy['요일'] = base_daily_copy['dt'].dt.dayofweek
+        dow_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '요일', '요일', align_mode="label").sort_values('요일')
+        dow_map = {0: '월요일', 1: '화요일', 2: '수요일', 3: '목요일', 4: '금요일', 5: '토요일', 6: '일요일'}
+        dow_disp['요일명'] = dow_disp['요일'].map(dow_map)
+
+        daily_copy['주차'] = daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
+        if not base_daily_copy.empty: base_daily_copy['주차'] = base_daily_copy['dt'].dt.to_period('W').apply(lambda r: f"{r.start_time.strftime('%Y-%m-%d')} ~ {r.end_time.strftime('%Y-%m-%d')}")
+        weekly_disp = _build_ts_compare_df(daily_copy, base_daily_copy, '주차', '주차', align_mode="sequence").sort_values('주차', ascending=False)
 
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
@@ -750,26 +759,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         key="overview_detail_panel",
         label_visibility="collapsed",
     )
-
-    if detail_panel in {"업체별 요약", "매체·유형별 요약", "캠페인 상세 분석"}:
-        if base_camp is None or base_camp.empty:
-            try:
-                base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
-                _diag_add(diag, "캠페인 번들(비교)", "ok" if base_camp is not None and not base_camp.empty else "zero_data", 0 if base_camp is None else len(base_camp.index), "query_campaign_bundle", f"비교 기간 {b1}~{b2} | 지연 조회")
-            except Exception as e:
-                base_camp = pd.DataFrame()
-                _diag_add(diag, "캠페인 번들(비교)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
-        df_display, df_type_display, camp_disp = _build_overview_campaign_frames(cur_camp, base_camp, meta)
-
-    if detail_panel == "기간별 상세":
-        if base_daily_ts is None or base_daily_ts.empty:
-            try:
-                base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
-                _diag_add(diag, "일자 추이(비교)", "ok" if base_daily_ts is not None and not base_daily_ts.empty else "zero_data", 0 if base_daily_ts is None else len(base_daily_ts.index), "query_campaign_timeseries", f"비교 기간 {b1}~{b2} | 지연 조회")
-            except Exception as e:
-                base_daily_ts = pd.DataFrame()
-                _diag_add(diag, "일자 추이(비교)", "error", 0, "query_campaign_timeseries", f"{type(e).__name__}: {e}")
-        daily_disp, dow_disp, weekly_disp = _build_overview_timeseries_frames(daily_ts, base_daily_ts)
 
     if detail_panel == "업체별 요약":
         if not df_display.empty:
@@ -854,19 +843,13 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
     with st.expander("텍스트 보고서 생성", expanded=False):
-        kw_state_key = f"overview_text_kw::{f['start']}::{f['end']}::{','.join(map(str, cids))}::{','.join(type_sel)}"
-        if kw_state_key not in st.session_state:
-            st.session_state[kw_state_key] = None
-        if st.button("텍스트 보고서 생성", key="overview_generate_text_report", use_container_width=True):
-            try:
-                st.session_state[kw_state_key] = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-                rows = 0 if st.session_state[kw_state_key] is None else len(st.session_state[kw_state_key].index)
-                _diag_add(diag, "키워드 번들", "ok" if rows else "zero_data", rows, "query_keyword_bundle", "텍스트 보고서 생성 버튼으로 지연 조회")
-            except Exception as e:
-                st.session_state[kw_state_key] = pd.DataFrame()
-                _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
-        kw_bundle = st.session_state.get(kw_state_key)
-        top_kw_str = _get_top_keyword_report_text(kw_bundle) if kw_bundle is not None else "없음"
+        top_kw_str = "없음"
+        report_kw_bundle = _resolve_report_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, kw_bundle)
+        if report_kw_bundle is not None and not report_kw_bundle.empty and "keyword" in report_kw_bundle.columns and "clk" in report_kw_bundle.columns:
+            kw_agg = report_kw_bundle.groupby("keyword")["clk"].sum().reset_index()
+            top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
+            if not top_kws.empty: 
+                top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
 
         shop_kw_str = "없음"
         if cids:
@@ -918,4 +901,4 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             
         st.code(report_text, language="text")
 
-    _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
+    _render_diag_panel(diag)
