@@ -30,14 +30,18 @@ KEY_FILES = [
     'view_campaign.py',
     'view_overview.py',
     'view_media.py',
+    'view_budget.py',
     'view_trend.py',
     'collector.py',
+    'collector_backfill_recent_sa.py',
     'fast_backfill.py',
     'collector_shop_ext.py',
+    'regression_check.py',
 ]
 
 RUNTIME_HELP_SCRIPTS = [
     'collector.py',
+    'collector_backfill_recent_sa.py',
     'fast_backfill.py',
     'collector_shop_ext.py',
     'backfill_single_legacy_sa.py',

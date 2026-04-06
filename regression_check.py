@@ -73,6 +73,65 @@ def check_budget_cache_helpers(root: Path) -> list[str]:
     return [f'ok | view_budget.py 필수 함수 유지 ({", ".join(sorted(required))})']
 
 
+
+
+def check_backfill_public_contract(root: Path) -> list[str]:
+    path = root / 'collector_backfill_recent_sa.py'
+    if not path.exists():
+        raise RegressionFailure('collector_backfill_recent_sa.py 가 없습니다')
+    tree = _read_ast(path)
+    funcs = _function_names(tree)
+    required = {
+        'process_account',
+        'process_conversion_report',
+        'parse_shopping_query_report',
+        'parse_base_report',
+        '_record_backfill_result',
+        'emit_backfill_run_summary',
+        '_log_backfill_db_failure',
+    }
+    missing = sorted(required - funcs)
+    if missing:
+        raise RegressionFailure(f'backfill 공개/핵심 함수 누락: {", ".join(missing)}')
+    return [f"ok | backfill 핵심 함수 유지 ({', '.join(sorted(required))})"]
+
+
+def check_backfill_parser_contract(root: Path) -> list[str]:
+    path = root / 'collector_backfill_recent_sa.py'
+    if not path.exists():
+        raise RegressionFailure('collector_backfill_recent_sa.py 가 없습니다')
+    tree = _read_ast(path)
+    funcs = _function_names(tree)
+    required = {
+        '_conv_process_header_mode',
+        '_conv_process_heuristic_mode',
+        '_conv_collect_type_hits',
+        '_conv_pick_numeric_payload',
+        '_log_backfill_conv_diag',
+    }
+    missing = sorted(required - funcs)
+    if missing:
+        raise RegressionFailure(f'backfill 파서 helper 누락: {", ".join(missing)}')
+    return [f"ok | backfill 파서 helper 유지 ({', '.join(sorted(required))})"]
+
+
+def check_backfill_stage_logging(root: Path) -> list[str]:
+    path = root / 'collector_backfill_recent_sa.py'
+    if not path.exists():
+        raise RegressionFailure('collector_backfill_recent_sa.py 가 없습니다')
+    text = path.read_text(encoding='utf-8')
+    required_tokens = [
+        'result["stage"]',
+        'stage=',
+        'save_shopping_query_split',
+        'save_stats_and_breakdowns',
+        'resolve_split_payload',
+    ]
+    missing = [tok for tok in required_tokens if tok not in text]
+    if missing:
+        raise RegressionFailure(f'backfill stage/error 추적 토큰 누락: {", ".join(missing)}')
+    return ['ok | backfill stage/error 추적 토큰 유지']
+
 def check_sa_scope_contract(root: Path) -> list[str]:
     collector_path = root / 'collector.py'
     if not collector_path.exists():
@@ -99,6 +158,9 @@ def main() -> int:
     checks = [
         check_budget_wrapper,
         check_budget_cache_helpers,
+        check_backfill_public_contract,
+        check_backfill_parser_contract,
+        check_backfill_stage_logging,
         check_sa_scope_contract,
     ]
     for fn in checks:
