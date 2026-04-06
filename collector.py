@@ -2654,6 +2654,232 @@ def _finalize_media_rows(agg: Dict[Tuple[str, str, str, str], Dict[str, Any]], t
     return rows, diag
 
 
+
+
+def _detect_noheader_device_idx(df: pd.DataFrame) -> int:
+    if df is None or df.empty:
+        return -1
+    max_cols = max((len(r) for _, r in df.iterrows()), default=0)
+    best_idx, best_hits = -1, 0
+    for i in range(max_cols):
+        hits = 0
+        for _, row in df.head(200).iterrows():
+            if len(row) <= i:
+                continue
+            dv = normalize_device_name(row.iloc[i])
+            if dv in {"PC", "MO"}:
+                hits += 1
+        if hits > best_hits:
+            best_idx, best_hits = i, hits
+    return best_idx if best_hits > 0 else -1
+
+
+def _detect_noheader_text_dim_indexes(df: pd.DataFrame, excluded: set[int]) -> tuple[int, int]:
+    if df is None or df.empty:
+        return -1, -1
+    max_cols = max((len(r) for _, r in df.iterrows()), default=0)
+    candidates = []
+    for i in range(max_cols):
+        if i in excluded:
+            continue
+        vals = []
+        numeric_hits = 0
+        id_hits = 0
+        for _, row in df.head(200).iterrows():
+            if len(row) <= i:
+                continue
+            raw = str(row.iloc[i]).strip()
+            if not raw or raw == '-':
+                continue
+            if _conv_looks_like_id(raw):
+                id_hits += 1
+                continue
+            if _conv_maybe_numeric(raw) is not None:
+                numeric_hits += 1
+                continue
+            vals.append(raw)
+        if not vals or numeric_hits > len(vals):
+            continue
+        uniq = len(set(vals))
+        candidates.append((i, len(vals), uniq))
+    if not candidates:
+        return -1, -1
+    candidates.sort(key=lambda x: (-x[1], x[2], x[0]))
+    media_idx = candidates[0][0]
+    region_idx = candidates[1][0] if len(candidates) > 1 else -1
+    return media_idx, region_idx
+
+
+def _detect_noheader_metric_indexes(df: pd.DataFrame, excluded: set[int]) -> tuple[int, int, int, int, int]:
+    if df is None or df.empty:
+        return -1, -1, -1, -1, -1
+    max_cols = max((len(r) for _, r in df.iterrows()), default=0)
+    scores = []
+    for i in range(max_cols):
+        if i in excluded:
+            continue
+        hits = 0
+        nonzero = 0
+        for _, row in df.head(200).iterrows():
+            if len(row) <= i:
+                continue
+            num = _conv_maybe_numeric(row.iloc[i])
+            if num is None:
+                continue
+            hits += 1
+            if abs(num) > 0:
+                nonzero += 1
+        if hits:
+            scores.append((i, hits, nonzero))
+    scores.sort(key=lambda x: (x[0]))
+    metric_cols = [i for i, hits, nonzero in scores if hits >= 3]
+    if not metric_cols:
+        return -1, -1, -1, -1, -1
+    metric_cols = metric_cols[-5:]
+    while len(metric_cols) < 5:
+        metric_cols.insert(0, -1)
+    return tuple(metric_cols[-5:])
+
+
+def _build_media_rows_from_noheader(df: pd.DataFrame, target_date: date, customer_id: str, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if df is None or df.empty:
+        diag = {'status': 'empty', 'mode': 'noheader'}
+        _log_media_parse_diag(diag)
+        return [], diag
+
+    ad_idx = _conv_best_prefixed_idx(df.head(200).itertuples(index=False, name=None), 'nad-') if False else -1
+    sample_rows = [row for _, row in df.head(200).iterrows()]
+    ad_idx = _conv_best_prefixed_idx(sample_rows, 'nad-')
+    camp_idx = _conv_best_prefixed_idx(sample_rows, 'cmp-', preferred_after=ad_idx)
+    device_idx = _detect_noheader_device_idx(df)
+    excluded = {x for x in [ad_idx, camp_idx, device_idx] if x != -1}
+    media_idx, region_idx = _detect_noheader_text_dim_indexes(df, excluded)
+    excluded.update({x for x in [media_idx, region_idx] if x != -1})
+    imp_idx, clk_idx, cost_idx, conv_idx, sales_idx = _detect_noheader_metric_indexes(df, excluded)
+
+    if ad_idx == -1 and camp_idx == -1:
+        diag = {'status': 'no_ad_or_camp_id', 'mode': 'noheader'}
+        _log_media_parse_diag(diag)
+        return [], diag
+
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    row_count = mapped_rows = short_rows = invalid_campaign_rows = filtered_rows = 0
+    for _, row in df.iterrows():
+        row_count += 1
+        vals = row.tolist()
+        row_campaign_id = ''
+        if ad_idx != -1 and len(vals) > ad_idx:
+            ad_id = str(vals[ad_idx]).strip()
+            if ad_id:
+                row_campaign_id = ''
+        if not row_campaign_id and camp_idx != -1 and len(vals) > camp_idx:
+            row_campaign_id = str(vals[camp_idx]).strip()
+        if not row_campaign_id or not row_campaign_id.lower().startswith('cmp-'):
+            invalid_campaign_rows += 1
+            continue
+        if allowed_campaign_ids is not None and row_campaign_id not in allowed_campaign_ids:
+            filtered_rows += 1
+            continue
+        mapped_rows += 1
+        campaign_type = campaign_type_map.get(row_campaign_id, '기타')
+        media_name = _m_safe_text(vals[media_idx] if media_idx != -1 and len(vals) > media_idx else '', '전체')
+        region_name = _m_safe_text(vals[region_idx] if region_idx != -1 and len(vals) > region_idx else '', '전체')
+        raw_device = vals[device_idx] if device_idx != -1 and len(vals) > device_idx else ''
+        device_name = normalize_device_name(raw_device) or _m_safe_text(raw_device, '전체')
+        key = (campaign_type, media_name, region_name, device_name)
+        bucket = agg.setdefault(key, {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        if imp_idx != -1 and len(vals) > imp_idx:
+            bucket['imp'] += int(round(_m_safe_float(vals[imp_idx])))
+        if clk_idx != -1 and len(vals) > clk_idx:
+            bucket['clk'] += int(round(_m_safe_float(vals[clk_idx])))
+        if cost_idx != -1 and len(vals) > cost_idx:
+            bucket['cost'] += int(round(_m_safe_float(vals[cost_idx])))
+        if conv_idx != -1 and len(vals) > conv_idx:
+            bucket['conv'] += float(_m_safe_float(vals[conv_idx]))
+        if sales_idx != -1 and len(vals) > sales_idx:
+            bucket['sales'] += int(round(_m_safe_float(vals[sales_idx])))
+
+    rows, agg_diag = _finalize_media_rows(agg, target_date, customer_id, data_source='ad_report_noheader')
+    diag = {
+        'status': 'ok' if rows else 'no_rows',
+        'mode': 'noheader',
+        'row_count': row_count,
+        'mapped_rows': mapped_rows,
+        'short_rows': short_rows,
+        'invalid_campaign_rows': invalid_campaign_rows,
+        'filtered_rows': filtered_rows,
+        'ad_idx': ad_idx,
+        'camp_idx': camp_idx,
+        'device_idx': device_idx,
+        'media_idx': media_idx,
+        'region_idx': region_idx,
+        'imp_idx': imp_idx,
+        'clk_idx': clk_idx,
+        'cost_idx': cost_idx,
+        'conv_idx': conv_idx,
+        'sales_idx': sales_idx,
+    }
+    diag.update(agg_diag)
+    _log_media_parse_diag(diag)
+    return rows, diag
+
+
+def build_media_rows_from_campaign_device(target_date: date, customer_id: str, camp_device_stat: Dict[Tuple[str, str], Dict[str, Any]] | None, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    for key, metrics in (camp_device_stat or {}).items():
+        campaign_id = ''
+        device_name = '전체'
+        if isinstance(key, tuple):
+            if len(key) >= 1:
+                campaign_id = str(key[0] or '').strip()
+            if len(key) >= 2:
+                device_name = normalize_device_name(key[1]) or _m_safe_text(key[1], '전체')
+        else:
+            campaign_id = str(key or '').strip()
+        if not campaign_id:
+            continue
+        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            continue
+        campaign_type = campaign_type_map.get(campaign_id, '기타')
+        bucket = agg.setdefault((campaign_type, '전체', '전체', device_name), {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(float(metrics.get('imp', metrics.get('impCnt', 0)) or 0)))
+        bucket['clk'] += int(round(float(metrics.get('clk', metrics.get('clkCnt', 0)) or 0)))
+        bucket['cost'] += int(round(float(metrics.get('cost', metrics.get('salesAmt', 0)) or 0)))
+        bucket['conv'] += float(metrics.get('conv', metrics.get('ccnt', 0.0)) or 0.0)
+        bucket['sales'] += int(round(float(metrics.get('sales', metrics.get('convAmt', 0)) or 0)))
+    rows, _ = _finalize_media_rows(agg, target_date, customer_id, data_source='campaign_device_rollup')
+    return rows
+
+
+def build_media_rows_from_campaign_total_db(engine: Engine, customer_id: str, target_date: date, campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    sql = text("""
+        SELECT campaign_id, imp, clk, cost, conv, sales
+        FROM fact_campaign_daily
+        WHERE customer_id = :cid AND dt = :dt
+    """)
+    agg: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(sql, {'cid': str(customer_id), 'dt': target_date}).fetchall()
+    except Exception as e:
+        _log_best_effort_failure('campaign total fallback 조회', e, ctx=f'cid={customer_id} dt={target_date}')
+        return []
+    for campaign_id, imp, clk, cost, conv, sales in rows:
+        campaign_id = str(campaign_id or '').strip()
+        if not campaign_id:
+            continue
+        if allowed_campaign_ids is not None and campaign_id not in allowed_campaign_ids:
+            continue
+        campaign_type = campaign_type_map.get(campaign_id, '기타')
+        bucket = agg.setdefault((campaign_type, '전체', '전체', '전체'), {'imp': 0, 'clk': 0, 'cost': 0, 'conv': 0.0, 'sales': 0})
+        bucket['imp'] += int(round(float(imp or 0)))
+        bucket['clk'] += int(round(float(clk or 0)))
+        bucket['cost'] += int(round(float(cost or 0)))
+        bucket['conv'] += float(conv or 0.0)
+        bucket['sales'] += int(round(float(sales or 0)))
+    rows, _ = _finalize_media_rows(agg, target_date, customer_id, data_source='campaign_total_fallback')
+    return rows
+
 def parse_media_report_rows(df: pd.DataFrame, target_date: date, customer_id: str, ad_to_campaign: Dict[str, str], campaign_type_map: Dict[str, str], allowed_campaign_ids: set[str] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if df is None or df.empty:
         return [], {'status': 'empty'}
