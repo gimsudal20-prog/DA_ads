@@ -13,6 +13,7 @@ import io
 import random
 import re
 import csv
+import traceback
 import threading
 import concurrent.futures
 from urllib.parse import urlparse
@@ -209,6 +210,42 @@ def die(msg: str):
     log(f"❌ FATAL: {msg}")
     sys.exit(1)
 
+
+def _exc_label(exc: Exception) -> str:
+    return exc.__class__.__name__ if exc else "Exception"
+
+
+def _traceback_tail(exc: Exception, line_count: int = 4) -> str:
+    try:
+        tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        flat = "".join(tb_lines).strip().splitlines()
+        tail = flat[-line_count:] if flat else []
+        return " | ".join(s.strip() for s in tail if s.strip())
+    except Exception:
+        return ""
+
+
+def _safe_rollback(conn) -> None:
+    try:
+        if conn is not None:
+            conn.rollback()
+    except Exception:
+        pass
+
+
+def _safe_close(obj) -> None:
+    try:
+        if obj is not None:
+            obj.close()
+    except Exception:
+        pass
+
+
+def _log_backfill_db_failure(stage: str, table: str, attempt: int, exc: Exception) -> None:
+    tail = _traceback_tail(exc, line_count=2)
+    extra = f" | tb={tail}" if tail else ""
+    log(f"⚠️ DB {stage} 실패 [{table}] attempt={attempt} | {_exc_label(exc)}: {exc}{extra}")
+
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
 
@@ -381,8 +418,7 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
             break
         except Exception as e:
             if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+                _safe_rollback(raw_conn)
             time.sleep(3)
             if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
@@ -424,8 +460,7 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
             break
         except Exception as e:
             if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+                _safe_rollback(raw_conn)
             time.sleep(3)
             if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
@@ -458,8 +493,7 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
             break
         except Exception as e:
             if raw_conn:
-                try: raw_conn.rollback()
-                except Exception: pass
+                _safe_rollback(raw_conn)
             time.sleep(3)
             if attempt == 2: log(f"⚠️ DB 적재 에러 (테이블: {table}): {e}")
         finally:
@@ -1786,16 +1820,20 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         "device_campaign_rows_saved": 0,
         "device_ad_rows_saved": 0,
         "query_rows_saved": 0,
+        "stage": "init",
         "error": "",
     }
 
     try:
+        current_stage = "init"
         target_camp_ids, target_kw_ids, target_ad_ids = [], [], []
         shopping_campaign_ids: set[str] = set()
         shopping_adgroup_ids: set[str] = set()
         shopping_keyword_ids: set[str] = set()
 
         if not skip_dim:
+            current_stage = "sync_dim_targets"
+            result["stage"] = current_stage
             log(f"   📥 [ {account_name} ] 구조 데이터 동기화 시작...")
             camp_rows, ag_rows, kw_rows, ad_rows = [], [], [], []
 
@@ -1873,6 +1911,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             log(f"   ✅ [ {account_name} ] 구조 적재 완료")
 
         else:
+            current_stage = "load_dim_targets"
+            result["stage"] = current_stage
             with engine.connect() as conn:
                 target_camp_ids = [str(r[0]) for r in conn.execute(text("SELECT campaign_id FROM dim_campaign WHERE customer_id = :cid"), {"cid": customer_id})]
                 target_kw_ids = [str(r[0]) for r in conn.execute(text("SELECT keyword_id FROM dim_keyword WHERE customer_id = :cid"), {"cid": customer_id})]
@@ -1891,6 +1931,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                     )
                 } if shopping_adgroup_ids else set()
 
+        current_stage = "build_keyword_lookup"
+        result["stage"] = current_stage
         keyword_lookup = {}
         keyword_unique_lookup = {}
         try:
@@ -1922,10 +1964,14 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
             keyword_lookup = {}
             keyword_unique_lookup = {}
 
+        current_stage = "build_live_maps"
+        result["stage"] = current_stage
         live_keyword_resolver = make_live_keyword_resolver(customer_id)
 
         ad_to_campaign_map = build_ad_to_campaign_map(engine, customer_id)
 
+        current_stage = "fetch_reports"
+        result["stage"] = current_stage
         kst_now = datetime.utcnow() + timedelta(hours=9)
         use_realtime_fallback = False
         dfs: Dict[str, pd.DataFrame | None] = {}
@@ -1958,15 +2004,21 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 result["device_status"] = "realtime_skipped"
 
         if use_realtime_fallback:
+            current_stage = "save_realtime_fallback"
+            result["stage"] = current_stage
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily")
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily") if not SKIP_KEYWORD_STATS else 0
             a_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_ad_ids, "ad_id", "fact_ad_daily") if not SKIP_AD_STATS else 0
+            current_stage = "finalize_result"
+            result["stage"] = current_stage
             result["campaign_rows_saved"] = int(c_cnt or 0)
             result["keyword_rows_saved"] = int(k_cnt or 0)
             result["ad_rows_saved"] = int(a_cnt or 0)
             result["split_reason"] = "realtime_total_only"
             log(f"   ✅ [ {account_name} ] 실시간 총합 수집 완료: 캠페인({c_cnt}) | 키워드({k_cnt}) | 소재({a_cnt})")
         else:
+            current_stage = "resolve_split_payload"
+            result["stage"] = current_stage
             split_report_ok = False
             camp_map, kw_map, ad_map = {}, {}, {}
             shop_query_rows: List[Dict[str, Any]] = []
@@ -2087,6 +2139,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
             # CAMPAIGN / KEYWORD reportTp 요청은 11001 오류가 발생할 수 있어
             # /stats 총합을 기본으로 쓰고 AD_CONVERSION 분리값만 병합한다.
+            current_stage = "save_stats_and_breakdowns"
+            result["stage"] = current_stage
             c_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_camp_ids, "campaign_id", "fact_campaign_daily", split_map=camp_map)
             k_cnt = fetch_stats_fallback(engine, customer_id, target_date, target_kw_ids, "keyword_id", "fact_keyword_daily", split_map=kw_map) if not SKIP_KEYWORD_STATS else 0
 
@@ -2161,6 +2215,8 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
                 result["device_status"] = "not_requested"
                 a_cnt = 0
 
+            current_stage = "save_shopping_query_split"
+            result["stage"] = current_stage
             replace_query_fact_range(engine, shop_query_rows, customer_id, target_date)
             if shop_query_rows:
                 log(f"   ✅ [ {account_name} ] 쇼핑검색어 분리 저장 완료: {len(shop_query_rows)}건")
@@ -2186,8 +2242,15 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
 
     except Exception as e:
         result["status"] = "error"
-        result["error"] = str(e)
-        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: {str(e)}")
+        stage_text = result.get("stage") or locals().get("current_stage") or "unknown"
+        tail = _traceback_tail(e)
+        result["stage"] = stage_text
+        result["error"] = f"stage={stage_text} | {_exc_label(e)}: {e}"
+        if tail:
+            result["error"] += f" | tb={tail}"
+        log(f"❌ [ {account_name} ] 계정 처리 중 오류 발생: stage={stage_text} | {_exc_label(e)}: {e}")
+        if tail:
+            log(f"   🧵 [ {account_name} ] traceback tail: {tail}")
     finally:
         _record_backfill_result(result)
 
