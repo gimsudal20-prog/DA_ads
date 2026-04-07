@@ -35,8 +35,6 @@ def _inject_overview_css():
     """, unsafe_allow_html=True)
 
 
-
-
 def _diag_add(diag: list | None, step: str, status: str = "ok", rows=None, source: str = "", note: str = "") -> None:
     if diag is None:
         return
@@ -145,6 +143,16 @@ def _build_overview_campaign_frames(cur_camp: pd.DataFrame, base_camp: pd.DataFr
         camp_disp = _build_comparison_df(cur_camp, base_camp, camp_col, '캠페인명')
     return df_display, df_type_display, camp_disp
 
+# ▼ 추가된 키워드 비교 데이터 프레임 생성 함수 ▼
+def _build_overview_keyword_frames(cur_kw: pd.DataFrame, base_kw: pd.DataFrame):
+    kw_disp = pd.DataFrame()
+    if cur_kw.empty and base_kw.empty:
+        return kw_disp
+    
+    kw_col = 'keyword' if 'keyword' in cur_kw.columns else None
+    if kw_col:
+        kw_disp = _build_comparison_df(cur_kw, base_kw, kw_col, '키워드')
+    return kw_disp
 
 def _build_overview_timeseries_frames(daily_ts: pd.DataFrame, base_daily_ts: pd.DataFrame):
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -573,7 +581,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         except Exception as e:
             cur_camp = pd.DataFrame()
             _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
+            
+        # ▼ 추가: 키워드 번들(현재) 로드 로직 ▼
+        try:
+            cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            _diag_add(diag, "키워드 번들(현재)", "ok" if cur_kw is not None and not cur_kw.empty else "zero_data", 0 if cur_kw is None else len(cur_kw.index), "query_keyword_bundle", "현재 기간 키워드 상세")
+        except Exception as e:
+            cur_kw = pd.DataFrame()
+            _diag_add(diag, "키워드 번들(현재)", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
+            
         base_camp = pd.DataFrame()
+        base_kw = pd.DataFrame() # ▼ 추가: 키워드 탭 진입 시 지연 로드용 초기화 ▼
         kw_bundle = None
         _diag_add(diag, "캠페인 번들(비교)", "warn", 0, "query_campaign_bundle", f"비교 기간 {b1}~{b2} | 상세 패널 필요 시 지연 조회")
         _diag_add(diag, "키워드 번들", "warn", 0, "query_keyword_bundle", "텍스트 보고서 생성 시 지연 조회")
@@ -765,6 +783,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ----------------------------------------------------
     df_display, df_type_display, camp_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     daily_disp, dow_disp, weekly_disp = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    kw_disp = pd.DataFrame() # ▼ 추가: 키워드 데이터프레임 초기화 ▼
 
     fmt_dict_standard = {
         "노출수": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
@@ -809,9 +828,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["통합 ROAS(%)", "통합 ROAS 증감"] if show_deltas else ["통합 ROAS(%)"])
         return cols
 
+    # ▼ 추가: '키워드 상세 분석' 항목 포함 ▼
     detail_panel = st.segmented_control(
         "세부 성과 보기",
-        ["업체별 요약", "매체·유형별 요약", "기간별 상세", "캠페인 상세 분석"],
+        ["업체별 요약", "매체·유형별 요약", "기간별 상세", "캠페인 상세 분석", "키워드 상세 분석"],
         default="업체별 요약",
         key="overview_detail_panel",
         label_visibility="collapsed",
@@ -826,6 +846,17 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 base_camp = pd.DataFrame()
                 _diag_add(diag, "캠페인 번들(비교)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
         df_display, df_type_display, camp_disp = _build_overview_campaign_frames(cur_camp, base_camp, meta)
+
+    # ▼ 추가: 키워드 상세 분석 탭일 경우 지연 로드 로직 ▼
+    if detail_panel == "키워드 상세 분석":
+        if base_kw is None or base_kw.empty:
+            try:
+                base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
+                _diag_add(diag, "키워드 번들(비교)", "ok" if base_kw is not None and not base_kw.empty else "zero_data", 0 if base_kw is None else len(base_kw.index), "query_keyword_bundle", f"비교 기간 {b1}~{b2} | 지연 조회")
+            except Exception as e:
+                base_kw = pd.DataFrame()
+                _diag_add(diag, "키워드 번들(비교)", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
+        kw_disp = _build_overview_keyword_frames(cur_kw, base_kw)
 
     if detail_panel == "기간별 상세":
         if base_daily_ts is None or base_daily_ts.empty:
@@ -886,7 +917,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
-    else:
+    # ▼ 추가: 키워드 상세 분석 렌더링 블록 ▼
+    elif detail_panel == "키워드 상세 분석":
+        if not kw_disp.empty:
+            kw_disp_top = kw_disp.head(200) # 브라우저 렌더링 과부하 방지
+            view_cols = ["키워드"] + [c for c in get_funnel_cols(show_deltas) if c in kw_disp_top.columns]
+            disp_kw = kw_disp_top[view_cols].copy()
+            styled_kw_df = disp_kw.style.format(fmt_dict_standard)
+            styled_kw_df = _apply_overview_delta_styles(styled_kw_df, disp_kw)
+            _render_overview_sticky_table(styled_kw_df, "키워드", height=460, hide_index=True)
+        else:
+            st.info("조건에 맞는 데이터가 없습니다.")
+
+    elif detail_panel == "캠페인 상세 분석":
         if not camp_disp.empty:
             camp_disp_top = camp_disp.head(200) # 브라우저 렌더링 과부하 방지
             view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_deltas) if c in camp_disp_top.columns]
@@ -899,10 +942,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
 
     # ----------------------------------------------------
-    # 엑셀 다운로드 (원래 데이터 모두 포함)
+    # 엑셀 다운로드 (키워드 시트 포함)
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-    has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty])
+    # ▼ 추가: has_data_to_export 조건에 kw_disp도 포함 ▼
+    has_data_to_export = any([not df_display.empty, not df_type_display.empty, not camp_disp.empty, not daily_disp.empty, not kw_disp.empty])
     if has_data_to_export:
         with st.container(border=True):
             st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>엑셀 데이터 일괄 다운로드</div>", unsafe_allow_html=True)
@@ -912,6 +956,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 if not df_display.empty: format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
                 if not df_type_display.empty: format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
                 if not camp_disp.empty: format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
+                # ▼ 추가: 키워드 데이터 엑셀 시트에 추가 ▼
+                if not kw_disp.empty: format_for_csv(kw_disp).to_excel(writer, sheet_name='키워드별_성과상세', index=False)
                 if not daily_disp.empty: format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
                 if not dow_disp.empty:
                     dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
