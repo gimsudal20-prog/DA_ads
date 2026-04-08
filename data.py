@@ -9,11 +9,11 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 from datetime import date
 
 # ==========================================
-# 1. Database Connection (NullPool 적용)
+# 1. Database Connection (QueuePool 적용)
 # ==========================================
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
@@ -34,14 +34,24 @@ def get_engine():
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
-        "keepalives_count": 5
+        "keepalives_count": 5,
     }
+
+    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5))
+    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10))
+    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "20") or 20))
+    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
 
     return create_engine(
         db_url,
-        poolclass=NullPool,
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
         connect_args=connect_args,
-        future=True
+        future=True,
     )
 
 def db_ping(engine) -> bool:
@@ -52,15 +62,55 @@ def db_ping(engine) -> bool:
     except Exception:
         return False
 
-def table_exists(engine, table_name: str) -> bool:
-    if "_table_names_cache" not in st.session_state:
+@st.cache_data(ttl=43200, max_entries=4, show_spinner=False)
+def get_public_table_names(_engine) -> tuple:
+    for attempt in range(3):
         try:
-            with engine.connect() as conn:
+            with _engine.connect() as conn:
                 res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
-                st.session_state["_table_names_cache"] = [r[0] for r in res]
+                return tuple(str(r[0]) for r in res if r and r[0])
+        except (OperationalError, StatementError, InterfaceError):
+            if attempt == 2:
+                st.cache_resource.clear()
+                st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
+                st.stop()
+            _engine.dispose()
+            time.sleep(1.0)
         except Exception:
-            return False
-    return table_name in st.session_state.get("_table_names_cache", [])
+            return tuple()
+    return tuple()
+
+@st.cache_data(ttl=43200, max_entries=8, show_spinner=False)
+def get_schema_snapshot(_engine) -> dict:
+    try:
+        with _engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name, ordinal_position
+                    """
+                )
+            ).fetchall()
+    except (OperationalError, StatementError, InterfaceError):
+        _engine.dispose()
+        return {}
+    except Exception:
+        return {}
+
+    out = {}
+    for table_name, column_name in rows:
+        t = str(table_name or '').strip()
+        c = str(column_name or '').strip()
+        if not t or not c:
+            continue
+        out.setdefault(t, []).append(c)
+    return out
+
+def table_exists(engine, table_name: str) -> bool:
+    return str(table_name or '').strip() in set(get_public_table_names(engine))
 
 def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
     value = str(name or "").strip()
@@ -71,30 +121,9 @@ def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     safe_table_name = _validate_sql_identifier(table_name, "table name")
-    for attempt in range(3):
-        try:
-            with _engine.connect() as conn:
-                res = conn.execute(
-                    text(
-                        """
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name = :table_name
-                          AND table_schema = 'public'
-                        """
-                    ),
-                    {"table_name": safe_table_name},
-                )
-                return [r[0] for r in res]
-        except (OperationalError, StatementError, InterfaceError):
-            if attempt == 2:
-                st.cache_resource.clear()
-                st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
-                st.stop()
-            _engine.dispose()
-            time.sleep(1.0)
-        except Exception:
-            return []
+    snapshot = get_schema_snapshot(_engine)
+    cols = snapshot.get(safe_table_name, [])
+    return list(cols) if cols else []
 
 @st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
@@ -103,10 +132,14 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
         try:
             with _engine.connect() as conn:
                 return pd.read_sql(text(query), conn, params=params)
+        except (OperationalError, StatementError, InterfaceError) as e:
+            last_error = e
+            _engine.dispose()
+            time.sleep(1.0 + attempt * 0.5)
         except Exception as e:
             last_error = e
             time.sleep(1.0)
-            
+
     st.cache_resource.clear()
     st.error(f"DB 연결이 지연되고 있습니다. 잠시 후 새로고침(F5) 해주세요. (사유: {last_error})")
     st.stop()
@@ -118,10 +151,14 @@ def sql_exec(_engine, query: str, params: dict = None) -> None:
             with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
             return
+        except (OperationalError, StatementError, InterfaceError) as e:
+            last_error = e
+            _engine.dispose()
+            time.sleep(1.0 + attempt * 0.5)
         except Exception as e:
             last_error = e
             time.sleep(1.0)
-            
+
     st.cache_resource.clear()
     raise RuntimeError(f"쿼리 실행 실패 (사유: {last_error})")
 
@@ -584,6 +621,95 @@ def _bundle_limit_clause(topn_cost: int) -> str:
 def _finalize_bundle_df(df: pd.DataFrame, campaign_type_col: str) -> pd.DataFrame:
     return _map_campaign_types(df, campaign_type_col)
 
+def _bundle_limit_value(topn_cost: int) -> int:
+    return _safe_limit(topn_cost, default=10000, max_limit=10000)
+
+
+def _build_campaign_top_ids_cte(where_cid: str, cid_params: dict, type_filter_sql: str, type_params: dict, limit_value: int) -> tuple[str, dict]:
+    if type_filter_sql:
+        cte_sql = f"""
+        WITH top_ids AS (
+            SELECT f.customer_id, f.campaign_id, SUM(f.cost) AS cost
+            FROM fact_campaign_daily f
+            JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+            GROUP BY f.customer_id, f.campaign_id
+            ORDER BY SUM(f.cost) DESC
+            LIMIT {limit_value}
+        )
+        """
+        return cte_sql, {**cid_params, **type_params}
+    cte_sql = f"""
+    WITH top_ids AS (
+        SELECT customer_id, campaign_id, SUM(cost) AS cost
+        FROM fact_campaign_daily
+        WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY customer_id, campaign_id
+        ORDER BY SUM(cost) DESC
+        LIMIT {limit_value}
+    )
+    """
+    return cte_sql, {**cid_params}
+
+
+def _build_keyword_top_ids_cte(where_cid: str, cid_params: dict, type_filter_sql: str, type_params: dict, limit_value: int) -> tuple[str, dict]:
+    if type_filter_sql:
+        cte_sql = f"""
+        WITH top_ids AS (
+            SELECT f.customer_id, f.keyword_id, SUM(f.cost) AS cost
+            FROM fact_keyword_daily f
+            JOIN dim_keyword k ON f.keyword_id = k.keyword_id AND f.customer_id = k.customer_id
+            JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+            GROUP BY f.customer_id, f.keyword_id
+            ORDER BY SUM(f.cost) DESC
+            LIMIT {limit_value}
+        )
+        """
+        return cte_sql, {**cid_params, **type_params}
+    cte_sql = f"""
+    WITH top_ids AS (
+        SELECT customer_id, keyword_id, SUM(cost) AS cost
+        FROM fact_keyword_daily
+        WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY customer_id, keyword_id
+        ORDER BY SUM(cost) DESC
+        LIMIT {limit_value}
+    )
+    """
+    return cte_sql, {**cid_params}
+
+
+def _build_ad_top_ids_cte(where_cid: str, cid_params: dict, type_filter_sql: str, type_params: dict, limit_value: int) -> tuple[str, dict]:
+    if type_filter_sql:
+        cte_sql = f"""
+        WITH top_ids AS (
+            SELECT f.customer_id, f.ad_id, SUM(f.cost) AS cost
+            FROM fact_ad_daily f
+            JOIN dim_ad ad ON f.ad_id = ad.ad_id AND f.customer_id = ad.customer_id
+            JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+            GROUP BY f.customer_id, f.ad_id
+            ORDER BY SUM(f.cost) DESC
+            LIMIT {limit_value}
+        )
+        """
+        return cte_sql, {**cid_params, **type_params}
+    cte_sql = f"""
+    WITH top_ids AS (
+        SELECT customer_id, ad_id, SUM(cost) AS cost
+        FROM fact_ad_daily
+        WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+        GROUP BY customer_id, ad_id
+        ORDER BY SUM(cost) DESC
+        LIMIT {limit_value}
+    )
+    """
+    return cte_sql, {**cid_params}
+
+
 
 def _normalize_customer_id_series(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
@@ -806,15 +932,19 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     camp_fact_cols = get_table_columns(_engine, "fact_campaign_daily")
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_campaign_daily"))
     metric_sql = _build_bundle_metric_sql(camp_fact_cols)
+    limit_value = _bundle_limit_value(topn_cost)
+    top_ids_cte, top_ids_params = _build_campaign_top_ids_cte(where_cid, cid_params, type_filter_sql, type_params, limit_value)
 
     sql = f"""
-        WITH agg AS (
-            SELECT customer_id, campaign_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+        {top_ids_cte}
+        , agg AS (
+            SELECT f.customer_id, f.campaign_id,
+                   SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
                    {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_campaign_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, campaign_id
+            FROM fact_campaign_daily f
+            JOIN top_ids t ON f.customer_id = t.customer_id AND f.campaign_id = t.campaign_id
+            WHERE f.dt BETWEEN :d1 AND :d2
+            GROUP BY f.customer_id, f.campaign_id
         )
         SELECT
             agg.customer_id, agg.campaign_id,
@@ -822,11 +952,10 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
+        ORDER BY agg.cost DESC
     """
-    sql += _bundle_limit_clause(topn_cost)
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **top_ids_params})
     return _finalize_bundle_df(df, "campaign_type")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
@@ -843,15 +972,19 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_keyword_daily"))
     metric_sql = _build_bundle_metric_sql(kw_fact_cols)
     dt_group, dt_select = _build_dt_sql(include_dt)
+    limit_value = _bundle_limit_value(topn_cost)
+    top_ids_cte, top_ids_params = _build_keyword_top_ids_cte(where_cid, cid_params, type_filter_sql, type_params, limit_value)
 
     sql = f"""
-        WITH agg AS (
-            SELECT customer_id, keyword_id{dt_group},
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+        {top_ids_cte}
+        , agg AS (
+            SELECT f.customer_id, f.keyword_id{dt_group},
+                   SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
                    {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_keyword_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, keyword_id{dt_group}
+            FROM fact_keyword_daily f
+            JOIN top_ids t ON f.customer_id = t.customer_id AND f.keyword_id = t.keyword_id
+            WHERE f.dt BETWEEN :d1 AND :d2
+            GROUP BY f.customer_id, f.keyword_id{dt_group}
         )
         SELECT
             agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
@@ -862,11 +995,10 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
         JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
         JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
+        ORDER BY agg.cost DESC
     """
-    sql += _bundle_limit_clause(topn_cost)
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **top_ids_params})
     return _finalize_bundle_df(df, "campaign_type_label")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
@@ -884,15 +1016,19 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_ad_daily"))
     metric_sql = _build_bundle_metric_sql(ad_fact_cols)
     dt_group, dt_select = _build_dt_sql(include_dt)
+    limit_value = _bundle_limit_value(topn_cost)
+    top_ids_cte, top_ids_params = _build_ad_top_ids_cte(where_cid, cid_params, type_filter_sql, type_params, limit_value)
 
     sql = f"""
-        WITH agg AS (
-            SELECT customer_id, ad_id{dt_group},
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+        {top_ids_cte}
+        , agg AS (
+            SELECT f.customer_id, f.ad_id{dt_group},
+                   SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
                    {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_ad_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, ad_id{dt_group}
+            FROM fact_ad_daily f
+            JOIN top_ids t ON f.customer_id = t.customer_id AND f.ad_id = t.ad_id
+            WHERE f.dt BETWEEN :d1 AND :d2
+            GROUP BY f.customer_id, f.ad_id{dt_group}
         )
         SELECT
             agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
@@ -903,11 +1039,10 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
         JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
         JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
         JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
+        ORDER BY agg.cost DESC
     """
-    sql += _bundle_limit_clause(topn_cost)
 
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **top_ids_params})
     return _finalize_bundle_df(df, "campaign_type_label")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
