@@ -9,14 +9,34 @@ import streamlit as st
 from data import *
 from ui import render_hero
 from page_helpers import BUILD_TAG, build_filters
-from view_overview import page_overview
-from view_budget import page_budget
-from view_campaign import page_perf_campaign
-from view_keyword import page_perf_keyword
-from view_ad import page_perf_ad
-from view_settings import page_settings
-from view_media import page_media
-from view_shopping_query import page_perf_shopping_query
+
+
+def _dispatch_page(nav: str, meta, engine, f):
+    if nav == "요약":
+        from view_overview import page_overview
+        page_overview(meta, engine, f)
+    elif nav == "예산 및 잔액":
+        from view_budget import page_budget
+        page_budget(meta, engine, f)
+    elif nav == "매체(지면) 분석":
+        from view_media import page_media
+        page_media(engine, f)
+    elif nav == "성과 분석 · 캠페인":
+        from view_campaign import page_perf_campaign
+        page_perf_campaign(meta, engine, f)
+    elif nav == "성과 분석 · 키워드":
+        from view_keyword import page_perf_keyword
+        page_perf_keyword(meta, engine, f)
+    elif nav == "쇼핑 검색어 분석":
+        from view_shopping_query import page_perf_shopping_query
+        page_perf_shopping_query(meta, engine, f)
+    elif nav == "성과 분석 · 소재":
+        from view_ad import page_perf_ad
+        page_perf_ad(meta, engine, f)
+    else:
+        from view_settings import page_settings
+        page_settings(engine)
+
 
 def main():
     try:
@@ -90,22 +110,8 @@ def main():
         st.info("담당자 또는 광고주(계정) 필터를 먼저 1개 이상 선택하면 데이터가 표시됩니다.")
         st.stop()
 
-    if nav == "요약":
-        page_overview(meta, engine, f)
-    elif nav == "예산 및 잔액":
-        page_budget(meta, engine, f)
-    elif nav == "매체(지면) 분석":
-        page_media(engine, f)
-    elif nav == "성과 분석 · 캠페인":
-        page_perf_campaign(meta, engine, f)
-    elif nav == "성과 분석 · 키워드":
-        page_perf_keyword(meta, engine, f)
-    elif nav == "쇼핑 검색어 분석":
-        page_perf_shopping_query(meta, engine, f)
-    elif nav == "성과 분석 · 소재":
-        page_perf_ad(meta, engine, f)
-    else:
-        page_settings(engine)
+    _dispatch_page(nav, meta, engine, f)
+
 
 if __name__ == "__main__":
     main()

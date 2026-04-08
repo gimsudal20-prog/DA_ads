@@ -154,22 +154,32 @@ def _pick_first_nonempty(row: pd.Series, candidates: list[str], default: str = "
                 return v
     return default
 
+
+def _first_nonempty_series(df: pd.DataFrame, candidates: list[str], default: str = "") -> pd.Series:
+    cols = [c for c in candidates if c in df.columns]
+    if not cols:
+        return pd.Series(default, index=df.index)
+    work = df[cols].copy()
+    work = work.astype(object).where(pd.notnull(work), "")
+    for c in cols:
+        work[c] = work[c].astype(str).str.strip()
+    work = work.replace({"": np.nan, "nan": np.nan, "None": np.nan, "none": np.nan})
+    return work.bfill(axis=1).iloc[:, 0].fillna(default)
+
 def _metric_expr(cols: set[str], *candidates: str) -> str:
     for c in candidates:
         if c in cols:
             return f"COALESCE({c}, 0)"
     return "0"
 
-def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
-    if not table_exists(engine, 'fact_media_daily'):
-        _diag_add(diag, '매체 원천', 'error', 0, 'fact_media_daily', '테이블이 존재하지 않습니다.')
+@st.cache_data(ttl=900, max_entries=30, show_spinner=False)
+def _cached_media_region(_engine, start_dt: str, end_dt: str, cids: tuple[str, ...], type_sel: tuple[str, ...]) -> pd.DataFrame:
+    if not table_exists(_engine, 'fact_media_daily'):
         return pd.DataFrame()
 
-    cols = set(get_table_columns(engine, 'fact_media_daily'))
-    _diag_add(diag, '매체 원천', 'ok' if cols else 'warn', len(cols), 'fact_media_daily', '컬럼 목록 확인')
-    params = {'d1': str(f['start']), 'd2': str(f['end'])}
-    type_vals = _expand_campaign_type_values(tuple(f.get('type_sel', []) or []))
-    cids = tuple(f.get('selected_customer_ids', []) or ())
+    cols = set(get_table_columns(_engine, 'fact_media_daily'))
+    params = {'d1': str(start_dt), 'd2': str(end_dt)}
+    type_vals = _expand_campaign_type_values(tuple(type_sel or ()))
     where_cid = f"AND CAST(customer_id AS TEXT) IN ({_sql_in_str_list(list(cids))})" if cids else ''
 
     select_cols = [
@@ -197,45 +207,55 @@ def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
     ]
     select_cols = [c for c in select_cols if c]
     sql = f"""
-        SELECT /* media_connection_fix_raw_v1 */
+        SELECT /* media_connection_fix_raw_v2_cached */
             {', '.join(select_cols)}
         FROM fact_media_daily
         WHERE dt BETWEEN :d1 AND :d2 {where_cid}
     """
-    try:
-        raw = sql_read(engine, sql, params)
-    except Exception as e:
-        _diag_add(diag, '매체 원천 조회', 'error', 0, 'fact_media_daily', f'{type(e).__name__}: {e}')
-        return pd.DataFrame()
+    raw = sql_read(_engine, sql, params)
     if raw is None or raw.empty:
-        _diag_add(diag, '매체 원천 조회', 'zero_data', 0, 'fact_media_daily', '기간/필터 기준 원천 데이터 없음')
         return pd.DataFrame()
-    _diag_add(diag, '매체 원천 조회', 'ok', len(raw.index), 'fact_media_daily', '원천 로우 조회 성공')
 
     cp_candidates = [c for c in ['campaign_type', 'campaign_tp', 'campaign_type_label'] if c in raw.columns]
     if type_vals and cp_candidates:
-        cp_series = raw[cp_candidates].bfill(axis=1).iloc[:, 0].fillna('').astype(str)
+        cp_series = raw[cp_candidates].astype(object).where(pd.notnull(raw[cp_candidates]), '').bfill(axis=1).iloc[:, 0].fillna('').astype(str)
         raw = raw[cp_series.isin(type_vals)]
         if raw.empty:
-            _diag_add(diag, '유형 필터', 'zero_data', 0, 'fact_media_daily', '유형 필터 적용 후 데이터 없음')
             return pd.DataFrame()
-        _diag_add(diag, '유형 필터', 'ok', len(raw.index), 'fact_media_daily', '유형 필터 적용 후 잔존')
 
-    def _media_from_row(r: pd.Series) -> str:
-        return _pick_first_nonempty(r, ['media_name', 'placement_name', 'media_code', 'placement_code', 'media_tp', 'placement_tp'], '전체')
-
-    def _device_from_row(r: pd.Series) -> str:
-        return _pick_first_nonempty(r, ['device_name', 'device', 'device_tp', 'device_type', 'platform'], '기타')
-
-    raw['매체이름'] = raw.apply(_media_from_row, axis=1).apply(_map_media_name)
-    raw['기기명'] = raw.apply(_device_from_row, axis=1).apply(_normalize_device_value)
+    media_series = _first_nonempty_series(raw, ['media_name', 'placement_name', 'media_code', 'placement_code', 'media_tp', 'placement_tp'], '전체')
+    device_series = _first_nonempty_series(raw, ['device_name', 'device', 'device_tp', 'device_type', 'platform'], '기타')
+    raw['매체이름'] = media_series.map(_map_media_name)
+    raw['기기명'] = device_series.map(_normalize_device_value)
 
     for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
         raw[c] = pd.to_numeric(raw[c], errors='coerce').fillna(0)
 
     out = raw.groupby(['매체이름', '기기명'], as_index=False)[['imp', 'clk', 'cost', 'conv', 'sales']].sum()
-    out = out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
-    _diag_add(diag, '매체 집계', 'ok' if not out.empty else 'zero_data', len(out.index), 'fact_media_daily', '매체/기기 기준 집계 완료')
+    return out.rename(columns={'imp':'노출수','clk':'클릭수','cost':'광고비','conv':'전환수','sales':'전환매출'})
+
+
+def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
+    if not table_exists(engine, 'fact_media_daily'):
+        _diag_add(diag, '매체 원천', 'error', 0, 'fact_media_daily', '테이블이 존재하지 않습니다.')
+        return pd.DataFrame()
+
+    cols = set(get_table_columns(engine, 'fact_media_daily'))
+    _diag_add(diag, '매체 원천', 'ok' if cols else 'warn', len(cols), 'fact_media_daily', '컬럼 목록 확인')
+    cids = tuple(f.get('selected_customer_ids', []) or ())
+    type_sel = tuple(f.get('type_sel', []) or ())
+    try:
+        out = _cached_media_region(engine, str(f['start']), str(f['end']), cids, type_sel)
+    except Exception as e:
+        _diag_add(diag, '매체 원천 조회', 'error', 0, 'fact_media_daily', f'{type(e).__name__}: {e}')
+        return pd.DataFrame()
+
+    if out is None or out.empty:
+        _diag_add(diag, '매체 원천 조회', 'zero_data', 0, 'fact_media_daily', '기간/필터 기준 원천 데이터 없음')
+        return pd.DataFrame()
+
+    _diag_add(diag, '매체 원천 조회', 'ok', len(out.index), 'fact_media_daily', '원천 로우 조회 성공')
+    _diag_add(diag, '매체 집계', 'ok', len(out.index), 'fact_media_daily', '매체/기기 기준 집계 완료')
     return out
 
 def _query_device(engine, f, diag: list | None = None, media_df: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -271,6 +291,14 @@ def page_media(engine, f):
 
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
     st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 확인된 코드부터 한글 지면명으로 변환되어 합산 표출됩니다. 미확인 코드는 코드값 그대로 유지됩니다.</div>", unsafe_allow_html=True)
+
+    selected_tab = st.radio(
+        "보기",
+        ["지면(매체)", "기기", "비용 누수 항목"],
+        horizontal=True,
+        key="media_view_tab",
+        label_visibility="collapsed",
+    )
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
         media_region_df = _query_media_region(engine, f, diag=diag)
