@@ -15,7 +15,7 @@ import base64
 import hashlib
 import concurrent.futures
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import requests
 import pandas as pd
@@ -24,7 +24,8 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.pool import QueuePool
 
 from account_master import load_bizmoney_targets, load_naver_accounts
 
@@ -35,6 +36,8 @@ API_SECRET = (os.getenv("NAVER_API_SECRET") or os.getenv("NAVER_ADS_SECRET") or 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 ACCOUNT_MASTER_FILE = (os.getenv("ACCOUNT_MASTER_FILE") or "account_master.xlsx").strip()
 BASE_URL = "https://api.searchad.naver.com"
+DB_MAX_RETRIES = max(1, int(os.getenv("BIZMONEY_DB_MAX_RETRIES", "3") or 3))
+DB_RETRY_BASE_SEC = max(1.0, float(os.getenv("BIZMONEY_DB_RETRY_BASE_SEC", "2") or 2))
 
 
 def log(msg: str):
@@ -48,6 +51,88 @@ def die(msg: str):
 
 if not API_KEY or not API_SECRET:
     die("API_KEY 또는 API_SECRET이 설정되지 않았습니다.")
+
+
+if not DB_URL:
+    die("DATABASE_URL이 설정되지 않았습니다.")
+
+
+
+def _exc_label(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+
+def _dispose_engine_quietly(engine: Engine):
+    try:
+        engine.dispose()
+    except Exception:
+        pass
+
+
+
+def _safe_rollback(raw_conn):
+    if not raw_conn:
+        return
+    try:
+        raw_conn.rollback()
+    except Exception:
+        pass
+
+
+
+def _safe_close(resource):
+    if not resource:
+        return
+    try:
+        resource.close()
+    except Exception:
+        pass
+
+
+
+def _sleep_backoff(attempt: int):
+    time.sleep(min(DB_RETRY_BASE_SEC * attempt, 8.0))
+
+
+
+def _is_retryable_db_error(exc: Exception) -> bool:
+    if isinstance(exc, OperationalError):
+        return True
+    if isinstance(exc, DBAPIError) and getattr(exc, "connection_invalidated", False):
+        return True
+    msg = str(exc).lower()
+    retry_tokens = [
+        "ssl connection has been closed unexpectedly",
+        "ssl syscall error",
+        "connection timed out",
+        "server closed the connection unexpectedly",
+        "could not receive data from server",
+        "connection already closed",
+        "connection not open",
+        "terminating connection",
+        "connection reset by peer",
+        "broken pipe",
+    ]
+    return any(token in msg for token in retry_tokens)
+
+
+
+def _run_db_op(engine: Engine, label: str, fn: Callable[[], Any]):
+    last_exc: Exception | None = None
+    for attempt in range(1, DB_MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            log(f"⚠️ {label} 실패 {attempt}/{DB_MAX_RETRIES} | {_exc_label(exc)}")
+            if attempt >= DB_MAX_RETRIES or not _is_retryable_db_error(exc):
+                raise
+            _dispose_engine_quietly(engine)
+            _sleep_backoff(attempt)
+    if last_exc is not None:
+        raise last_exc
+
 
 
 def get_header(method: str, uri: str, customer_id: str) -> Dict[str, str]:
@@ -64,6 +149,7 @@ def get_header(method: str, uri: str, customer_id: str) -> Dict[str, str]:
         "X-Customer": str(customer_id),
         "X-Signature": base64.b64encode(sig).decode("utf-8"),
     }
+
 
 
 def get_bizmoney(customer_id: str) -> Tuple[Optional[int], Optional[dict]]:
@@ -89,46 +175,72 @@ def get_bizmoney(customer_id: str) -> Tuple[Optional[int], Optional[dict]]:
     return None, None
 
 
+
 def get_engine() -> Engine:
     db_url = DB_URL
     if "sslmode=" not in db_url:
         db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
+    pool_size = max(1, int(os.getenv("BIZMONEY_DB_POOL_SIZE", "3") or 3))
+    max_overflow = max(0, int(os.getenv("BIZMONEY_DB_MAX_OVERFLOW", "6") or 6))
+    pool_timeout = max(5, int(os.getenv("BIZMONEY_DB_POOL_TIMEOUT", "30") or 30))
+    pool_recycle = max(60, int(os.getenv("BIZMONEY_DB_POOL_RECYCLE", "1800") or 1800))
     return create_engine(
         db_url,
-        poolclass=NullPool,
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"},
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
+        pool_reset_on_return="rollback",
+        use_native_hstore=False,
+        connect_args={
+            "connect_timeout": 15,
+            "options": "-c lock_timeout=10000 -c statement_timeout=300000",
+        },
         future=True,
     )
+
+
+
+def _verify_connection(engine: Engine):
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
 
 
 def upsert_dim_account_meta_bulk(engine: Engine, accounts: List[Dict[str, str]]):
     if not accounts:
         return
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS dim_account_meta (
-                customer_id TEXT PRIMARY KEY,
-                account_name TEXT,
-                manager TEXT,
-                monthly_budget BIGINT DEFAULT 0,
-                platform TEXT,
-                naver_media_type TEXT,
-                bizmoney_group_key TEXT,
-                bizmoney_mode TEXT,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """))
-        for ddl in [
-            "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS platform TEXT",
-            "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS naver_media_type TEXT",
-            "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS bizmoney_group_key TEXT",
-            "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
-            "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS monthly_budget BIGINT DEFAULT 0",
-        ]:
-            try:
-                conn.execute(text(ddl))
-            except Exception:
-                pass
+
+    def ensure_meta_schema():
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS dim_account_meta (
+                    customer_id TEXT PRIMARY KEY,
+                    account_name TEXT,
+                    manager TEXT,
+                    monthly_budget BIGINT DEFAULT 0,
+                    platform TEXT,
+                    naver_media_type TEXT,
+                    bizmoney_group_key TEXT,
+                    bizmoney_mode TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            for ddl in [
+                "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS platform TEXT",
+                "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS naver_media_type TEXT",
+                "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS bizmoney_group_key TEXT",
+                "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
+                "ALTER TABLE dim_account_meta ADD COLUMN IF NOT EXISTS monthly_budget BIGINT DEFAULT 0",
+            ]:
+                try:
+                    conn.execute(text(ddl))
+                except Exception:
+                    pass
+
+    _run_db_op(engine, "dim_account_meta 스키마 보장", ensure_meta_schema)
 
     sql = """
         INSERT INTO dim_account_meta (
@@ -151,56 +263,65 @@ def upsert_dim_account_meta_bulk(engine: Engine, accounts: List[Dict[str, str]])
         )
         for a in accounts
     ]
-    raw_conn, cur = None, None
-    try:
-        raw_conn = engine.raw_connection()
-        cur = raw_conn.cursor()
-        psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
-        raw_conn.commit()
-    finally:
-        if cur:
-            try: cur.close()
-            except Exception: pass
-        if raw_conn:
-            try: raw_conn.close()
-            except Exception: pass
+
+    def do_upsert():
+        raw_conn = None
+        cur = None
+        try:
+            raw_conn = engine.raw_connection()
+            cur = raw_conn.cursor()
+            psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
+            raw_conn.commit()
+        except Exception:
+            _safe_rollback(raw_conn)
+            raise
+        finally:
+            _safe_close(cur)
+            _safe_close(raw_conn)
+
+    _run_db_op(engine, "dim_account_meta 업서트", do_upsert)
+
 
 
 def ensure_fact_tables(engine: Engine):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fact_bizmoney_daily (
-                dt DATE,
-                customer_id TEXT,
-                bizmoney_balance BIGINT,
-                bizmoney_group_key TEXT,
-                bizmoney_mode TEXT,
-                source_customer_id TEXT,
-                is_group_representative BOOLEAN DEFAULT FALSE,
-                PRIMARY KEY(dt, customer_id)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fact_bizmoney_group_daily (
-                dt DATE,
-                bizmoney_group_key TEXT,
-                representative_customer_id TEXT,
-                bizmoney_balance BIGINT,
-                bizmoney_mode TEXT,
-                PRIMARY KEY(dt, bizmoney_group_key)
-            )
-        """))
-        for ddl in [
-            "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS bizmoney_group_key TEXT",
-            "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
-            "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS source_customer_id TEXT",
-            "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS is_group_representative BOOLEAN DEFAULT FALSE",
-            "ALTER TABLE fact_bizmoney_group_daily ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
-        ]:
-            try:
-                conn.execute(text(ddl))
-            except Exception:
-                pass
+    def do_ensure():
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS fact_bizmoney_daily (
+                    dt DATE,
+                    customer_id TEXT,
+                    bizmoney_balance BIGINT,
+                    bizmoney_group_key TEXT,
+                    bizmoney_mode TEXT,
+                    source_customer_id TEXT,
+                    is_group_representative BOOLEAN DEFAULT FALSE,
+                    PRIMARY KEY(dt, customer_id)
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS fact_bizmoney_group_daily (
+                    dt DATE,
+                    bizmoney_group_key TEXT,
+                    representative_customer_id TEXT,
+                    bizmoney_balance BIGINT,
+                    bizmoney_mode TEXT,
+                    PRIMARY KEY(dt, bizmoney_group_key)
+                )
+            """))
+            for ddl in [
+                "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS bizmoney_group_key TEXT",
+                "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
+                "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS source_customer_id TEXT",
+                "ALTER TABLE fact_bizmoney_daily ADD COLUMN IF NOT EXISTS is_group_representative BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE fact_bizmoney_group_daily ADD COLUMN IF NOT EXISTS bizmoney_mode TEXT",
+            ]:
+                try:
+                    conn.execute(text(ddl))
+                except Exception:
+                    pass
+
+    _run_db_op(engine, "fact_bizmoney 스키마 보장", do_ensure)
+
 
 
 def upsert_bizmoney_bulk(engine: Engine, account_rows: List[Dict[str, Any]], group_rows: List[Dict[str, Any]]):
@@ -220,19 +341,23 @@ def upsert_bizmoney_bulk(engine: Engine, account_rows: List[Dict[str, Any]], gro
                 is_group_representative = EXCLUDED.is_group_representative
         """
         tuples = list(df.itertuples(index=False, name=None))
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
-            raw_conn.commit()
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+
+        def upsert_account_rows():
+            raw_conn = None
+            cur = None
+            try:
+                raw_conn = engine.raw_connection()
+                cur = raw_conn.cursor()
+                psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
+                raw_conn.commit()
+            except Exception:
+                _safe_rollback(raw_conn)
+                raise
+            finally:
+                _safe_close(cur)
+                _safe_close(raw_conn)
+
+        _run_db_op(engine, "fact_bizmoney_daily 업서트", upsert_account_rows)
 
     if group_rows:
         df = pd.DataFrame(group_rows).drop_duplicates(subset=["dt", "bizmoney_group_key"], keep="last")
@@ -247,23 +372,30 @@ def upsert_bizmoney_bulk(engine: Engine, account_rows: List[Dict[str, Any]], gro
                 bizmoney_mode = EXCLUDED.bizmoney_mode
         """
         tuples = list(df.itertuples(index=False, name=None))
-        raw_conn, cur = None, None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
-            raw_conn.commit()
-        finally:
-            if cur:
-                try: cur.close()
-                except Exception: pass
-            if raw_conn:
-                try: raw_conn.close()
-                except Exception: pass
+
+        def upsert_group_rows():
+            raw_conn = None
+            cur = None
+            try:
+                raw_conn = engine.raw_connection()
+                cur = raw_conn.cursor()
+                psycopg2.extras.execute_values(cur, sql, tuples, page_size=1000)
+                raw_conn.commit()
+            except Exception:
+                _safe_rollback(raw_conn)
+                raise
+            finally:
+                _safe_close(cur)
+                _safe_close(raw_conn)
+
+        _run_db_op(engine, "fact_bizmoney_group_daily 업서트", upsert_group_rows)
+
 
 
 def main():
     engine = get_engine()
+    _run_db_op(engine, "DB 연결 확인", lambda: _verify_connection(engine))
+
     all_naver_accounts = load_naver_accounts(file_path=ACCOUNT_MASTER_FILE, include_gfa=True, media_types=["sa", "gfa"])
     targets = load_bizmoney_targets(file_path=ACCOUNT_MASTER_FILE)
 
