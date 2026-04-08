@@ -103,6 +103,48 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
         if neg_cols: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_cols)
     return styler
 
+
+
+def _campaign_fast_column_config(df: pd.DataFrame, pinned: str | None = None, extra: dict | None = None) -> dict:
+    cfg: dict = {}
+    int_cols = {"노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "총 전환수"}
+    won_cols = {"광고비", "CPC(원)", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "총 전환매출"}
+    pct2_cols = {"CTR(%)"}
+    pct1_cols = {"지출 비중(%)", "구매 ROAS(%)", "장바구니 ROAS(%)", "위시리스트 ROAS(%)", "통합 ROAS(%)"}
+    delta_pct_cols = {"노출 증감", "클릭 증감", "광고비 증감", "CPC 증감", "구매 증감", "구매 매출 증감", "구매 ROAS 증감", "총 전환 증감", "총 매출 증감", "통합 ROAS 증감"}
+    delta_abs_int_cols = {"노출 차이", "클릭 차이", "구매 차이", "장바구니 차이", "위시리스트 차이", "총 전환 차이", "순위 변화"}
+    delta_abs_won_cols = {"광고비 차이", "CPC 차이", "구매 매출 차이", "총 매출 차이"}
+    for col in df.columns:
+        if col in int_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d")
+        elif col in won_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d 원")
+        elif col in pct2_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%.2f %%")
+        elif col in pct1_cols or col in delta_pct_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%.1f %%")
+        elif col in delta_abs_int_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d")
+        elif col in delta_abs_won_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d 원")
+    if pinned and pinned in df.columns:
+        cfg[pinned] = st.column_config.TextColumn(pinned, pinned=True, width="medium")
+    if extra:
+        cfg.update(extra)
+    return cfg
+
+
+def _render_campaign_fast_df(df: pd.DataFrame, *, pinned: str | None = None, height: int | None = None, selection_mode=None, on_select=None, extra_config: dict | None = None):
+    cfg = _campaign_fast_column_config(df, pinned=pinned, extra=extra_config)
+    kwargs = {"width": "stretch", "hide_index": True, "column_config": cfg}
+    if height is not None:
+        kwargs["height"] = height
+    if selection_mode is not None:
+        kwargs["selection_mode"] = selection_mode
+    if on_select is not None:
+        kwargs["on_select"] = on_select
+    return st.dataframe(df, **kwargs)
+
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
@@ -652,13 +694,11 @@ def _render_campaign_type_device_summary(disp_main: pd.DataFrame, engine, f: Dic
             type_grp["지출 비중(%)"] = np.where(total_cost > 0, (type_grp["광고비"] / total_cost) * 100, 0.0)
             type_grp[roas_col] = np.where(type_grp["광고비"] > 0, (type_grp[sales_col] / type_grp["광고비"]) * 100, 0.0)
             type_grp = type_grp.sort_values("광고비", ascending=False)
-            safe_fmt_type = {k: v for k, v in FMT_DICT.items() if k in type_grp.columns}
-            st.dataframe(
-                type_grp.style.format(safe_fmt_type),
-                width="stretch",
+            _render_campaign_fast_df(
+                type_grp,
+                pinned="캠페인유형",
                 height=_compact_df_height(type_grp, min_height=74, max_height=220),
-                hide_index=True,
-                column_config={
+                extra_config={
                     "지출 비중(%)": st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
                 },
             )
@@ -736,8 +776,7 @@ def _render_campaign_detail_table(title: str, df: pd.DataFrame, item_label: str,
     norm = norm.rename(columns={"항목명": item_label})
     cols = [c for c in _detail_display_columns(has_pre_patch_cur, item_label) if c in norm.columns]
     disp = norm[cols].sort_values("광고비", ascending=False).head(100)
-    safe_fmt = {k: v for k, v in FMT_DICT.items() if k in disp.columns}
-    st.dataframe(disp.style.format(safe_fmt), width="stretch", hide_index=True)
+    _render_campaign_fast_df(disp, pinned=item_label)
     return True
 
 
@@ -776,8 +815,7 @@ def _render_campaign_summary_tab(view: pd.DataFrame, engine, f: Dict, diag: list
 
     final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
     disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
-    safe_fmt_main = {k: v for k, v in FMT_DICT.items() if k in disp_main_src.columns}
-    event = st.dataframe(disp_main_src[final_cols].style.format(safe_fmt_main), width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun")
+    event = _render_campaign_fast_df(disp_main_src[final_cols], pinned="캠페인", selection_mode="single-row", on_select="rerun")
     selected_rows = event.selection.rows
     if not selected_rows:
         return

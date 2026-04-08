@@ -189,6 +189,24 @@ def _ad_fetch_limit(top_n: int, compare: bool = False) -> int:
         return min(max(top_n * 4, 400), 1200)
     return min(max(top_n * 3, 300), 1000)
 
+
+
+def _fast_ad_column_config(df: pd.DataFrame, pinned: str | None = None) -> dict:
+    cfg = {k: v for k, v in FAST_AD_CONFIG.items() if k in df.columns}
+    delta_pct_cols = {"노출 증감", "클릭 증감", "CTR 증감", "광고비 증감", "CPC 증감", "전환 증감", "CVR 증감", "전환매출 증감", "ROAS 증감"}
+    delta_abs_int_cols = {"노출 차이", "클릭 차이", "전환 차이"}
+    delta_abs_won_cols = {"광고비 차이", "CPC 차이", "전환매출 차이"}
+    for col in df.columns:
+        if col in delta_pct_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%.1f %%")
+        elif col in delta_abs_int_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d")
+        elif col in delta_abs_won_cols:
+            cfg[col] = st.column_config.NumberColumn(col, format="%d 원")
+    if pinned and pinned in df.columns:
+        cfg[pinned] = st.column_config.TextColumn(pinned, pinned=True, width="medium")
+    return cfg
+
 def _render_ad_sticky_table(df, first_col: str, height: int = 500, col_config: dict = None):
     try:
         rows = len(df.index)
@@ -196,10 +214,13 @@ def _render_ad_sticky_table(df, first_col: str, height: int = 500, col_config: d
         elif rows == 1: calc_height = 80
         else: calc_height = min(height, max(100, 40 + (rows * 36)))
     except: calc_height = height
-    cfg = col_config.copy() if col_config else {}
-    cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
-    if "랜딩페이지 URL" in df.columns: cfg["랜딩페이지 URL"] = st.column_config.LinkColumn("랜딩페이지 URL", display_text="링크 열기", pinned=True)
-    st.dataframe(df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
+    raw_df = df.data if hasattr(df, "data") else df
+    cfg = _fast_ad_column_config(raw_df, pinned=first_col)
+    if col_config:
+        cfg.update(col_config)
+    if "랜딩페이지 URL" in raw_df.columns:
+        cfg["랜딩페이지 URL"] = st.column_config.LinkColumn("랜딩페이지 URL", display_text="링크 열기", pinned=True)
+    st.dataframe(raw_df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
 
 @st.fragment
 def _render_ad_tab(df_tab: pd.DataFrame, ad_type_name: str, top_n: int, start_dt, end_dt):
@@ -319,12 +340,9 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
     cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in df_target.columns]
     disp_c = df_target[cols_cmp].sort_values("광고비", ascending=False).head(top_n)
 
-    styled_cmp = disp_c.style.format(FMT_DICT)
-    styled_cmp = _apply_delta_styles(styled_cmp, disp_c)
-
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>소재 기간 비교 데이터</div>", unsafe_allow_html=True)
-        st.dataframe(styled_cmp, use_container_width=True, height=500, hide_index=True, column_config={"소재내용": st.column_config.TextColumn("소재내용", pinned=True, width="medium")})
+        _render_ad_sticky_table(disp_c, "소재내용", height=500)
 
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
@@ -336,13 +354,16 @@ def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     top_n = int(f.get("top_n_ad", 100))
     selected_tab = st.pills("분석 탭 선택", ["파워링크", "쇼핑검색", "랜딩페이지 효율", "기간 비교"], default="파워링크")
 
+    fetch_limit = _ad_fetch_limit(top_n, compare=(selected_tab == "기간 비교"))
+    if selected_tab == "랜딩페이지 효율":
+        fetch_limit = min(fetch_limit, max(top_n * 2, 250))
     bundle = query_ad_bundle(
         engine,
         f["start"],
         f["end"],
         cids,
         type_sel,
-        topn_cost=_ad_fetch_limit(top_n, compare=(selected_tab == "기간 비교")),
+        topn_cost=fetch_limit,
         top_k=50,
     )
 
