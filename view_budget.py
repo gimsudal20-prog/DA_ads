@@ -75,6 +75,15 @@ def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float)
     return budget_view
 
 
+
+
+def _ensure_budget_input_js_once():
+    if st.session_state.get("_budget_input_js_once"):
+        return
+    _ensure_budget_input_js_once()
+    st.session_state["_budget_input_js_once"] = True
+
+
 @st.fragment
 def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
     prev_month_dt = (end_dt.replace(day=1) - timedelta(days=1))
@@ -123,53 +132,7 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
 
     st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 (현재 권장 소진율: <span style='color:#0528F2;'>{target_pacing_rate*100:.0f}%</span>)</div>", unsafe_allow_html=True)
     st.caption("표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요. 권장 소진율 대비 10% 이상 차이가 나면 과속/과소 상태로 진단됩니다.")
-
-    components.html("""
-    <script>
-    const doc = window.parent.document;
-    const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-            mutation.addedNodes.forEach((node) => {
-                if (node.nodeType === 1) { 
-                    let inputs = (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') ? [node] : node.querySelectorAll('input, textarea');
-                    inputs.forEach(targetInput => {
-                        if (targetInput && !targetInput.dataset.commaAttached) {
-                            targetInput.addEventListener('input', function(e) {
-                                let rawValue = this.value.replace(/[^0-9]/g, '');
-                                if (rawValue !== '') {
-                                    let formatted = parseInt(rawValue, 10).toLocaleString('ko-KR');
-                                    if (this.value !== formatted) {
-                                        let cursorPosition = this.selectionStart;
-                                        let oldLength = this.value.length;
-                                        
-                                        let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-                                        if (this.tagName === 'TEXTAREA') {
-                                            setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-                                        }
-                                        
-                                        if (setter) {
-                                            setter.call(this, formatted);
-                                            this.dispatchEvent(new Event('input', { bubbles: true }));
-                                        } else {
-                                            this.value = formatted;
-                                        }
-                                        
-                                        let newLength = this.value.length;
-                                        let newPos = cursorPosition + (newLength - oldLength);
-                                        try { this.setSelectionRange(newPos, newPos); } catch(err) {}
-                                    }
-                                }
-                            });
-                            targetInput.dataset.commaAttached = "true";
-                        }
-                    });
-                }
-            });
-        });
-    });
-    observer.observe(doc.body, { childList: true, subtree: true });
-    </script>
-    """, height=0, width=0)
+    _ensure_budget_input_js_once()
 
     st.data_editor(
         editor_df,
@@ -261,17 +224,17 @@ def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     st.markdown("<div class='nv-sec-title'>예산 관리</div>", unsafe_allow_html=True)
     
-    tab_budget, tab_alert = st.tabs(["월 예산 현황", "비즈머니 관리"])
-    
+    selected_view = st.radio("보기", ["월 예산 현황", "비즈머니 관리"], horizontal=True, label_visibility="collapsed", key="budget_view_mode")
+
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
     end_dt = f.get("end") or yesterday
     avg_d2 = end_dt - timedelta(days=1)
     avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    
+
     month_d1 = end_dt.replace(day=1)
     month_d2 = date(end_dt.year + 1, 1, 1) - timedelta(days=1) if end_dt.month == 12 else date(end_dt.year, end_dt.month + 1, 1) - timedelta(days=1)
-    
+
     prev_month_last_day = month_d1 - timedelta(days=1)
     prev_month_d1 = prev_month_last_day.replace(day=1)
     prev_month_d2 = prev_month_last_day
@@ -280,17 +243,9 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     current_day = end_dt.day
     target_pacing_rate = current_day / days_in_month
 
-    # ⚡ DB 직접 호출 대신 캐싱된 래퍼 함수 사용
-    bundle = _cached_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
-
-    alert_avg_d2 = yesterday
-    alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
-    alert_bundle = _cached_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
-    
-    biz_view = _prepare_biz_view(bundle)
-    alert_view = _prepare_alert_view(alert_bundle)
-
-    with tab_budget:
+    if selected_view == "월 예산 현황":
+        bundle = _cached_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
+        biz_view = _prepare_biz_view(bundle)
         if biz_view.empty:
             st.info("예산 현황 데이터가 없습니다.")
         else:
@@ -332,8 +287,11 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
             render_budget_editor(budget_view, engine, end_dt, target_pacing_rate)
-
-    with tab_alert:
+    else:
+        alert_avg_d2 = yesterday
+        alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
+        alert_bundle = _cached_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
+        alert_view = _prepare_alert_view(alert_bundle)
         if alert_view.empty:
             st.info("비즈머니 관리 데이터가 없습니다.")
         else:
