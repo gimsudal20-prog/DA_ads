@@ -97,144 +97,6 @@ def _selected_type_label(type_sel: tuple) -> str:
     return ", ".join(type_sel)
 
 
-def _render_overview_light_table(df: pd.DataFrame, first_col: str, height: int = 420, hide_index: bool = False):
-    real_height = _auto_table_height(df, default_height=height, max_height=height)
-    st.dataframe(df, width="stretch", height=real_height, hide_index=hide_index, column_config=_sticky_cfg(first_col))
-
-
-def _overview_state_key(prefix: str, start_dt, end_dt, cids: tuple, type_sel: tuple) -> str:
-    cid_key = ",".join(map(str, cids or ()))
-    type_key = ",".join(map(str, type_sel or ()))
-    return f"{prefix}::{start_dt}::{end_dt}::{cid_key}::{type_key}"
-
-
-def _resolve_overview_shop_keywords_text(engine, start_dt, end_dt, cids: tuple) -> str:
-    if not cids:
-        return "없음"
-    try:
-        from data import sql_read, _sql_in_str_list
-        cid_sql = _sql_in_str_list(list(cids))
-        q = (
-            f"SELECT query_text, SUM(purchase_conv) as conv "
-            f"FROM fact_shopping_query_daily "
-            f"WHERE dt BETWEEN '{start_dt}' AND '{end_dt}' AND customer_id IN ({cid_sql}) "
-            f"GROUP BY query_text HAVING SUM(purchase_conv) > 0 "
-            f"ORDER BY SUM(purchase_conv) DESC LIMIT 3"
-        )
-        df_shop_q = sql_read(engine, q)
-        if not df_shop_q.empty:
-            return ", ".join([f"{r['query_text']}({int(r['conv']):,}회)" for _, r in df_shop_q.iterrows()])
-    except Exception:
-        pass
-    return "없음"
-
-
-def _build_overview_export_bytes(engine, meta: pd.DataFrame, f: Dict, b1, b2, cids: tuple, type_sel: tuple,
-                                 cur_camp: pd.DataFrame, cur_kw: pd.DataFrame, base_camp: pd.DataFrame,
-                                 base_kw: pd.DataFrame, daily_ts: pd.DataFrame, base_daily_ts: pd.DataFrame) -> bytes | None:
-    work_cur_camp = cur_camp if cur_camp is not None else pd.DataFrame()
-    work_base_camp = base_camp if base_camp is not None else pd.DataFrame()
-    work_cur_kw = cur_kw if cur_kw is not None else pd.DataFrame()
-    work_base_kw = base_kw if base_kw is not None else pd.DataFrame()
-    work_daily_ts = daily_ts if daily_ts is not None else pd.DataFrame()
-    work_base_daily_ts = base_daily_ts if base_daily_ts is not None else pd.DataFrame()
-
-    if work_base_camp.empty:
-        work_base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
-    if work_cur_kw.empty:
-        work_cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-    if work_base_kw.empty:
-        work_base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
-    if work_base_daily_ts.empty:
-        work_base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
-
-    df_display, df_type_display, camp_disp = _build_overview_campaign_frames(work_cur_camp, work_base_camp, meta)
-    kw_disp = _build_overview_keyword_frames(work_cur_kw, work_base_kw)
-    daily_disp, dow_disp, weekly_disp = _build_overview_timeseries_frames(work_daily_ts, work_base_daily_ts)
-
-    has_data_to_export = any([
-        not df_display.empty, not df_type_display.empty, not camp_disp.empty,
-        not daily_disp.empty, not kw_disp.empty
-    ])
-    if not has_data_to_export:
-        return None
-
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer) as writer:
-        if not df_display.empty:
-            format_for_csv(df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
-        if not df_type_display.empty:
-            format_for_csv(df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
-        if not camp_disp.empty:
-            format_for_csv(camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
-        if not kw_disp.empty:
-            format_for_csv(kw_disp).to_excel(writer, sheet_name='키워드별_성과상세', index=False)
-        if not daily_disp.empty:
-            format_for_csv(daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
-        if not dow_disp.empty:
-            dow_export = dow_disp.drop(columns=['요일']) if '요일' in dow_disp.columns else dow_disp
-            format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
-        if not weekly_disp.empty:
-            format_for_csv(weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
-    return excel_buffer.getvalue()
-
-
-def _build_overview_report_text(engine, f: Dict, cids: tuple, type_sel: tuple, selected_type_label: str,
-                                cur: dict, combined_toggle: bool, kpi_mode: str, diag: list | None = None) -> str:
-    top_kw_str = "없음"
-    try:
-        top_kw_str = _resolve_overview_report_top_keywords(
-            engine,
-            f["start"],
-            f["end"],
-            tuple(cids),
-            tuple(type_sel),
-            selected_type_label,
-            diag=diag,
-            force_refresh=True,
-        )
-    except Exception as e:
-        _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
-        top_kw_str = "없음"
-
-    shop_kw_str = _resolve_overview_shop_keywords_text(engine, f["start"], f["end"], tuple(cids))
-    is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
-
-    if is_shopping_only:
-        return "\n".join([
-            f"[ {selected_type_label} 성과 요약 ]",
-            _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
-            _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
-            _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
-            _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
-            _format_report_line("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}"),
-            _format_report_line("구매완료 매출", f"{int(float(cur.get('sales', 0))):,}원"),
-            _format_report_line("구매 ROAS", f"{float(cur.get('roas', 0)):.1f}%"),
-            _format_report_line("주요 전환 키워드", shop_kw_str)
-        ])
-
-    if combined_toggle or kpi_mode != "shopping_purchase":
-        c_conv_val = cur.get('tot_conv', 0)
-        c_sales_val = cur.get('tot_sales', 0)
-        c_roas_val = cur.get('tot_roas', 0)
-    else:
-        c_conv_val = cur.get('conv', 0)
-        c_sales_val = cur.get('sales', 0)
-        c_roas_val = cur.get('roas', 0)
-
-    return "\n".join([
-        f"[ {selected_type_label} 성과 요약 ]",
-        _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
-        _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
-        _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
-        _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
-        _format_report_line("전환수", f"{float(c_conv_val):.1f}"),
-        _format_report_line("총전환매출", f"{int(float(c_sales_val)):,}원"),
-        _format_report_line("ROAS", f"{float(c_roas_val):.1f}%"),
-        _format_report_line("주요 유입 키워드", top_kw_str)
-    ])
-
-
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1500)
@@ -251,6 +113,24 @@ def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tup
 def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     try: return query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
     except Exception: return pd.DataFrame()
+
+
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def _cached_shop_query_top_keywords(_engine, start_dt, end_dt, cids: tuple) -> pd.DataFrame:
+    if not cids:
+        return pd.DataFrame()
+    try:
+        cid_sql = _sql_in_str_list(list(cids))
+        q = f"SELECT query_text, SUM(purchase_conv) as conv FROM fact_shopping_query_daily WHERE dt BETWEEN '{start_dt}' AND '{end_dt}' AND customer_id IN ({cid_sql}) GROUP BY query_text HAVING SUM(purchase_conv) > 0 ORDER BY SUM(purchase_conv) DESC LIMIT 3"
+        return sql_read(_engine, q)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _overview_state_token(start_dt, end_dt, base_start, base_end, cids: tuple, type_sel: tuple) -> str:
+    cid_part = ",".join(map(str, cids or ()))
+    type_part = ",".join(map(str, type_sel or ()))
+    return f"{start_dt}::{end_dt}::{base_start}::{base_end}::{cid_part}::{type_part}"
 
 
 def _attach_account_names(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
@@ -719,7 +599,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
             
         cur_kw = pd.DataFrame()
-        _diag_add(diag, "키워드 번들(현재)", "warn", 0, "query_keyword_bundle", "초기 로딩 경량화를 위해 키워드 상세는 필요 시 지연 조회")
+        _diag_add(diag, "키워드 번들(현재)", "warn", 0, "query_keyword_bundle", "키워드 상세/보고서 생성 시 지연 조회")
 
         base_camp = pd.DataFrame()
         base_kw = pd.DataFrame()
@@ -744,6 +624,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         elif len(acc_names) > 1: account_name = f"{acc_names[0]} 외 {len(acc_names)-1}개"
 
     selected_type_label = _selected_type_label(type_sel)
+    overview_state_token = _overview_state_token(f["start"], f["end"], b1, b2, cids, type_sel)
+    excel_state_key = f"overview_excel::{overview_state_token}"
+    report_state_key = f"overview_report::{overview_state_token}"
 
     st.markdown(f"<div class='nv-sec-title'>{account_name} 종합 성과 요약</div>", unsafe_allow_html=True)
     patch_date = date(2026, 3, 11)
@@ -935,15 +818,6 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
 
     # ====================================================
-
-
-    def _render_funnel_detail_table(df_src: pd.DataFrame, first_col: str, height: int = 420):
-        if df_src is None or df_src.empty:
-            st.info("조건에 맞는 데이터가 없습니다.")
-            return
-        styled = df_src.style.format(fmt_dict_standard)
-        styled = _apply_overview_delta_styles(styled, df_src)
-        _render_overview_sticky_table(styled, first_col, height=height, hide_index=True)
     # 퍼널 뷰 배치 및 증감/절대값 토글 로직
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
@@ -989,14 +863,14 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if cur_kw is None or cur_kw.empty:
             try:
                 cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
-                _diag_add(diag, "키워드 번들(현재)", "ok" if cur_kw is not None and not cur_kw.empty else "zero_data", 0 if cur_kw is None else len(cur_kw.index), "query_keyword_bundle", "키워드 상세 탭 진입 시 현재 기간 로드")
+                _diag_add(diag, "키워드 번들(현재)", "ok" if cur_kw is not None and not cur_kw.empty else "zero_data", 0 if cur_kw is None else len(cur_kw.index), "query_keyword_bundle", "키워드 상세 패널 지연 조회")
             except Exception as e:
                 cur_kw = pd.DataFrame()
                 _diag_add(diag, "키워드 번들(현재)", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
         if base_kw is None or base_kw.empty:
             try:
                 base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
-                _diag_add(diag, "키워드 번들(비교)", "ok" if base_kw is not None and not base_kw.empty else "zero_data", 0 if base_kw is None else len(base_kw.index), "query_keyword_bundle", f"키워드 상세 탭 진입 시 비교 기간 로드 | {b1}~{b2}")
+                _diag_add(diag, "키워드 번들(비교)", "ok" if base_kw is not None and not base_kw.empty else "zero_data", 0 if base_kw is None else len(base_kw.index), "query_keyword_bundle", "키워드 상세 패널 비교 지연 조회")
             except Exception as e:
                 base_kw = pd.DataFrame()
                 _diag_add(diag, "키워드 번들(비교)", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
@@ -1013,7 +887,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not df_display.empty:
             view_cols = ["계정명"] + [c for c in get_funnel_cols(show_deltas) if c in df_display.columns]
             disp_df = df_display[view_cols].copy()
-            _render_funnel_detail_table(disp_df, "계정명", height=420)
+            styled_df = disp_df.style.format(fmt_dict_standard)
+            styled_df = _apply_overview_delta_styles(styled_df, disp_df)
+            _render_overview_sticky_table(styled_df, "계정명", height=420, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1021,7 +897,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not df_type_display.empty:
             view_cols = ["캠페인 유형"] + [c for c in get_funnel_cols(show_deltas) if c in df_type_display.columns]
             disp_type_df = df_type_display[view_cols].copy()
-            _render_funnel_detail_table(disp_type_df, "캠페인 유형", height=420)
+            styled_type_df = disp_type_df.style.format(fmt_dict_standard)
+            styled_type_df = _apply_overview_delta_styles(styled_type_df, disp_type_df)
+            _render_overview_sticky_table(styled_type_df, "캠페인 유형", height=420, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1041,7 +919,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     return
                 v_cols = [col_name] + [c for c in get_funnel_cols(show_deltas) if c in df.columns]
                 d_df = df[v_cols].copy()
-                _render_funnel_detail_table(d_df, col_name, height=420)
+                s_df = d_df.style.format(fmt_dict_standard)
+                s_df = _apply_overview_delta_styles(s_df, d_df)
+                _render_overview_sticky_table(s_df, col_name, height=420, hide_index=True)
 
             if period_panel == "주차별": _display_ts_tab(weekly_disp, "주차")
             elif period_panel == "요일별": _display_ts_tab(dow_disp, "요일명")
@@ -1054,7 +934,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             camp_disp_top = camp_disp.head(200)
             view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_deltas) if c in camp_disp_top.columns]
             disp_camp = camp_disp_top[view_cols].copy()
-            _render_funnel_detail_table(disp_camp, "캠페인명", height=460)
+            styled_camp_df = disp_camp.style.format(fmt_dict_standard)
+            styled_camp_df = _apply_overview_delta_styles(styled_camp_df, disp_camp)
+            _render_overview_sticky_table(styled_camp_df, "캠페인명", height=460, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1063,57 +945,157 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             kw_disp_top = kw_disp.head(200)
             view_cols = ["키워드"] + [c for c in get_funnel_cols(show_deltas) if c in kw_disp_top.columns]
             disp_kw = kw_disp_top[view_cols].copy()
-            _render_funnel_detail_table(disp_kw, "키워드", height=460)
+            styled_kw_df = disp_kw.style.format(fmt_dict_standard)
+            styled_kw_df = _apply_overview_delta_styles(styled_kw_df, disp_kw)
+            _render_overview_sticky_table(styled_kw_df, "키워드", height=460, hide_index=True)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
 
-
     # ----------------------------------------------------
-    # 엑셀 다운로드 / 텍스트 보고서 (버튼 기반 지연 생성)
+    # 엑셀 다운로드 / 텍스트 보고서 (필요 시 지연 생성)
     # ----------------------------------------------------
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
-    overview_ctx_key = _overview_state_key("overview", f["start"], f["end"], cids, type_sel)
-    excel_state_key = f"overview_excel_bytes::{overview_ctx_key}"
-    report_state_key = f"overview_text_report::{overview_ctx_key}"
-
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>엑셀 데이터 일괄 다운로드</div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>필요할 때만 상세 데이터를 불러와 통합 엑셀을 생성합니다.</div>", unsafe_allow_html=True)
-        if st.button("엑셀 파일 준비", key=f"overview_prepare_excel::{overview_ctx_key}", use_container_width=True):
-            try:
-                excel_bytes = _build_overview_export_bytes(
-                    engine, meta, f, b1, b2, cids, type_sel,
-                    cur_camp, cur_kw, base_camp, base_kw, daily_ts, base_daily_ts
-                )
-                st.session_state[excel_state_key] = excel_bytes
-                if excel_bytes is None:
-                    st.info("내보낼 데이터가 없습니다.")
-            except Exception as e:
+        st.markdown("<div style='font-size:12px; color:var(--nv-muted); margin-bottom:10px;'>필요할 때만 상세 데이터를 모아 엑셀을 생성합니다.</div>", unsafe_allow_html=True)
+        if st.button("엑셀 파일 준비", key=f"overview_prepare_excel::{overview_state_token}", use_container_width=True):
+            export_cur_kw = cur_kw
+            if export_cur_kw is None or export_cur_kw.empty:
+                try:
+                    export_cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+                    _diag_add(diag, "키워드 번들(현재)", "ok" if export_cur_kw is not None and not export_cur_kw.empty else "zero_data", 0 if export_cur_kw is None else len(export_cur_kw.index), "query_keyword_bundle", "엑셀 생성용 지연 조회")
+                except Exception as e:
+                    export_cur_kw = pd.DataFrame()
+                    _diag_add(diag, "키워드 번들(현재)", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
+
+            export_base_camp = base_camp
+            if export_base_camp is None or export_base_camp.empty:
+                try:
+                    export_base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+                except Exception:
+                    export_base_camp = pd.DataFrame()
+            export_df_display, export_df_type_display, export_camp_disp = _build_overview_campaign_frames(cur_camp, export_base_camp, meta)
+
+            export_base_kw = base_kw
+            if export_base_kw is None or export_base_kw.empty:
+                try:
+                    export_base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
+                except Exception:
+                    export_base_kw = pd.DataFrame()
+            export_kw_disp = _build_overview_keyword_frames(export_cur_kw, export_base_kw)
+
+            export_base_daily = base_daily_ts
+            if export_base_daily is None or export_base_daily.empty:
+                try:
+                    export_base_daily = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+                except Exception:
+                    export_base_daily = pd.DataFrame()
+            export_daily_disp, export_dow_disp, export_weekly_disp = _build_overview_timeseries_frames(daily_ts, export_base_daily)
+
+            has_data_to_export = any([
+                not export_df_display.empty,
+                not export_df_type_display.empty,
+                not export_camp_disp.empty,
+                not export_kw_disp.empty,
+                not export_daily_disp.empty,
+            ])
+            if has_data_to_export:
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer) as writer:
+                    if not export_df_display.empty: format_for_csv(export_df_display).to_excel(writer, sheet_name='계정별_성과상세', index=False)
+                    if not export_df_type_display.empty: format_for_csv(export_df_type_display).to_excel(writer, sheet_name='유형별_성과상세', index=False)
+                    if not export_camp_disp.empty: format_for_csv(export_camp_disp).to_excel(writer, sheet_name='캠페인별_성과상세', index=False)
+                    if not export_kw_disp.empty: format_for_csv(export_kw_disp).to_excel(writer, sheet_name='키워드별_성과상세', index=False)
+                    if not export_daily_disp.empty: format_for_csv(export_daily_disp).to_excel(writer, sheet_name='일자별_성과상세', index=False)
+                    if not export_dow_disp.empty:
+                        dow_export = export_dow_disp.drop(columns=['요일']) if '요일' in export_dow_disp.columns else export_dow_disp
+                        format_for_csv(dow_export).to_excel(writer, sheet_name='요일별_성과상세', index=False)
+                    if not export_weekly_disp.empty: format_for_csv(export_weekly_disp).to_excel(writer, sheet_name='주간_성과상세', index=False)
+                st.session_state[excel_state_key] = excel_buffer.getvalue()
+                st.success("엑셀 파일 준비가 완료되었습니다.")
+            else:
                 st.session_state.pop(excel_state_key, None)
-                st.error(f"엑셀 생성 중 오류가 발생했습니다: {type(e).__name__}: {e}")
-        excel_bytes = st.session_state.get(excel_state_key)
-        if excel_bytes:
+                st.info("내려받을 상세 데이터가 없습니다.")
+
+        if excel_state_key in st.session_state:
             st.download_button(
                 "통합 엑셀 다운로드",
-                data=excel_bytes,
+                data=st.session_state[excel_state_key],
                 file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
-                key=f"overview_download_excel::{overview_ctx_key}",
+                key=f"overview_download_excel::{overview_state_token}",
             )
 
     with st.expander("텍스트 보고서 생성", expanded=False):
-        if st.button("텍스트 보고서 생성", key=f"overview_generate_text_report::{overview_ctx_key}", use_container_width=True):
+        if st.button("텍스트 보고서 생성", key=f"overview_generate_text_report::{overview_state_token}", use_container_width=True):
+            top_kw_str = "없음"
             try:
-                st.session_state[report_state_key] = _build_overview_report_text(
-                    engine, f, cids, type_sel, selected_type_label, cur, combined_toggle, kpi_mode, diag=diag
+                top_kw_str = _resolve_overview_report_top_keywords(
+                    engine,
+                    f["start"],
+                    f["end"],
+                    tuple(cids),
+                    tuple(type_sel),
+                    selected_type_label,
+                    diag=diag,
+                    force_refresh=True,
                 )
             except Exception as e:
-                st.session_state[report_state_key] = f"보고서 생성 중 오류: {type(e).__name__}: {e}"
-        report_text = st.session_state.get(report_state_key)
-        if report_text:
-            st.code(report_text, language="text")
+                _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
+                top_kw_str = "없음"
+
+            shop_kw_str = "없음"
+            if cids:
+                try:
+                    df_shop_q = _cached_shop_query_top_keywords(engine, f["start"], f["end"], tuple(cids))
+                    if not df_shop_q.empty:
+                        shop_kw_str = ", ".join([f"{r['query_text']}({int(r['conv']):,}회)" for _, r in df_shop_q.iterrows()])
+                except Exception:
+                    pass
+
+            is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
+
+            if is_shopping_only:
+                report_text = "\n".join([
+                    f"[ {selected_type_label} 성과 요약 ]",
+                    _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
+                    _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
+                    _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
+                    _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
+                    _format_report_line("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}"),
+                    _format_report_line("구매완료 매출", f"{int(float(cur.get('sales', 0))):,}원"),
+                    _format_report_line("구매 ROAS", f"{float(cur.get('roas', 0)):.1f}%"),
+                    _format_report_line("주요 전환 키워드", shop_kw_str)
+                ])
+            else:
+                if combined_toggle or kpi_mode != "shopping_purchase":
+                    c_conv_val = cur.get('tot_conv', 0)
+                    c_sales_val = cur.get('tot_sales', 0)
+                    c_roas_val = cur.get('tot_roas', 0)
+                else:
+                    c_conv_val = cur.get('conv', 0)
+                    c_sales_val = cur.get('sales', 0)
+                    c_roas_val = cur.get('roas', 0)
+
+                report_text = "\n".join([
+                    f"[ {selected_type_label} 성과 요약 ]",
+                    _format_report_line("노출수", f"{int(float(cur.get('imp', 0))):,}"),
+                    _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
+                    _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
+                    _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
+                    _format_report_line("전환수", f"{float(c_conv_val):.1f}"),
+                    _format_report_line("총전환매출", f"{int(float(c_sales_val)):,}원"),
+                    _format_report_line("ROAS", f"{float(c_roas_val):.1f}%"),
+                    _format_report_line("주요 유입 키워드", top_kw_str)
+                ])
+            st.session_state[report_state_key] = report_text
+
+        if report_state_key in st.session_state:
+            st.code(st.session_state[report_state_key], language="text")
+        else:
+            st.caption("텍스트 보고서 생성 버튼을 누르면 필요한 데이터만 조회합니다.")
 
     _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
