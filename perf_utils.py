@@ -1,112 +1,77 @@
 # -*- coding: utf-8 -*-
-"""perf_utils.py - lightweight runtime profiling helpers for Streamlit pages."""
-
+"""Lightweight profiling helpers for dashboard runtime diagnostics."""
 from __future__ import annotations
 
-import os
 import time
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Dict
 
-import pandas as pd
 import streamlit as st
 
-_TRUTHY = {"1", "true", "yes", "on", "y"}
-
-
-def _ss():
-    try:
-        return st.session_state
-    except Exception:
-        return {}
+_SESSION_KEY = "_perf_events"
+_ENABLE_KEY = "_show_perf_diag"
 
 
 def perf_enabled() -> bool:
-    env_flag = str(os.getenv("DASH_PROFILE", "0") or "0").strip().lower() in _TRUTHY
     try:
-        return bool(env_flag or _ss().get("_perf_enabled", False))
+        return bool(st.session_state.get(_ENABLE_KEY, False))
     except Exception:
-        return env_flag
+        return False
 
 
-def set_perf_enabled(enabled: bool) -> None:
+def reset_perf_events() -> None:
     try:
-        _ss()["_perf_enabled"] = bool(enabled)
+        st.session_state[_SESSION_KEY] = []
     except Exception:
         pass
 
 
-def perf_reset(page_name: str = "") -> None:
+def _append_event(kind: str, label: str, elapsed_ms: float, extra: Dict[str, Any] | None = None) -> None:
     if not perf_enabled():
         return
-    ss = _ss()
-    ss["_perf_log"] = []
-    ss["_perf_started_at"] = time.perf_counter()
-    ss["_perf_page_name"] = str(page_name or "")
+    try:
+        events = st.session_state.setdefault(_SESSION_KEY, [])
+        events.append({
+            "kind": str(kind),
+            "label": str(label),
+            "elapsed_ms": round(float(elapsed_ms), 1),
+            "extra": extra or {},
+        })
+    except Exception:
+        pass
 
 
-def perf_add(section: str, elapsed_ms: float, rows: Any = None, note: str = "", kind: str = "step") -> None:
-    if not perf_enabled():
-        return
-    ss = _ss()
-    logs = list(ss.get("_perf_log", []) or [])
-    logs.append({
-        "kind": str(kind or "step"),
-        "section": str(section or "(unknown)"),
-        "ms": round(float(elapsed_ms or 0.0), 2),
-        "rows": "-" if rows is None else str(rows),
-        "note": str(note or "")[:240],
-    })
-    if len(logs) > 500:
-        logs = logs[-500:]
-    ss["_perf_log"] = logs
+def record_db_timing(kind: str, label: str, elapsed_ms: float, **extra: Any) -> None:
+    _append_event(kind, label, elapsed_ms, extra)
 
 
 @contextmanager
-def perf_span(section: str, rows: Any = None, note: str = "", kind: str = "step"):
-    if not perf_enabled():
-        yield
-        return
-    started = time.perf_counter()
+def timed_block(label: str, kind: str = "block", **extra: Any):
+    t0 = time.perf_counter()
     try:
         yield
     finally:
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        perf_add(section, elapsed_ms, rows=rows, note=note, kind=kind)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        _append_event(kind, label, elapsed_ms, extra)
 
 
-def render_perf_panel(expanded: bool = False) -> None:
+def render_perf_panel() -> None:
     if not perf_enabled():
         return
-    logs = list(_ss().get("_perf_log", []) or [])
-    if not logs:
+    events = st.session_state.get(_SESSION_KEY, []) or []
+    if not events:
         return
-
-    started = _ss().get("_perf_started_at")
-    total_ms = None
-    if started is not None:
-        try:
-            total_ms = round((time.perf_counter() - float(started)) * 1000.0, 2)
-        except Exception:
-            total_ms = None
-
-    df = pd.DataFrame(logs)
-    if df.empty:
-        return
-
-    with st.expander("속도 진단", expanded=expanded):
-        cols = st.columns(3)
-        cols[0].metric("단계 수", f"{len(df):,}")
-        cols[1].metric("총 시간", f"{total_ms:,.1f} ms" if total_ms is not None else "-")
-        cols[2].metric("페이지", str(_ss().get("_perf_page_name", "-") or "-"))
-        st.caption("아래 표는 현재 렌더에서 실행된 단계/쿼리 시간입니다. 느린 항목부터 확인하세요.")
-
-        if "ms" in df.columns:
-            slow_df = df.sort_values("ms", ascending=False).reset_index(drop=True)
-        else:
-            slow_df = df.copy()
-        st.markdown("**느린 순 상위 단계**")
-        st.dataframe(slow_df.head(30), width="stretch", hide_index=True)
-
-        st.markdown("**전체 단계 로그**")
-        st.dataframe(df.reset_index(drop=True), width="stretch", hide_index=True)
+    total_ms = sum(float(e.get("elapsed_ms") or 0.0) for e in events)
+    with st.expander("속도 진단 결과", expanded=False):
+        st.caption(f"누적 측정 {len(events)}건 · 총 {total_ms:.1f} ms")
+        rows = []
+        for e in events:
+            extra = e.get("extra") or {}
+            extra_txt = " | ".join(f"{k}={v}" for k, v in extra.items() if v not in (None, "", [], {}))
+            rows.append({
+                "구분": e.get("kind", ""),
+                "항목": e.get("label", ""),
+                "시간(ms)": e.get("elapsed_ms", 0.0),
+                "상세": extra_txt,
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
