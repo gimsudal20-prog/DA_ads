@@ -227,45 +227,41 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
     return view
 
 
-
-
-def _fast_column_config(df: pd.DataFrame, pinned: str | None = None) -> dict:
-    cfg: dict = {}
-    int_cols = {"노출", "클릭", "전환"}
-    won_cols = {"광고비", "CPC(원)", "CPA(원)", "전환매출"}
-    pct1_cols = {"ROAS(%)", "ROAS 증감", "노출 증감", "클릭 증감", "광고비 증감", "CPC 증감", "전환 증감", "전환매출 증감"}
-    pct2_cols = {"CTR(%)"}
-    delta_int_cols = {"노출 차이", "클릭 차이", "전환 차이"}
-    delta_won_cols = {"광고비 차이", "CPC 차이", "전환매출 차이"}
-    for col in df.columns:
-        if col in int_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%d")
-        elif col in won_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%d 원")
-        elif col in pct1_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%.1f %%")
-        elif col in pct2_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%.2f %%")
-        elif col in delta_int_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%d")
-        elif col in delta_won_cols:
-            cfg[col] = st.column_config.NumberColumn(col, format="%d 원")
-    if pinned and pinned in df.columns:
-        cfg[pinned] = st.column_config.TextColumn(pinned, pinned=True, width="medium")
-    return cfg
-
 def _render_sticky_table(df, first_col: str, height: int = 550, col_config: dict = None):
     try:
         rows = len(df.index)
-        if rows <= 0: calc_height = 100
-        elif rows == 1: calc_height = 80
-        else: calc_height = min(height, max(100, 40 + (rows * 36)))
-    except: calc_height = height
-    raw_df = df.data if hasattr(df, "data") else df
-    cfg = _fast_column_config(raw_df, pinned=first_col)
-    if col_config:
-        cfg.update(col_config)
-    st.dataframe(raw_df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
+        if rows <= 0:
+            calc_height = 100
+        elif rows == 1:
+            calc_height = 80
+        else:
+            calc_height = min(height, max(100, 40 + (rows * 36)))
+    except Exception:
+        calc_height = height
+    cfg = col_config.copy() if col_config else {}
+    cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
+    st.dataframe(df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
+
+
+def _keyword_fast_col_config(df: pd.DataFrame, first_col: str = "키워드") -> dict:
+    cfg: dict = {}
+    if first_col in df.columns:
+        cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
+    pct_cols = {"CTR(%)", "CVR(%)", "ROAS(%)"} | {c for c in df.columns if "증감" in c and "차이" not in c}
+    currency_cols = {"CPC(원)", "CPA(원)", "광고비", "전환매출"} | {c for c in df.columns if c.endswith("차이") and ("광고비" in c or "매출" in c or "CPC" in c)}
+    count_cols = {"노출", "클릭", "전환"} | {c for c in df.columns if c.endswith("차이") and c not in currency_cols}
+    for c in df.columns:
+        if c in cfg:
+            continue
+        if c in pct_cols:
+            cfg[c] = st.column_config.NumberColumn(c, format="%.1f %%")
+        elif c in currency_cols:
+            cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
+        elif c in count_cols or c == "순위 변화":
+            cfg[c] = st.column_config.NumberColumn(c, format="%d")
+        elif c == "평균순위":
+            cfg[c] = st.column_config.TextColumn(c)
+    return cfg
 
 
 @st.fragment
@@ -333,7 +329,7 @@ def render_keyword_main(view, top_n):
     
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
     
-    _render_sticky_table(disp, "키워드", height=550)
+    _render_sticky_table(disp, "키워드", height=550, col_config=_keyword_fast_col_config(disp, "키워드"))
 
 
 @st.fragment
@@ -440,7 +436,7 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     disp_final = disp_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    _render_sticky_table(disp_final, "키워드", height=550)
+    st.dataframe(disp_final, use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
