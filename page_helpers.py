@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from data import *
 from ui import *
@@ -22,59 +22,45 @@ TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
 
-@st.cache_data(ttl=3600, max_entries=20, show_spinner=False)
-def _meta_filter_cache(meta: pd.DataFrame) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _meta_filter_cache(meta: pd.DataFrame) -> Dict[str, object]:
     if meta is None or meta.empty:
-        return {"all_customer_ids": [], "managers": [], "accounts": [], "manager_accounts": {}, "manager_ids": {}, "account_ids": {}, "manager_account_ids": {}}
+        return {"managers": [], "accounts": [], "accounts_by_manager": {}, "all_ids": []}
 
-    df = meta.copy()
-    if "customer_id" in df.columns:
-        df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
+    work = meta.copy()
+    if "manager" in work.columns:
+        work["manager"] = work["manager"].fillna("").astype(str).str.strip()
     else:
-        df["customer_id"] = pd.Series(dtype="Int64")
-    if "manager" not in df.columns:
-        df["manager"] = ""
-    if "account_name" not in df.columns:
-        df["account_name"] = ""
-    df["manager"] = df["manager"].astype(str).str.strip()
-    df["account_name"] = df["account_name"].astype(str).str.strip()
-    df = df.dropna(subset=["customer_id"])
+        work["manager"] = ""
+    if "account_name" in work.columns:
+        work["account_name"] = work["account_name"].fillna("").astype(str).str.strip()
+    else:
+        work["account_name"] = ""
+    if "customer_id" in work.columns:
+        work["customer_id"] = pd.to_numeric(work["customer_id"], errors="coerce")
+    else:
+        work["customer_id"] = pd.Series(dtype="float64")
 
-    managers = sorted([x for x in df["manager"].unique().tolist() if x])
-    accounts = sorted([x for x in df["account_name"].unique().tolist() if x])
-    all_customer_ids = sorted(df["customer_id"].astype("int64").drop_duplicates().tolist())
+    managers = sorted([x for x in work["manager"].unique().tolist() if x])
+    accounts = sorted([x for x in work["account_name"].unique().tolist() if x])
 
-    manager_accounts = {}
-    manager_ids = {}
-    account_ids = {}
-    manager_account_ids = {}
+    mgr_df = work[(work["manager"] != "") & (work["account_name"] != "")][["manager", "account_name"]].drop_duplicates()
+    accounts_by_manager = (
+        mgr_df.groupby("manager")["account_name"].apply(lambda s: sorted([x for x in s.tolist() if x])).to_dict()
+        if not mgr_df.empty else {}
+    )
 
-    for manager, grp in df.groupby("manager", dropna=False):
-        if manager:
-            manager_accounts[manager] = sorted([x for x in grp["account_name"].tolist() if x])
-            manager_ids[manager] = sorted(grp["customer_id"].astype("int64").drop_duplicates().tolist())
-            for account, sub in grp.groupby("account_name", dropna=False):
-                if account:
-                    manager_account_ids[(manager, account)] = sorted(sub["customer_id"].astype("int64").drop_duplicates().tolist())
-    for account, grp in df.groupby("account_name", dropna=False):
-        if account:
-            account_ids[account] = sorted(grp["customer_id"].astype("int64").drop_duplicates().tolist())
-
+    all_ids = sorted(work["customer_id"].dropna().astype("int64").drop_duplicates().tolist())
     return {
-        "all_customer_ids": all_customer_ids,
         "managers": managers,
         "accounts": accounts,
-        "manager_accounts": manager_accounts,
-        "manager_ids": manager_ids,
-        "account_ids": account_ids,
-        "manager_account_ids": manager_account_ids,
+        "accounts_by_manager": accounts_by_manager,
+        "all_ids": all_ids,
     }
 
+
 def _all_customer_ids(meta: pd.DataFrame) -> list:
-    if meta is None or meta.empty or "customer_id" not in meta.columns:
-        return []
-    s = pd.to_numeric(meta["customer_id"], errors="coerce").dropna().astype("int64")
-    return sorted(s.drop_duplicates().tolist())
+    return list(_meta_filter_cache(meta).get("all_ids", []))
 
 
 def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
@@ -84,19 +70,18 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
     manager_sel = [str(x).strip() for x in (manager_sel or []) if str(x).strip()]
     account_sel = [str(x).strip() for x in (account_sel or []) if str(x).strip()]
 
-    # 아무 것도 선택하지 않았으면 전체 계정을 반환한다.
     if not manager_sel and not account_sel:
         return _all_customer_ids(meta)
 
-    df = meta.copy()
-    if manager_sel and "manager" in df.columns:
-        df = df[df["manager"].astype(str).str.strip().isin(manager_sel)]
-    if account_sel and "account_name" in df.columns:
-        df = df[df["account_name"].astype(str).str.strip().isin(account_sel)]
-    if "customer_id" not in df.columns:
+    work = meta
+    if manager_sel and "manager" in work.columns:
+        work = work[work["manager"].fillna("").astype(str).str.strip().isin(manager_sel)]
+    if account_sel and "account_name" in work.columns:
+        work = work[work["account_name"].fillna("").astype(str).str.strip().isin(account_sel)]
+    if "customer_id" not in work.columns:
         return []
-    s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
-    return sorted(s.drop_duplicates().tolist())
+    ids = pd.to_numeric(work["customer_id"], errors="coerce").dropna().astype("int64").drop_duplicates().tolist()
+    return sorted(ids)
 
 def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
     try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
@@ -175,9 +160,9 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         }
     sv = st.session_state["filters_v8"]
 
-    filter_cache = _meta_filter_cache(meta)
-    managers = list(filter_cache.get("managers", []))
-    accounts = list(filter_cache.get("accounts", []))
+    meta_cache = _meta_filter_cache(meta)
+    managers = list(meta_cache.get("managers", []))
+    accounts = list(meta_cache.get("accounts", []))
 
     with st.sidebar:
         st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
@@ -240,12 +225,11 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         accounts_by_mgr = accounts
         if manager_sel:
-            try:
-                dfm = meta.copy()
-                if "manager" in dfm.columns and "account_name" in dfm.columns:
-                    dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
-                    accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
-            except Exception: pass
+            mgr_map = meta_cache.get("accounts_by_manager", {}) or {}
+            merged = []
+            for mgr in manager_sel:
+                merged.extend(mgr_map.get(str(mgr).strip(), []))
+            accounts_by_mgr = sorted(set([x for x in merged if str(x).strip()]))
 
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
         account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
@@ -271,9 +255,10 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad,
         "prefetch_warm": sv.get("prefetch_warm", True), "show_diagnostics": bool(show_diagnostics),
     })
-    sv.clear()
-    sv.update(updated_filters)
-    st.session_state["filters_v8"] = sv
+    prev_filters = _normalize_filter_state(dict(st.session_state.get("filters_v8", {})))
+    if prev_filters != updated_filters:
+        st.session_state["filters_v8"] = updated_filters
+    sv = st.session_state["filters_v8"]
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
     if not cids and not (manager_sel or account_sel):

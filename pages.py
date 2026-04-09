@@ -6,13 +6,13 @@ from __future__ import annotations
 import os
 import streamlit as st
 
-from data import *
+from data import get_engine, get_latest_dates, get_meta, load_dim_campaign, get_campaign_type_options
 from ui import render_hero
 from page_helpers import BUILD_TAG, build_filters
 
 
-@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
-def _get_cached_type_options(dim_campaign_df: pd.DataFrame) -> list:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_campaign_type_options(dim_campaign_df):
     return get_campaign_type_options(dim_campaign_df)
 
 def main():
@@ -71,8 +71,8 @@ def main():
         if not meta_ready:
             st.error("설정 메뉴에서 동기화를 진행해주세요.")
             return
-        dim_campaign_df = load_dim_campaign(engine)
-        f = build_filters(meta, _get_cached_type_options(dim_campaign_df), engine)
+        type_opts = _cached_campaign_type_options(load_dim_campaign(engine))
+        f = build_filters(meta, type_opts, engine)
 
     requires_selection_pages = {
         "요약",

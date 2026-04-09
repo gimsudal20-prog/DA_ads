@@ -13,7 +13,7 @@ from sqlalchemy.pool import QueuePool
 from datetime import date
 
 # ==========================================
-# 1. Database Connection (QueuePool + pre_ping 적용)
+# 1. Database Connection (QueuePool 적용)
 # ==========================================
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
@@ -34,18 +34,24 @@ def get_engine():
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
-        "keepalives_count": 5
+        "keepalives_count": 5,
     }
+
+    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "4") or 4))
+    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "8") or 8))
+    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "20") or 20))
+    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
 
     return create_engine(
         db_url,
         poolclass=QueuePool,
         pool_pre_ping=True,
-        pool_size=max(2, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5)),
-        max_overflow=max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10)),
-        pool_recycle=max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800)),
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
         connect_args=connect_args,
-        future=True
+        future=True,
     )
 
 def db_ping(engine) -> bool:
@@ -587,59 +593,6 @@ def _bundle_limit_clause(topn_cost: int) -> str:
 
 def _finalize_bundle_df(df: pd.DataFrame, campaign_type_col: str) -> pd.DataFrame:
     return _map_campaign_types(df, campaign_type_col)
-
-def _bundle_topn_value(topn_cost: int) -> int:
-    return _safe_limit(topn_cost, default=1000, max_limit=5000)
-
-
-def _campaign_top_ids_cte(where_cid: str, type_filter_sql: str, topn_cost: int) -> str:
-    return f"""
-        top_ids AS (
-            SELECT f.customer_id, f.campaign_id
-            FROM fact_campaign_daily f
-            JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
-            GROUP BY f.customer_id, f.campaign_id
-            ORDER BY SUM(f.cost) DESC
-            LIMIT {_bundle_topn_value(topn_cost)}
-        ),
-    """
-
-
-def _keyword_top_ids_cte(where_cid: str, type_filter_sql: str, include_dt: bool, topn_cost: int) -> str:
-    dt_select = ', f.dt' if include_dt else ''
-    dt_group = ', f.dt' if include_dt else ''
-    return f"""
-        top_ids AS (
-            SELECT f.customer_id, f.keyword_id{dt_select}
-            FROM fact_keyword_daily f
-            JOIN dim_keyword k ON f.keyword_id = k.keyword_id AND f.customer_id = k.customer_id
-            JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
-            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
-            GROUP BY f.customer_id, f.keyword_id{dt_group}
-            ORDER BY SUM(f.cost) DESC
-            LIMIT {_bundle_topn_value(topn_cost)}
-        ),
-    """
-
-
-def _ad_top_ids_cte(where_cid: str, type_filter_sql: str, include_dt: bool, topn_cost: int) -> str:
-    dt_select = ', f.dt' if include_dt else ''
-    dt_group = ', f.dt' if include_dt else ''
-    return f"""
-        top_ids AS (
-            SELECT f.customer_id, f.ad_id{dt_select}
-            FROM fact_ad_daily f
-            JOIN dim_ad ad ON f.ad_id = ad.ad_id AND f.customer_id = ad.customer_id
-            JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
-            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
-            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
-            GROUP BY f.customer_id, f.ad_id{dt_group}
-            ORDER BY SUM(f.cost) DESC
-            LIMIT {_bundle_topn_value(topn_cost)}
-        ),
-    """
 
 
 def _normalize_customer_id_series(series: pd.Series) -> pd.Series:
