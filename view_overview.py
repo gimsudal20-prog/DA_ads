@@ -935,6 +935,15 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     }
 
     # ====================================================
+
+
+    def _render_funnel_detail_table(df_src: pd.DataFrame, first_col: str, height: int = 420):
+        if df_src is None or df_src.empty:
+            st.info("조건에 맞는 데이터가 없습니다.")
+            return
+        styled = df_src.style.format(fmt_dict_standard)
+        styled = _apply_overview_delta_styles(styled, df_src)
+        _render_overview_sticky_table(styled, first_col, height=height, hide_index=True)
     # 퍼널 뷰 배치 및 증감/절대값 토글 로직
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
@@ -1004,7 +1013,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not df_display.empty:
             view_cols = ["계정명"] + [c for c in get_funnel_cols(show_deltas) if c in df_display.columns]
             disp_df = df_display[view_cols].copy()
-            _render_overview_light_table(disp_df, "계정명", height=420, hide_index=True)
+            _render_funnel_detail_table(disp_df, "계정명", height=420)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1012,7 +1021,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         if not df_type_display.empty:
             view_cols = ["캠페인 유형"] + [c for c in get_funnel_cols(show_deltas) if c in df_type_display.columns]
             disp_type_df = df_type_display[view_cols].copy()
-            _render_overview_light_table(disp_type_df, "캠페인 유형", height=420, hide_index=True)
+            _render_funnel_detail_table(disp_type_df, "캠페인 유형", height=420)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1032,7 +1041,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                     return
                 v_cols = [col_name] + [c for c in get_funnel_cols(show_deltas) if c in df.columns]
                 d_df = df[v_cols].copy()
-                _render_overview_light_table(d_df, col_name, height=420, hide_index=True)
+                _render_funnel_detail_table(d_df, col_name, height=420)
 
             if period_panel == "주차별": _display_ts_tab(weekly_disp, "주차")
             elif period_panel == "요일별": _display_ts_tab(dow_disp, "요일명")
@@ -1045,7 +1054,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             camp_disp_top = camp_disp.head(200)
             view_cols = ["캠페인명"] + [c for c in get_funnel_cols(show_deltas) if c in camp_disp_top.columns]
             disp_camp = camp_disp_top[view_cols].copy()
-            _render_overview_light_table(disp_camp, "캠페인명", height=460, hide_index=True)
+            _render_funnel_detail_table(disp_camp, "캠페인명", height=460)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
@@ -1054,7 +1063,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             kw_disp_top = kw_disp.head(200)
             view_cols = ["키워드"] + [c for c in get_funnel_cols(show_deltas) if c in kw_disp_top.columns]
             disp_kw = kw_disp_top[view_cols].copy()
-            _render_overview_light_table(disp_kw, "키워드", height=460, hide_index=True)
+            _render_funnel_detail_table(disp_kw, "키워드", height=460)
         else:
             st.info("조건에 맞는 데이터가 없습니다.")
 
