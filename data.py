@@ -39,7 +39,11 @@ def get_engine():
 
     return create_engine(
         db_url,
-        poolclass=NullPool,
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=max(2, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5)),
+        max_overflow=max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10)),
+        pool_recycle=max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800)),
         connect_args=connect_args,
         future=True
     )
