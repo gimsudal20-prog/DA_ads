@@ -9,11 +9,17 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool
 from datetime import date
 
+try:
+    from perf_utils import perf_add
+except Exception:
+    def perf_add(*args, **kwargs):
+        return None
+
 # ==========================================
-# 1. Database Connection (QueuePool 적용)
+# 1. Database Connection (NullPool 적용)
 # ==========================================
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
@@ -34,24 +40,14 @@ def get_engine():
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
-        "keepalives_count": 5,
+        "keepalives_count": 5
     }
-
-    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "4") or 4))
-    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "8") or 8))
-    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "20") or 20))
-    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
 
     return create_engine(
         db_url,
-        poolclass=QueuePool,
-        pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
+        poolclass=NullPool,
         connect_args=connect_args,
-        future=True,
+        future=True
     )
 
 def db_ping(engine) -> bool:
@@ -72,6 +68,17 @@ def table_exists(engine, table_name: str) -> bool:
             return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
+
+
+def _sql_profile_label(query: str) -> str:
+    try:
+        flat = " ".join(str(query or "").strip().split())
+    except Exception:
+        flat = str(query or "")
+    if len(flat) > 160:
+        flat = flat[:157] + "..."
+    return flat or "(empty query)"
+
 def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
     value = str(name or "").strip()
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
@@ -81,6 +88,7 @@ def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_table_columns(_engine, table_name: str) -> list:
     safe_table_name = _validate_sql_identifier(table_name, "table name")
+    started = time.perf_counter()
     for attempt in range(3):
         try:
             with _engine.connect() as conn:
@@ -95,26 +103,35 @@ def get_table_columns(_engine, table_name: str) -> list:
                     ),
                     {"table_name": safe_table_name},
                 )
-                return [r[0] for r in res]
-        except (OperationalError, StatementError, InterfaceError):
+                cols = [r[0] for r in res]
+                perf_add("db.get_table_columns", (time.perf_counter() - started) * 1000.0, rows=len(cols), note=safe_table_name, kind="schema")
+                return cols
+        except (OperationalError, StatementError, InterfaceError) as e:
+            perf_add("db.get_table_columns.retry", (time.perf_counter() - started) * 1000.0, rows=None, note=f"{safe_table_name} | {type(e).__name__} | attempt={attempt+1}", kind="error")
             if attempt == 2:
                 st.cache_resource.clear()
                 st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
                 st.stop()
             _engine.dispose()
             time.sleep(1.0)
-        except Exception:
+        except Exception as e:
+            perf_add("db.get_table_columns.error", (time.perf_counter() - started) * 1000.0, rows=None, note=f"{safe_table_name} | {type(e).__name__}", kind="error")
             return []
 
 @st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     last_error = None
+    label = _sql_profile_label(query)
     for attempt in range(3):
+        started = time.perf_counter()
         try:
             with _engine.connect() as conn:
-                return pd.read_sql(text(query), conn, params=params)
+                df = pd.read_sql(text(query), conn, params=params)
+            perf_add("db.sql_read", (time.perf_counter() - started) * 1000.0, rows=len(df.index), note=label, kind="query")
+            return df
         except Exception as e:
             last_error = e
+            perf_add("db.sql_read.retry", (time.perf_counter() - started) * 1000.0, rows=None, note=f"{label} | {type(e).__name__} | attempt={attempt+1}", kind="error")
             time.sleep(1.0)
             
     st.cache_resource.clear()
@@ -123,13 +140,17 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     last_error = None
+    label = _sql_profile_label(query)
     for attempt in range(3):
+        started = time.perf_counter()
         try:
             with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
+            perf_add("db.sql_exec", (time.perf_counter() - started) * 1000.0, rows=None, note=label, kind="query")
             return
         except Exception as e:
             last_error = e
+            perf_add("db.sql_exec.retry", (time.perf_counter() - started) * 1000.0, rows=None, note=f"{label} | {type(e).__name__} | attempt={attempt+1}", kind="error")
             time.sleep(1.0)
             
     st.cache_resource.clear()
