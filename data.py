@@ -11,7 +11,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
 from sqlalchemy.pool import QueuePool
 from datetime import date
-from perf_utils import record_db_timing
 
 # ==========================================
 # 1. Database Connection (QueuePool 적용)
@@ -38,15 +37,21 @@ def get_engine():
         "keepalives_count": 5
     }
 
+    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5))
+    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10))
+    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
+    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "30") or 30))
+
     return create_engine(
         db_url,
         poolclass=QueuePool,
         pool_pre_ping=True,
-        pool_size=max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "4") or 4)),
-        max_overflow=max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "8") or 8)),
-        pool_recycle=max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800)),
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_recycle=pool_recycle,
+        pool_timeout=pool_timeout,
         connect_args=connect_args,
-        future=True
+        future=True,
     )
 
 def db_ping(engine) -> bool:
@@ -59,14 +64,11 @@ def db_ping(engine) -> bool:
 
 def table_exists(engine, table_name: str) -> bool:
     if "_table_names_cache" not in st.session_state:
-        t0 = time.perf_counter()
         try:
             with engine.connect() as conn:
                 res = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'"))
                 st.session_state["_table_names_cache"] = [r[0] for r in res]
-            record_db_timing("schema", "table_exists.bootstrap", (time.perf_counter() - t0) * 1000.0, rows=len(st.session_state.get("_table_names_cache", [])))
         except Exception:
-            record_db_timing("schema", "table_exists.bootstrap", (time.perf_counter() - t0) * 1000.0, error="failed")
             return False
     return table_name in st.session_state.get("_table_names_cache", [])
 
@@ -80,7 +82,6 @@ def _validate_sql_identifier(name: str, label: str = "identifier") -> str:
 def get_table_columns(_engine, table_name: str) -> list:
     safe_table_name = _validate_sql_identifier(table_name, "table name")
     for attempt in range(3):
-        t0 = time.perf_counter()
         try:
             with _engine.connect() as conn:
                 res = conn.execute(
@@ -94,11 +95,8 @@ def get_table_columns(_engine, table_name: str) -> list:
                     ),
                     {"table_name": safe_table_name},
                 )
-                rows = [r[0] for r in res]
-                record_db_timing("schema", "get_table_columns", (time.perf_counter() - t0) * 1000.0, table=safe_table_name, rows=len(rows))
-                return rows
+                return [r[0] for r in res]
         except (OperationalError, StatementError, InterfaceError):
-            record_db_timing("schema", "get_table_columns", (time.perf_counter() - t0) * 1000.0, table=safe_table_name, attempt=attempt + 1, error="retry")
             if attempt == 2:
                 st.cache_resource.clear()
                 st.error("데이터베이스 일시적 연결 오류. 페이지를 새로고침(F5) 해주세요.")
@@ -106,23 +104,17 @@ def get_table_columns(_engine, table_name: str) -> list:
             _engine.dispose()
             time.sleep(1.0)
         except Exception:
-            record_db_timing("schema", "get_table_columns", (time.perf_counter() - t0) * 1000.0, table=safe_table_name, error="failed")
             return []
 
 @st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
 def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     last_error = None
-    summary = " ".join(str(query).split())[:140]
     for attempt in range(3):
-        t0 = time.perf_counter()
         try:
             with _engine.connect() as conn:
-                df = pd.read_sql(text(query), conn, params=params)
-            record_db_timing("sql_read", "sql_read", (time.perf_counter() - t0) * 1000.0, rows=len(df.index), q=summary)
-            return df
+                return pd.read_sql(text(query), conn, params=params)
         except Exception as e:
             last_error = e
-            record_db_timing("sql_read", "sql_read", (time.perf_counter() - t0) * 1000.0, attempt=attempt + 1, error=type(e).__name__, q=summary)
             time.sleep(1.0)
             
     st.cache_resource.clear()
@@ -131,17 +123,13 @@ def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     last_error = None
-    summary = " ".join(str(query).split())[:140]
     for attempt in range(3):
-        t0 = time.perf_counter()
         try:
             with _engine.begin() as conn:
                 conn.execute(text(query), params or {})
-            record_db_timing("sql_exec", "sql_exec", (time.perf_counter() - t0) * 1000.0, q=summary)
             return
         except Exception as e:
             last_error = e
-            record_db_timing("sql_exec", "sql_exec", (time.perf_counter() - t0) * 1000.0, attempt=attempt + 1, error=type(e).__name__, q=summary)
             time.sleep(1.0)
             
     st.cache_resource.clear()
