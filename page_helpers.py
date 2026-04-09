@@ -5,21 +5,74 @@ from __future__ import annotations
 
 import os
 import textwrap
+from datetime import date, datetime, timedelta
+from typing import Dict, List
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
-from typing import Dict, List
 
-from data import *
-from ui import *
 from data import pct_change, pct_to_arrow
+from ui import *
 
 BUILD_TAG = os.getenv("APP_BUILD", "")
 TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
+
+
+@st.cache_data(ttl=43200, max_entries=8, show_spinner=False)
+def _build_filter_catalog(meta: pd.DataFrame) -> dict:
+    if meta is None or meta.empty:
+        return {"managers": tuple(), "accounts": tuple(), "manager_to_accounts": {}}
+
+    work = meta.copy()
+    if "manager" in work.columns:
+        work["manager"] = work["manager"].fillna("").astype(str).str.strip()
+    if "account_name" in work.columns:
+        work["account_name"] = work["account_name"].fillna("").astype(str).str.strip()
+
+    managers = tuple(sorted(x for x in work.get("manager", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()))
+    accounts = tuple(sorted(x for x in work.get("account_name", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()))
+
+    manager_to_accounts = {}
+    if "manager" in work.columns and "account_name" in work.columns:
+        pairs = work.loc[(work["manager"] != "") & (work["account_name"] != ""), ["manager", "account_name"]].drop_duplicates()
+        for manager, grp in pairs.groupby("manager"):
+            manager_to_accounts[str(manager)] = tuple(sorted(grp["account_name"].tolist()))
+
+    return {
+        "managers": managers,
+        "accounts": accounts,
+        "manager_to_accounts": manager_to_accounts,
+    }
+
+
+@st.cache_data(ttl=43200, max_entries=32, show_spinner=False)
+def _resolve_customer_ids_cached(meta: pd.DataFrame, manager_sel: tuple, account_sel: tuple) -> list:
+    if meta is None or meta.empty:
+        return []
+
+    manager_sel = [str(x).strip() for x in (manager_sel or []) if str(x).strip()]
+    account_sel = [str(x).strip() for x in (account_sel or []) if str(x).strip()]
+
+    if not manager_sel and not account_sel:
+        return _all_customer_ids(meta)
+
+    work = meta
+    mask = pd.Series(True, index=work.index)
+    if manager_sel and "manager" in work.columns:
+        manager_col = work["manager"].fillna("").astype(str).str.strip()
+        mask &= manager_col.isin(manager_sel)
+    if account_sel and "account_name" in work.columns:
+        account_col = work["account_name"].fillna("").astype(str).str.strip()
+        mask &= account_col.isin(account_sel)
+    if "customer_id" not in work.columns:
+        return []
+    s = pd.to_numeric(work.loc[mask, "customer_id"], errors="coerce").dropna().astype("int64")
+    return sorted(s.drop_duplicates().tolist())
+
 
 def _all_customer_ids(meta: pd.DataFrame) -> list:
     if meta is None or meta.empty or "customer_id" not in meta.columns:
@@ -29,25 +82,7 @@ def _all_customer_ids(meta: pd.DataFrame) -> list:
 
 
 def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: list) -> list:
-    if meta is None or meta.empty:
-        return []
-
-    manager_sel = [str(x).strip() for x in (manager_sel or []) if str(x).strip()]
-    account_sel = [str(x).strip() for x in (account_sel or []) if str(x).strip()]
-
-    # 아무 것도 선택하지 않았으면 전체 계정을 반환한다.
-    if not manager_sel and not account_sel:
-        return _all_customer_ids(meta)
-
-    df = meta.copy()
-    if manager_sel and "manager" in df.columns:
-        df = df[df["manager"].astype(str).str.strip().isin(manager_sel)]
-    if account_sel and "account_name" in df.columns:
-        df = df[df["account_name"].astype(str).str.strip().isin(account_sel)]
-    if "customer_id" not in df.columns:
-        return []
-    s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
-    return sorted(s.drop_duplicates().tolist())
+    return _resolve_customer_ids_cached(meta, tuple(manager_sel or ()), tuple(account_sel or ()))
 
 def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
     try: return col.multiselect(label, options, default=default, key=key, placeholder=placeholder)
@@ -122,24 +157,24 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         st.session_state["filters_v8"] = {
             "q": "", "manager": [], "account": [], "type_sel": [],
             "period_mode": "어제", "d1": default_start, "d2": default_end,
-            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200, "prefetch_warm": True, "show_diagnostics": False,
+            "top_n_campaign": 200, "top_n_keyword": 300, "top_n_ad": 200,
+            "prefetch_warm": True, "show_diagnostics": False,
         }
-    sv = st.session_state["filters_v8"]
+    sv = _normalize_filter_state(st.session_state["filters_v8"])
 
-    managers = sorted([x for x in meta["manager"].dropna().unique().tolist() if str(x).strip()]) if "manager" in meta.columns else []
-    accounts = sorted([x for x in meta["account_name"].dropna().unique().tolist() if str(x).strip()]) if "account_name" in meta.columns else []
+    catalog = _build_filter_catalog(meta)
+    managers = list(catalog.get("managers", ()))
+    accounts = list(catalog.get("accounts", ()))
+    manager_to_accounts = catalog.get("manager_to_accounts", {})
 
     with st.sidebar:
         st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
-
         st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
-        
+
         period_options = ["어제", "오늘", "최근 7일", "최근 30일", "이번 달", "지난 주", "지난 달", "직접 선택"]
         sv_period = sv.get("period_mode", "어제")
         if sv_period not in period_options:
             sv_period = "어제"
-            
-        # ✨ 위젯 경고 해결: session_state가 없을 때만 초기값 세팅
         if "f_period_mode" not in st.session_state:
             st.session_state["f_period_mode"] = sv_period
 
@@ -147,92 +182,111 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
         with c_prev:
             st.button("◀", key="f_btn_prev", on_click=_shift_period, args=("prev",), use_container_width=True)
         with c_sel:
-            period_mode = st.selectbox(
-                "기간 간편 선택",
-                period_options,
-                # ✨ 핵심: index 값을 강제로 넣지 않고 key(session_state)에 온전히 제어권을 넘김
-                key="f_period_mode", 
-                label_visibility="collapsed"
-            )
+            period_mode = st.selectbox("기간 간편 선택", period_options, key="f_period_mode", label_visibility="collapsed")
         with c_next:
             st.button("▶", key="f_btn_next", on_click=_shift_period, args=("next",), use_container_width=True)
 
         if period_mode == "직접 선택":
             c1, c2 = st.columns(2)
-            
-            # ✨ 날짜도 마찬가지로 session_state 초기화 후 key로만 제어
             if "f_d1" not in st.session_state:
                 st.session_state["f_d1"] = sv.get("d1", default_start)
             if "f_d2" not in st.session_state:
                 st.session_state["f_d2"] = sv.get("d2", default_end)
-                
             d1 = c1.date_input("시작일", key="f_d1", label_visibility="collapsed")
             d2 = c2.date_input("종료일", key="f_d2", label_visibility="collapsed")
         else:
-            if period_mode == "오늘": d2 = d1 = today
-            elif period_mode == "어제": d2 = d1 = today - timedelta(days=1)
-            elif period_mode == "최근 7일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=6)
-            elif period_mode == "최근 30일": d2 = today - timedelta(days=1); d1 = d2 - timedelta(days=29)
-            elif period_mode == "이번 달": d2 = today; d1 = date(today.year, today.month, 1)
-            elif period_mode == "지난 주": d2 = today - timedelta(days=today.weekday() + 1); d1 = today - timedelta(days=today.weekday() + 7)
-            elif period_mode == "지난 달": d2 = date(today.year, today.month, 1) - timedelta(days=1); d1 = date(d2.year, d2.month, 1)
-            else: d2 = sv.get("d2", default_end); d1 = sv.get("d1", default_start)
-            
-            # ✨ 다른 모드를 선택했을 때도 세션의 날짜 상태를 갱신해두어야
-            # 나중에 '직접 선택'을 눌렀을 때 엉뚱한 날짜가 표시되지 않음
+            if period_mode == "오늘":
+                d2 = d1 = today
+            elif period_mode == "어제":
+                d2 = d1 = today - timedelta(days=1)
+            elif period_mode == "최근 7일":
+                d2 = today - timedelta(days=1)
+                d1 = d2 - timedelta(days=6)
+            elif period_mode == "최근 30일":
+                d2 = today - timedelta(days=1)
+                d1 = d2 - timedelta(days=29)
+            elif period_mode == "이번 달":
+                d2 = today
+                d1 = date(today.year, today.month, 1)
+            elif period_mode == "지난 주":
+                d2 = today - timedelta(days=today.weekday() + 1)
+                d1 = today - timedelta(days=today.weekday() + 7)
+            elif period_mode == "지난 달":
+                d2 = date(today.year, today.month, 1) - timedelta(days=1)
+                d1 = date(d2.year, d2.month, 1)
+            else:
+                d2 = sv.get("d2", default_end)
+                d1 = sv.get("d1", default_start)
             st.session_state["f_d1"] = d1
             st.session_state["f_d2"] = d2
 
         st.divider()
-
         st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>담당자 및 계정</div>", unsafe_allow_html=True)
         manager_sel = ui_multiselect(st, "담당자", managers, default=sv.get("manager", []), key="f_manager", placeholder="전체 담당자")
 
-        accounts_by_mgr = accounts
         if manager_sel:
-            try:
-                dfm = meta.copy()
-                if "manager" in dfm.columns and "account_name" in dfm.columns:
-                    dfm = dfm[dfm["manager"].astype(str).isin([str(x) for x in manager_sel])]
-                    accounts_by_mgr = sorted([x for x in dfm["account_name"].dropna().unique().tolist() if str(x).strip()])
-            except Exception: pass
-
+            accounts_by_mgr = sorted({acc for mgr in manager_sel for acc in manager_to_accounts.get(str(mgr), ())})
+        else:
+            accounts_by_mgr = accounts
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
         account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
 
         st.divider()
-        
+        q = sv.get("q", "")
+        type_sel = sv.get("type_sel", [])
+        top_n_campaign = int(sv.get("top_n_campaign", 200))
+        top_n_keyword = int(sv.get("top_n_keyword", 300))
+        top_n_ad = int(sv.get("top_n_ad", 200))
+        show_diagnostics = bool(sv.get("show_diagnostics", False))
         with st.expander("상세 설정 (검색, 표시 제한)", expanded=False):
-            q = st.text_input("텍스트 검색", sv.get("q", ""), key="f_q", placeholder="키워드/캠페인명 입력")
-            type_sel = ui_multiselect(st, "광고 유형", type_opts, default=sv.get("type_sel", []), key="f_type_sel", placeholder="전체 광고 유형")
-            
+            q = st.text_input("텍스트 검색", q, key="f_q", placeholder="키워드/캠페인명 입력")
+            type_sel = ui_multiselect(st, "광고 유형", type_opts, default=type_sel, key="f_type_sel", placeholder="전체 광고 유형")
             st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>표시 데이터 수 제한</div>", unsafe_allow_html=True)
-            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_campaign", 200)), step=50, key="f_top_n_campaign")
-            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_keyword", 300)), step=50, key="f_top_n_keyword")
-            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=int(sv.get("top_n_ad", 200)), step=50, key="f_top_n_ad")
+            top_n_campaign = st.number_input("캠페인 한도", min_value=10, max_value=2000, value=top_n_campaign, step=50, key="f_top_n_campaign")
+            top_n_keyword = st.number_input("키워드 한도", min_value=10, max_value=2000, value=top_n_keyword, step=50, key="f_top_n_keyword")
+            top_n_ad = st.number_input("소재 한도", min_value=10, max_value=2000, value=top_n_ad, step=50, key="f_top_n_ad")
             st.markdown("<div style='margin-top:12px; margin-bottom:4px; font-size:12px; font-weight:500; color:var(--nv-muted);'>관리자 옵션</div>", unsafe_allow_html=True)
-            show_diagnostics = st.checkbox("조회 진단 보기", value=bool(sv.get("show_diagnostics", False)), key="f_show_diagnostics")
+            show_diagnostics = st.checkbox("조회 진단 보기", value=show_diagnostics, key="f_show_diagnostics")
 
         st.caption("필터 변경 시 즉시 반영됩니다.")
 
     updated_filters = _normalize_filter_state({
-        "q": q or "", "manager": manager_sel or [], "account": account_sel or [],
-        "type_sel": type_sel or [], "period_mode": period_mode, "d1": d1, "d2": d2,
-        "top_n_campaign": top_n_campaign, "top_n_keyword": top_n_keyword, "top_n_ad": top_n_ad,
-        "prefetch_warm": sv.get("prefetch_warm", True), "show_diagnostics": bool(show_diagnostics),
+        "q": q or "",
+        "manager": manager_sel or [],
+        "account": account_sel or [],
+        "type_sel": type_sel or [],
+        "period_mode": period_mode,
+        "d1": d1,
+        "d2": d2,
+        "top_n_campaign": top_n_campaign,
+        "top_n_keyword": top_n_keyword,
+        "top_n_ad": top_n_ad,
+        "prefetch_warm": sv.get("prefetch_warm", True),
+        "show_diagnostics": bool(show_diagnostics),
     })
-    sv.clear()
-    sv.update(updated_filters)
-    st.session_state["filters_v8"] = sv
+    if updated_filters != sv:
+        st.session_state["filters_v8"] = updated_filters
+        sv = updated_filters
+    else:
+        sv = st.session_state["filters_v8"]
 
     cids = resolve_customer_ids(meta, manager_sel, account_sel)
     if not cids and not (manager_sel or account_sel):
         cids = _all_customer_ids(meta)
 
     return {
-        "q": sv["q"], "manager": sv["manager"], "account": sv["account"], "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
-        "start": d1, "end": d2, "period_mode": period_mode, "customer_ids": cids, "selected_customer_ids": cids,
-        "top_n_keyword": int(sv.get("top_n_keyword", 300)), "top_n_ad": int(sv.get("top_n_ad", 200)), "top_n_campaign": int(sv.get("top_n_campaign", 200)),
+        "q": sv["q"],
+        "manager": sv["manager"],
+        "account": sv["account"],
+        "type_sel": tuple(sv["type_sel"]) if sv["type_sel"] else tuple(),
+        "start": d1,
+        "end": d2,
+        "period_mode": period_mode,
+        "customer_ids": cids,
+        "selected_customer_ids": cids,
+        "top_n_keyword": int(sv.get("top_n_keyword", 300)),
+        "top_n_ad": int(sv.get("top_n_ad", 200)),
+        "top_n_campaign": int(sv.get("top_n_campaign", 200)),
         "show_diagnostics": bool(sv.get("show_diagnostics", False)),
         "ready": True,
     }

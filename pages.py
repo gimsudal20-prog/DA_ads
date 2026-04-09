@@ -4,38 +4,23 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
+
 import streamlit as st
 
-from data import *
-from ui import render_hero
+from data import get_campaign_type_options, get_engine, get_latest_dates, get_meta, load_dim_campaign
 from page_helpers import BUILD_TAG, build_filters
+from ui import render_hero
 
 
-def _dispatch_page(nav: str, meta, engine, f):
-    if nav == "요약":
-        from view_overview import page_overview
-        page_overview(meta, engine, f)
-    elif nav == "예산 및 잔액":
-        from view_budget import page_budget
-        page_budget(meta, engine, f)
-    elif nav == "매체(지면) 분석":
-        from view_media import page_media
-        page_media(engine, f)
-    elif nav == "성과 분석 · 캠페인":
-        from view_campaign import page_perf_campaign
-        page_perf_campaign(meta, engine, f)
-    elif nav == "성과 분석 · 키워드":
-        from view_keyword import page_perf_keyword
-        page_perf_keyword(meta, engine, f)
-    elif nav == "쇼핑 검색어 분석":
-        from view_shopping_query import page_perf_shopping_query
-        page_perf_shopping_query(meta, engine, f)
-    elif nav == "성과 분석 · 소재":
-        from view_ad import page_perf_ad
-        page_perf_ad(meta, engine, f)
-    else:
-        from view_settings import page_settings
-        page_settings(engine)
+@st.cache_data(ttl=43200, max_entries=4, show_spinner=False)
+def _cached_type_options(dim_campaign):
+    return tuple(get_campaign_type_options(dim_campaign))
+
+
+def _lazy_page(module_name: str, func_name: str):
+    module = import_module(module_name)
+    return getattr(module, func_name)
 
 
 def main():
@@ -94,7 +79,9 @@ def main():
         if not meta_ready:
             st.error("설정 메뉴에서 동기화를 진행해주세요.")
             return
-        f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
+        dim_campaign = load_dim_campaign(engine)
+        type_opts = list(_cached_type_options(dim_campaign))
+        f = build_filters(meta, type_opts, engine)
 
     requires_selection_pages = {
         "요약",
@@ -110,7 +97,22 @@ def main():
         st.info("담당자 또는 광고주(계정) 필터를 먼저 1개 이상 선택하면 데이터가 표시됩니다.")
         st.stop()
 
-    _dispatch_page(nav, meta, engine, f)
+    if nav == "요약":
+        _lazy_page("view_overview", "page_overview")(meta, engine, f)
+    elif nav == "예산 및 잔액":
+        _lazy_page("view_budget", "page_budget")(meta, engine, f)
+    elif nav == "매체(지면) 분석":
+        _lazy_page("view_media", "page_media")(engine, f)
+    elif nav == "성과 분석 · 캠페인":
+        _lazy_page("view_campaign", "page_perf_campaign")(meta, engine, f)
+    elif nav == "성과 분석 · 키워드":
+        _lazy_page("view_keyword", "page_perf_keyword")(meta, engine, f)
+    elif nav == "쇼핑 검색어 분석":
+        _lazy_page("view_shopping_query", "page_perf_shopping_query")(meta, engine, f)
+    elif nav == "성과 분석 · 소재":
+        _lazy_page("view_ad", "page_perf_ad")(meta, engine, f)
+    else:
+        _lazy_page("view_settings", "page_settings")(engine)
 
 
 if __name__ == "__main__":
