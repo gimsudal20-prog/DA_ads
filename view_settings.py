@@ -10,6 +10,43 @@ from sqlalchemy import text
 
 from data import sql_read, sql_exec, db_ping, seed_from_accounts_xlsx
 
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+def _cached_campaign_settings(_engine) -> pd.DataFrame:
+    sql = """
+        SELECT 
+            c.customer_id, 
+            COALESCE(cust.account_name, CAST(c.customer_id AS VARCHAR)) as account_name,
+            COALESCE(cust.manager, '미배정') as manager,
+            c.campaign_id, 
+            c.campaign_name, 
+            c.target_roas, 
+            c.min_roas 
+        FROM dim_campaign c
+        LEFT JOIN dim_customer cust ON CAST(c.customer_id AS VARCHAR) = CAST(cust.customer_id AS VARCHAR)
+    """
+    try:
+        return sql_read(_engine, sql)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _campaign_filter_options(camp_df: pd.DataFrame):
+    if camp_df is None or camp_df.empty:
+        return ["전체"], {"전체": ["전체"]}
+    temp = camp_df[["manager", "account_name"]].copy()
+    temp["manager"] = temp["manager"].fillna("미배정").astype(str)
+    temp["account_name"] = temp["account_name"].fillna("").astype(str)
+    managers = ["전체"] + sorted([x for x in temp["manager"].drop_duplicates().tolist() if x])
+    account_map = {"전체": ["전체"] + sorted([x for x in temp["account_name"].drop_duplicates().tolist() if x])}
+    for manager in managers:
+        if manager == "전체":
+            continue
+        sub = temp.loc[temp["manager"] == manager, "account_name"].drop_duplicates().tolist()
+        account_map[manager] = ["전체"] + sorted([x for x in sub if x])
+    return managers, account_map
+
 @st.fragment
 def page_settings(engine) -> None:
     # 🍎 헤더 부분
@@ -56,40 +93,26 @@ def page_settings(engine) -> None:
                 try: conn.execute(text("ALTER TABLE dim_campaign ADD COLUMN min_roas DOUBLE PRECISION;"))
                 except Exception: pass
 
-            sql = """
-                SELECT 
-                    c.customer_id, 
-                    COALESCE(cust.account_name, CAST(c.customer_id AS VARCHAR)) as account_name,
-                    COALESCE(cust.manager, '미배정') as manager,
-                    c.campaign_id, 
-                    c.campaign_name, 
-                    c.target_roas, 
-                    c.min_roas 
-                FROM dim_campaign c
-                LEFT JOIN dim_customer cust ON CAST(c.customer_id AS VARCHAR) = CAST(cust.customer_id AS VARCHAR)
-            """
-            camp_df = sql_read(engine, sql)
+            camp_df = _cached_campaign_settings(engine)
 
             if not camp_df.empty:
                 camp_df = camp_df.sort_values(['manager', 'account_name', 'campaign_name']).reset_index(drop=True)
-                
+                managers, account_map = _campaign_filter_options(camp_df)
+
                 col_m, col_a = st.columns(2)
                 with col_m:
-                    managers = ["전체"] + list(camp_df['manager'].dropna().unique())
                     sel_manager = st.selectbox("담당자 선택", managers)
-                
-                temp_df = camp_df.copy()
-                if sel_manager != "전체":
-                    temp_df = temp_df[temp_df['manager'] == sel_manager]
-                
                 with col_a:
-                    accounts = ["전체"] + list(temp_df['account_name'].dropna().unique())
-                    sel_acc = st.selectbox("업체 선택", accounts)
-                
-                if sel_acc != "전체":
-                    temp_df = temp_df[temp_df['account_name'] == sel_acc]
+                    sel_acc = st.selectbox("업체 선택", account_map.get(sel_manager, ["전체"]))
 
-                disp_df = temp_df.reset_index(drop=True)
+                if sel_manager == "전체" and sel_acc == "전체":
+                    disp_df = camp_df.reset_index(drop=True)
+                elif sel_manager == "전체":
+                    disp_df = camp_df[camp_df['account_name'] == sel_acc].reset_index(drop=True)
+                elif sel_acc == "전체":
+                    disp_df = camp_df[camp_df['manager'] == sel_manager].reset_index(drop=True)
+                else:
+                    disp_df = camp_df[(camp_df['manager'] == sel_manager) & (camp_df['account_name'] == sel_acc)].reset_index(drop=True)
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -112,18 +135,29 @@ def page_settings(engine) -> None:
 
                 if st.button("화면의 목표 ROAS 저장", type="primary", icon=":material/save:"):
                     with st.spinner("저장 중입니다..."):
+                        base_df = disp_df[["customer_id", "campaign_id", "target_roas", "min_roas"]].copy()
+                        comp_df = edited_df[["customer_id", "campaign_id", "target_roas", "min_roas"]].copy()
+                        merged = comp_df.merge(
+                            base_df,
+                            on=["customer_id", "campaign_id"],
+                            how="left",
+                            suffixes=("", "_orig"),
+                        )
+                        changed = merged[
+                            (~merged["target_roas"].fillna(-1).eq(merged["target_roas_orig"].fillna(-1))) |
+                            (~merged["min_roas"].fillna(-1).eq(merged["min_roas_orig"].fillna(-1)))
+                        ]
                         with engine.begin() as conn:
-                            for _, row in edited_df.iterrows():
+                            for _, row in changed.iterrows():
                                 t_val = float(row['target_roas']) if pd.notna(row['target_roas']) else None
                                 m_val = float(row['min_roas']) if pd.notna(row['min_roas']) else None
-                                
                                 conn.execute(
                                     text("UPDATE dim_campaign SET target_roas = :t, min_roas = :m WHERE customer_id = :cid AND campaign_id = :campid"),
                                     {"t": t_val, "m": m_val, "cid": str(row['customer_id']), "campid": str(row['campaign_id'])}
                                 )
                     st.success("저장 완료!", icon=":material/check_circle:")
                     st.cache_data.clear()
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
             else:
                 st.info("데이터 동기화를 먼저 진행해주세요.", icon=":material/info:")
