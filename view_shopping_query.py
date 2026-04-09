@@ -15,27 +15,6 @@ from page_helpers import _perf_common_merge_meta, period_compare_range
 
 
 # ✨ 숫자 콤마 및 기호 포맷팅 딕셔너리
-SHOPPING_QUERY_COL_CONFIG = {
-    "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
-    "구매완료 매출": st.column_config.NumberColumn("구매완료 매출", format="%d 원"),
-    "장바구니수": st.column_config.NumberColumn("장바구니수", format="%d"),
-    "장바구니 매출액": st.column_config.NumberColumn("장바구니 매출액", format="%d 원"),
-    "총 전환수": st.column_config.NumberColumn("총 전환수", format="%d"),
-    "총 전환매출": st.column_config.NumberColumn("총 전환매출", format="%d 원"),
-    "구매완료수 증감": st.column_config.NumberColumn("구매완료수 증감", format="%.1f %%"),
-    "구매완료 매출 증감": st.column_config.NumberColumn("구매완료 매출 증감", format="%.1f %%"),
-    "총 전환수 증감": st.column_config.NumberColumn("총 전환수 증감", format="%.1f %%"),
-    "총 전환매출 증감": st.column_config.NumberColumn("총 전환매출 증감", format="%.1f %%"),
-}
-
-@st.cache_data(ttl=900, max_entries=20, show_spinner=False)
-def _build_shopping_query_excel_bytes(df: pd.DataFrame) -> bytes:
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer) as writer:
-        df.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
-    return excel_buffer.getvalue()
-
-
 FMT_DICT = {
     "구매완료수": "{:,.0f}",
     "구매완료 매출": "{:,.0f}원",
@@ -236,24 +215,33 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         if disp.empty:
             _empty_notice("조건에 맞는 검색어가 없습니다.")
         else:
-            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=SHOPPING_QUERY_COL_CONFIG)
+            col_cfg = {
+                k: st.column_config.NumberColumn(k, format=("%d" if "증감" not in k else "%.1f %%"))
+                for k in disp.columns if k in {"구매완료수", "장바구니수", "총 전환수", "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감", "총 전환매출 증감"}
+            }
+            col_cfg.update({
+                k: st.column_config.NumberColumn(k, format="%d 원")
+                for k in disp.columns if k in {"구매완료 매출", "장바구니 매출액", "총 전환매출"}
+            })
+            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=col_cfg)
 
     st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
-    
+
     with st.container(border=True):
         st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:8px;'>리포트 다운로드</div><div style='font-size:13px;color:#6B7280;margin-bottom:12px;'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
-        download_sig = (str(f['start']), str(f['end']), int(len(disp.index)), tuple(disp.columns))
-        state_key = 'shopping_query_download_sig'
-        bytes_key = 'shopping_query_download_bytes'
-        if st.button('엑셀 파일 준비', key='shopping_query_prepare_excel', use_container_width=True):
-            st.session_state[state_key] = download_sig
-            st.session_state[bytes_key] = _build_shopping_query_excel_bytes(disp)
-        if st.session_state.get(state_key) == download_sig and st.session_state.get(bytes_key):
+        excel_sig = f"{f['start']}|{f['end']}|{len(disp.index)}|{hash(tuple(disp.columns))}"
+        if st.button("엑셀 파일 준비", use_container_width=True, key="sq_prepare_excel"):
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer) as writer:
+                disp.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
+            st.session_state["sq_excel_sig"] = excel_sig
+            st.session_state["sq_excel_bytes"] = excel_buffer.getvalue()
+        if st.session_state.get("sq_excel_sig") == excel_sig and st.session_state.get("sq_excel_bytes"):
             st.download_button(
                 label="검색어 리포트 다운로드 (Excel)",
-                data=st.session_state[bytes_key],
+                data=st.session_state.get("sq_excel_bytes"),
                 file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key='shopping_query_download_button',
+                key="sq_download_excel",
             )

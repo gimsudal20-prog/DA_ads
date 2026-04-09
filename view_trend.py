@@ -51,22 +51,21 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
-TREND_COL_CONFIG = {
-    "트렌드지수(%)": st.column_config.NumberColumn("트렌드지수(%)", format="%.1f"),
-    "노출": st.column_config.NumberColumn("노출", format="%d"),
-    "클릭": st.column_config.NumberColumn("클릭", format="%d"),
-    "광고비": st.column_config.NumberColumn("광고비", format="%d"),
-}
+@st.cache_data(show_spinner=False, ttl=1800)
+def _cached_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date_str: str, end_date_str: str):
+    return get_datalab_trend(client_id, client_secret, keyword, pd.to_datetime(start_date_str).date(), pd.to_datetime(end_date_str).date(), diag=None)
 
-@st.cache_data(ttl=1800, max_entries=20, show_spinner=False)
-def _cached_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date) -> pd.DataFrame:
+def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date, diag: list | None = None) -> pd.DataFrame:
+    if not client_id or not client_secret:
+        _diag_add(diag, "데이터랩 인증", "error", 0, "NAVER_DATALAB_CLIENT_ID/SECRET", "API 키가 비어 있습니다.")
+        return pd.DataFrame()
     client_id = client_id.replace('"', '').replace("'", "").strip()
     client_secret = client_secret.replace('"', '').replace("'", "").strip()
+
     url = "https://openapi.naver.com/v1/datalab/search"
     s_date = start_date
     e_date = end_date
-    if s_date == e_date:
-        s_date = s_date - timedelta(days=1)
+    if s_date == e_date: s_date = s_date - timedelta(days=1)
 
     body = {
         "startDate": s_date.strftime("%Y-%m-%d"),
@@ -80,85 +79,67 @@ def _cached_datalab_trend(client_id: str, client_secret: str, keyword: str, star
     req.add_header("X-Naver-Client-Id", client_id)
     req.add_header("X-Naver-Client-Secret", client_secret)
     req.add_header("Content-Type", "application/json")
-    response = urllib.request.urlopen(req, data=json.dumps(body).encode("utf-8"))
-    if response.getcode() != 200:
-        return pd.DataFrame()
-    data = json.loads(response.read().decode('utf-8'))
-    if "results" not in data or not data["results"]:
-        return pd.DataFrame()
-    df = pd.DataFrame(data["results"][0]["data"])
-    if df.empty:
-        return df
-    df = df.rename(columns={"period": "dt", "ratio": "트렌드지수(%)"})
-    df["dt"] = pd.to_datetime(df["dt"])
-    return df
 
-
-def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date, diag: list | None = None) -> pd.DataFrame:
-    if not client_id or not client_secret:
-        _diag_add(diag, "데이터랩 인증", "error", 0, "NAVER_DATALAB_CLIENT_ID/SECRET", "API 키가 비어 있습니다.")
-        return pd.DataFrame()
     try:
-        df = _cached_datalab_trend(client_id, client_secret, keyword, start_date, end_date)
-        _diag_add(diag, '데이터랩 조회', 'ok' if not df.empty else 'zero_data', len(df.index), 'Naver DataLab', f'검색어={keyword}')
-        return df
+        response = urllib.request.urlopen(req, data=json.dumps(body).encode("utf-8"))
+        if response.getcode() == 200:
+            data = json.loads(response.read().decode('utf-8'))
+            if "results" in data and len(data["results"]) > 0:
+                df = pd.DataFrame(data["results"][0]["data"])
+                df = df.rename(columns={"period": "dt", "ratio": "트렌드지수(%)"})
+                df["dt"] = pd.to_datetime(df["dt"])
+                _diag_add(diag, '데이터랩 조회', 'ok' if not df.empty else 'zero_data', len(df.index), 'Naver DataLab', f'검색어={keyword}')
+                return df
     except Exception as e:
         _diag_add(diag, '데이터랩 조회', 'error', 0, 'Naver DataLab', f'{type(e).__name__}: {e}')
         return pd.DataFrame()
 
-@st.cache_data(ttl=900, max_entries=20, show_spinner=False)
-def _cached_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
+    _diag_add(diag, '데이터랩 조회', 'zero_data', 0, 'Naver DataLab', f'검색어={keyword} 결과 없음')
+    return pd.DataFrame()
+
+def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple, diag: list | None = None) -> pd.DataFrame:
     df_list = []
     cid_str = _sql_in_str_list(list(cids))
     where_cid = f"AND f.customer_id::text IN ({cid_str})" if cids else ""
-
+    
     has_camp = table_exists(_engine, "dim_campaign")
     has_grp = table_exists(_engine, "dim_adgroup")
+    
     if table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword"):
+        _diag_add(diag, "내부 원천", "ok", None, "fact_keyword_daily + dim_keyword", "키워드 일별 상세 기준")
         f_cols = get_table_columns(_engine, "fact_keyword_daily")
         sales_col = "f.sales" if "sales" in f_cols else "0"
+        
         g_join = "LEFT JOIN dim_adgroup g ON dk.customer_id::text = g.customer_id::text AND dk.adgroup_id::text = g.adgroup_id::text" if has_grp else ""
         c_join = "LEFT JOIN dim_campaign c ON g.customer_id::text = c.customer_id::text AND g.campaign_id::text = c.campaign_id::text" if (has_grp and has_camp) else ""
+        
         c_name = "COALESCE(c.campaign_name, g.campaign_id::text, '알 수 없음')" if (has_grp and has_camp) else "'알 수 없음'"
         g_name = "COALESCE(g.adgroup_name, dk.adgroup_id::text, '알 수 없음')" if has_grp else "dk.adgroup_id::text"
+
         sql = f"""
         SELECT f.dt::date AS dt, {c_name} AS campaign_name, {g_name} AS adgroup_name,
             SUM(f.imp) AS imp, SUM(f.clk) AS clk, SUM(f.cost) AS cost, SUM(COALESCE({sales_col}, 0)) AS sales
         FROM fact_keyword_daily f JOIN dim_keyword dk ON f.customer_id::text = dk.customer_id::text AND f.keyword_id::text = dk.keyword_id::text
         {g_join} {c_join} WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY 1, 2, 3
         """
-        df1 = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
-        if df1 is not None and not df1.empty:
-            df_list.append(df1)
+        try:
+            df1 = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2)})
+            if df1 is not None and not df1.empty:
+                df_list.append(df1)
+                _diag_add(diag, "내부 원천 조회", "ok", len(df1.index), "fact_keyword_daily", "내부 키워드 일별 로우 조회 성공")
+            else:
+                _diag_add(diag, "내부 원천 조회", "zero_data", 0, "fact_keyword_daily", "기간/필터 기준 데이터 없음")
+        except Exception as e:
+            _diag_add(diag, "내부 원천 조회", "error", 0, "fact_keyword_daily", f"{type(e).__name__}: {e}")
 
-    if not df_list:
-        return pd.DataFrame()
-    res = pd.concat(df_list, ignore_index=True)
-    return res.groupby(["dt", "campaign_name", "adgroup_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
-
-
-def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple, diag: list | None = None) -> pd.DataFrame:
-    has_keyword = table_exists(_engine, "fact_keyword_daily") and table_exists(_engine, "dim_keyword")
-    if has_keyword:
-        _diag_add(diag, "내부 원천", "ok", None, "fact_keyword_daily + dim_keyword", "키워드 일별 상세 기준")
     else:
         _diag_add(diag, "내부 원천", "error", 0, "fact_keyword_daily + dim_keyword", "필수 테이블이 없어 내부 일별 상세를 만들 수 없습니다.")
-        _diag_add(diag, "내부 일별 집계", "zero_data", 0, "fact_keyword_daily", "집계 가능한 내부 데이터가 없습니다.")
-        return pd.DataFrame()
 
-    try:
-        out = _cached_internal_daily_detail(_engine, d1, d2, cids)
-    except Exception as e:
-        _diag_add(diag, "내부 원천 조회", "error", 0, "fact_keyword_daily", f"{type(e).__name__}: {e}")
-        _diag_add(diag, "내부 일별 집계", "zero_data", 0, "fact_keyword_daily", "집계 가능한 내부 데이터가 없습니다.")
-        return pd.DataFrame()
-
-    if out is not None and not out.empty:
-        _diag_add(diag, "내부 원천 조회", "ok", len(out.index), "fact_keyword_daily", "내부 키워드 일별 로우 조회 성공")
-        _diag_add(diag, "내부 일별 집계", "ok", len(out.index), "fact_keyword_daily", "캠페인/광고그룹 기준 일별 집계")
+    if df_list:
+        res = pd.concat(df_list, ignore_index=True)
+        out = res.groupby(["dt", "campaign_name", "adgroup_name"], as_index=False)[["imp", "clk", "cost", "sales"]].sum()
+        _diag_add(diag, "내부 일별 집계", "ok" if not out.empty else "zero_data", len(out.index), "fact_keyword_daily", "캠페인/광고그룹 기준 일별 집계")
         return out
-
-    _diag_add(diag, "내부 원천 조회", "zero_data", 0, "fact_keyword_daily", "기간/필터 기준 데이터 없음")
     _diag_add(diag, "내부 일별 집계", "zero_data", 0, "fact_keyword_daily", "집계 가능한 내부 데이터가 없습니다.")
     return pd.DataFrame()
 
@@ -220,28 +201,32 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_diag_panel(diag)
         return
 
-    c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
-    with c1: datalab_kw = st.text_input("데이터랩 검색어", placeholder="예: 나이키운동화").strip()
+    c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.0])
+    with c1:
+        datalab_kw = st.text_input("데이터랩 검색어", placeholder="예: 나이키운동화", key="trend_kw").strip()
     with c2:
         camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_camp = st.selectbox("비교할 캠페인", camps)
+        sel_camp = st.selectbox("비교할 캠페인", camps, key="trend_campaign")
     with c3:
-        if sel_camp == "전체": grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        else: grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_grp = st.selectbox("비교할 광고그룹", grps)
+        if sel_camp == "전체":
+            grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+        else:
+            grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+        sel_grp = st.selectbox("비교할 광고그룹", grps, key="trend_group")
+    with c4:
+        run_clicked = st.button("트렌드 조회", use_container_width=True, key="trend_run")
 
-    trend_sig = (str(d1), str(d2), tuple(cids), str(sel_camp), str(sel_grp), datalab_kw)
-    run_key = "trend_last_run_sig"
-    submitted = st.button("트렌드 조회", use_container_width=True, key="trend_run_button")
-    if submitted:
-        st.session_state[run_key] = trend_sig
+    query_sig = f"{d1}|{d2}|{datalab_kw}|{sel_camp}|{sel_grp}|{','.join(type_sel)}|{','.join(cids)}"
+    if run_clicked:
+        st.session_state["trend_run_sig"] = query_sig
 
     if not datalab_kw:
         _diag_add(diag, "검색어 입력", "warn", 0, "st.text_input", "데이터랩 검색어를 입력하면 비교가 시작됩니다.")
         _render_diag_panel(diag)
         return
-    if st.session_state.get(run_key) != trend_sig:
-        _diag_add(diag, "조회 대기", "warn", 0, "st.button", "필터나 검색어를 바꾼 뒤 트렌드 조회 버튼을 눌러주세요.")
+    if st.session_state.get("trend_run_sig") != query_sig:
+        _diag_add(diag, "트렌드 조회", "warn", 0, "st.button", "트렌드 조회 버튼을 눌러 실행하세요.")
+        st.info("검색어와 대상을 정한 뒤 '트렌드 조회' 버튼을 눌러 주세요.")
         _render_diag_panel(diag)
         return
 
@@ -258,7 +243,8 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     df_daily["dt"] = pd.to_datetime(df_daily["dt"])
     df_daily = df_daily.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
 
-    trend_df = get_datalab_trend(client_id, client_secret, datalab_kw, d1, d2, diag=diag)
+    trend_df = _cached_datalab_trend(client_id, client_secret, datalab_kw, str(d1), str(d2))
+    _diag_add(diag, '데이터랩 조회', 'ok' if trend_df is not None and not trend_df.empty else 'zero_data', 0 if trend_df is None else len(trend_df.index), 'Naver DataLab', f'검색어={datalab_kw}')
     if trend_df.empty:
         st.info("데이터랩 결과가 없어 비교 그래프를 만들 수 없습니다. 조회 진단을 확인해 주세요.")
         _render_diag_panel(diag)
@@ -269,7 +255,18 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     render_trend_chart(merged_df, datalab_kw, "전체")
     
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:24px;'>일자별 상세 데이터</div>", unsafe_allow_html=True)
-    trend_table = merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).copy()
-    st.dataframe(trend_table, use_container_width=True, hide_index=True, column_config=TREND_COL_CONFIG)
+    detail_df = merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).copy()
+    st.dataframe(
+        detail_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "dt": st.column_config.DateColumn("dt"),
+            "트렌드지수(%)": st.column_config.NumberColumn("트렌드지수(%)", format="%.1f"),
+            "노출": st.column_config.NumberColumn("노출", format="%d"),
+            "클릭": st.column_config.NumberColumn("클릭", format="%d"),
+            "광고비": st.column_config.NumberColumn("광고비", format="%d"),
+        },
+    )
 
     _render_diag_panel(diag)
