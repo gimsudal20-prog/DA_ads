@@ -4,24 +4,16 @@
 from __future__ import annotations
 
 import os
-from importlib import import_module
-
 import streamlit as st
 
-from data import get_campaign_type_options, get_engine, get_latest_dates, get_meta, load_dim_campaign
-from page_helpers import BUILD_TAG, build_filters
+from data import *
 from ui import render_hero
+from page_helpers import BUILD_TAG, build_filters
 
 
-@st.cache_data(ttl=43200, max_entries=4, show_spinner=False)
-def _cached_type_options(dim_campaign):
-    return tuple(get_campaign_type_options(dim_campaign))
-
-
-def _lazy_page(module_name: str, func_name: str):
-    module = import_module(module_name)
-    return getattr(module, func_name)
-
+@st.cache_data(ttl=3600, max_entries=8, show_spinner=False)
+def _get_cached_type_options(dim_campaign_df: pd.DataFrame) -> list:
+    return get_campaign_type_options(dim_campaign_df)
 
 def main():
     try:
@@ -79,9 +71,8 @@ def main():
         if not meta_ready:
             st.error("설정 메뉴에서 동기화를 진행해주세요.")
             return
-        dim_campaign = load_dim_campaign(engine)
-        type_opts = list(_cached_type_options(dim_campaign))
-        f = build_filters(meta, type_opts, engine)
+        dim_campaign_df = load_dim_campaign(engine)
+        f = build_filters(meta, _get_cached_type_options(dim_campaign_df), engine)
 
     requires_selection_pages = {
         "요약",
@@ -98,22 +89,29 @@ def main():
         st.stop()
 
     if nav == "요약":
-        _lazy_page("view_overview", "page_overview")(meta, engine, f)
+        from view_overview import page_overview
+        page_overview(meta, engine, f)
     elif nav == "예산 및 잔액":
-        _lazy_page("view_budget", "page_budget")(meta, engine, f)
+        from view_budget import page_budget
+        page_budget(meta, engine, f)
     elif nav == "매체(지면) 분석":
-        _lazy_page("view_media", "page_media")(engine, f)
+        from view_media import page_media
+        page_media(engine, f)
     elif nav == "성과 분석 · 캠페인":
-        _lazy_page("view_campaign", "page_perf_campaign")(meta, engine, f)
+        from view_campaign import page_perf_campaign
+        page_perf_campaign(meta, engine, f)
     elif nav == "성과 분석 · 키워드":
-        _lazy_page("view_keyword", "page_perf_keyword")(meta, engine, f)
+        from view_keyword import page_perf_keyword
+        page_perf_keyword(meta, engine, f)
     elif nav == "쇼핑 검색어 분석":
-        _lazy_page("view_shopping_query", "page_perf_shopping_query")(meta, engine, f)
+        from view_shopping_query import page_perf_shopping_query
+        page_perf_shopping_query(meta, engine, f)
     elif nav == "성과 분석 · 소재":
-        _lazy_page("view_ad", "page_perf_ad")(meta, engine, f)
+        from view_ad import page_perf_ad
+        page_perf_ad(meta, engine, f)
     else:
-        _lazy_page("view_settings", "page_settings")(engine)
-
+        from view_settings import page_settings
+        page_settings(engine)
 
 if __name__ == "__main__":
     main()

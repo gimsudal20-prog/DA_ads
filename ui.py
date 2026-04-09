@@ -10,18 +10,41 @@ import streamlit as st
 
 from styles import apply_global_css
 
-try:
-    from streamlit_echarts import st_echarts
-    HAS_ECHARTS = True
-except Exception:
-    st_echarts = None
-    HAS_ECHARTS = False
+HAS_ECHARTS = None
+st_echarts = None
+HAS_AGGRID = None
+AgGrid = GridOptionsBuilder = ColumnsAutoSizeMode = GridUpdateMode = None
 
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, GridUpdateMode
-    HAS_AGGRID = True
-except ImportError:
-    HAS_AGGRID = False
+
+def _ensure_echarts():
+    global HAS_ECHARTS, st_echarts
+    if HAS_ECHARTS is not None:
+        return HAS_ECHARTS
+    try:
+        from streamlit_echarts import st_echarts as _st_echarts
+        st_echarts = _st_echarts
+        HAS_ECHARTS = True
+    except Exception:
+        HAS_ECHARTS = False
+        st_echarts = None
+    return HAS_ECHARTS
+
+
+def _ensure_aggrid():
+    global HAS_AGGRID, AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, GridUpdateMode
+    if HAS_AGGRID is not None:
+        return HAS_AGGRID
+    try:
+        from st_aggrid import AgGrid as _AgGrid, GridOptionsBuilder as _GridOptionsBuilder, ColumnsAutoSizeMode as _ColumnsAutoSizeMode, GridUpdateMode as _GridUpdateMode
+        AgGrid = _AgGrid
+        GridOptionsBuilder = _GridOptionsBuilder
+        ColumnsAutoSizeMode = _ColumnsAutoSizeMode
+        GridUpdateMode = _GridUpdateMode
+        HAS_AGGRID = True
+    except Exception:
+        HAS_AGGRID = False
+        AgGrid = GridOptionsBuilder = ColumnsAutoSizeMode = GridUpdateMode = None
+    return HAS_AGGRID
 
 from data import format_currency
 
@@ -103,6 +126,13 @@ def render_big_table(df, key: str, height: int = 400) -> None:
         render_empty_state("조회된 데이터가 없습니다.", height)
         return
 
+    if len(check_df) > 1000 or not _ensure_aggrid():
+        try:
+            st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+        except Exception:
+            st.dataframe(check_df, use_container_width=True, height=height, hide_index=True)
+        return
+
     if HAS_AGGRID:
         gb = GridOptionsBuilder.from_dataframe(check_df)
         gb.configure_default_column(resizable=True, filterable=True, sortable=True)
@@ -118,7 +148,7 @@ def render_big_table(df, key: str, height: int = 400) -> None:
             theme='alpine',
             update_mode=GridUpdateMode.NO_UPDATE,
             columns_auto_size_mode=ColumnsAutoSizeMode.FIT_ALL_COLUMNS_TO_VIEW,
-            allow_unsafe_jscode=True,
+            allow_unsafe_jscode=False,
             key=f"aggrid_{key}"
         )
     else:
@@ -217,7 +247,15 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
             {"name": y2_name, "type": "line", "yAxisIndex": 1, "data": y2_data, "smooth": True, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 2.5}, "symbol": "circle", "symbolSize": 6}
         ]
     }
-    st_echarts(options=options, height=f"{height}px")
+    if _ensure_echarts():
+        if _ensure_echarts():
+        st_echarts(options=options, height=f"{height}px")
+    else:
+        chart_df = pd.DataFrame({x_col: x_data, y_name: y_data}).set_index(x_col)
+        st.line_chart(chart_df, height=height)
+    else:
+        chart_df = pd.DataFrame({x_col: x_data, y1_name: y1_data, y2_name: y2_data}).set_index(x_col)
+        st.line_chart(chart_df, height=height)
 
 def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: str, y_name: str, height: int = 300):
     if df.empty:
@@ -247,4 +285,8 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
             {"name": y_name, "type": "line", "data": y_data, "smooth": True, "itemStyle": {"color": THEME['primary']}, "lineStyle": {"width": 2.5}, "symbol": "circle", "symbolSize": 6}
         ]
     }
-    st_echarts(options=options, height=f"{height}px")
+    if _ensure_echarts():
+        st_echarts(options=options, height=f"{height}px")
+    else:
+        chart_df = pd.DataFrame({x_col: x_data, y1_name: y1_data, y2_name: y2_data}).set_index(x_col)
+        st.line_chart(chart_df, height=height)

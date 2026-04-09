@@ -430,4 +430,7 @@ JS_CUSTOM_ENHANCEMENTS = """
 
 def apply_global_css():
     st.markdown(GLOBAL_UI_CSS, unsafe_allow_html=True)
-    components.html(JS_CUSTOM_ENHANCEMENTS, height=0, width=0)
+    if str(st.session_state.get("_enable_parent_js_enhancements", "1")) not in {"0", "false", "False", "off", "OFF"}:
+        if not st.session_state.get("_parent_js_enhancements_injected"):
+            components.html(JS_CUSTOM_ENHANCEMENTS, height=0, width=0)
+            st.session_state["_parent_js_enhancements_injected"] = True
