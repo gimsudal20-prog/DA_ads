@@ -248,11 +248,7 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
         ]
     }
     if _ensure_echarts():
-        if _ensure_echarts():
         st_echarts(options=options, height=f"{height}px")
-    else:
-        chart_df = pd.DataFrame({x_col: x_data, y_name: y_data}).set_index(x_col)
-        st.line_chart(chart_df, height=height)
     else:
         chart_df = pd.DataFrame({x_col: x_data, y1_name: y1_data, y2_name: y2_data}).set_index(x_col)
         st.line_chart(chart_df, height=height)
@@ -288,5 +284,5 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     if _ensure_echarts():
         st_echarts(options=options, height=f"{height}px")
     else:
-        chart_df = pd.DataFrame({x_col: x_data, y1_name: y1_data, y2_name: y2_data}).set_index(x_col)
+        chart_df = pd.DataFrame({x_col: x_data, y_name: y_data}).set_index(x_col)
         st.line_chart(chart_df, height=height)
