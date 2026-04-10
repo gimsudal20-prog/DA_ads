@@ -43,6 +43,16 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
     return styler
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_sq_terms(_engine, d1, d2, cids: tuple):
+    return query_shopping_search_terms(_engine, d1, d2, cids)
+
+def _build_sq_excel_bytes(df: pd.DataFrame) -> bytes:
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer) as writer:
+        df.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
+    return excel_buffer.getvalue()
+
 def _empty_notice(message: str):
     st.info(message)
 
@@ -169,11 +179,11 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
 
     with st.spinner("🔄 쇼핑 검색어 데이터를 불러오는 중입니다..."):
-        df_cur = query_shopping_search_terms(engine, f["start"], f["end"], cids)
+        df_cur = _cached_sq_terms(engine, f["start"], f["end"], cids)
         if df_cur.empty:
             _empty_notice("해당 기간에 수집된 쇼핑 검색어 전환 데이터가 없습니다.")
             return
-        df_prev = query_shopping_search_terms(engine, b1, b2, cids)
+        df_prev = _cached_sq_terms(engine, b1, b2, cids)
         df_cur = _perf_common_merge_meta(df_cur, meta)
         if not df_prev.empty:
             df_prev = _perf_common_merge_meta(df_prev, meta)
@@ -215,33 +225,26 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         if disp.empty:
             _empty_notice("조건에 맞는 검색어가 없습니다.")
         else:
-            col_cfg = {
-                k: st.column_config.NumberColumn(k, format=("%d" if "증감" not in k else "%.1f %%"))
-                for k in disp.columns if k in {"구매완료수", "장바구니수", "총 전환수", "구매완료수 증감", "구매완료 매출 증감", "총 전환수 증감", "총 전환매출 증감"}
-            }
-            col_cfg.update({
-                k: st.column_config.NumberColumn(k, format="%d 원")
-                for k in disp.columns if k in {"구매완료 매출", "장바구니 매출액", "총 전환매출"}
-            })
-            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=col_cfg)
+            # ✨ 세 자리 콤마 포맷팅 & 증감률 컬러 스타일링 적용
+            safe_fmt = {k: v for k, v in FMT_DICT.items() if k in disp.columns}
+            styled_disp = disp.style.format(safe_fmt)
+            styled_disp = _apply_delta_styles(styled_disp, disp)
+            st.dataframe(styled_disp, use_container_width=True, hide_index=True)
 
     st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
-
+    
     with st.container(border=True):
         st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:8px;'>리포트 다운로드</div><div style='font-size:13px;color:#6B7280;margin-bottom:12px;'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
-        excel_sig = f"{f['start']}|{f['end']}|{len(disp.index)}|{hash(tuple(disp.columns))}"
-        if st.button("엑셀 파일 준비", use_container_width=True, key="sq_prepare_excel"):
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer) as writer:
-                disp.to_excel(writer, sheet_name="쇼핑_검색어_성과", index=False)
-            st.session_state["sq_excel_sig"] = excel_sig
-            st.session_state["sq_excel_bytes"] = excel_buffer.getvalue()
-        if st.session_state.get("sq_excel_sig") == excel_sig and st.session_state.get("sq_excel_bytes"):
+        cache_key = f"sq_excel::{f['start']}::{f['end']}::{cmp_mode}::{sel_camp}::{sel_grp}::{q_text.strip()}::{int(min_purchase_sales)}::{int(min_total_conv)}::{int(only_purchase)}::{int(only_cart)}"
+        if st.button("엑셀 파일 준비", key="sq_prepare_excel_btn", use_container_width=True):
+            st.session_state[cache_key] = _build_sq_excel_bytes(disp)
+        excel_bytes = st.session_state.get(cache_key)
+        if excel_bytes:
             st.download_button(
                 label="검색어 리포트 다운로드 (Excel)",
-                data=st.session_state.get("sq_excel_bytes"),
+                data=excel_bytes,
                 file_name=f"쇼핑_검색어_리포트_{f['start']}_{f['end']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="sq_download_excel",
+                key="sq_download_excel_btn",
             )

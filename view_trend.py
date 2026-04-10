@@ -51,9 +51,9 @@ except Exception:
     st_echarts = None
     HAS_ECHARTS = False
 
-@st.cache_data(show_spinner=False, ttl=1800)
-def _cached_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date_str: str, end_date_str: str):
-    return get_datalab_trend(client_id, client_secret, keyword, pd.to_datetime(start_date_str).date(), pd.to_datetime(end_date_str).date(), diag=None)
+@st.cache_data(show_spinner=False, ttl=900)
+def _cached_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date) -> pd.DataFrame:
+    return get_datalab_trend(client_id, client_secret, keyword, start_date, end_date, diag=None)
 
 def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_date: date, end_date: date, diag: list | None = None) -> pd.DataFrame:
     if not client_id or not client_secret:
@@ -96,6 +96,10 @@ def get_datalab_trend(client_id: str, client_secret: str, keyword: str, start_da
 
     _diag_add(diag, '데이터랩 조회', 'zero_data', 0, 'Naver DataLab', f'검색어={keyword} 결과 없음')
     return pd.DataFrame()
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
+    return get_internal_daily_detail(_engine, d1, d2, cids, diag=None)
 
 def get_internal_daily_detail(_engine, d1: date, d2: date, cids: tuple, diag: list | None = None) -> pd.DataFrame:
     df_list = []
@@ -195,38 +199,30 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
         _render_diag_panel(diag)
         return
 
-    df_raw = get_internal_daily_detail(engine, d1, d2, cids, diag=diag)
+    df_raw = _cached_internal_daily_detail(engine, d1, d2, cids)
+    _diag_add(diag, "내부 원천 조회", "ok" if not df_raw.empty else "zero_data", len(df_raw.index) if df_raw is not None else 0, "fact_keyword_daily", "캐시/원천 조회")
     if df_raw.empty:
         st.info("선택한 기간의 내부 노출 데이터가 없어 트렌드 비교를 진행할 수 없습니다.")
         _render_diag_panel(diag)
         return
 
-    c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.0])
-    with c1:
-        datalab_kw = st.text_input("데이터랩 검색어", placeholder="예: 나이키운동화", key="trend_kw").strip()
+    c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
+    with c1: datalab_kw = st.text_input("데이터랩 검색어", placeholder="예: 나이키운동화").strip()
     with c2:
         camps = ["전체"] + sorted([str(x) for x in df_raw["campaign_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_camp = st.selectbox("비교할 캠페인", camps, key="trend_campaign")
+        sel_camp = st.selectbox("비교할 캠페인", camps)
     with c3:
-        if sel_camp == "전체":
-            grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        else:
-            grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
-        sel_grp = st.selectbox("비교할 광고그룹", grps, key="trend_group")
-    with c4:
-        run_clicked = st.button("트렌드 조회", use_container_width=True, key="trend_run")
+        if sel_camp == "전체": grps = ["전체"] + sorted([str(x) for x in df_raw["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+        else: grps = ["전체"] + sorted([str(x) for x in df_raw[df_raw["campaign_name"] == sel_camp]["adgroup_name"].dropna().unique() if str(x).strip() and x != "알 수 없음"])
+        sel_grp = st.selectbox("비교할 광고그룹", grps)
 
-    query_sig = f"{d1}|{d2}|{datalab_kw}|{sel_camp}|{sel_grp}|{','.join(type_sel)}|{','.join(cids)}"
-    if run_clicked:
-        st.session_state["trend_run_sig"] = query_sig
-
+    run_trend = st.button('트렌드 조회', key='trend_run_btn', use_container_width=False)
     if not datalab_kw:
         _diag_add(diag, "검색어 입력", "warn", 0, "st.text_input", "데이터랩 검색어를 입력하면 비교가 시작됩니다.")
         _render_diag_panel(diag)
         return
-    if st.session_state.get("trend_run_sig") != query_sig:
-        _diag_add(diag, "트렌드 조회", "warn", 0, "st.button", "트렌드 조회 버튼을 눌러 실행하세요.")
-        st.info("검색어와 대상을 정한 뒤 '트렌드 조회' 버튼을 눌러 주세요.")
+    if not run_trend:
+        st.info('검색어와 조건을 선택한 뒤 `트렌드 조회`를 눌러 비교를 시작하세요.')
         _render_diag_panel(diag)
         return
 
@@ -243,8 +239,8 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     df_daily["dt"] = pd.to_datetime(df_daily["dt"])
     df_daily = df_daily.rename(columns={"imp": "노출", "clk": "클릭", "cost": "광고비"})
 
-    trend_df = _cached_datalab_trend(client_id, client_secret, datalab_kw, str(d1), str(d2))
-    _diag_add(diag, '데이터랩 조회', 'ok' if trend_df is not None and not trend_df.empty else 'zero_data', 0 if trend_df is None else len(trend_df.index), 'Naver DataLab', f'검색어={datalab_kw}')
+    trend_df = _cached_datalab_trend(client_id, client_secret, datalab_kw, d1, d2)
+    _diag_add(diag, "데이터랩 조회", "ok" if not trend_df.empty else "zero_data", len(trend_df.index) if trend_df is not None else 0, "Naver DataLab", f"검색어={datalab_kw}")
     if trend_df.empty:
         st.info("데이터랩 결과가 없어 비교 그래프를 만들 수 없습니다. 조회 진단을 확인해 주세요.")
         _render_diag_panel(diag)
@@ -255,18 +251,17 @@ def page_trend(meta: pd.DataFrame, engine, f: Dict) -> None:
     render_trend_chart(merged_df, datalab_kw, "전체")
     
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:24px;'>일자별 상세 데이터</div>", unsafe_allow_html=True)
-    detail_df = merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).copy()
+    detail = merged_df[["dt", "트렌드지수(%)", "노출", "클릭", "광고비"]].sort_values("dt", ascending=False).copy()
+    detail['dt'] = pd.to_datetime(detail['dt']).dt.date
     st.dataframe(
-        detail_df,
-        use_container_width=True,
-        hide_index=True,
+        detail,
+        use_container_width=True, hide_index=True,
         column_config={
-            "dt": st.column_config.DateColumn("dt"),
             "트렌드지수(%)": st.column_config.NumberColumn("트렌드지수(%)", format="%.1f"),
             "노출": st.column_config.NumberColumn("노출", format="%d"),
             "클릭": st.column_config.NumberColumn("클릭", format="%d"),
             "광고비": st.column_config.NumberColumn("광고비", format="%d"),
-        },
+        }
     )
 
     _render_diag_panel(diag)

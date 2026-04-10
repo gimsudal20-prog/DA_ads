@@ -221,20 +221,18 @@ def _query_media_region(engine, f, diag: list | None = None) -> pd.DataFrame:
             return pd.DataFrame()
         _diag_add(diag, '유형 필터', 'ok', len(raw.index), 'fact_media_daily', '유형 필터 적용 후 잔존')
 
-    media_candidates = [c for c in ['media_name', 'placement_name', 'media_code', 'placement_code', 'media_tp', 'placement_tp'] if c in raw.columns]
-    device_candidates = [c for c in ['device_name', 'device', 'device_tp', 'device_type', 'platform'] if c in raw.columns]
+    media_cols = [c for c in ['media_name', 'placement_name', 'media_code', 'placement_code', 'media_tp', 'placement_tp'] if c in raw.columns]
+    device_cols = [c for c in ['device_name', 'device', 'device_tp', 'device_type', 'platform'] if c in raw.columns]
 
-    if media_candidates:
-        media_series = raw[media_candidates].bfill(axis=1).iloc[:, 0].fillna('전체').astype(str)
+    if media_cols:
+        raw['매체이름'] = raw[media_cols].replace('', np.nan).bfill(axis=1).iloc[:, 0].fillna('전체').map(_map_media_name)
     else:
-        media_series = pd.Series(['전체'] * len(raw), index=raw.index, dtype='object')
-    if device_candidates:
-        device_series = raw[device_candidates].bfill(axis=1).iloc[:, 0].fillna('기타').astype(str)
-    else:
-        device_series = pd.Series(['기타'] * len(raw), index=raw.index, dtype='object')
+        raw['매체이름'] = '전체'
 
-    raw['매체이름'] = media_series.map(_map_media_name)
-    raw['기기명'] = device_series.map(_normalize_device_value)
+    if device_cols:
+        raw['기기명'] = raw[device_cols].replace('', np.nan).bfill(axis=1).iloc[:, 0].fillna('기타').map(_normalize_device_value)
+    else:
+        raw['기기명'] = '기타'
 
     for c in ['imp', 'clk', 'cost', 'conv', 'sales']:
         raw[c] = pd.to_numeric(raw[c], errors='coerce').fillna(0)
@@ -266,6 +264,12 @@ def _calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out['CTR(%)'] = np.where(out['노출수'] > 0, (out['클릭수'] / out['노출수']) * 100, 0.0)
     return out.sort_values('광고비', ascending=False).reset_index(drop=True)
 
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_media_region(_engine, start: str, end: str, cids: tuple[str, ...], type_sel: tuple[str, ...]) -> pd.DataFrame:
+    f = {"start": pd.to_datetime(start).date(), "end": pd.to_datetime(end).date(), "selected_customer_ids": list(cids), "type_sel": list(type_sel)}
+    return _query_media_region(_engine, f, diag=None)
+
+
 @st.fragment
 def page_media(engine, f):
     if not f.get("ready", False): return
@@ -278,17 +282,16 @@ def page_media(engine, f):
     st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
     st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 확인된 코드부터 한글 지면명으로 변환되어 합산 표출됩니다. 미확인 코드는 코드값 그대로 유지됩니다.</div>", unsafe_allow_html=True)
 
-    selected_tab = st.radio(
-        "보기",
-        ["지면(매체)", "기기", "비용 누수 항목"],
-        horizontal=True,
-        key="media_tab_unified",
-        label_visibility="collapsed",
-    )
+    selected_tab = st.radio('보기', ['지면(매체)', '기기', '비용 누수 항목'], horizontal=True, key='media_view_mode')
 
     with st.spinner("🔄 매체 및 기기 성과 데이터를 집계하고 있습니다..."):
-        media_region_df = _query_media_region(engine, f, diag=diag)
-        device_df = _query_device(engine, f, diag=diag, media_df=media_region_df) if selected_tab == "기기" else pd.DataFrame()
+        media_region_df = _cached_media_region(engine, str(f['start']), str(f['end']), cids, type_sel)
+        if media_region_df is None or media_region_df.empty:
+            _diag_add(diag, '매체 원천 조회', 'zero_data', 0, 'fact_media_daily', '기간/필터 기준 원천 데이터 없음')
+            media_region_df = pd.DataFrame()
+        else:
+            _diag_add(diag, '매체 원천 조회', 'ok', len(media_region_df.index), 'fact_media_daily', '캐시/원천 조회 성공')
+        device_df = _query_device(engine, f, diag=diag, media_df=media_region_df) if selected_tab == '기기' else pd.DataFrame()
 
     if (media_region_df is None or media_region_df.empty) and (device_df is None or device_df.empty):
         st.warning('자동 수집된 매체/기기 데이터가 없습니다. 현재 프로젝트 기준으로 기기 데이터부터 자동 반영됩니다.')
