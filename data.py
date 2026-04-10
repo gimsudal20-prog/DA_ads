@@ -13,7 +13,7 @@ from sqlalchemy.pool import QueuePool
 from datetime import date
 
 # ==========================================
-
+# 1. Database Connection (QueuePool 적용)
 # ==========================================
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
@@ -39,7 +39,12 @@ def get_engine():
 
     return create_engine(
         db_url,
-        poolclass=NullPool,
+        poolclass=QueuePool,
+        pool_pre_ping=True,
+        pool_size=max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5)),
+        max_overflow=max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10)),
+        pool_timeout=max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "30") or 30)),
+        pool_recycle=max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800)),
         connect_args=connect_args,
         future=True
     )
@@ -754,63 +759,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
     )
 
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
-def query_overview_campaign_daily(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    if not table_exists(_engine, "fact_campaign_daily"):
-        return pd.DataFrame()
-    cids_tuple = _normalize_filter_values(cids)
-    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "overview_daily_cid")
-
-    type_join_sql = ""
-    type_where_sql = ""
-    type_params = {}
-    if type_sel and table_exists(_engine, "dim_campaign"):
-        cols = get_table_columns(_engine, "dim_campaign")
-        cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else "campaign_type")
-        type_join_sql = "JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id"
-        type_where_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "overview_daily_type")
-
-    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
-    expr = _strict_conv_selects(fact_cols, alias="f")
-    sql = f"""
-        SELECT
-            f.dt,
-            SUM(f.imp) as imp,
-            SUM(f.clk) as clk,
-            SUM(f.cost) as cost,
-            SUM({expr['purchase_conv_expr']}) as conv,
-            SUM({expr['purchase_sales_expr']}) as sales,
-            SUM({expr['total_conv_expr']}) as tot_conv,
-            SUM({expr['total_sales_expr']}) as tot_sales,
-            SUM({expr['cart_conv_expr']}) as cart_conv,
-            SUM({expr['cart_sales_expr']}) as cart_sales,
-            SUM({expr['wish_conv_expr']}) as wishlist_conv,
-            SUM({expr['wish_sales_expr']}) as wishlist_sales
-        FROM fact_campaign_daily f
-        {type_join_sql}
-        WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}
-        GROUP BY f.dt
-        ORDER BY f.dt
-    """
-    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
-    if not df.empty:
-        df["dt"] = pd.to_datetime(df["dt"])
-        for col in ["imp","clk","cost","conv","sales","tot_conv","tot_sales","cart_conv","cart_sales","wishlist_conv","wishlist_sales"]:
-            if col not in df.columns:
-                df[col] = 0
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return df
-
-
-@st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
-    if entity == "campaign":
-        daily_df = query_overview_campaign_daily(_engine, d1, d2, cids, type_sel)
-        if daily_df is None or daily_df.empty:
-            return {}
-        row = daily_df[[c for c in ["imp","clk","cost","conv","sales","tot_conv","tot_sales","cart_conv","cart_sales","wishlist_conv","wishlist_sales"] if c in daily_df.columns]].sum(numeric_only=True).to_dict()
-        row.setdefault("tot_conv", row.get("conv", 0))
-        row.setdefault("tot_sales", row.get("sales", 0))
-        return _compute_total_ratio_metrics(row)
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
 
