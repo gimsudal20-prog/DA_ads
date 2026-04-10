@@ -39,8 +39,8 @@ def get_engine():
 
     pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5))
     max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10))
-    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
     pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "30") or 30))
+    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
 
     return create_engine(
         db_url,
@@ -48,10 +48,10 @@ def get_engine():
         pool_pre_ping=True,
         pool_size=pool_size,
         max_overflow=max_overflow,
-        pool_recycle=pool_recycle,
         pool_timeout=pool_timeout,
+        pool_recycle=pool_recycle,
         connect_args=connect_args,
-        future=True,
+        future=True
     )
 
 def db_ping(engine) -> bool:
@@ -806,25 +806,36 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
-    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "campaign_bundle_cid")
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "campaign_bundle_cid")
 
     dim_cols, cp_col = _resolve_campaign_type_column(_engine)
     target_roas_select = ", c.target_roas" if "target_roas" in dim_cols else ", 0.0 as target_roas"
     min_roas_select = ", c.min_roas" if "min_roas" in dim_cols else ", 0.0 as min_roas"
-    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "campaign_bundle_type")
+    type_filter_sql, type_params = _build_campaign_type_filter(f"c.{cp_col}", type_sel, "campaign_bundle_type")
 
     camp_fact_cols = get_table_columns(_engine, "fact_campaign_daily")
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_campaign_daily"))
     metric_sql = _build_bundle_metric_sql(camp_fact_cols)
+    limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
 
     sql = f"""
-        WITH agg AS (
-            SELECT customer_id, campaign_id,
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+        WITH top_ids AS (
+            SELECT f.customer_id, f.campaign_id, SUM(f.cost) as cost
+            FROM fact_campaign_daily f
+            JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+            WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+            GROUP BY f.customer_id, f.campaign_id
+            ORDER BY cost DESC
+            LIMIT {limit_value}
+        ),
+        agg AS (
+            SELECT f.customer_id, f.campaign_id,
+                   SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
                    {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_campaign_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, campaign_id
+            FROM fact_campaign_daily f
+            JOIN top_ids t ON f.customer_id = t.customer_id AND f.campaign_id = t.campaign_id
+            WHERE f.dt BETWEEN :d1 AND :d2
+            GROUP BY f.customer_id, f.campaign_id
         )
         SELECT
             agg.customer_id, agg.campaign_id,
@@ -832,10 +843,8 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
             agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
         FROM agg
         JOIN dim_campaign c ON agg.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
+        ORDER BY agg.cost DESC
     """
-    sql += _bundle_limit_clause(topn_cost)
-
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type")
 
@@ -844,37 +853,72 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
-    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "keyword_bundle_cid")
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "keyword_bundle_cid")
 
     _, cp_col = _resolve_campaign_type_column(_engine)
-    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "keyword_bundle_type")
+    type_filter_sql, type_params = _build_campaign_type_filter(f"c.{cp_col}", type_sel, "keyword_bundle_type")
 
     kw_fact_cols = get_table_columns(_engine, "fact_keyword_daily")
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_keyword_daily"))
     metric_sql = _build_bundle_metric_sql(kw_fact_cols)
     dt_group, dt_select = _build_dt_sql(include_dt)
 
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, keyword_id{dt_group},
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_keyword_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, keyword_id{dt_group}
-        )
-        SELECT
-            agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
-            c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, k.keyword{dt_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
-        FROM agg
-        JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
-        JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
-    sql += _bundle_limit_clause(topn_cost)
+    if include_dt:
+        sql = f"""
+            WITH agg AS (
+                SELECT customer_id, keyword_id{dt_group},
+                       SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                       {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
+                FROM fact_keyword_daily
+                WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+                GROUP BY customer_id, keyword_id{dt_group}
+            )
+            SELECT
+                agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
+                c.campaign_name, c.{cp_col} as campaign_type_label,
+                a.adgroup_name, k.keyword{dt_select},
+                agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
+            FROM agg
+            JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
+            JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+            WHERE 1=1 {type_filter_sql}
+        """
+        sql += _bundle_limit_clause(topn_cost)
+    else:
+        limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
+        sql = f"""
+            WITH top_ids AS (
+                SELECT f.customer_id, f.keyword_id, SUM(f.cost) as cost
+                FROM fact_keyword_daily f
+                JOIN dim_keyword k ON f.keyword_id = k.keyword_id AND f.customer_id = k.customer_id
+                JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+                JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+                GROUP BY f.customer_id, f.keyword_id
+                ORDER BY cost DESC
+                LIMIT {limit_value}
+            ),
+            agg AS (
+                SELECT f.customer_id, f.keyword_id,
+                       SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
+                       {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
+                FROM fact_keyword_daily f
+                JOIN top_ids t ON f.customer_id = t.customer_id AND f.keyword_id = t.keyword_id
+                WHERE f.dt BETWEEN :d1 AND :d2
+                GROUP BY f.customer_id, f.keyword_id
+            )
+            SELECT
+                agg.customer_id, a.campaign_id, k.adgroup_id, agg.keyword_id,
+                c.campaign_name, c.{cp_col} as campaign_type_label,
+                a.adgroup_name, k.keyword,
+                agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
+            FROM agg
+            JOIN dim_keyword k ON agg.keyword_id = k.keyword_id AND agg.customer_id = k.customer_id
+            JOIN dim_adgroup a ON k.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+            ORDER BY agg.cost DESC
+        """
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type_label")
@@ -884,38 +928,73 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
-    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "ad_bundle_cid")
+    where_cid, cid_params = _build_in_filter("f.customer_id", cids_tuple, "ad_bundle_cid")
 
     _, cp_col = _resolve_campaign_type_column(_engine)
     url_select, title_select, image_select = _resolve_ad_dimension_selects(_engine)
-    type_filter_sql, type_params = _build_campaign_type_filter(cp_col, type_sel, "ad_bundle_type")
+    type_filter_sql, type_params = _build_campaign_type_filter(f"c.{cp_col}", type_sel, "ad_bundle_type")
 
     ad_fact_cols = get_table_columns(_engine, "fact_ad_daily")
     rank_agg_sql, rank_select_sql = _build_rank_metric_sql(_resolve_rank_column(_engine, "fact_ad_daily"))
     metric_sql = _build_bundle_metric_sql(ad_fact_cols)
     dt_group, dt_select = _build_dt_sql(include_dt)
 
-    sql = f"""
-        WITH agg AS (
-            SELECT customer_id, ad_id{dt_group},
-                   SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
-                   {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
-            FROM fact_ad_daily
-            WHERE dt BETWEEN :d1 AND :d2 {where_cid}
-            GROUP BY customer_id, ad_id{dt_group}
-        )
-        SELECT
-            agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
-            c.campaign_name, c.{cp_col} as campaign_type_label,
-            a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select}{dt_select},
-            agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
-        FROM agg
-        JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
-        JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
-        JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
-        WHERE 1=1 {type_filter_sql}
-    """
-    sql += _bundle_limit_clause(topn_cost)
+    if include_dt:
+        sql = f"""
+            WITH agg AS (
+                SELECT customer_id, ad_id{dt_group},
+                       SUM(imp) as imp, SUM(clk) as clk, SUM(cost) as cost
+                       {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
+                FROM fact_ad_daily
+                WHERE dt BETWEEN :d1 AND :d2 {where_cid}
+                GROUP BY customer_id, ad_id{dt_group}
+            )
+            SELECT
+                agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
+                c.campaign_name, c.{cp_col} as campaign_type_label,
+                a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select}{dt_select},
+                agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
+            FROM agg
+            JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
+            JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+            WHERE 1=1 {type_filter_sql}
+        """
+        sql += _bundle_limit_clause(topn_cost or top_k)
+    else:
+        limit_value = _safe_limit(topn_cost or top_k, default=50, max_limit=10000)
+        sql = f"""
+            WITH top_ids AS (
+                SELECT f.customer_id, f.ad_id, SUM(f.cost) as cost
+                FROM fact_ad_daily f
+                JOIN dim_ad ad ON f.ad_id = ad.ad_id AND f.customer_id = ad.customer_id
+                JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND f.customer_id = a.customer_id
+                JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+                WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_filter_sql}
+                GROUP BY f.customer_id, f.ad_id
+                ORDER BY cost DESC
+                LIMIT {limit_value}
+            ),
+            agg AS (
+                SELECT f.customer_id, f.ad_id,
+                       SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost
+                       {metric_sql['conv_agg_sql']}{rank_agg_sql}{metric_sql['cart_agg_sql']}{metric_sql['wish_agg_sql']}
+                FROM fact_ad_daily f
+                JOIN top_ids t ON f.customer_id = t.customer_id AND f.ad_id = t.ad_id
+                WHERE f.dt BETWEEN :d1 AND :d2
+                GROUP BY f.customer_id, f.ad_id
+            )
+            SELECT
+                agg.customer_id, a.campaign_id, ad.adgroup_id, agg.ad_id,
+                c.campaign_name, c.{cp_col} as campaign_type_label,
+                a.adgroup_name, ad.ad_name, {title_select}, {image_select}, {url_select},
+                agg.imp, agg.clk, agg.cost, agg.conv, agg.sales, agg.tot_conv, agg.tot_sales{metric_sql['cart_select_sql']}{metric_sql['wish_select_sql']}{rank_select_sql}
+            FROM agg
+            JOIN dim_ad ad ON agg.ad_id = ad.ad_id AND agg.customer_id = ad.customer_id
+            JOIN dim_adgroup a ON ad.adgroup_id = a.adgroup_id AND agg.customer_id = a.customer_id
+            JOIN dim_campaign c ON a.campaign_id = c.campaign_id AND agg.customer_id = c.customer_id
+            ORDER BY agg.cost DESC
+        """
 
     df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
     return _finalize_bundle_df(df, "campaign_type_label")
