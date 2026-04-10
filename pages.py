@@ -10,11 +10,6 @@ from data import *
 from ui import render_hero
 from page_helpers import BUILD_TAG, build_filters
 
-
-@st.cache_data(ttl=43200, max_entries=8, show_spinner=False)
-def _cached_campaign_type_options(dim_campaign) -> tuple:
-    return tuple(get_campaign_type_options(dim_campaign))
-
 def main():
     try:
         engine = get_engine()
@@ -71,9 +66,7 @@ def main():
         if not meta_ready:
             st.error("설정 메뉴에서 동기화를 진행해주세요.")
             return
-        dim_campaign = load_dim_campaign(engine)
-        type_opts = list(_cached_campaign_type_options(dim_campaign))
-        f = build_filters(meta, type_opts, engine)
+        f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
 
     requires_selection_pages = {
         "요약",

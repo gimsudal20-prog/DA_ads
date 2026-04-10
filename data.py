@@ -34,11 +34,11 @@ def get_engine():
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
-        "keepalives_count": 5
+        "keepalives_count": 5,
     }
 
-    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5))
-    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10))
+    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "6") or 6))
+    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "12") or 12))
     pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "30") or 30))
     pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
 
@@ -51,7 +51,7 @@ def get_engine():
         pool_timeout=pool_timeout,
         pool_recycle=pool_recycle,
         connect_args=connect_args,
-        future=True
+        future=True,
     )
 
 def db_ping(engine) -> bool:
