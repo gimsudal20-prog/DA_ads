@@ -634,13 +634,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         except Exception as e:
             base_summary = {}
             _diag_add(diag, "요약(비교)", "error", 0, "get_entity_totals", f"{type(e).__name__}: {e}")
-        try:
-            cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
-            _diag_add(diag, "캠페인 번들(현재)", "ok" if cur_camp is not None and not cur_camp.empty else "zero_data", 0 if cur_camp is None else len(cur_camp.index), "query_campaign_bundle", "현재 기간 캠페인 상세")
-        except Exception as e:
-            cur_camp = pd.DataFrame()
-            _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
-            
+        cur_camp = pd.DataFrame()
+        _diag_add(diag, "캠페인 번들(현재)", "warn", 0, "query_campaign_bundle", "세부 표/목표 현황/엑셀 필요 시 지연 조회")
         cur_kw = pd.DataFrame()
         _diag_add(diag, "키워드 번들(현재)", "warn", 0, "query_keyword_bundle", "키워드 상세 또는 텍스트 보고서 필요 시 지연 조회")
 
@@ -674,7 +669,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     is_split_only = f["start"] >= patch_date
     is_mixed_period = (f["start"] < patch_date <= f["end"])
     combined_toggle = not is_split_only
-    auto_kpi_mode = _infer_kpi_mode(type_sel, cur_camp, is_split_only)
+    auto_kpi_mode = _infer_kpi_mode(type_sel, pd.DataFrame(), is_split_only)
     can_use_purchase_toggle = (f["end"] >= patch_date)
 
     head_col_meta, empty_col, head_col_toggle = st.columns([5, 1, 3])
@@ -754,6 +749,18 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     filter_sig = f"{f['start']}::{f['end']}::{','.join(map(str, cids))}::{','.join(map(str, type_sel))}::{selected_type_label}::{int(combined_toggle)}::{kpi_mode}"
     text_report_state_key = f"overview_text_report::{filter_sig}"
     excel_ready_state_key = f"overview_excel::{filter_sig}"
+    target_ready_state_key = f"overview_target_ready::{filter_sig}"
+
+    def _ensure_cur_camp_loaded() -> pd.DataFrame:
+        nonlocal cur_camp
+        if cur_camp is None or cur_camp.empty:
+            try:
+                cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+                _diag_add(diag, "캠페인 번들(현재)", "ok" if cur_camp is not None and not cur_camp.empty else "zero_data", 0 if cur_camp is None else len(cur_camp.index), "query_campaign_bundle", "지연 조회")
+            except Exception as e:
+                cur_camp = pd.DataFrame()
+                _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
+        return cur_camp
 
     with st.container(border=True):
         st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:8px;'>빠른 작업</div>", unsafe_allow_html=True)
@@ -784,6 +791,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.code(st.session_state[text_report_state_key], language="text")
 
         if prepare_excel:
+            _ensure_cur_camp_loaded()
             if base_camp is None or base_camp.empty:
                 try:
                     base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
@@ -864,61 +872,67 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     with st.expander("캠페인별 목표 달성 현황", expanded=False):
         st.markdown("<div style='font-size:13px; color:var(--nv-muted); margin-bottom:12px;'>캠페인별 설정된 목표 ROAS 대비 현재 달성 상태를 확인합니다.</div>", unsafe_allow_html=True)
-        
-        if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
-            only_miss = st.toggle("목표 미달만 보기", value=False, key="ov_target_only_miss")
-            target_df = cur_camp.copy()
-            target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
-            target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
-            target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
-            
-            if not target_df.empty:
-                target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
-                target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
-                target_df["conv"] = pd.to_numeric(target_df.get("conv", 0), errors="coerce").fillna(0.0)
-
-                target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
-                target_df["c_roas_purch"] = _safe_div(target_df["sales"], target_df["cost"], 100.0)
-                target_df["achieve_raw"] = _safe_div(target_df["c_roas_purch"], target_df["base_roas"], 100.0)
-                target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
+        load_target = st.button("목표 달성 현황 불러오기", key="ov_target_load_btn", use_container_width=True)
+        if load_target:
+            st.session_state[target_ready_state_key] = True
+        if not st.session_state.get(target_ready_state_key, False):
+            st.info("불필요한 초기 로딩을 줄이기 위해 이 표는 버튼을 눌렀을 때만 불러옵니다.")
+        else:
+            _ensure_cur_camp_loaded()
+            if not cur_camp.empty and "target_roas" in cur_camp.columns and "min_roas" in cur_camp.columns:
+                only_miss = st.toggle("목표 미달만 보기", value=False, key="ov_target_only_miss")
+                target_df = cur_camp.copy()
+                target_df["target_roas"] = pd.to_numeric(target_df["target_roas"], errors="coerce").fillna(0.0)
+                target_df["min_roas"] = pd.to_numeric(target_df["min_roas"], errors="coerce").fillna(0.0)
+                target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
                 
-                target_df["status"] = np.where(
-                    (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
-                    np.where(
-                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "목표 달성",
+                if not target_df.empty:
+                    target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
+                    target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
+                    target_df["conv"] = pd.to_numeric(target_df.get("conv", 0), errors="coerce").fillna(0.0)
+
+                    target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
+                    target_df["c_roas_purch"] = _safe_div(target_df["sales"], target_df["cost"], 100.0)
+                    target_df["achieve_raw"] = _safe_div(target_df["c_roas_purch"], target_df["base_roas"], 100.0)
+                    target_df["achieve"] = target_df["achieve_raw"].clip(upper=100.0)
+                    
+                    target_df["status"] = np.where(
+                        (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] > target_df["target_roas"]), "초과 달성",
                         np.where(
-                            (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "최소 달성",
-                            "미달"
+                            (target_df["target_roas"] > 0) & (target_df["c_roas_purch"] == target_df["target_roas"]), "목표 달성",
+                            np.where(
+                                (target_df["min_roas"] > 0) & (target_df["c_roas_purch"] >= target_df["min_roas"]), "최소 달성",
+                                "미달"
+                            )
                         )
                     )
-                )
-                if only_miss: target_df = target_df[target_df["status"] == "미달"]
-                target_df = target_df.sort_values(by="cost", ascending=False).head(200)
+                    if only_miss: target_df = target_df[target_df["status"] == "미달"]
+                    target_df = target_df.sort_values(by="cost", ascending=False).head(200)
 
-                if not target_df.empty:
-                    disp_target = target_df.rename(columns={
-                        "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
-                        "c_roas_purch": "구매완료 ROAS(%)", "target_roas": "목표 ROAS(%)", "min_roas": "최소 ROAS(%)", "cost": "광고비",
-                        "conv": "구매완료수"
-                    })
-                    
-                    disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "구매완료수", "구매완료 ROAS(%)", "최소 ROAS(%)", "목표 ROAS(%)", "광고비"]
-                    st.dataframe(
-                        disp_target[disp_cols],
-                        width="stretch", hide_index=True,
-                        column_config={
-                            "달성 상태": st.column_config.TextColumn("상태", width="small"),
-                            "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
-                            "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
-                            "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS(%)", format="%.1f%%"),
-                            "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%d%%"),
-                            "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%d%%"),
-                            "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
-                        }
-                    )
-                else: st.info("조건에 맞는 캠페인이 없습니다.")
+                    if not target_df.empty:
+                        disp_target = target_df.rename(columns={
+                            "campaign_name": "캠페인명", "achieve": "달성률(%)", "status": "달성 상태",
+                            "c_roas_purch": "구매완료 ROAS(%)", "target_roas": "목표 ROAS(%)", "min_roas": "최소 ROAS(%)", "cost": "광고비",
+                            "conv": "구매완료수"
+                        })
+                        
+                        disp_cols = ["캠페인명", "달성 상태", "달성률(%)", "구매완료수", "구매완료 ROAS(%)", "최소 ROAS(%)", "목표 ROAS(%)", "광고비"]
+                        st.dataframe(
+                            disp_target[disp_cols],
+                            width="stretch", hide_index=True,
+                            column_config={
+                                "달성 상태": st.column_config.TextColumn("상태", width="small"),
+                                "달성률(%)": st.column_config.ProgressColumn("달성률", format="%.1f%%", min_value=0, max_value=100),
+                                "구매완료수": st.column_config.NumberColumn("구매완료수", format="%d"),
+                                "구매완료 ROAS(%)": st.column_config.NumberColumn("구매완료 ROAS(%)", format="%.1f%%"),
+                                "최소 ROAS(%)": st.column_config.NumberColumn("최소 ROAS(%)", format="%d%%"),
+                                "목표 ROAS(%)": st.column_config.NumberColumn("목표 ROAS(%)", format="%d%%"),
+                                "광고비": st.column_config.NumberColumn("광고비", format="%d 원")
+                            }
+                        )
+                    else: st.info("조건에 맞는 캠페인이 없습니다.")
+                else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
             else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
-        else: st.info("안내: 최소/목표 ROAS가 설정된 캠페인이 없습니다. 설정 메뉴에서 계정별 목표를 지정해주세요.")
 
     # ----------------------------------------------------
     # 상세 데이터 전처리 (지연 조회 전 기본값만 준비)
@@ -972,20 +986,25 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     detail_panel = st.segmented_control(
         "세부 성과 보기",
-        ["업체별 요약", "매체·유형별 요약", "기간별 상세", "캠페인 상세 분석", "키워드 상세 분석"],
-        default="업체별 요약",
+        ["요약만", "업체별 요약", "매체·유형별 요약", "기간별 상세", "캠페인 상세 분석", "키워드 상세 분석"],
+        default="요약만",
         key="overview_detail_panel",
         label_visibility="collapsed",
     )
 
     # 탭별 화면 렌더링에 필요한 데이터만 지연 로드 (UI 응답성 최적화)
     if detail_panel in {"업체별 요약", "매체·유형별 요약", "캠페인 상세 분석"}:
+        _ensure_cur_camp_loaded()
         if base_camp is None or base_camp.empty:
             try: base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
             except Exception: base_camp = pd.DataFrame()
         df_display, df_type_display, camp_disp = _build_overview_campaign_frames(cur_camp, base_camp, meta)
 
     if detail_panel == "키워드 상세 분석":
+        _ensure_cur_camp_loaded()
+        if cur_kw is None or cur_kw.empty:
+            try: cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            except Exception: cur_kw = pd.DataFrame()
         if base_kw is None or base_kw.empty:
             try: base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
             except Exception: base_kw = pd.DataFrame()
@@ -998,7 +1017,10 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         daily_disp, dow_disp, weekly_disp = _build_overview_timeseries_frames(daily_ts, base_daily_ts)
 
     # 렌더링 블록
-    if detail_panel == "업체별 요약":
+    if detail_panel == "요약만":
+        st.caption("초기 로딩 속도를 위해 세부 성과 표는 필요할 때만 불러옵니다. 위 선택에서 상세 패널을 고르면 해당 데이터만 지연 조회합니다.")
+
+    elif detail_panel == "업체별 요약":
         if not df_display.empty:
             view_cols = ["계정명"] + [c for c in get_funnel_cols(show_deltas) if c in df_display.columns]
             disp_df = df_display[view_cols].copy()
