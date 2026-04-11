@@ -13,7 +13,7 @@ from sqlalchemy.pool import QueuePool
 from datetime import date
 
 # ==========================================
-# 1. Database Connection (QueuePool 적용)
+# 1. Database Connection (NullPool 적용)
 # ==========================================
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
@@ -37,19 +37,14 @@ def get_engine():
         "keepalives_count": 5,
     }
 
-    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "6") or 6))
-    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "12") or 12))
-    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "30") or 30))
-    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
-
     return create_engine(
         db_url,
         poolclass=QueuePool,
         pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
+        pool_recycle=1800,
         connect_args=connect_args,
         future=True,
     )
@@ -750,6 +745,200 @@ def update_monthly_budget(_engine, cid: int, val: int):
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
 
+def _overview_campaign_cache_key(d1: date, d2: date, cids: tuple) -> tuple:
+    return (str(d1), str(d2), tuple(_normalize_filter_values(cids)))
+
+
+def _overview_campaign_cache_type_case(cp_col: str) -> str:
+    safe_col = _validate_sql_identifier(cp_col, "column name")
+    return (
+        f"CASE "
+        f"WHEN c.{safe_col} = 'WEB_SITE' THEN 'WEB_SITE' "
+        f"WHEN c.{safe_col} = 'SHOPPING' THEN 'SHOPPING' "
+        f"WHEN c.{safe_col} = 'POWER_CONTENTS' THEN 'POWER_CONTENTS' "
+        f"WHEN c.{safe_col} = 'BRAND_SEARCH' THEN 'BRAND_SEARCH' "
+        f"WHEN c.{safe_col} = 'PLACE' THEN 'PLACE' "
+        f"ELSE COALESCE(c.{safe_col}, '기타') END"
+    )
+
+
+def _ensure_overview_campaign_daily_cache(_engine) -> None:
+    sql_exec(
+        _engine,
+        """
+        CREATE TABLE IF NOT EXISTS overview_campaign_daily_cache (
+            dt DATE NOT NULL,
+            customer_id TEXT NOT NULL,
+            campaign_type TEXT NOT NULL,
+            imp BIGINT DEFAULT 0,
+            clk BIGINT DEFAULT 0,
+            cost BIGINT DEFAULT 0,
+            conv DOUBLE PRECISION DEFAULT 0,
+            sales BIGINT DEFAULT 0,
+            tot_conv DOUBLE PRECISION DEFAULT 0,
+            tot_sales BIGINT DEFAULT 0,
+            cart_conv DOUBLE PRECISION DEFAULT 0,
+            cart_sales BIGINT DEFAULT 0,
+            wishlist_conv DOUBLE PRECISION DEFAULT 0,
+            wishlist_sales BIGINT DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (dt, customer_id, campaign_type)
+        )
+        """,
+    )
+    try:
+        cached = st.session_state.get("_table_names_cache", [])
+        if "overview_campaign_daily_cache" not in cached:
+            st.session_state["_table_names_cache"] = list(cached) + ["overview_campaign_daily_cache"]
+    except Exception:
+        pass
+
+
+def _refresh_overview_campaign_daily_cache(_engine, d1: date, d2: date, cids: tuple) -> None:
+    if not table_exists(_engine, "fact_campaign_daily") or not table_exists(_engine, "dim_campaign"):
+        return
+
+    cache_key = _overview_campaign_cache_key(d1, d2, cids)
+    refreshed = st.session_state.setdefault("_overview_campaign_daily_cache_ready", set())
+    if cache_key in refreshed:
+        return
+
+    _ensure_overview_campaign_daily_cache(_engine)
+    _, cp_col = _resolve_campaign_type_column(_engine)
+    fact_cols = get_table_columns(_engine, "fact_campaign_daily")
+    expr = _strict_conv_selects(fact_cols, alias="f")
+
+    cids_tuple = _normalize_filter_values(cids)
+    where_fact_cid, fact_cid_params = _build_in_filter("f.customer_id", cids_tuple, "ov_cache_fact_cid")
+    where_cache_cid, cache_cid_params = _build_in_filter("customer_id", cids_tuple, "ov_cache_delete_cid")
+    type_case_sql = _overview_campaign_cache_type_case(cp_col)
+
+    delete_sql = f"DELETE FROM overview_campaign_daily_cache WHERE dt BETWEEN :d1 AND :d2 {where_cache_cid}"
+    insert_sql = f"""
+        INSERT INTO overview_campaign_daily_cache (
+            dt, customer_id, campaign_type,
+            imp, clk, cost, conv, sales, tot_conv, tot_sales, cart_conv, cart_sales, wishlist_conv, wishlist_sales, updated_at
+        )
+        SELECT
+            f.dt,
+            f.customer_id,
+            {type_case_sql} AS campaign_type,
+            SUM(COALESCE(f.imp, 0)) AS imp,
+            SUM(COALESCE(f.clk, 0)) AS clk,
+            SUM(COALESCE(f.cost, 0)) AS cost,
+            SUM({expr['purchase_conv_expr']}) AS conv,
+            SUM({expr['purchase_sales_expr']}) AS sales,
+            SUM({expr['total_conv_expr']}) AS tot_conv,
+            SUM({expr['total_sales_expr']}) AS tot_sales,
+            SUM({expr['cart_conv_expr']}) AS cart_conv,
+            SUM({expr['cart_sales_expr']}) AS cart_sales,
+            SUM({expr['wish_conv_expr']}) AS wishlist_conv,
+            SUM({expr['wish_sales_expr']}) AS wishlist_sales,
+            NOW() AS updated_at
+        FROM fact_campaign_daily f
+        JOIN dim_campaign c ON f.campaign_id = c.campaign_id AND f.customer_id = c.customer_id
+        WHERE f.dt BETWEEN :d1 AND :d2 {where_fact_cid}
+        GROUP BY f.dt, f.customer_id, {type_case_sql}
+        ON CONFLICT (dt, customer_id, campaign_type) DO UPDATE SET
+            imp = EXCLUDED.imp,
+            clk = EXCLUDED.clk,
+            cost = EXCLUDED.cost,
+            conv = EXCLUDED.conv,
+            sales = EXCLUDED.sales,
+            tot_conv = EXCLUDED.tot_conv,
+            tot_sales = EXCLUDED.tot_sales,
+            cart_conv = EXCLUDED.cart_conv,
+            cart_sales = EXCLUDED.cart_sales,
+            wishlist_conv = EXCLUDED.wishlist_conv,
+            wishlist_sales = EXCLUDED.wishlist_sales,
+            updated_at = NOW()
+    """
+
+    sql_exec(_engine, delete_sql, {"d1": str(d1), "d2": str(d2), **cache_cid_params})
+    sql_exec(_engine, insert_sql, {"d1": str(d1), "d2": str(d2), **fact_cid_params})
+
+    refreshed.add(cache_key)
+    st.session_state["_overview_campaign_daily_cache_ready"] = refreshed
+
+
+def _read_overview_campaign_totals_from_cache(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
+    _refresh_overview_campaign_daily_cache(_engine, d1, d2, cids)
+    if not table_exists(_engine, "overview_campaign_daily_cache"):
+        return {}
+
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "ov_total_cid")
+    normalized_types = _normalize_filter_values(type_sel)
+    db_types = tuple({
+        {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}.get(t, t)
+        for t in normalized_types
+    })
+    where_type, type_params = _build_in_filter("campaign_type", db_types, "ov_total_type")
+
+    sql = f"""
+        SELECT
+            SUM(imp) as imp,
+            SUM(clk) as clk,
+            SUM(cost) as cost,
+            SUM(conv) as conv,
+            SUM(sales) as sales,
+            SUM(tot_conv) as tot_conv,
+            SUM(tot_sales) as tot_sales,
+            SUM(cart_conv) as cart_conv,
+            SUM(cart_sales) as cart_sales,
+            SUM(wishlist_conv) as wishlist_conv,
+            SUM(wishlist_sales) as wishlist_sales
+        FROM overview_campaign_daily_cache
+        WHERE dt BETWEEN :d1 AND :d2 {where_cid} {where_type}
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
+    if df.empty:
+        return {}
+    row = df.iloc[0].fillna(0).to_dict()
+    row["tot_conv"] = row.get("tot_conv", 0)
+    row["tot_sales"] = row.get("tot_sales", 0)
+    return _compute_total_ratio_metrics(row)
+
+
+def _read_overview_campaign_timeseries_from_cache(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    _refresh_overview_campaign_daily_cache(_engine, d1, d2, cids)
+    if not table_exists(_engine, "overview_campaign_daily_cache"):
+        return pd.DataFrame()
+
+    cids_tuple = _normalize_filter_values(cids)
+    where_cid, cid_params = _build_in_filter("customer_id", cids_tuple, "ov_ts_cid")
+    normalized_types = _normalize_filter_values(type_sel)
+    db_types = tuple({
+        {"파워링크": "WEB_SITE", "쇼핑검색": "SHOPPING", "파워컨텐츠": "POWER_CONTENTS", "브랜드검색": "BRAND_SEARCH", "플레이스": "PLACE"}.get(t, t)
+        for t in normalized_types
+    })
+    where_type, type_params = _build_in_filter("campaign_type", db_types, "ov_ts_type")
+
+    sql = f"""
+        SELECT
+            dt,
+            SUM(imp) as imp,
+            SUM(clk) as clk,
+            SUM(cost) as cost,
+            SUM(conv) as conv,
+            SUM(sales) as sales,
+            SUM(tot_conv) as tot_conv,
+            SUM(tot_sales) as tot_sales,
+            SUM(cart_conv) as cart_conv,
+            SUM(cart_sales) as cart_sales,
+            SUM(wishlist_conv) as wishlist_conv,
+            SUM(wishlist_sales) as wishlist_sales
+        FROM overview_campaign_daily_cache
+        WHERE dt BETWEEN :d1 AND :d2 {where_cid} {where_type}
+        GROUP BY dt
+        ORDER BY dt
+    """
+    df = sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params, **type_params})
+    if not df.empty:
+        df["dt"] = pd.to_datetime(df["dt"])
+    return df
+
+
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_off_log"):
@@ -765,6 +954,14 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
 
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
 def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
+    if entity == "campaign":
+        try:
+            cached_row = _read_overview_campaign_totals_from_cache(_engine, d1, d2, cids, type_sel)
+            if cached_row:
+                return cached_row
+        except Exception:
+            pass
+
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
 
@@ -922,6 +1119,13 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
+    try:
+        cached_df = _read_overview_campaign_timeseries_from_cache(_engine, d1, d2, cids, type_sel)
+        if not cached_df.empty:
+            return cached_df
+    except Exception:
+        pass
+
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
