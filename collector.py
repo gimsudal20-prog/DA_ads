@@ -1073,6 +1073,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         finalize_account_result_fn=_finalize_account_result,
         exc_label_fn=_exc_label,
         traceback_tail_fn=_traceback_tail,
+        refresh_overview_report_source_cache_fn=getattr(collector_db_mod, "refresh_overview_report_source_cache", None),
         skip_keyword_stats=SKIP_KEYWORD_STATS,
         skip_ad_stats=SKIP_AD_STATS,
         log_fn=log,

@@ -109,6 +109,23 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
         _log_best_effort_failure("ensure_column", e, ctx=f"table={table} column={column}")
 
 
+def ensure_overview_report_source_cache(engine: Engine):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS overview_report_source_cache (
+                dt DATE,
+                customer_id TEXT,
+                campaign_type TEXT,
+                source_kind TEXT,
+                source_text TEXT,
+                metric_value DOUBLE PRECISION DEFAULT 0,
+                sales_value BIGINT DEFAULT 0,
+                rank_no INTEGER DEFAULT 0,
+                PRIMARY KEY(dt, customer_id, campaign_type, source_kind, source_text)
+            )
+        """))
+
+
 def ensure_tables(engine: Engine):
     for attempt in range(3):
         try:
@@ -194,11 +211,86 @@ def ensure_tables(engine: Engine):
             ensure_column(engine, "fact_media_daily", "source_report", "TEXT")
 
             ensure_device_tables(engine)
+            ensure_overview_report_source_cache(engine)
             break
         except Exception as e:
             time.sleep(3)
             if attempt == 2:
                 raise e
+
+
+def refresh_overview_report_source_cache(engine: Engine, customer_id: str, d1, d2):
+    ensure_overview_report_source_cache(engine)
+    params = {"cid": str(customer_id), "d1": d1, "d2": d2}
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM overview_report_source_cache WHERE customer_id = :cid AND dt BETWEEN :d1 AND :d2"),
+            params,
+        )
+        conn.execute(text("""
+            WITH keyword_daily AS (
+                SELECT
+                    f.dt,
+                    f.customer_id,
+                    COALESCE(c.campaign_tp, 'WEB_SITE') AS campaign_type,
+                    COALESCE(k.keyword, '') AS source_text,
+                    SUM(COALESCE(f.clk, 0)) AS metric_value,
+                    SUM(COALESCE(f.sales, 0)) AS sales_value
+                FROM fact_keyword_daily f
+                JOIN dim_keyword k
+                  ON f.customer_id = k.customer_id AND f.keyword_id = k.keyword_id
+                JOIN dim_adgroup a
+                  ON k.customer_id = a.customer_id AND k.adgroup_id = a.adgroup_id
+                JOIN dim_campaign c
+                  ON a.customer_id = c.customer_id AND a.campaign_id = c.campaign_id
+                WHERE f.customer_id = :cid
+                  AND f.dt BETWEEN :d1 AND :d2
+                GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'WEB_SITE'), COALESCE(k.keyword, '')
+            ), ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY dt, customer_id, campaign_type
+                    ORDER BY metric_value DESC, sales_value DESC, source_text
+                ) AS rank_no
+                FROM keyword_daily
+                WHERE source_text <> '' AND metric_value > 0
+            )
+            INSERT INTO overview_report_source_cache (
+                dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no
+            )
+            SELECT dt, customer_id, campaign_type, 'powerlink_keyword', source_text, metric_value, sales_value, rank_no
+            FROM ranked
+            WHERE rank_no <= 20
+        """), params)
+        conn.execute(text("""
+            WITH query_daily AS (
+                SELECT
+                    f.dt,
+                    f.customer_id,
+                    COALESCE(c.campaign_tp, 'SHOPPING') AS campaign_type,
+                    COALESCE(f.query_text, '') AS source_text,
+                    SUM(COALESCE(f.purchase_conv, 0)) AS metric_value,
+                    SUM(COALESCE(f.purchase_sales, 0)) AS sales_value
+                FROM fact_shopping_query_daily f
+                LEFT JOIN dim_campaign c
+                  ON f.customer_id = c.customer_id AND f.campaign_id = c.campaign_id
+                WHERE f.customer_id = :cid
+                  AND f.dt BETWEEN :d1 AND :d2
+                GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'SHOPPING'), COALESCE(f.query_text, '')
+            ), ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY dt, customer_id, campaign_type
+                    ORDER BY metric_value DESC, sales_value DESC, source_text
+                ) AS rank_no
+                FROM query_daily
+                WHERE source_text <> '' AND (metric_value > 0 OR sales_value > 0)
+            )
+            INSERT INTO overview_report_source_cache (
+                dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no
+            )
+            SELECT dt, customer_id, campaign_type, 'shopping_query', source_text, metric_value, sales_value, rank_no
+            FROM ranked
+            WHERE rank_no <= 20
+        """), params)
 
 
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):

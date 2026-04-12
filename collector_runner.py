@@ -657,6 +657,7 @@ def process_account(
     finalize_account_result_fn: Callable[..., None],
     exc_label_fn: Callable[[Exception], str],
     traceback_tail_fn: Callable[[Exception, int], str],
+    refresh_overview_report_source_cache_fn: Callable[..., None] | None = None,
     skip_keyword_stats: bool = False,
     skip_ad_stats: bool = False,
     log_fn: Callable[[str], None] = _log,
@@ -853,6 +854,13 @@ def process_account(
                 device_campaign_cnt=device_campaign_cnt,
                 device_ad_cnt=device_ad_cnt,
             )
+
+            if callable(refresh_overview_report_source_cache_fn) and result.get("status") in {"ok", "zero_data"}:
+                try:
+                    refresh_overview_report_source_cache_fn(engine, customer_id, target_date, target_date)
+                    log_fn(f"   ✅ [ {account_name} ] 오버뷰 보고서 소스 캐시 갱신 완료")
+                except Exception as e:
+                    log_best_effort_failure_fn("overview report cache refresh", e, ctx=f"customer_id={customer_id} dt={target_date}")
 
     except Exception as e:
         result["status"] = "error"
