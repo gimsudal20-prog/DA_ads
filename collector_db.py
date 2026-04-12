@@ -75,6 +75,35 @@ def _best_effort_dispose(engine: Engine, *, ctx: str = "") -> None:
         _log_best_effort_failure("engine.dispose", dispose_exc, ctx=ctx)
 
 
+def _execute_ddl_with_retry(engine: Engine, ddl: str, *, ctx: str = "") -> None:
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        raw_conn = None
+        cur = None
+        try:
+            raw_conn = engine.raw_connection()
+            try:
+                raw_conn.autocommit = True
+            except Exception:
+                pass
+            cur = raw_conn.cursor()
+            try:
+                cur.execute("SET statement_timeout TO 300000")
+            except Exception:
+                pass
+            cur.execute(ddl)
+            return
+        except Exception as e:
+            last_err = e
+            _best_effort_dispose(engine, ctx=ctx)
+            _log_retry_failure("DDL 실행", attempt, 3, e, ctx=ctx)
+            time.sleep(min(6, 1 + attempt))
+        finally:
+            _safe_close(cur, label="cursor", ctx=ctx)
+            _safe_close(raw_conn, label="connection", ctx=ctx)
+    _raise_retry_failure("DDL 실행", last_err, ctx=ctx)
+
+
 class _TableWriteSpec:
     def __init__(self, chunk_rows: int, page_size: int, statement_timeout_ms: int):
         self.chunk_rows = max(1, int(chunk_rows))
@@ -86,10 +115,12 @@ def _table_write_spec(table: str, row_count: int) -> _TableWriteSpec:
     t = str(table or '').lower()
     if t == 'dim_keyword':
         if row_count >= 50000:
-            return _TableWriteSpec(500, 100, 900000)
+            return _TableWriteSpec(120, 40, 1800000)
         if row_count >= 10000:
-            return _TableWriteSpec(750, 150, 900000)
-        return _TableWriteSpec(1000, 200, 900000)
+            return _TableWriteSpec(180, 60, 1200000)
+        if row_count >= 3000:
+            return _TableWriteSpec(250, 80, 900000)
+        return _TableWriteSpec(400, 100, 600000)
     if t in {'dim_campaign', 'dim_adgroup', 'dim_ad'}:
         return _TableWriteSpec(1000, 250, 600000)
     if t.startswith('fact_'):
@@ -107,9 +138,8 @@ def _execute_values_in_chunks(engine: Engine, sql: str, tuples: list[tuple], *, 
         return
     spec = _table_write_spec(table, len(tuples))
     total_chunks = (len(tuples) + spec.chunk_rows - 1) // spec.chunk_rows
-    for chunk_idx0, chunk in _iter_chunks(tuples, spec.chunk_rows):
-        chunk_no = chunk_idx0 // spec.chunk_rows + 1
-        chunk_ctx = f"{ctx} chunk={chunk_no}/{total_chunks} chunk_rows={len(chunk)} page_size={spec.page_size}"
+
+    def _write_chunk(chunk: list[tuple], chunk_ctx: str, page_size: int) -> None:
         last_err: Exception | None = None
         for attempt in range(1, 4):
             raw_conn = None
@@ -118,9 +148,9 @@ def _execute_values_in_chunks(engine: Engine, sql: str, tuples: list[tuple], *, 
                 raw_conn = engine.raw_connection()
                 cur = raw_conn.cursor()
                 cur.execute(f"SET statement_timeout TO {spec.statement_timeout_ms}")
-                psycopg2.extras.execute_values(cur, sql, chunk, page_size=spec.page_size)
+                psycopg2.extras.execute_values(cur, sql, chunk, page_size=max(1, page_size))
                 raw_conn.commit()
-                break
+                return
             except Exception as e:
                 last_err = e
                 _safe_rollback(raw_conn, ctx=chunk_ctx)
@@ -130,8 +160,18 @@ def _execute_values_in_chunks(engine: Engine, sql: str, tuples: list[tuple], *, 
             finally:
                 _safe_close(cur, label="cursor", ctx=chunk_ctx)
                 _safe_close(raw_conn, label="connection", ctx=chunk_ctx)
-        else:
-            _raise_retry_failure("DB 적재", last_err, ctx=chunk_ctx)
+        if len(chunk) > 1:
+            half = max(1, len(chunk) // 2)
+            next_page = max(1, page_size // 2)
+            _write_chunk(chunk[:half], f"{chunk_ctx} split=1", next_page)
+            _write_chunk(chunk[half:], f"{chunk_ctx} split=2", next_page)
+            return
+        _raise_retry_failure("DB 적재", last_err, ctx=chunk_ctx)
+
+    for chunk_idx0, chunk in _iter_chunks(tuples, spec.chunk_rows):
+        chunk_no = chunk_idx0 // spec.chunk_rows + 1
+        chunk_ctx = f"{ctx} chunk={chunk_no}/{total_chunks} chunk_rows={len(chunk)} page_size={spec.page_size}"
+        _write_chunk(chunk, chunk_ctx, spec.page_size)
 
 
 def _filter_nonzero_media_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -188,9 +228,9 @@ def get_engine(db_url: str) -> Engine:
 
 
 def ensure_column(engine: Engine, table: str, column: str, datatype: str):
+    ddl = f"ALTER TABLE {table} ADD COLUMN {column} {datatype}"
     try:
-        with engine.begin() as conn:
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}"))
+        _execute_ddl_with_retry(engine, ddl, ctx=f"table={table} column={column}")
     except Exception as e:
         msg = str(e).lower()
         if "already exists" in msg or "duplicate column" in msg:
@@ -199,45 +239,31 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
 
 
 def ensure_tables(engine: Engine):
-    for attempt in range(3):
+    ddl_statements = [
+        "CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)",
+        "CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))",
+        "CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))",
+        "CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))",
+        "CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))",
+        "CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))",
+        "CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))",
+        "CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))",
+        """CREATE TABLE IF NOT EXISTS fact_shopping_query_daily (
+                    dt DATE, customer_id TEXT, campaign_id TEXT, adgroup_id TEXT, ad_id TEXT, query_text TEXT,
+                    total_conv DOUBLE PRECISION, total_sales BIGINT DEFAULT 0, purchase_conv DOUBLE PRECISION, purchase_sales BIGINT DEFAULT 0,
+                    cart_conv DOUBLE PRECISION, cart_sales BIGINT DEFAULT 0, wishlist_conv DOUBLE PRECISION, wishlist_sales BIGINT DEFAULT 0,
+                    split_available BOOLEAN, data_source TEXT, PRIMARY KEY(dt, customer_id, adgroup_id, ad_id, query_text))""",
+        """CREATE TABLE IF NOT EXISTS fact_campaign_off_log (dt DATE, customer_id TEXT, campaign_id TEXT, off_time TEXT, PRIMARY KEY(dt, customer_id, campaign_id))""",
+        """CREATE TABLE IF NOT EXISTS fact_media_daily (
+                    dt DATE, customer_id TEXT, campaign_type TEXT, media_name TEXT, region_name TEXT, device_name TEXT DEFAULT '전체',
+                    imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, data_source TEXT, source_report TEXT,
+                    PRIMARY KEY(dt, customer_id, campaign_type, media_name, region_name, device_name))""",
+    ]
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
         try:
-            with engine.begin() as conn:
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_account (customer_id TEXT PRIMARY KEY, account_name TEXT)"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_campaign (customer_id TEXT, campaign_id TEXT, campaign_name TEXT, campaign_tp TEXT, status TEXT, PRIMARY KEY(customer_id, campaign_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_adgroup (customer_id TEXT, adgroup_id TEXT, adgroup_name TEXT, campaign_id TEXT, status TEXT, PRIMARY KEY(customer_id, adgroup_id))"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS dim_keyword (customer_id TEXT, keyword_id TEXT, adgroup_id TEXT, keyword TEXT, status TEXT, PRIMARY KEY(customer_id, keyword_id))"))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS dim_ad (customer_id TEXT, ad_id TEXT, adgroup_id TEXT, ad_name TEXT, status TEXT, ad_title TEXT, ad_desc TEXT, pc_landing_url TEXT, mobile_landing_url TEXT, creative_text TEXT, image_url TEXT, PRIMARY KEY(customer_id, ad_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_campaign_daily (dt DATE, customer_id TEXT, campaign_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, campaign_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_keyword_daily (dt DATE, customer_id TEXT, keyword_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, keyword_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_ad_daily (dt DATE, customer_id TEXT, ad_id TEXT, imp BIGINT, clk BIGINT, cost BIGINT, conv DOUBLE PRECISION, sales BIGINT DEFAULT 0, roas DOUBLE PRECISION DEFAULT 0, avg_rnk DOUBLE PRECISION DEFAULT 0, PRIMARY KEY(dt, customer_id, ad_id))"""))
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_shopping_query_daily (
-                    dt DATE,
-                    customer_id TEXT,
-                    campaign_id TEXT,
-                    adgroup_id TEXT,
-                    ad_id TEXT,
-                    query_text TEXT,
-                    total_conv DOUBLE PRECISION,
-                    total_sales BIGINT DEFAULT 0,
-                    purchase_conv DOUBLE PRECISION,
-                    purchase_sales BIGINT DEFAULT 0,
-                    cart_conv DOUBLE PRECISION,
-                    cart_sales BIGINT DEFAULT 0,
-                    wishlist_conv DOUBLE PRECISION,
-                    wishlist_sales BIGINT DEFAULT 0,
-                    split_available BOOLEAN,
-                    data_source TEXT,
-                    PRIMARY KEY(dt, customer_id, adgroup_id, ad_id, query_text)
-                )"""))
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS fact_campaign_off_log (
-                        dt DATE,
-                        customer_id TEXT,
-                        campaign_id TEXT,
-                        off_time TEXT,
-                        PRIMARY KEY(dt, customer_id, campaign_id)
-                    )
-                """))
+            for idx, ddl in enumerate(ddl_statements, start=1):
+                _execute_ddl_with_retry(engine, ddl, ctx=f"ensure_tables ddl={idx}/{len(ddl_statements)}")
 
             ensure_column(engine, "dim_ad", "ad_title", "TEXT")
             ensure_column(engine, "dim_ad", "ad_desc", "TEXT")
@@ -247,47 +273,27 @@ def ensure_tables(engine: Engine):
             ensure_column(engine, "dim_ad", "image_url", "TEXT")
 
             for table in ["fact_campaign_daily", "fact_keyword_daily", "fact_ad_daily"]:
-                ensure_column(engine, table, "purchase_conv", "DOUBLE PRECISION")
-                ensure_column(engine, table, "purchase_sales", "BIGINT")
-                ensure_column(engine, table, "purchase_roas", "DOUBLE PRECISION")
-                ensure_column(engine, table, "cart_conv", "DOUBLE PRECISION")
-                ensure_column(engine, table, "cart_sales", "BIGINT")
-                ensure_column(engine, table, "cart_roas", "DOUBLE PRECISION")
-                ensure_column(engine, table, "wishlist_conv", "DOUBLE PRECISION")
-                ensure_column(engine, table, "wishlist_sales", "BIGINT")
-                ensure_column(engine, table, "wishlist_roas", "DOUBLE PRECISION")
-                ensure_column(engine, table, "primary_conv", "DOUBLE PRECISION")
-                ensure_column(engine, table, "primary_sales", "BIGINT")
-                ensure_column(engine, table, "primary_roas", "DOUBLE PRECISION")
-                ensure_column(engine, table, "split_available", "BOOLEAN")
-                ensure_column(engine, table, "data_source", "TEXT")
+                for col, typ in [
+                    ("purchase_conv", "DOUBLE PRECISION"),("purchase_sales", "BIGINT"),("purchase_roas", "DOUBLE PRECISION"),
+                    ("cart_conv", "DOUBLE PRECISION"),("cart_sales", "BIGINT"),("cart_roas", "DOUBLE PRECISION"),
+                    ("wishlist_conv", "DOUBLE PRECISION"),("wishlist_sales", "BIGINT"),("wishlist_roas", "DOUBLE PRECISION"),
+                    ("primary_conv", "DOUBLE PRECISION"),("primary_sales", "BIGINT"),("primary_roas", "DOUBLE PRECISION"),
+                    ("split_available", "BOOLEAN"),("data_source", "TEXT")
+                ]:
+                    ensure_column(engine, table, col, typ)
 
-            with engine.begin() as conn:
-                conn.execute(text("""CREATE TABLE IF NOT EXISTS fact_media_daily (
-                    dt DATE,
-                    customer_id TEXT,
-                    campaign_type TEXT,
-                    media_name TEXT,
-                    region_name TEXT,
-                    device_name TEXT DEFAULT '전체',
-                    imp BIGINT,
-                    clk BIGINT,
-                    cost BIGINT,
-                    conv DOUBLE PRECISION,
-                    sales BIGINT DEFAULT 0,
-                    data_source TEXT,
-                    source_report TEXT,
-                    PRIMARY KEY(dt, customer_id, campaign_type, media_name, region_name, device_name)
-                )"""))
             ensure_column(engine, "fact_media_daily", "data_source", "TEXT")
             ensure_column(engine, "fact_media_daily", "source_report", "TEXT")
-
             ensure_device_tables(engine)
-            break
+            ensure_overview_campaign_daily_cache(engine)
+            ensure_overview_report_source_cache(engine)
+            return
         except Exception as e:
+            last_err = e
+            _best_effort_dispose(engine, ctx="ensure_tables")
+            _log_retry_failure("DB 초기화", attempt, 3, e, ctx="ensure_tables")
             time.sleep(3)
-            if attempt == 2:
-                raise e
+    _raise_retry_failure("DB 초기화", last_err, ctx="ensure_tables")
 
 
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
@@ -320,6 +326,7 @@ def clear_fact_range(engine: Engine, table: str, customer_id: str, d1):
             return
         except Exception as e:
             last_err = e
+            _best_effort_dispose(engine, ctx=ctx)
             _log_retry_failure("fact 범위 삭제", attempt, 3, e, ctx=ctx)
             time.sleep(3)
     _raise_retry_failure("fact 범위 삭제", last_err, ctx=ctx)
@@ -341,6 +348,7 @@ def clear_fact_scope(engine: Engine, table: str, customer_id: str, d1, pk: str, 
             return
         except Exception as e:
             last_err = e
+            _best_effort_dispose(engine, ctx=ctx)
             _log_retry_failure("fact 범위 삭제(scope)", attempt, 3, e, ctx=ctx)
             time.sleep(3)
     _raise_retry_failure("fact 범위 삭제(scope)", last_err, ctx=ctx)
@@ -579,3 +587,157 @@ def replace_media_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
             _safe_close(cur, label="cursor", ctx=f"fact_media_daily upsert cid={customer_id} dt={d1}")
             _safe_close(raw_conn, label="connection", ctx=f"fact_media_daily upsert cid={customer_id} dt={d1}")
     raise RuntimeError(f"fact_media_daily 적재 최종 실패 | cid={customer_id} dt={d1} rows={len(df)} pk={pk_cols} | {type(last_upsert_err).__name__}: {last_upsert_err}") from last_upsert_err
+
+
+def ensure_overview_campaign_daily_cache(engine: Engine):
+    _execute_ddl_with_retry(engine, """
+        CREATE TABLE IF NOT EXISTS overview_campaign_daily_cache (
+            dt DATE NOT NULL,
+            customer_id TEXT NOT NULL,
+            campaign_type TEXT NOT NULL,
+            imp BIGINT DEFAULT 0,
+            clk BIGINT DEFAULT 0,
+            cost BIGINT DEFAULT 0,
+            conv DOUBLE PRECISION DEFAULT 0,
+            sales BIGINT DEFAULT 0,
+            tot_conv DOUBLE PRECISION DEFAULT 0,
+            tot_sales BIGINT DEFAULT 0,
+            cart_conv DOUBLE PRECISION DEFAULT 0,
+            cart_sales BIGINT DEFAULT 0,
+            wishlist_conv DOUBLE PRECISION DEFAULT 0,
+            wishlist_sales BIGINT DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (dt, customer_id, campaign_type)
+        )
+    """, ctx="ensure_overview_campaign_daily_cache")
+
+
+def refresh_overview_campaign_daily_cache(engine: Engine, customer_id: str, d1, d2):
+    ensure_overview_campaign_daily_cache(engine)
+    params = {"cid": str(customer_id), "d1": d1, "d2": d2}
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM overview_campaign_daily_cache WHERE customer_id=:cid AND dt BETWEEN :d1 AND :d2"), params)
+                conn.execute(text("""
+                    INSERT INTO overview_campaign_daily_cache (
+                        dt, customer_id, campaign_type,
+                        imp, clk, cost, conv, sales, tot_conv, tot_sales, cart_conv, cart_sales, wishlist_conv, wishlist_sales, updated_at
+                    )
+                    SELECT
+                        f.dt,
+                        f.customer_id,
+                        COALESCE(c.campaign_tp, 'WEB_SITE') AS campaign_type,
+                        SUM(COALESCE(f.imp, 0)) AS imp,
+                        SUM(COALESCE(f.clk, 0)) AS clk,
+                        SUM(COALESCE(f.cost, 0)) AS cost,
+                        SUM(COALESCE(f.purchase_conv, f.conv, 0)) AS conv,
+                        SUM(COALESCE(f.purchase_sales, f.sales, 0)) AS sales,
+                        SUM(COALESCE(f.primary_conv, f.tot_conv, f.conv, 0)) AS tot_conv,
+                        SUM(COALESCE(f.primary_sales, f.tot_sales, f.sales, 0)) AS tot_sales,
+                        SUM(COALESCE(f.cart_conv, 0)) AS cart_conv,
+                        SUM(COALESCE(f.cart_sales, 0)) AS cart_sales,
+                        SUM(COALESCE(f.wishlist_conv, 0)) AS wishlist_conv,
+                        SUM(COALESCE(f.wishlist_sales, 0)) AS wishlist_sales,
+                        NOW() AS updated_at
+                    FROM fact_campaign_daily f
+                    JOIN dim_campaign c
+                      ON f.customer_id = c.customer_id AND f.campaign_id = c.campaign_id
+                    WHERE f.customer_id = :cid
+                      AND f.dt BETWEEN :d1 AND :d2
+                    GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'WEB_SITE')
+                    ON CONFLICT (dt, customer_id, campaign_type) DO UPDATE SET
+                        imp = EXCLUDED.imp,
+                        clk = EXCLUDED.clk,
+                        cost = EXCLUDED.cost,
+                        conv = EXCLUDED.conv,
+                        sales = EXCLUDED.sales,
+                        tot_conv = EXCLUDED.tot_conv,
+                        tot_sales = EXCLUDED.tot_sales,
+                        cart_conv = EXCLUDED.cart_conv,
+                        cart_sales = EXCLUDED.cart_sales,
+                        wishlist_conv = EXCLUDED.wishlist_conv,
+                        wishlist_sales = EXCLUDED.wishlist_sales,
+                        updated_at = NOW()
+                """), params)
+            return
+        except Exception as e:
+            last_err = e
+            _best_effort_dispose(engine, ctx=f"refresh overview campaign cache cid={customer_id}")
+            _log_retry_failure("overview campaign cache refresh", attempt, 3, e, ctx=f"customer_id={customer_id} d1={d1} d2={d2}")
+            time.sleep(2)
+    _raise_retry_failure("overview campaign cache refresh", last_err, ctx=f"customer_id={customer_id} d1={d1} d2={d2}")
+
+
+def ensure_overview_report_source_cache(engine: Engine):
+    _execute_ddl_with_retry(engine, """
+        CREATE TABLE IF NOT EXISTS overview_report_source_cache (
+            dt DATE,
+            customer_id TEXT,
+            campaign_type TEXT,
+            source_kind TEXT,
+            source_text TEXT,
+            metric_value DOUBLE PRECISION DEFAULT 0,
+            sales_value BIGINT DEFAULT 0,
+            rank_no INTEGER DEFAULT 0,
+            PRIMARY KEY(dt, customer_id, campaign_type, source_kind, source_text)
+        )
+    """, ctx="ensure_overview_report_source_cache")
+
+
+def refresh_overview_report_source_cache(engine: Engine, customer_id: str, d1, d2):
+    ensure_overview_report_source_cache(engine)
+    params = {"cid": str(customer_id), "d1": d1, "d2": d2}
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM overview_report_source_cache WHERE customer_id = :cid AND dt BETWEEN :d1 AND :d2"), params)
+                conn.execute(text("""
+                    WITH keyword_daily AS (
+                        SELECT f.dt, f.customer_id, COALESCE(c.campaign_tp, 'WEB_SITE') AS campaign_type,
+                               COALESCE(k.keyword, '') AS source_text,
+                               SUM(COALESCE(f.clk, 0)) AS metric_value,
+                               SUM(COALESCE(f.sales, 0)) AS sales_value
+                        FROM fact_keyword_daily f
+                        JOIN dim_keyword k ON f.customer_id = k.customer_id AND f.keyword_id = k.keyword_id
+                        JOIN dim_adgroup a ON k.customer_id = a.customer_id AND k.adgroup_id = a.adgroup_id
+                        JOIN dim_campaign c ON a.customer_id = c.customer_id AND a.campaign_id = c.campaign_id
+                        WHERE f.customer_id = :cid AND f.dt BETWEEN :d1 AND :d2
+                        GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'WEB_SITE'), COALESCE(k.keyword, '')
+                    ), ranked AS (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY dt, customer_id, campaign_type ORDER BY metric_value DESC, sales_value DESC, source_text) AS rank_no
+                        FROM keyword_daily
+                        WHERE source_text <> '' AND metric_value > 0
+                    )
+                    INSERT INTO overview_report_source_cache (dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no)
+                    SELECT dt, customer_id, campaign_type, 'powerlink_keyword', source_text, metric_value, sales_value, rank_no
+                    FROM ranked WHERE rank_no <= 20
+                """), params)
+                conn.execute(text("""
+                    WITH query_daily AS (
+                        SELECT f.dt, f.customer_id, COALESCE(c.campaign_tp, 'SHOPPING') AS campaign_type,
+                               COALESCE(f.query_text, '') AS source_text,
+                               SUM(COALESCE(f.purchase_conv, 0)) AS metric_value,
+                               SUM(COALESCE(f.purchase_sales, 0)) AS sales_value
+                        FROM fact_shopping_query_daily f
+                        LEFT JOIN dim_campaign c ON f.customer_id = c.customer_id AND f.campaign_id = c.campaign_id
+                        WHERE f.customer_id = :cid AND f.dt BETWEEN :d1 AND :d2
+                        GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'SHOPPING'), COALESCE(f.query_text, '')
+                    ), ranked AS (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY dt, customer_id, campaign_type ORDER BY metric_value DESC, sales_value DESC, source_text) AS rank_no
+                        FROM query_daily
+                        WHERE source_text <> '' AND metric_value > 0
+                    )
+                    INSERT INTO overview_report_source_cache (dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no)
+                    SELECT dt, customer_id, campaign_type, 'shopping_query', source_text, metric_value, sales_value, rank_no
+                    FROM ranked WHERE rank_no <= 20
+                """), params)
+            return
+        except Exception as e:
+            last_err = e
+            _best_effort_dispose(engine, ctx=f"refresh overview report cache cid={customer_id}")
+            _log_retry_failure("overview report cache refresh", attempt, 3, e, ctx=f"customer_id={customer_id} d1={d1} d2={d2}")
+            time.sleep(2)
+    _raise_retry_failure("overview report cache refresh", last_err, ctx=f"customer_id={customer_id} d1={d1} d2={d2}")
