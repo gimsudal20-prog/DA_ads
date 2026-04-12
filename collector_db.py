@@ -9,7 +9,7 @@ import psycopg2
 import psycopg2.extras
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from device_collector_helpers import ensure_device_tables
 
@@ -26,8 +26,12 @@ def _safe_rollback(raw_conn, *, ctx: str = ""):
     if not raw_conn:
         return
     try:
+        if getattr(raw_conn, "closed", False):
+            return
         raw_conn.rollback()
     except Exception as rollback_exc:
+        if "closed" in str(rollback_exc).lower():
+            return
         extra = f" | {ctx}" if ctx else ""
         _log(f"⚠️ 롤백 실패{extra} | {_exc_label(rollback_exc)}")
 
@@ -38,6 +42,8 @@ def _safe_close(resource, *, label: str, ctx: str = ""):
     try:
         resource.close()
     except Exception as close_exc:
+        if "closed" in str(close_exc).lower():
+            return
         extra = f" | {ctx}" if ctx else ""
         _log(f"⚠️ {label} close 실패{extra} | {_exc_label(close_exc)}")
 
@@ -62,6 +68,72 @@ def _raise_retry_failure(action: str, exc: Exception | None, *, ctx: str = ""):
     raise RuntimeError(msg)
 
 
+def _best_effort_dispose(engine: Engine, *, ctx: str = "") -> None:
+    try:
+        engine.dispose()
+    except Exception as dispose_exc:
+        _log_best_effort_failure("engine.dispose", dispose_exc, ctx=ctx)
+
+
+class _TableWriteSpec:
+    def __init__(self, chunk_rows: int, page_size: int, statement_timeout_ms: int):
+        self.chunk_rows = max(1, int(chunk_rows))
+        self.page_size = max(1, int(page_size))
+        self.statement_timeout_ms = max(30000, int(statement_timeout_ms))
+
+
+def _table_write_spec(table: str, row_count: int) -> _TableWriteSpec:
+    t = str(table or '').lower()
+    if t == 'dim_keyword':
+        if row_count >= 50000:
+            return _TableWriteSpec(500, 100, 900000)
+        if row_count >= 10000:
+            return _TableWriteSpec(750, 150, 900000)
+        return _TableWriteSpec(1000, 200, 900000)
+    if t in {'dim_campaign', 'dim_adgroup', 'dim_ad'}:
+        return _TableWriteSpec(1000, 250, 600000)
+    if t.startswith('fact_'):
+        return _TableWriteSpec(1000, 250, 600000)
+    return _TableWriteSpec(1000, 250, 600000)
+
+
+def _iter_chunks(seq, size: int):
+    for i in range(0, len(seq), size):
+        yield i, seq[i:i+size]
+
+
+def _execute_values_in_chunks(engine: Engine, sql: str, tuples: list[tuple], *, table: str, ctx: str) -> None:
+    if not tuples:
+        return
+    spec = _table_write_spec(table, len(tuples))
+    total_chunks = (len(tuples) + spec.chunk_rows - 1) // spec.chunk_rows
+    for chunk_idx0, chunk in _iter_chunks(tuples, spec.chunk_rows):
+        chunk_no = chunk_idx0 // spec.chunk_rows + 1
+        chunk_ctx = f"{ctx} chunk={chunk_no}/{total_chunks} chunk_rows={len(chunk)} page_size={spec.page_size}"
+        last_err: Exception | None = None
+        for attempt in range(1, 4):
+            raw_conn = None
+            cur = None
+            try:
+                raw_conn = engine.raw_connection()
+                cur = raw_conn.cursor()
+                cur.execute(f"SET statement_timeout TO {spec.statement_timeout_ms}")
+                psycopg2.extras.execute_values(cur, sql, chunk, page_size=spec.page_size)
+                raw_conn.commit()
+                break
+            except Exception as e:
+                last_err = e
+                _safe_rollback(raw_conn, ctx=chunk_ctx)
+                _best_effort_dispose(engine, ctx=chunk_ctx)
+                _log_retry_failure("DB 적재", attempt, 3, e, ctx=chunk_ctx)
+                time.sleep(min(8, 2 + attempt))
+            finally:
+                _safe_close(cur, label="cursor", ctx=chunk_ctx)
+                _safe_close(raw_conn, label="connection", ctx=chunk_ctx)
+        else:
+            _raise_retry_failure("DB 적재", last_err, ctx=chunk_ctx)
+
+
 def _filter_nonzero_media_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for r in rows or []:
@@ -81,19 +153,36 @@ def get_engine(db_url: str) -> Engine:
     if "sslmode=" not in db_url:
         db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     import os
-    pool_size = max(1, int(os.getenv("COLLECTOR_DB_POOL_SIZE", "6") or 6))
-    max_overflow = max(0, int(os.getenv("COLLECTOR_DB_MAX_OVERFLOW", "12") or 12))
+    use_queue_pool = str(os.getenv("COLLECTOR_USE_QUEUEPOOL", "0") or "0").strip().lower() in {"1", "true", "yes", "y"}
+    pool_size = max(1, int(os.getenv("COLLECTOR_DB_POOL_SIZE", "4") or 4))
+    max_overflow = max(0, int(os.getenv("COLLECTOR_DB_MAX_OVERFLOW", "4") or 4))
     pool_timeout = max(5, int(os.getenv("COLLECTOR_DB_POOL_TIMEOUT", "30") or 30))
-    pool_recycle = max(60, int(os.getenv("COLLECTOR_DB_POOL_RECYCLE", "1800") or 1800))
+    pool_recycle = max(60, int(os.getenv("COLLECTOR_DB_POOL_RECYCLE", "300") or 300))
+    connect_args = {
+        "options": "-c lock_timeout=10000 -c statement_timeout=300000",
+        "connect_timeout": int(os.getenv("COLLECTOR_DB_CONNECT_TIMEOUT", "15") or 15),
+        "keepalives": 1,
+        "keepalives_idle": int(os.getenv("COLLECTOR_DB_KEEPALIVES_IDLE", "30") or 30),
+        "keepalives_interval": int(os.getenv("COLLECTOR_DB_KEEPALIVES_INTERVAL", "10") or 10),
+        "keepalives_count": int(os.getenv("COLLECTOR_DB_KEEPALIVES_COUNT", "5") or 5),
+    }
+    if use_queue_pool:
+        return create_engine(
+            db_url,
+            poolclass=QueuePool,
+            pool_pre_ping=True,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_recycle=pool_recycle,
+            connect_args=connect_args,
+            future=True,
+        )
     return create_engine(
         db_url,
-        poolclass=QueuePool,
+        poolclass=NullPool,
         pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
-        connect_args={"options": "-c lock_timeout=10000 -c statement_timeout=300000"},
+        connect_args=connect_args,
         future=True,
     )
 
@@ -107,23 +196,6 @@ def ensure_column(engine: Engine, table: str, column: str, datatype: str):
         if "already exists" in msg or "duplicate column" in msg:
             return
         _log_best_effort_failure("ensure_column", e, ctx=f"table={table} column={column}")
-
-
-def ensure_overview_report_source_cache(engine: Engine):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS overview_report_source_cache (
-                dt DATE,
-                customer_id TEXT,
-                campaign_type TEXT,
-                source_kind TEXT,
-                source_text TEXT,
-                metric_value DOUBLE PRECISION DEFAULT 0,
-                sales_value BIGINT DEFAULT 0,
-                rank_no INTEGER DEFAULT 0,
-                PRIMARY KEY(dt, customer_id, campaign_type, source_kind, source_text)
-            )
-        """))
 
 
 def ensure_tables(engine: Engine):
@@ -211,86 +283,11 @@ def ensure_tables(engine: Engine):
             ensure_column(engine, "fact_media_daily", "source_report", "TEXT")
 
             ensure_device_tables(engine)
-            ensure_overview_report_source_cache(engine)
             break
         except Exception as e:
             time.sleep(3)
             if attempt == 2:
                 raise e
-
-
-def refresh_overview_report_source_cache(engine: Engine, customer_id: str, d1, d2):
-    ensure_overview_report_source_cache(engine)
-    params = {"cid": str(customer_id), "d1": d1, "d2": d2}
-    with engine.begin() as conn:
-        conn.execute(
-            text("DELETE FROM overview_report_source_cache WHERE customer_id = :cid AND dt BETWEEN :d1 AND :d2"),
-            params,
-        )
-        conn.execute(text("""
-            WITH keyword_daily AS (
-                SELECT
-                    f.dt,
-                    f.customer_id,
-                    COALESCE(c.campaign_tp, 'WEB_SITE') AS campaign_type,
-                    COALESCE(k.keyword, '') AS source_text,
-                    SUM(COALESCE(f.clk, 0)) AS metric_value,
-                    SUM(COALESCE(f.sales, 0)) AS sales_value
-                FROM fact_keyword_daily f
-                JOIN dim_keyword k
-                  ON f.customer_id = k.customer_id AND f.keyword_id = k.keyword_id
-                JOIN dim_adgroup a
-                  ON k.customer_id = a.customer_id AND k.adgroup_id = a.adgroup_id
-                JOIN dim_campaign c
-                  ON a.customer_id = c.customer_id AND a.campaign_id = c.campaign_id
-                WHERE f.customer_id = :cid
-                  AND f.dt BETWEEN :d1 AND :d2
-                GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'WEB_SITE'), COALESCE(k.keyword, '')
-            ), ranked AS (
-                SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY dt, customer_id, campaign_type
-                    ORDER BY metric_value DESC, sales_value DESC, source_text
-                ) AS rank_no
-                FROM keyword_daily
-                WHERE source_text <> '' AND metric_value > 0
-            )
-            INSERT INTO overview_report_source_cache (
-                dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no
-            )
-            SELECT dt, customer_id, campaign_type, 'powerlink_keyword', source_text, metric_value, sales_value, rank_no
-            FROM ranked
-            WHERE rank_no <= 20
-        """), params)
-        conn.execute(text("""
-            WITH query_daily AS (
-                SELECT
-                    f.dt,
-                    f.customer_id,
-                    COALESCE(c.campaign_tp, 'SHOPPING') AS campaign_type,
-                    COALESCE(f.query_text, '') AS source_text,
-                    SUM(COALESCE(f.purchase_conv, 0)) AS metric_value,
-                    SUM(COALESCE(f.purchase_sales, 0)) AS sales_value
-                FROM fact_shopping_query_daily f
-                LEFT JOIN dim_campaign c
-                  ON f.customer_id = c.customer_id AND f.campaign_id = c.campaign_id
-                WHERE f.customer_id = :cid
-                  AND f.dt BETWEEN :d1 AND :d2
-                GROUP BY f.dt, f.customer_id, COALESCE(c.campaign_tp, 'SHOPPING'), COALESCE(f.query_text, '')
-            ), ranked AS (
-                SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY dt, customer_id, campaign_type
-                    ORDER BY metric_value DESC, sales_value DESC, source_text
-                ) AS rank_no
-                FROM query_daily
-                WHERE source_text <> '' AND (metric_value > 0 OR sales_value > 0)
-            )
-            INSERT INTO overview_report_source_cache (
-                dt, customer_id, campaign_type, source_kind, source_text, metric_value, sales_value, rank_no
-            )
-            SELECT dt, customer_id, campaign_type, 'shopping_query', source_text, metric_value, sales_value, rank_no
-            FROM ranked
-            WHERE rank_no <= 20
-        """), params)
 
 
 def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols: List[str]):
@@ -309,26 +306,8 @@ def upsert_many(engine: Engine, table: str, rows: List[Dict[str, Any]], pk_cols:
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
 
     tuples = list(df.itertuples(index=False, name=None))
-    last_err: Exception | None = None
     ctx = f"table={table} rows={len(tuples)} pk={pk_cols}"
-    for attempt in range(1, 4):
-        raw_conn = None
-        cur = None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            return
-        except Exception as e:
-            last_err = e
-            _safe_rollback(raw_conn, ctx=ctx)
-            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
-            time.sleep(3)
-        finally:
-            _safe_close(cur, label="cursor", ctx=ctx)
-            _safe_close(raw_conn, label="connection", ctx=ctx)
-    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
+    _execute_values_in_chunks(engine, sql, tuples, table=table, ctx=ctx)
 
 
 def clear_fact_range(engine: Engine, table: str, customer_id: str, d1):
@@ -387,26 +366,8 @@ def replace_fact_range(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    last_err: Exception | None = None
     ctx = f"table={table} rows={len(tuples)}"
-    for attempt in range(1, 4):
-        raw_conn = None
-        cur = None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            return
-        except Exception as e:
-            last_err = e
-            _safe_rollback(raw_conn, ctx=ctx)
-            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
-            time.sleep(3)
-        finally:
-            _safe_close(cur, label="cursor", ctx=ctx)
-            _safe_close(raw_conn, label="connection", ctx=ctx)
-    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
+    _execute_values_in_chunks(engine, sql, tuples, table=table, ctx=ctx)
 
 
 def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], customer_id: str, d1):
@@ -430,26 +391,8 @@ def replace_query_fact_range(engine: Engine, rows: List[Dict[str, Any]], custome
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    last_err: Exception | None = None
     ctx = f"table={table} rows={len(tuples)}"
-    for attempt in range(1, 4):
-        raw_conn = None
-        cur = None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            return
-        except Exception as e:
-            last_err = e
-            _safe_rollback(raw_conn, ctx=ctx)
-            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
-            time.sleep(3)
-        finally:
-            _safe_close(cur, label="cursor", ctx=ctx)
-            _safe_close(raw_conn, label="connection", ctx=ctx)
-    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
+    _execute_values_in_chunks(engine, sql, tuples, table=table, ctx=ctx)
 
 
 def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], customer_id: str, d1, pk: str, ids: List[str]):
@@ -471,26 +414,8 @@ def replace_fact_scope(engine: Engine, table: str, rows: List[Dict[str, Any]], c
     sql = f'INSERT INTO {table} ({col_names}) VALUES %s {conflict_clause}'
     tuples = list(df.itertuples(index=False, name=None))
 
-    last_err: Exception | None = None
     ctx = f"table={table} rows={len(tuples)}"
-    for attempt in range(1, 4):
-        raw_conn = None
-        cur = None
-        try:
-            raw_conn = engine.raw_connection()
-            cur = raw_conn.cursor()
-            psycopg2.extras.execute_values(cur, sql, tuples, page_size=5000)
-            raw_conn.commit()
-            return
-        except Exception as e:
-            last_err = e
-            _safe_rollback(raw_conn, ctx=ctx)
-            _log_retry_failure("DB 적재", attempt, 3, e, ctx=ctx)
-            time.sleep(3)
-        finally:
-            _safe_close(cur, label="cursor", ctx=ctx)
-            _safe_close(raw_conn, label="connection", ctx=ctx)
-    _raise_retry_failure("DB 적재", last_err, ctx=ctx)
+    _execute_values_in_chunks(engine, sql, tuples, table=table, ctx=ctx)
 
 
 def _get_fact_media_daily_conflict_cols(engine: Engine) -> List[str]:

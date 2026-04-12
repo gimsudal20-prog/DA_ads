@@ -148,8 +148,12 @@ def _safe_rollback(raw_conn, *, ctx: str = ""):
     if not raw_conn:
         return
     try:
+        if getattr(raw_conn, "closed", False):
+            return
         raw_conn.rollback()
     except Exception as rollback_exc:
+        if "closed" in str(rollback_exc).lower():
+            return
         extra = f" | {ctx}" if ctx else ""
         log(f"⚠️ 롤백 실패{extra} | {_exc_label(rollback_exc)}")
 
@@ -160,6 +164,8 @@ def _safe_close(resource, *, label: str, ctx: str = ""):
     try:
         resource.close()
     except Exception as close_exc:
+        if "closed" in str(close_exc).lower():
+            return
         extra = f" | {ctx}" if ctx else ""
         log(f"⚠️ {label} close 실패{extra} | {_exc_label(close_exc)}")
 
@@ -493,6 +499,10 @@ def acquire_job_lock(engine: Engine, customer_id: str, target_date: date):
         return raw_conn
     except Exception as e:
         log(f"⚠️ 락 획득 실패 - 무락 모드로 진행합니다: {e}")
+        try:
+            engine.dispose()
+        except Exception:
+            pass
         _safe_close(cur, label="cursor", ctx=f"lock customer_id={customer_id}")
         _safe_close(raw_conn, label="connection", ctx=f"lock customer_id={customer_id}")
         return None
@@ -503,6 +513,8 @@ def release_job_lock(raw_conn, customer_id: str, target_date: date):
         return
     cur = None
     try:
+        if getattr(raw_conn, "closed", False):
+            return
         cur = raw_conn.cursor()
         lk = lock_key_for_job(customer_id, target_date)
         cur.execute("SELECT pg_advisory_unlock(%s)", (lk,))
@@ -1073,7 +1085,6 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         finalize_account_result_fn=_finalize_account_result,
         exc_label_fn=_exc_label,
         traceback_tail_fn=_traceback_tail,
-        refresh_overview_report_source_cache_fn=getattr(collector_db_mod, "refresh_overview_report_source_cache", None),
         skip_keyword_stats=SKIP_KEYWORD_STATS,
         skip_ad_stats=SKIP_AD_STATS,
         log_fn=log,
