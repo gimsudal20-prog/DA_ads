@@ -119,11 +119,11 @@ def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
         with c3: st.metric("장바구니 발생", f"{cart_cnt:,}개")
 
 
-def _render_filter_panel(view: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str, object]]:
+def _render_filter_panel(view: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     with st.container(border=True):
         st.markdown("<div style='font-size:15px;font-weight:700;color:#1F2937;margin-bottom:12px;'>쇼핑 검색어 필터</div>", unsafe_allow_html=True)
         filtered = view.copy()
-
+        
         r1c1, r1c2 = st.columns(2)
         camps = ["전체"] + sorted([str(x) for x in filtered["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in filtered.columns else ["전체"]
         sel_camp = r1c1.selectbox("캠페인", camps, key="sq_camp_filter_unified")
@@ -156,16 +156,15 @@ def _render_filter_panel(view: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str, ob
         if min_total_conv > 0:
             filtered = filtered[pd.to_numeric(filtered["총 전환수"], errors="coerce").fillna(0) >= float(min_total_conv)]
 
-    filter_state = {
+    return filtered, {
         "sel_camp": sel_camp,
         "sel_grp": sel_grp,
-        "q_text": q_text.strip(),
+        "q_text": q_text,
         "min_purchase_sales": float(min_purchase_sales),
         "min_total_conv": float(min_total_conv),
         "only_purchase": bool(only_purchase),
         "only_cart": bool(only_cart),
     }
-    return filtered, filter_state
 
 
 @st.fragment
@@ -174,7 +173,7 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
         return
 
     st.markdown("<div class='nv-sec-title'>쇼핑 검색어 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nv-sec-sub' style='margin-bottom:16px;'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>", unsafe_allow_html=True)
 
     cids = tuple(f.get("selected_customer_ids", []))
     patch_date = date(2026, 3, 11)
@@ -244,12 +243,7 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     with st.container(border=True):
         st.markdown("<div style='font-size:15px;font-weight:700;margin-bottom:8px;'>리포트 다운로드</div><div style='font-size:13px;color:#6B7280;margin-bottom:12px;'>현재 필터 기준 결과를 엑셀로 내려받습니다.</div>", unsafe_allow_html=True)
-        cache_key = (
-            f"sq_excel::{f['start']}::{f['end']}::{cmp_mode}::"
-            f"{filter_state['sel_camp']}::{filter_state['sel_grp']}::{filter_state['q_text']}::"
-            f"{int(filter_state['min_purchase_sales'])}::{int(filter_state['min_total_conv'])}::"
-            f"{int(filter_state['only_purchase'])}::{int(filter_state['only_cart'])}"
-        )
+        cache_key = f"sq_excel::{f['start']}::{f['end']}::{cmp_mode}::{filter_state['sel_camp']}::{filter_state['sel_grp']}::{str(filter_state['q_text']).strip()}::{int(filter_state['min_purchase_sales'])}::{int(filter_state['min_total_conv'])}::{int(filter_state['only_purchase'])}::{int(filter_state['only_cart'])}"
         if st.button("엑셀 파일 준비", key="sq_prepare_excel_btn", use_container_width=True):
             st.session_state[cache_key] = _build_sq_excel_bytes(disp)
         excel_bytes = st.session_state.get(cache_key)

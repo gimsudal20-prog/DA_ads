@@ -58,6 +58,12 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
         if neg_cols: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_cols)
     return styler
 
+def _render_keyword_styled_table(df: pd.DataFrame, first_col: str, height: int = 550):
+    safe_fmt = {k: v for k, v in FMT_DICT.items() if k in df.columns}
+    styled = df.style.format(safe_fmt)
+    styled = _apply_delta_styles(styled, df)
+    st.dataframe(styled, use_container_width=True, height=height, hide_index=True, column_config=_keyword_fast_col_config(df, first_col))
+
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
@@ -327,6 +333,7 @@ def render_keyword_main(view, top_n):
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     disp = disp[final_cols].sort_values("광고비", ascending=False).head(top_n)
     
+    st.markdown("<div class='nv-sec-sub' style='margin:4px 0 12px 0;'>키워드 필터와 합산 옵션을 먼저 적용한 뒤 표를 확인하세요.</div>", unsafe_allow_html=True)
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
     
     _render_sticky_table(disp, "키워드", height=550, col_config=_keyword_fast_col_config(disp, "키워드"))
@@ -436,12 +443,12 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     disp_final = disp_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    st.dataframe(disp_final, use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
+    _render_keyword_styled_table(disp_final, "키워드", height=550) if show_deltas else st.dataframe(disp_final, use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     st.markdown("<div class='nv-sec-title'>키워드/소재(쇼핑) 상세 분석</div>", unsafe_allow_html=True)
-    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
+    st.markdown("<div class='nv-sec-sub' style='margin-bottom:14px;'>파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.</div>", unsafe_allow_html=True)
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 150))

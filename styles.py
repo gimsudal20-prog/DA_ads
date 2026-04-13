@@ -75,7 +75,7 @@ h1, h2, h3, h4, h5, h6 {
   gap: 16px;
   margin-bottom: 28px;
   padding: 22px 28px;
-  background: #FCFCFD;
+  background: var(--nv-bg);
   border: 1px solid var(--nv-line);
   border-radius: var(--nv-radius-lg);
   box-shadow: none;
@@ -169,13 +169,14 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: var(--nv-radius-lg);
   border: 1px solid var(--nv-line);
   margin-bottom: 16px;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
   box-shadow: none;
 }
 .nv-metric-card:hover {
   border-color: var(--nv-line-strong);
   box-shadow: none;
   transform: none;
+  background: #FCFDFE;
 }
 .nv-metric-card-title {
   color: var(--nv-muted);
@@ -296,7 +297,7 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 14px !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-  background: #FFFFFF !important;
+  background: var(--nv-bg) !important;
   box-shadow: none !important;
   border: 1px solid var(--nv-line) !important;
 }
@@ -326,7 +327,7 @@ div[data-baseweb="select"] > div:focus-within {
 [data-testid="stExpander"] {
   border: 1px solid var(--nv-line) !important;
   border-radius: var(--nv-radius-lg) !important;
-  box-shadow: none !important;
+  box-shadow: var(--nv-shadow-soft) !important;
   background: var(--nv-bg) !important;
   overflow: hidden;
 }
@@ -348,7 +349,7 @@ div[data-baseweb="select"] > div:focus-within {
   border-radius: 10px !important;
   font-weight: 700 !important;
   padding: 8px 16px !important;
-  box-shadow: none !important;
+  box-shadow: var(--nv-shadow-soft) !important;
 }
 [data-testid="baseButton-primary"]:hover { 
   background-color: #000000 !important; 
@@ -376,6 +377,20 @@ div[data-baseweb="select"] > div:focus-within {
   color: var(--nv-text);
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
+
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--nv-line) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  box-shadow: none !important;
+}
+[data-testid="stDataFrame"] [role="grid"] {
+  border: none !important;
+}
+[data-testid="stDataFrame"] [role="columnheader"] {
+  background: #FAFBFC !important;
+}
 
 @media (max-width: 1100px) {
   div.block-container {
