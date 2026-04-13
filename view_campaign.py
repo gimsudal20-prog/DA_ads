@@ -130,6 +130,20 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
         cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
     return cfg
 
+
+def _campaign_sticky_cfg(first_col: str | None = None) -> dict:
+    if not first_col:
+        return {}
+    return {first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")}
+
+
+def _render_campaign_sticky_table(df: pd.DataFrame, first_col: str, apply_delta_styles: bool = False):
+    fmt_dict = {k: v for k, v in FMT_DICT.items() if k in df.columns}
+    styled = df.style.format(fmt_dict)
+    if apply_delta_styles:
+        styled = _apply_delta_styles(styled, df)
+    st.dataframe(styled, width="stretch", hide_index=True, column_config=_campaign_sticky_cfg(first_col))
+
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
@@ -896,7 +910,7 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
     base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
     cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
     disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
-    st.dataframe(disp_grp, width="stretch", hide_index=True, column_config=_campaign_fast_col_config(disp_grp, "광고그룹"))
+    _render_campaign_sticky_table(disp_grp, "광고그룹", apply_delta_styles=show_deltas_grp)
 
 
 def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
