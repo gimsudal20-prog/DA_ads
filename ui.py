@@ -51,7 +51,7 @@ def _ensure_aggrid():
 def render_empty_state(message: str = "조회된 데이터가 없습니다.", height: int = 300) -> None:
     safe_msg = html.escape(message)
     empty_html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; height:{height}px; width:100%; background:linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.84)); border:1px dashed {THEME['line']}; border-radius:20px; color:{THEME['muted']}; text-align:center; box-shadow:0 10px 35px rgba(15,23,42,0.04); backdrop-filter:blur(10px);">
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; height:{height}px; width:100%; background:linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.84)); border:1px dashed {THEME['line']}; border-radius:20px; color:{THEME['muted']}; text-align:center; backdrop-filter:blur(10px);">
         <div style="width:42px; height:42px; border-radius:14px; background:{THEME['surface']}; display:flex; align-items:center; justify-content:center; font-size:18px;">⌁</div>
         <div style="font-size:14px; font-weight:700; color:{THEME['text']};">{safe_msg}</div>
         <div style="font-size:12px; opacity:0.78;">조건을 변경하거나 동기화를 확인해주세요.</div>

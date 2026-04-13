@@ -35,8 +35,8 @@ GLOBAL_UI_CSS = """
   /* Geometry */
   --nv-radius: 14px;
   --nv-radius-lg: 22px;
-  --nv-shadow-soft: 0 10px 35px rgba(15, 23, 42, 0.05);
-  --nv-shadow-hover: 0 18px 45px rgba(15, 23, 42, 0.08);
+  --nv-shadow-soft: none;
+  --nv-shadow-hover: none;
 }
 
 /* =========================================
@@ -204,8 +204,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 .nv-metric-card:hover {
   border-color: var(--nv-primary);
-  box-shadow: var(--nv-shadow-hover);
-  transform: translateY(-2px);
+  box-shadow: none;
+  transform: none;
 }
 .nv-metric-card-title {
   color: var(--nv-muted);
@@ -311,7 +311,7 @@ h1, h2, h3, h4, h5, h6 {
 [data-testid="stSegmentedControl"] label:has(input:checked) {
   background: #FFFFFF !important;
   border: 1px solid var(--nv-line) !important;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06) !important;
+  box-shadow: none !important;
 }
 [data-testid="stSegmentedControl"] label p {
   font-size: 13px !important;
@@ -438,7 +438,7 @@ div[data-baseweb="select"] > div,
   box-shadow: none !important;
 }
 div[data-baseweb="select"] > div:focus-within {
-  box-shadow: 0 0 0 1px var(--nv-primary) inset !important;
+  box-shadow: inset 0 0 0 1px var(--nv-primary) !important;
   border-color: var(--nv-primary) !important;
 }
 

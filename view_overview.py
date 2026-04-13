@@ -21,7 +21,7 @@ def _inject_overview_css():
     .ov-chip.primary { background: var(--nv-primary-soft); color: var(--nv-primary); border-color: transparent; }
     .ov-chip.muted { color: var(--nv-muted); background: rgba(255,255,255,0.66); }
     .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
-    .ov-kpi-panel { background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.86)); border: 1px solid var(--nv-line); border-radius: 20px; padding: 18px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); backdrop-filter: blur(12px); }
+    .ov-kpi-panel { background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.86)); border: 1px solid var(--nv-line); border-radius: 20px; padding: 18px; backdrop-filter: blur(12px); }
     .ov-kpi-title { font-size: 13px; font-weight: 750; color: var(--nv-text); margin-bottom: 14px; letter-spacing: -0.01em; }
     .ov-kpi-cells { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     .ov-kpi-cell { background: #F7F9FC; border: 1px solid rgba(15,23,42,0.05); border-radius: 16px; padding: 14px; min-width: 0; }
