@@ -22,40 +22,6 @@ from data import (
 )
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta
 
-
-def _render_tab_intro(title: str, desc: str = "") -> None:
-    title_html = escape(str(title))
-    desc_html = escape(str(desc)) if desc else ""
-    desc_block = f"<div class=\"nv-sec-sub\">{desc_html}</div>" if desc_html else ""
-    st.markdown(
-        f"""
-        <div class=\"nv-section-head\" style=\"margin: 4px 0 14px 0;\">
-            <div>
-                <div class=\"nv-sec-eyebrow\">Campaign analysis</div>
-                <div class=\"nv-sec-title\">{title_html}</div>
-                {desc_block}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_toggle_toolbar(key_prefix: str, help_text: str, default: bool = False) -> bool:
-    left, right = st.columns([1, 0.34], gap="small")
-    with left:
-        st.caption(help_text)
-    with right:
-        show = st.toggle("증감율 보기", value=default, key=f"{key_prefix}_abs_toggle")
-    return show
-
-
-def _style_perf_table_for_display(df: pd.DataFrame, show_deltas: bool = False):
-    styler = df.style
-    if show_deltas:
-        styler = _apply_delta_styles(styler, df)
-    return styler
-
 def _campaign_fetch_limit(top_n: int) -> int:
     try:
         top_n = int(top_n or 0)
@@ -136,6 +102,28 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
         if pos_cols: styler = styler.applymap(_style_delta_numeric, subset=pos_cols)
         if neg_cols: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_cols)
     return styler
+
+
+def _build_styler(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    styler = df.style
+    fmt_subset = {col: fmt for col, fmt in FMT_DICT.items() if col in df.columns for fmt in [FMT_DICT[col]]}
+    if fmt_subset:
+        styler = styler.format(fmt_subset, na_rep="-")
+    styler = _apply_delta_styles(styler, df)
+    return styler
+
+
+def _render_perf_table(df: pd.DataFrame, first_col: str | None = None, *, height: int | None = None, key: str | None = None) -> None:
+    # Streamlit dataframe on raw DataFrame does not apply per-cell delta colors.
+    # For campaign/group comparison tables we intentionally use Styler so 증감 색상이 실제로 보이게 한다.
+    styler = _build_styler(df)
+    kwargs = {"width": "stretch", "hide_index": True}
+    if height is not None:
+        kwargs["height"] = height
+    try:
+        st.dataframe(styler, **kwargs)
+    except Exception:
+        st.dataframe(df, **kwargs, column_config=_campaign_fast_col_config(df, first_col))
 
 
 
@@ -819,7 +807,6 @@ def _render_campaign_detail_section(selected_campaign: str, engine, f: Dict, sel
 
 
 def _render_campaign_summary_tab(view: pd.DataFrame, engine, f: Dict, diag: list[dict], has_pre_patch_cur: bool, top_n: int) -> None:
-    _render_tab_intro("종합 성과", "캠페인별 핵심 지표를 먼저 보고, 원하는 캠페인을 선택하면 하위 키워드·소재 흐름까지 이어서 내려갑니다.")
     camps_main = ["전체"] + sorted([str(x) for x in view["캠페인"].dropna().unique() if str(x).strip()]) if "캠페인" in view.columns else ["전체"]
     sel_camp_main = st.selectbox("캠페인 검색", camps_main, key="camp_name_filter_main")
     disp_main = view.copy()
@@ -876,8 +863,9 @@ def _build_detail_source(kw_bundle: pd.DataFrame, ad_bundle: pd.DataFrame) -> pd
 
 
 def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple, type_sel: tuple, top_n: int, patch_date: date, has_pre_patch_cur: bool) -> None:
-    _render_tab_intro("광고그룹 성과", "광고비 기준 상위 광고그룹을 같은 화면에서 비교하고, 필요할 때 기간 증감까지 바로 확인합니다.")
-    show_deltas_grp = _render_toggle_toolbar("grp", "광고그룹 기준의 상대 성과를 비교합니다. 증감율을 켜면 증가/감소 흐름을 색상으로 같이 보여줍니다.")
+    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
+    show_deltas_grp = st.toggle(" 증감율 보기", value=False, key="grp_abs_toggle")
+    st.markdown("</div>", unsafe_allow_html=True)
     cmp_mode_grp = None
     b1_grp, b2_grp = None, None
     if show_deltas_grp:
@@ -930,8 +918,7 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
     base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
     cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
     disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
-    render_obj = _style_perf_table_for_display(disp_grp, show_deltas=show_deltas_grp) if show_deltas_grp else disp_grp
-    st.dataframe(render_obj, width="stretch", hide_index=True, column_config=_campaign_fast_col_config(disp_grp, "광고그룹"))
+    _render_perf_table(disp_grp, "광고그룹")
 
 
 def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
@@ -952,8 +939,9 @@ def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
 
 
 def _render_campaign_compare_tab(view: pd.DataFrame, engine, f: Dict, cids: tuple, type_sel: tuple, top_n: int, patch_date: date, has_pre_patch_cur: bool) -> None:
-    _render_tab_intro("기간 비교", "현재 기간과 비교 기간을 같은 표 기준으로 정렬해 보고, 비용·전환·ROAS 변화를 함께 확인합니다.")
-    show_deltas = _render_toggle_toolbar("camp", "비교 기준을 선택하면 현재 기간과 이전 기간을 나란히 계산합니다. 비용 계열은 감소가 좋은 방향으로 색상을 반대로 표시합니다.")
+    st.markdown("<div style='display:flex; justify-content:flex-end; margin-bottom:8px;'>", unsafe_allow_html=True)
+    show_deltas = st.toggle(" 증감율 보기", value=False, key="camp_abs_toggle")
+    st.markdown("</div>", unsafe_allow_html=True)
     opts = get_dynamic_cmp_options(f["start"], f["end"])
     cmp_opts = [o for o in opts if o != "비교 안함"]
     cmp_mode = st.radio("비교 기준", cmp_opts if cmp_opts else ["이전 같은 기간 대비"], horizontal=True, key="camp_cmp_mode")
@@ -978,12 +966,10 @@ def _render_campaign_compare_tab(view: pd.DataFrame, engine, f: Dict, cids: tupl
             metrics_cols_cmp.append("순위 변화")
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
     disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
-    render_obj = _style_perf_table_for_display(disp_cmp, show_deltas=show_deltas) if show_deltas else disp_cmp
-    st.dataframe(render_obj, width="stretch", height=560, hide_index=True, column_config=_campaign_fast_col_config(disp_cmp, "캠페인"))
+    _render_perf_table(disp_cmp, "캠페인", height=560)
 
 
 def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: Dict, cids: tuple) -> None:
-    _render_tab_intro("꺼짐 기록", "예산 부족으로 중단된 시점을 날짜별로 빠르게 보고, 운영 이슈가 성과에 영향을 줬는지 확인합니다.")
     st.info("이 지면에서는 상세 퍼널보다 안정적인 광고 운영 여부가 중요합니다.")
     try:
         days_diff = (pd.to_datetime(f["end"]) - pd.to_datetime(f["start"])).days + 1
@@ -1023,18 +1009,7 @@ def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
-    st.markdown(
-        """
-        <div class="nv-page-head">
-            <div class="nv-page-head-left">
-                <div class="nv-page-kicker">Campaign performance</div>
-                <div class="nv-h1">캠페인 상세 분석</div>
-                <div class="nv-page-desc">종합 성과, 그룹 성과, 기간 비교, 꺼짐 기록을 같은 흐름으로 볼 수 있게 정리했습니다. 그림자는 줄이고, 표와 필터 중심으로 더 평평한 화면 톤으로 맞췄습니다.</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_campaign", 200))
