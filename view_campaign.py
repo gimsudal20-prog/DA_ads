@@ -104,15 +104,14 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
     return styler
 
 
-
-def _render_styled_delta_df(df: pd.DataFrame, first_col: str | None = None, height: int | None = None) -> None:
-    safe_fmt = {k: v for k, v in FMT_DICT.items() if k in df.columns}
-    styled = df.style.format(safe_fmt)
-    styled = _apply_delta_styles(styled, df)
-    kwargs = {"width": "stretch", "hide_index": True, "column_config": _campaign_fast_col_config(df, first_col)}
-    if height is not None:
-        kwargs["height"] = height
-    st.dataframe(styled, **kwargs)
+def _render_campaign_table(df: pd.DataFrame, first_col: str, *, height=None, show_deltas: bool = False) -> None:
+    if show_deltas:
+        safe_fmt = {k: v for k, v in FMT_DICT.items() if k in df.columns}
+        styled = df.style.format(safe_fmt)
+        styled = _apply_delta_styles(styled, df)
+        st.dataframe(styled, width="stretch", height=height, hide_index=True)
+        return
+    st.dataframe(df, width="stretch", height=height, hide_index=True, column_config=_campaign_fast_col_config(df, first_col))
 
 
 def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) -> dict:
@@ -131,9 +130,9 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
         if c in pct_cols or c in diff_pct_cols:
             cfg[c] = st.column_config.NumberColumn(c, format="%.1f %%")
         elif c in currency_cols or c in currency_diff_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,d 원")
         elif c in count_cols or c in count_diff_cols or c == "순위 변화":
-            cfg[c] = st.column_config.NumberColumn(c, format="%d")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,d")
         elif c == "평균순위":
             cfg[c] = st.column_config.TextColumn(c)
     if "지출 비중(%)" in df.columns:
@@ -906,7 +905,7 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
     base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
     cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
     disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
-    _render_styled_delta_df(disp_grp, "광고그룹") if show_deltas_grp else st.dataframe(disp_grp, width="stretch", hide_index=True, column_config=_campaign_fast_col_config(disp_grp, "광고그룹"))
+    _render_campaign_table(disp_grp, "광고그룹", show_deltas=show_deltas_grp)
 
 
 def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
@@ -954,7 +953,7 @@ def _render_campaign_compare_tab(view: pd.DataFrame, engine, f: Dict, cids: tupl
             metrics_cols_cmp.append("순위 변화")
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
     disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
-    _render_styled_delta_df(disp_cmp, "캠페인", height=560) if show_deltas else st.dataframe(disp_cmp, width="stretch", height=560, hide_index=True, column_config=_campaign_fast_col_config(disp_cmp, "캠페인"))
+    _render_campaign_table(disp_cmp, "캠페인", height=560, show_deltas=show_deltas)
 
 
 def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: Dict, cids: tuple) -> None:
@@ -998,7 +997,6 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
     st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div class='nv-sec-sub' style='margin-bottom:16px;'>요약 · 그룹 · 비교 데이터를 같은 톤의 표 레이아웃으로 확인합니다.</div>", unsafe_allow_html=True)
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_campaign", 200))
