@@ -491,6 +491,72 @@ def _load_targets_from_dims(
 
 
 
+
+
+def _refresh_live_target_ids_minimal(
+    customer_id: str,
+    collect_sa: bool,
+    collect_device: bool,
+    shopping_only: bool,
+    list_campaigns_fn: Callable[[str], List[dict]],
+    list_adgroups_fn: Callable[[str, str], List[dict]],
+    list_keywords_fn: Callable[[str, str], List[dict]],
+    list_ads_fn: Callable[[str, str], List[dict]],
+    is_shopping_campaign_obj_fn: Callable[[dict], bool],
+    log_fn: Callable[[str], None] = _log,
+):
+    target_camp_ids: List[str] = []
+    target_kw_ids: List[str] = []
+    target_ad_ids: List[str] = []
+    shopping_campaign_ids: set[str] = set()
+    shopping_adgroup_ids: set[str] = set()
+    shopping_keyword_ids: set[str] = set()
+
+    camps = list_campaigns_fn(customer_id) or []
+    for c in camps:
+        cid = str(c.get("nccCampaignId") or "").strip()
+        if not cid:
+            continue
+        is_shopping = is_shopping_campaign_obj_fn(c)
+        if shopping_only and not is_shopping:
+            continue
+        target_camp_ids.append(cid)
+        if is_shopping:
+            shopping_campaign_ids.add(cid)
+
+        groups = list_adgroups_fn(customer_id, cid) or []
+        for g in groups:
+            gid = str(g.get("nccAdgroupId") or "").strip()
+            if not gid:
+                continue
+            if is_shopping:
+                shopping_adgroup_ids.add(gid)
+
+            if collect_sa:
+                kws = list_keywords_fn(customer_id, gid) or []
+                for k in kws:
+                    kid = str(k.get("nccKeywordId") or "").strip()
+                    if kid:
+                        target_kw_ids.append(kid)
+                        if is_shopping:
+                            shopping_keyword_ids.add(kid)
+
+            if collect_sa or collect_device:
+                ads = list_ads_fn(customer_id, gid) or []
+                for ad in ads:
+                    adid = str(ad.get("nccAdId") or "").strip()
+                    if adid:
+                        target_ad_ids.append(adid)
+
+    return {
+        "target_camp_ids": sorted(set(target_camp_ids)),
+        "target_kw_ids": sorted(set(target_kw_ids)),
+        "target_ad_ids": sorted(set(target_ad_ids)),
+        "shopping_campaign_ids": shopping_campaign_ids,
+        "shopping_adgroup_ids": shopping_adgroup_ids,
+        "shopping_keyword_ids": shopping_keyword_ids,
+    }
+
 def _build_keyword_lookup_bundle(
     engine: Engine,
     customer_id: str,
@@ -658,6 +724,11 @@ def process_account(
     exc_label_fn: Callable[[Exception], str],
     traceback_tail_fn: Callable[[Exception, int], str],
     refresh_overview_report_source_cache_fn: Callable[..., None] | None = None,
+    list_campaigns_fn: Callable[[str], List[dict]] | None = None,
+    list_adgroups_fn: Callable[[str, str], List[dict]] | None = None,
+    list_keywords_fn: Callable[[str, str], List[dict]] | None = None,
+    list_ads_fn: Callable[[str, str], List[dict]] | None = None,
+    is_shopping_campaign_obj_fn: Callable[[dict], bool] | None = None,
     skip_keyword_stats: bool = False,
     skip_ad_stats: bool = False,
     log_fn: Callable[[str], None] = _log,
@@ -729,6 +800,47 @@ def process_account(
         result["keyword_targets"] = len(target_kw_ids)
         result["ad_targets"] = len(target_ad_ids)
         result["shopping_campaign_targets"] = len(shopping_campaign_ids)
+
+        try:
+            kst_today = (datetime.utcnow() + timedelta(hours=9)).date()
+            recent_fast_skip_dim = bool(skip_dim and fast_mode and target_date >= (kst_today - timedelta(days=1)))
+        except Exception:
+            recent_fast_skip_dim = bool(skip_dim and fast_mode)
+
+        if recent_fast_skip_dim and callable(list_campaigns_fn) and callable(list_adgroups_fn) and callable(list_keywords_fn) and callable(list_ads_fn) and callable(is_shopping_campaign_obj_fn):
+            try:
+                live_bundle = _refresh_live_target_ids_minimal(
+                    customer_id=customer_id,
+                    collect_sa=collect_sa,
+                    collect_device=collect_device,
+                    shopping_only=shopping_only,
+                    list_campaigns_fn=list_campaigns_fn,
+                    list_adgroups_fn=list_adgroups_fn,
+                    list_keywords_fn=list_keywords_fn,
+                    list_ads_fn=list_ads_fn,
+                    is_shopping_campaign_obj_fn=is_shopping_campaign_obj_fn,
+                    log_fn=log_fn,
+                )
+                old_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
+                target_camp_ids = live_bundle["target_camp_ids"]
+                target_kw_ids = live_bundle["target_kw_ids"]
+                target_ad_ids = live_bundle["target_ad_ids"]
+                shopping_campaign_ids = live_bundle["shopping_campaign_ids"]
+                shopping_adgroup_ids = live_bundle["shopping_adgroup_ids"]
+                shopping_keyword_ids = live_bundle["shopping_keyword_ids"]
+                new_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
+                result["campaign_targets"] = new_counts[0]
+                result["keyword_targets"] = new_counts[1]
+                result["ad_targets"] = new_counts[2]
+                result["shopping_campaign_targets"] = len(shopping_campaign_ids)
+                result["live_target_refresh"] = True
+                if new_counts != old_counts:
+                    log_fn(
+                        f"   🔄 [ {account_name} ] 최근일 fast 보정: live target 재확인 적용 "
+                        f"(campaign {old_counts[0]}→{new_counts[0]}, keyword {old_counts[1]}→{new_counts[1]}, ad {old_counts[2]}→{new_counts[2]})"
+                    )
+            except Exception as e:
+                log_best_effort_failure_fn("live target refresh", e, ctx=f"customer_id={customer_id} fast_mode={fast_mode} skip_dim={skip_dim}")
 
         stage = "build_keyword_lookup"
         result["stage"] = stage
