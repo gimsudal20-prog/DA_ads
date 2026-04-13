@@ -1085,6 +1085,7 @@ def process_account(engine: Engine, customer_id: str, account_name: str, target_
         finalize_account_result_fn=_finalize_account_result,
         exc_label_fn=_exc_label,
         traceback_tail_fn=_traceback_tail,
+        refresh_overview_report_source_cache_fn=collector_db_mod.refresh_overview_report_source_cache,
         skip_keyword_stats=SKIP_KEYWORD_STATS,
         skip_ad_stats=SKIP_AD_STATS,
         log_fn=log,
@@ -1303,10 +1304,11 @@ def main():
     global FAST_MODE
     FAST_MODE = bool(args.fast)
     if FAST_MODE:
-        args.skip_dim = True
         os.environ["COLLECTOR_FAST_MODE"] = "1"
     else:
         os.environ.pop("COLLECTOR_FAST_MODE", None)
+    if FAST_MODE:
+        args.skip_dim = True
 
     target_date = resolve_target_date(args.date)
     emit_main_run_banner(target_date, args)
