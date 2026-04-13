@@ -17,20 +17,23 @@ from page_helpers import get_dynamic_cmp_options, period_compare_range
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 400; line-height: 1.2; }
+    .ov-chip { background: rgba(255,255,255,0.78); color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 600; line-height: 1.2; backdrop-filter: blur(8px); }
     .ov-chip.primary { background: var(--nv-primary-soft); color: var(--nv-primary); border-color: transparent; }
-    .ov-chip.muted { color: var(--nv-muted); background: var(--nv-surface); }
-    .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .ov-kpi-panel { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 12px; padding: 16px; }
-    .ov-kpi-title { font-size: 13px; font-weight: 700; color: var(--nv-text); margin-bottom: 12px; }
-    .ov-kpi-cells { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-    .ov-kpi-cell { background: var(--nv-surface); border-radius: 10px; padding: 12px; min-width: 0; }
-    .ov-kpi-label { font-size: 12px; color: var(--nv-muted); margin-bottom: 6px; }
-    .ov-kpi-value { font-size: 20px; font-weight: 800; color: var(--nv-text); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ov-kpi-delta { margin-top: 8px; font-size: 11px; font-weight: 700; display:inline-flex; padding: 4px 8px; border-radius: 999px; }
-    .ov-kpi-delta.pos { background: #E8F0FE; color: #1A73E8; }
-    .ov-kpi-delta.neg { background: #FCE8E6; color: #EA4335; }
-    .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
+    .ov-chip.muted { color: var(--nv-muted); background: rgba(255,255,255,0.66); }
+    .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+    .ov-kpi-panel { background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.86)); border: 1px solid var(--nv-line); border-radius: 20px; padding: 18px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); backdrop-filter: blur(12px); }
+    .ov-kpi-title { font-size: 13px; font-weight: 750; color: var(--nv-text); margin-bottom: 14px; letter-spacing: -0.01em; }
+    .ov-kpi-cells { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .ov-kpi-cell { background: #F7F9FC; border: 1px solid rgba(15,23,42,0.05); border-radius: 16px; padding: 14px; min-width: 0; }
+    .ov-kpi-label { font-size: 12px; color: var(--nv-muted); margin-bottom: 8px; font-weight: 600; }
+    .ov-kpi-value { font-size: 22px; font-weight: 800; color: var(--nv-text); line-height: 1.08; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.03em; }
+    .ov-kpi-delta { margin-top: 10px; font-size: 11px; font-weight: 800; display:inline-flex; padding: 5px 9px; border-radius: 999px; }
+    .ov-kpi-delta.pos { background: #EAF1FF; color: #2563FF; }
+    .ov-kpi-delta.neg { background: #FDECEC; color: #DC2626; }
+    .ov-kpi-delta.neu { background: rgba(255,255,255,0.8); color: var(--nv-muted); border:1px solid var(--nv-line); }
+    @media (max-width: 1200px) {
+      .ov-kpi-grid, .ov-kpi-cells { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+    }
     </style>
     """, unsafe_allow_html=True)
 

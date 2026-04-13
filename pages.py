@@ -50,11 +50,24 @@ def main():
 
         nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
 
+    page_subtitles = {
+        "요약": "핵심 KPI와 일자별 추이를 한 번에 볼 수 있게 정리했습니다.",
+        "예산 및 잔액": "월 예산, 집행률, 잔액 흐름을 더 빠르게 읽을 수 있도록 구성했습니다.",
+        "매체(지면) 분석": "노출 지면과 기기별 효율을 비교하기 좋게 보여줍니다.",
+        "성과 분석 · 캠페인": "캠페인, 그룹, 기간 비교를 한 화면 흐름으로 이어서 확인할 수 있습니다.",
+        "성과 분석 · 키워드": "상위 키워드와 세부 성과를 빠르게 훑을 수 있게 정리했습니다.",
+        "성과 분석 · 소재": "소재별 효율과 랜딩 흐름을 더 직관적으로 볼 수 있게 구성했습니다.",
+        "쇼핑 검색어 분석": "검색어별 전환 성과와 필터 흐름을 더 깔끔하게 다듬었습니다.",
+        "설정 및 연결": "수집 상태와 연결 설정을 확인할 수 있습니다.",
+    }
+    page_desc = page_subtitles.get(nav, "")
     st.markdown(
         f"""
         <div class='nv-page-head'>
             <div class='nv-page-head-left'>
+                <div class='nv-page-kicker'>Dashboard</div>
                 <div class='nv-h1'>{nav}</div>
+                <div class='nv-page-desc'>{page_desc}</div>
             </div>
         </div>
         """,
