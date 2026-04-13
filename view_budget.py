@@ -46,6 +46,41 @@ def _prepare_alert_view(bundle: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=180, show_spinner=False, max_entries=20)
+def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
+    if alert_view is None or alert_view.empty:
+        return pd.DataFrame()
+
+    df = alert_view.copy()
+    df["_sort_days"] = pd.to_numeric(df.get("days_cover"), errors="coerce").fillna(9999)
+    df = df.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
+
+    def get_depletion_date(days_left):
+        if pd.isna(days_left) or float(days_left) >= 99:
+            return "여유"
+        days = float(days_left)
+        if days <= 0:
+            return "즉시 충전 필요"
+        deplete_date = date.today() + timedelta(days=int(days))
+        return deplete_date.strftime("%m월 %d일 (임박)") if days <= 3 else deplete_date.strftime("%m월 %d일")
+
+    df["예상 중단일"] = df["days_cover"].apply(get_depletion_date)
+    df["비즈머니 잔액"] = df["bizmoney_balance"].apply(lambda x: format_currency(x))
+    avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
+    df[avg_days_label] = df["avg_cost"].apply(lambda x: format_currency(x))
+    df["담당자"] = df.get("manager", "미배정")
+    df["업체명"] = df.get("account_name", df.get("customer_id", "-"))
+    df["알림"] = np.select(
+        [
+            df["예상 중단일"].astype(str).str.contains("충전 필요", na=False),
+            df["예상 중단일"].astype(str).str.contains("임박", na=False),
+        ],
+        ["🔴", "🟠"],
+        default="",
+    )
+    return df[["알림", "업체명", "담당자", "비즈머니 잔액", avg_days_label, "예상 중단일"]]
+
+
+@st.cache_data(ttl=180, show_spinner=False, max_entries=20)
 def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float) -> pd.DataFrame:
     if biz_view is None or biz_view.empty:
         return pd.DataFrame()
@@ -80,7 +115,7 @@ def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float)
 def _ensure_budget_input_js_once():
     if st.session_state.get("_budget_input_js_once"):
         return
-    _ensure_budget_input_js_once()
+    # no-op guard: legacy hook kept for compatibility, but avoid recursive rerun cost
     st.session_state["_budget_input_js_once"] = True
 
 
@@ -175,40 +210,26 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
 
 @st.fragment
 def render_alert_table(alert_view: pd.DataFrame):
-    alert_view["_sort_days"] = pd.to_numeric(alert_view["days_cover"], errors="coerce").fillna(9999)
-    alert_view = alert_view.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
-
-    def get_depletion_date(days_left):
-        if pd.isna(days_left) or float(days_left) >= 99: return "여유"
-        days = float(days_left)
-        if days <= 0: return "즉시 충전 필요"
-        deplete_date = date.today() + timedelta(days=int(days))
-        return deplete_date.strftime("%m월 %d일 (임박)") if days <= 3 else deplete_date.strftime("%m월 %d일")
-
-    alert_view["예상 중단일"] = alert_view["days_cover"].apply(get_depletion_date)
-    
-    display_df = alert_view[["account_name", "manager", "bizmoney_balance", "avg_cost", "예상 중단일"]].copy()
-    display_df["비즈머니 잔액"] = display_df["bizmoney_balance"].apply(lambda x: format_currency(x))
-    
-    avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
-    display_df[avg_days_label] = display_df["avg_cost"].apply(lambda x: format_currency(x))
-    
-    display_df = display_df[["account_name", "manager", "비즈머니 잔액", avg_days_label, "예상 중단일"]].rename(columns={"account_name": "업체명", "manager": "담당자"})
-    
-    def color_alert(val):
-        if isinstance(val, str) and '충전 필요' in val:
-            return 'color: white; font-weight: 800; background-color: #EF4444;' 
-        elif isinstance(val, str) and '임박' in val:
-            return 'color: #9A3412; font-weight: 700; background-color: #FFEDD5;' 
-        return ''
-
-    try:
-        styled_df = display_df.style.map(color_alert, subset=['예상 중단일'])
-    except AttributeError:
-        styled_df = display_df.style.applymap(color_alert, subset=['예상 중단일'])
-    
+    display_df = _build_alert_display(alert_view)
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
-    st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
+    if display_df.empty:
+        st.info("비즈머니 관리 데이터가 없습니다.")
+        return
+    avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+        column_config={
+            "알림": st.column_config.TextColumn(" ", width="small"),
+            "업체명": st.column_config.TextColumn("업체명"),
+            "담당자": st.column_config.TextColumn("담당자"),
+            "비즈머니 잔액": st.column_config.TextColumn("비즈머니 잔액"),
+            avg_days_label: st.column_config.TextColumn(avg_days_label),
+            "예상 중단일": st.column_config.TextColumn("예상 중단일"),
+        },
+    )
 
 
 @st.fragment
