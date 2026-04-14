@@ -146,6 +146,29 @@ def check_sa_scope_contract(root: Path) -> list[str]:
     return msgs
 
 
+def check_recent_cache_guard(root: Path) -> list[str]:
+    data_path = root / 'data.py'
+    overview_path = root / 'view_overview.py'
+    app_path = root / 'app.py'
+    missing: list[str] = []
+    data_text = data_path.read_text(encoding='utf-8') if data_path.exists() else ''
+    overview_text = overview_path.read_text(encoding='utf-8') if overview_path.exists() else ''
+    app_text = app_path.read_text(encoding='utf-8') if app_path.exists() else ''
+
+    for token in ['_recent_cache_bucket', '_sql_read_cached', 'sql_read(_engine, query: str, params: dict = None)']:
+        if token not in data_text:
+            missing.append(f'data.py:{token}')
+    for token in ['_overview_hot_cache_token', 'cache_token=current_cache_token', '_cache_buster=current_cache_token']:
+        if token not in overview_text:
+            missing.append(f'view_overview.py:{token}')
+    if '_today_kst_for_cache_reset' not in app_text:
+        missing.append('app.py:_today_kst_for_cache_reset')
+
+    if missing:
+        raise RegressionFailure(f'최근 날짜 캐시 보호 가드 누락: {", ".join(missing)}')
+    return ['ok | 최근 날짜(오늘/어제) 캐시 보호 가드 유지']
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run minimal regression checks.')
     parser.add_argument('--repo', default='.', help='repository root path')
@@ -162,6 +185,7 @@ def main() -> int:
         check_backfill_parser_contract,
         check_backfill_stage_logging,
         check_sa_scope_contract,
+        check_recent_cache_guard,
     ]
     for fn in checks:
         try:

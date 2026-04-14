@@ -7,7 +7,8 @@ import numpy as np
 import streamlit as st
 import io
 from typing import Dict
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from data import *
 from ui import render_echarts_dual_axis
@@ -100,21 +101,52 @@ def _selected_type_label(type_sel: tuple) -> str:
     return ", ".join(type_sel)
 
 
+def _coerce_overview_date(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        return pd.to_datetime(value).date()
+    except Exception:
+        return None
+
+
+def _overview_hot_cache_token(start_dt, end_dt) -> str:
+    d1 = _coerce_overview_date(start_dt)
+    d2 = _coerce_overview_date(end_dt)
+    if d1 is None or d2 is None:
+        return ""
+    try:
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        today_kst = now_kst.date()
+    except Exception:
+        now_kst = datetime.now()
+        today_kst = date.today()
+    hot_start = today_kst - timedelta(days=1)
+    if max(d1, d2) < hot_start:
+        return ""
+    minute_bucket = (now_kst.minute // 5) * 5
+    return f"ov-hot:{now_kst.strftime('%Y-%m-%d %H')}:{minute_bucket:02d}"
+
+
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1500)
+def _cached_campaign_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple, cache_token: str = "") -> pd.DataFrame:
+    try: return query_campaign_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=1500, _cache_buster=cache_token)
     except Exception: return pd.DataFrame()
 
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=300)
+def _cached_keyword_bundle(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple, cache_token: str = "") -> pd.DataFrame:
+    try: return query_keyword_bundle(_engine, start_dt, end_dt, cids, type_sel, topn_cost=300, _cache_buster=cache_token)
     except Exception: return pd.DataFrame()
 
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple) -> pd.DataFrame:
-    try: return query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel)
+def _cached_campaign_timeseries(_engine, start_dt, end_dt, cids: tuple, type_sel: tuple, cache_token: str = "") -> pd.DataFrame:
+    try: return query_campaign_timeseries(_engine, start_dt, end_dt, cids, type_sel, _cache_buster=cache_token)
     except Exception: return pd.DataFrame()
 
 
@@ -218,20 +250,21 @@ def _keyword_report_type_candidates(type_sel: tuple) -> list[tuple]:
     return candidates
 
 
-def _load_report_keyword_bundle(engine, start_dt, end_dt, cids: tuple, type_sel: tuple, state_key: str, force_refresh: bool = False) -> pd.DataFrame:
-    if force_refresh or state_key not in st.session_state:
-        st.session_state[state_key] = _cached_keyword_bundle(engine, start_dt, end_dt, cids, type_sel)
-    bundle = st.session_state.get(state_key)
+def _load_report_keyword_bundle(engine, start_dt, end_dt, cids: tuple, type_sel: tuple, state_key: str, force_refresh: bool = False, cache_token: str = "") -> pd.DataFrame:
+    scoped_state_key = f"{state_key}::{cache_token}" if cache_token else state_key
+    if force_refresh or scoped_state_key not in st.session_state:
+        st.session_state[scoped_state_key] = _cached_keyword_bundle(engine, start_dt, end_dt, cids, type_sel, cache_token)
+    bundle = st.session_state.get(scoped_state_key)
     return bundle if isinstance(bundle, pd.DataFrame) else pd.DataFrame()
 
 
-def _resolve_overview_report_top_keywords(engine, start_dt, end_dt, cids: tuple, type_sel: tuple, selected_type_label: str, diag: list | None = None, force_refresh: bool = False) -> str:
+def _resolve_overview_report_top_keywords(engine, start_dt, end_dt, cids: tuple, type_sel: tuple, selected_type_label: str, diag: list | None = None, force_refresh: bool = False, cache_token: str = "") -> str:
     is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
     if is_shopping_only:
         return "없음"
 
     generic_key = f"overview_text_kw::{start_dt}::{end_dt}::{','.join(map(str, cids))}::{','.join(map(str, type_sel))}"
-    bundle = _load_report_keyword_bundle(engine, start_dt, end_dt, cids, type_sel, generic_key, force_refresh=force_refresh)
+    bundle = _load_report_keyword_bundle(engine, start_dt, end_dt, cids, type_sel, generic_key, force_refresh=force_refresh, cache_token=cache_token)
     top_kw_str = _get_top_keyword_report_text(bundle)
     if top_kw_str != "없음":
         if diag is not None:
@@ -242,7 +275,7 @@ def _resolve_overview_report_top_keywords(engine, start_dt, end_dt, cids: tuple,
     last_rows = 0
     for cand in candidates:
         state_key = f"overview_text_kw_powerlink::{start_dt}::{end_dt}::{','.join(map(str, cids))}::{','.join(map(str, cand))}"
-        cand_bundle = _load_report_keyword_bundle(engine, start_dt, end_dt, cids, cand, state_key, force_refresh=force_refresh)
+        cand_bundle = _load_report_keyword_bundle(engine, start_dt, end_dt, cids, cand, state_key, force_refresh=force_refresh, cache_token=cache_token)
         last_rows = 0 if cand_bundle is None else len(cand_bundle.index)
         top_kw_str = _get_top_keyword_report_text(cand_bundle)
         if top_kw_str != "없음":
@@ -563,28 +596,31 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     b1, b2 = period_compare_range(f["start"], f["end"], cmp_mode)
     _diag_add(diag, "필터", "ok", len(cids), "filters", f"기간={f['start']}~{f['end']} | 비교={cmp_mode} | 유형={', '.join(type_sel) if type_sel else '전체'}")
 
+    current_cache_token = _overview_hot_cache_token(f["start"], f["end"])
+    compare_cache_token = _overview_hot_cache_token(b1, b2)
+
     with st.spinner("데이터를 집계 중입니다... (최적화 모드)"):
         try:
-            cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel)
+            cur_summary = get_entity_totals(engine, "campaign", f["start"], f["end"], cids, type_sel, _cache_buster=current_cache_token)
             _diag_add(diag, "요약(현재)", "ok" if cur_summary else "zero_data", 1 if cur_summary else 0, "get_entity_totals", "현재 기간 캠페인 합계")
         except Exception as e:
             cur_summary = {}
             _diag_add(diag, "요약(현재)", "error", 0, "get_entity_totals", f"{type(e).__name__}: {e}")
         try:
-            base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel)
+            base_summary = get_entity_totals(engine, "campaign", b1, b2, cids, type_sel, _cache_buster=compare_cache_token)
             _diag_add(diag, "요약(비교)", "ok" if base_summary else "zero_data", 1 if base_summary else 0, "get_entity_totals", f"비교 기간 {b1}~{b2}")
         except Exception as e:
             base_summary = {}
             _diag_add(diag, "요약(비교)", "error", 0, "get_entity_totals", f"{type(e).__name__}: {e}")
         try:
-            cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel)
+            cur_camp = _cached_campaign_bundle(engine, f["start"], f["end"], cids, type_sel, current_cache_token)
             _diag_add(diag, "캠페인 번들(현재)", "ok" if cur_camp is not None and not cur_camp.empty else "zero_data", 0 if cur_camp is None else len(cur_camp.index), "query_campaign_bundle", "현재 기간 캠페인 상세")
         except Exception as e:
             cur_camp = pd.DataFrame()
             _diag_add(diag, "캠페인 번들(현재)", "error", 0, "query_campaign_bundle", f"{type(e).__name__}: {e}")
             
         try:
-            cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel)
+            cur_kw = _cached_keyword_bundle(engine, f["start"], f["end"], cids, type_sel, current_cache_token)
             _diag_add(diag, "키워드 번들(현재)", "ok" if cur_kw is not None and not cur_kw.empty else "zero_data", 0 if cur_kw is None else len(cur_kw.index), "query_keyword_bundle", "현재 기간 키워드 상세")
         except Exception as e:
             cur_kw = pd.DataFrame()
@@ -597,7 +633,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         _diag_add(diag, "키워드 번들(비교)", "warn", 0, "query_keyword_bundle", f"비교 기간 {b1}~{b2} | 상세 패널 필요 시 지연 조회")
         
         try:
-            daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel)
+            daily_ts = _cached_campaign_timeseries(engine, f["start"], f["end"], cids, type_sel, current_cache_token)
             _diag_add(diag, "일자 추이(현재)", "ok" if daily_ts is not None and not daily_ts.empty else "zero_data", 0 if daily_ts is None else len(daily_ts.index), "query_campaign_timeseries", "현재 기간 시계열")
         except Exception as e:
             daily_ts = pd.DataFrame()
@@ -841,19 +877,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # 탭별 화면 렌더링에 필요한 데이터만 지연 로드 (UI 응답성 최적화)
     if detail_panel in {"업체별 요약", "매체·유형별 요약", "캠페인 상세 분석"}:
         if base_camp is None or base_camp.empty:
-            try: base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+            try: base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel, compare_cache_token)
             except Exception: base_camp = pd.DataFrame()
         df_display, df_type_display, camp_disp = _build_overview_campaign_frames(cur_camp, base_camp, meta)
 
     if detail_panel == "키워드 상세 분석":
         if base_kw is None or base_kw.empty:
-            try: base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
+            try: base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel, compare_cache_token)
             except Exception: base_kw = pd.DataFrame()
         kw_disp = _build_overview_keyword_frames(cur_kw, base_kw)
 
     if detail_panel == "기간별 상세":
         if base_daily_ts is None or base_daily_ts.empty:
-            try: base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+            try: base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel, compare_cache_token)
             except Exception: base_daily_ts = pd.DataFrame()
         daily_disp, dow_disp, weekly_disp = _build_overview_timeseries_frames(daily_ts, base_daily_ts)
 
@@ -934,19 +970,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     
     # 누락 방지를 위한 전체 데이터 프레임 강제 동기화 
     if base_camp is None or base_camp.empty:
-        try: base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel)
+        try: base_camp = _cached_campaign_bundle(engine, b1, b2, cids, type_sel, compare_cache_token)
         except Exception: base_camp = pd.DataFrame()
     if df_display.empty or camp_disp.empty:
         df_display, df_type_display, camp_disp = _build_overview_campaign_frames(cur_camp, base_camp, meta)
 
     if base_kw is None or base_kw.empty:
-        try: base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel)
+        try: base_kw = _cached_keyword_bundle(engine, b1, b2, cids, type_sel, compare_cache_token)
         except Exception: base_kw = pd.DataFrame()
     if kw_disp.empty:
         kw_disp = _build_overview_keyword_frames(cur_kw, base_kw)
 
     if base_daily_ts is None or base_daily_ts.empty:
-        try: base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel)
+        try: base_daily_ts = _cached_campaign_timeseries(engine, b1, b2, cids, type_sel, compare_cache_token)
         except Exception: base_daily_ts = pd.DataFrame()
     if daily_disp.empty:
         daily_disp, dow_disp, weekly_disp = _build_overview_timeseries_frames(daily_ts, base_daily_ts)
@@ -982,6 +1018,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 selected_type_label,
                 diag=diag,
                 force_refresh=generate_text_report,
+                cache_token=current_cache_token,
             )
         except Exception as e:
             _diag_add(diag, "키워드 번들", "error", 0, "query_keyword_bundle", f"{type(e).__name__}: {e}")
