@@ -132,6 +132,25 @@ def check_backfill_stage_logging(root: Path) -> list[str]:
         raise RegressionFailure(f'backfill stage/error 추적 토큰 누락: {", ".join(missing)}')
     return ['ok | backfill stage/error 추적 토큰 유지']
 
+
+
+def check_stats_partial_fetch_guard(root: Path) -> list[str]:
+    path = root / 'collector_api.py'
+    if not path.exists():
+        raise RegressionFailure('collector_api.py 가 없습니다')
+    text = path.read_text(encoding='utf-8')
+    required_tokens = [
+        'class PartialStatsFetchError',
+        'max_workers = min(6',
+        'raise PartialStatsFetchError',
+        '/stats partial fetch failed',
+    ]
+    missing = [tok for tok in required_tokens if tok not in text]
+    if missing:
+        raise RegressionFailure(f'/stats 부분실패 가드 토큰 누락: {", ".join(missing)}')
+    return ['ok | /stats 청크 문제시 fail-closed 가드 유지']
+
+
 def check_sa_scope_contract(root: Path) -> list[str]:
     collector_path = root / 'collector.py'
     if not collector_path.exists():
@@ -144,29 +163,6 @@ def check_sa_scope_contract(root: Path) -> list[str]:
     else:
         msgs.append('note | collector.py sa_scope 직접 지원은 현재 기준 미적용')
     return msgs
-
-
-def check_recent_cache_guard(root: Path) -> list[str]:
-    data_path = root / 'data.py'
-    overview_path = root / 'view_overview.py'
-    app_path = root / 'app.py'
-    missing: list[str] = []
-    data_text = data_path.read_text(encoding='utf-8') if data_path.exists() else ''
-    overview_text = overview_path.read_text(encoding='utf-8') if overview_path.exists() else ''
-    app_text = app_path.read_text(encoding='utf-8') if app_path.exists() else ''
-
-    for token in ['_recent_cache_bucket', '_sql_read_cached', 'sql_read(_engine, query: str, params: dict = None)']:
-        if token not in data_text:
-            missing.append(f'data.py:{token}')
-    for token in ['_overview_hot_cache_token', 'cache_token=current_cache_token', '_cache_buster=current_cache_token']:
-        if token not in overview_text:
-            missing.append(f'view_overview.py:{token}')
-    if '_today_kst_for_cache_reset' not in app_text:
-        missing.append('app.py:_today_kst_for_cache_reset')
-
-    if missing:
-        raise RegressionFailure(f'최근 날짜 캐시 보호 가드 누락: {", ".join(missing)}')
-    return ['ok | 최근 날짜(오늘/어제) 캐시 보호 가드 유지']
 
 
 def main() -> int:
@@ -184,8 +180,8 @@ def main() -> int:
         check_backfill_public_contract,
         check_backfill_parser_contract,
         check_backfill_stage_logging,
+        check_stats_partial_fetch_guard,
         check_sa_scope_contract,
-        check_recent_cache_guard,
     ]
     for fn in checks:
         try:

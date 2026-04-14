@@ -81,28 +81,81 @@ def extract_ad_creative_fields(ad_obj: dict, json_module=json) -> Dict[str, str]
 
 
 
+class PartialStatsFetchError(RuntimeError):
+    """Raised when one or more /stats chunks fail after retries.
+
+    We intentionally fail closed here so the caller does not replace an entire
+    day with a silently partial result set.
+    """
+
+
 def get_stats_range(customer_id: str, ids: List[str], d1: date, request_json: Callable[..., Tuple[int, Any]]) -> List[dict]:
     if not ids:
         return []
+
+    import concurrent.futures
+
     out: List[dict] = []
     d_str = d1.strftime("%Y-%m-%d")
     fields = json.dumps(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt", "avgRnk"], separators=(",", ":"))
     time_range = json.dumps({"since": d_str, "until": d_str}, separators=(",", ":"))
     chunks = [ids[i : i + 50] for i in range(0, len(ids), 50)]
+    max_workers = min(6, max(1, len(chunks)))
 
-    def fetch_chunk(chunk: List[str]) -> List[dict]:
+    def fetch_chunk(chunk: List[str]) -> Tuple[bool, List[dict], str]:
         params = {"ids": ",".join(chunk), "fields": fields, "timeRange": time_range}
         status, data = request_json("GET", "/stats", customer_id, params=params, raise_error=False)
-        if status == 200 and isinstance(data, dict) and "data" in data:
-            return data["data"]
-        return []
+        if status == 200 and isinstance(data, dict) and isinstance(data.get("data"), list):
+            return True, data["data"], "ok"
+        detail = f"status={status}"
+        if isinstance(data, dict):
+            title = str(data.get("title") or data.get("message") or "").strip()
+            if title:
+                detail += f" title={title}"
+        elif data not in (None, ""):
+            detail += f" body={str(data)[:180]}"
+        return False, [], detail
 
-    import concurrent.futures
+    def run_chunks(target_chunks: List[List[str]]) -> Tuple[List[dict], List[Tuple[List[str], str]]]:
+        rows: List[dict] = []
+        failed: List[Tuple[List[str], str]] = []
+        if not target_chunks:
+            return rows, failed
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(target_chunks))) as executor:
+            future_map = {executor.submit(fetch_chunk, chunk): chunk for chunk in target_chunks}
+            for future in concurrent.futures.as_completed(future_map):
+                chunk = future_map[future]
+                try:
+                    ok, chunk_rows, detail = future.result()
+                except Exception as exc:
+                    ok, chunk_rows, detail = False, [], f"exception={type(exc).__name__}: {exc}"
+                if ok:
+                    rows.extend(chunk_rows)
+                else:
+                    failed.append((chunk, detail))
+        return rows, failed
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, max(1, len(chunks)))) as executor:
-        results = executor.map(fetch_chunk, chunks)
-        for res in results:
-            out.extend(res)
+    chunk_rows, failures = run_chunks(chunks)
+    out.extend(chunk_rows)
+
+    retry_round = 0
+    while failures and retry_round < 2:
+        retry_round += 1
+        time.sleep(0.6 + (retry_round * 0.4) + random.uniform(0.05, 0.2))
+        retry_chunks = [chunk for chunk, _ in failures]
+        chunk_rows, failures = run_chunks(retry_chunks)
+        out.extend(chunk_rows)
+
+    if failures:
+        failed_ids = sum(len(chunk) for chunk, _ in failures)
+        sample_chunk, sample_detail = failures[0]
+        sample_preview = ",".join(sample_chunk[:3])
+        raise PartialStatsFetchError(
+            f"/stats partial fetch failed | customer_id={customer_id} | dt={d_str} | "
+            f"chunks_failed={len(failures)}/{len(chunks)} | ids_failed={failed_ids}/{len(ids)} | "
+            f"sample_ids={sample_preview} | {sample_detail}"
+        )
+
     return out
 
 
