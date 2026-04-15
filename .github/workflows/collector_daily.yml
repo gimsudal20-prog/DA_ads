@@ -92,8 +92,8 @@ jobs:
               echo "🚀 수집 날짜(전일, 전체 갱신) = ${YESTERDAY} | 모드=${COLLECT_MODE}"
               python collector.py --date "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}"
             else
-              echo "🚀 수집 날짜(전일, 빠른 갱신) = ${YESTERDAY} | 모드=${COLLECT_MODE}"
-              python collector.py --date "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}" --fast
+              echo "🚀 수집 날짜(전일, 백필형 안전 갱신) = ${YESTERDAY} | 모드=${COLLECT_MODE}"
+              python fast_backfill.py --start "${YESTERDAY}" --end "${YESTERDAY}" --workers 2 --collect_mode "${COLLECT_MODE}" --sync_dim_first_day
             fi
 
             if [ "${COLLECT_MODE}" = "기기만" ] || [ "${COLLECT_MODE}" = "device_only" ]; then
