@@ -62,21 +62,21 @@ def _render_diag_panel(diag: list | None, enabled: bool = False) -> None:
 
 
 FMT_DICT = {
-    "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
-    "클릭": "{:,.0f}", "클릭 증감": "{:+.1f}%", "클릭 차이": "{:+,.0f}",
+    "노출": "{:,.0f}", "노출 증감": "{:+.0f}%", "노출 차이": "{:+,.0f}",
+    "클릭": "{:,.0f}", "클릭 증감": "{:+.0f}%", "클릭 차이": "{:+,.0f}",
     "CTR(%)": "{:,.2f}%", 
-    "광고비": "{:,.0f}원", "광고비 증감": "{:+.1f}%", "광고비 차이": "{:+,.0f}원",
-    "CPC(원)": "{:,.0f}원", "CPC 증감": "{:+.1f}%", "CPC 차이": "{:+,.0f}원",
-    "구매완료수": "{:,.0f}", "구매 증감": "{:+.1f}%", "구매 차이": "{:+,.0f}",
-    "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.1f}%", "구매 매출 차이": "{:+,.0f}원",
-    "구매 ROAS(%)": "{:,.1f}%", "구매 ROAS 증감": "{:+.1f}%",
-    "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.1f}%", "장바구니 차이": "{:+,.0f}",
-    "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.1f}%",
-    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.1f}%", "위시리스트 차이": "{:+,.0f}",
-    "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.1f}%",
-    "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
-    "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
-    "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
+    "광고비": "{:,.0f}원", "광고비 증감": "{:+.0f}%", "광고비 차이": "{:+,.0f}원",
+    "CPC(원)": "{:,.0f}원", "CPC 증감": "{:+.0f}%", "CPC 차이": "{:+,.0f}원",
+    "구매완료수": "{:,.0f}", "구매 증감": "{:+.0f}%", "구매 차이": "{:+,.0f}",
+    "구매완료 매출": "{:,.0f}원", "구매 매출 증감": "{:+.0f}%", "구매 매출 차이": "{:+,.0f}원",
+    "구매 ROAS(%)": "{:,.0f}%", "구매 ROAS 증감": "{:+.0f}%",
+    "장바구니수": "{:,.0f}", "장바구니 증감": "{:+.0f}%", "장바구니 차이": "{:+,.0f}",
+    "장바구니 매출액": "{:,.0f}원", "장바구니 ROAS(%)": "{:,.0f}%",
+    "위시리스트수": "{:,.0f}", "위시리스트 증감": "{:+.0f}%", "위시리스트 차이": "{:+,.0f}",
+    "위시리스트 매출액": "{:,.0f}원", "위시리스트 ROAS(%)": "{:,.0f}%",
+    "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.0f}%", "총 전환 차이": "{:+,.0f}",
+    "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.0f}%", "총 매출 차이": "{:+,.0f}원",
+    "통합 ROAS(%)": "{:,.0f}%", "통합 ROAS 증감": "{:+.0f}%",
     "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
 }
 
@@ -109,7 +109,7 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
     cfg: dict = {}
     if first_col and first_col in df.columns:
         cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
-    pct_cols = {"CTR(%)", "구매 ROAS(%)", "장바구니 ROAS(%)", "위시리스트 ROAS(%)", "통합 ROAS(%)", "지출 비중(%)"}
+    pct_cols = {"구매 ROAS(%)", "장바구니 ROAS(%)", "위시리스트 ROAS(%)", "통합 ROAS(%)"}
     diff_pct_cols = {c for c in df.columns if "증감" in c and "차이" not in c}
     currency_cols = {"광고비", "CPC(원)", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "총 전환매출"}
     currency_diff_cols = {c for c in df.columns if c.endswith("차이") and ("매출" in c or "광고비" in c or "CPC" in c)}
@@ -118,8 +118,10 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
     for c in df.columns:
         if c in cfg:
             continue
-        if c in pct_cols or c in diff_pct_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%.1f %%")
+        if c == "CTR(%)":
+            cfg[c] = st.column_config.NumberColumn(c, format="%.2f %%")
+        elif c in pct_cols or c in diff_pct_cols:
+            cfg[c] = st.column_config.NumberColumn(c, format="%d %%")
         elif c in currency_cols or c in currency_diff_cols:
             cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
         elif c in count_cols or c in count_diff_cols or c == "순위 변화":
@@ -127,7 +129,7 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
         elif c == "평균순위":
             cfg[c] = st.column_config.TextColumn(c)
     if "지출 비중(%)" in df.columns:
-        cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
+        cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%d %%", min_value=0, max_value=100)
     return cfg
 
 
@@ -639,7 +641,6 @@ def _prefer_detail_source_by_campaign(kw_df: pd.DataFrame, ad_df: pd.DataFrame) 
         return pd.concat(kept, ignore_index=True)
     return kw_df.reset_index(drop=True) if not kw_df.empty else ad_df.reset_index(drop=True)
 
-#  수정 1: 확장소재 성과와 일반 하위 항목 성과를 분리해서 반환하도록 함수 구조 변경
 def _query_detail_bundles_for_campaign(engine, d1, d2, customer_id: str, campaign_id: str, diag: list | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     kw_bundle = _query_keyword_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
     ad_bundle = _query_ad_detail_for_campaign(engine, d1, d2, customer_id, campaign_id)
@@ -717,7 +718,7 @@ def _normalize_detail_metric_frame(df: pd.DataFrame, item_col: str) -> pd.DataFr
         "adgroup_name": "광고그룹",
         item_col: "항목명",
         "imp": "노출",
-        "clk": "클릭",
+        "클릭": "클릭",
         "cost": "광고비",
         "cart_conv": "장바구니수",
         "cart_sales": "장바구니 매출액",
