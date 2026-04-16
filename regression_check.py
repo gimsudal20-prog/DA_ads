@@ -132,25 +132,6 @@ def check_backfill_stage_logging(root: Path) -> list[str]:
         raise RegressionFailure(f'backfill stage/error 추적 토큰 누락: {", ".join(missing)}')
     return ['ok | backfill stage/error 추적 토큰 유지']
 
-
-
-def check_stats_partial_fetch_guard(root: Path) -> list[str]:
-    path = root / 'collector_api.py'
-    if not path.exists():
-        raise RegressionFailure('collector_api.py 가 없습니다')
-    text = path.read_text(encoding='utf-8')
-    required_tokens = [
-        'class PartialStatsFetchError',
-        'max_workers = min(6',
-        'raise PartialStatsFetchError',
-        '/stats partial fetch failed',
-    ]
-    missing = [tok for tok in required_tokens if tok not in text]
-    if missing:
-        raise RegressionFailure(f'/stats 부분실패 가드 토큰 누락: {", ".join(missing)}')
-    return ['ok | /stats 청크 문제시 fail-closed 가드 유지']
-
-
 def check_sa_scope_contract(root: Path) -> list[str]:
     collector_path = root / 'collector.py'
     if not collector_path.exists():
@@ -180,7 +161,6 @@ def main() -> int:
         check_backfill_public_contract,
         check_backfill_parser_contract,
         check_backfill_stage_logging,
-        check_stats_partial_fetch_guard,
         check_sa_scope_contract,
     ]
     for fn in checks:

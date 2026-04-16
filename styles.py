@@ -33,8 +33,8 @@ GLOBAL_UI_CSS = """
   /* Geometry */
   --nv-radius: 12px;
   --nv-radius-lg: 16px;
-  --nv-shadow-soft: none;
-  --nv-shadow-hover: none;
+  --nv-shadow-soft: 0 4px 20px rgba(15, 23, 42, 0.03);
+  --nv-shadow-hover: 0 10px 30px rgba(15, 23, 42, 0.06);
 }
 
 /* =========================================
@@ -78,7 +78,7 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--nv-bg);
   border: 1px solid var(--nv-line);
   border-radius: var(--nv-radius-lg);
-  box-shadow: none;
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-page-head-left { min-width: 0; }
 .nv-h1 {
@@ -102,7 +102,7 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: var(--nv-radius-lg);
   padding: 24px 28px;
   margin-top: 24px;
-  box-shadow: none;
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-section-muted {
   background: var(--nv-surface);
@@ -169,14 +169,13 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: var(--nv-radius-lg);
   border: 1px solid var(--nv-line);
   margin-bottom: 16px;
-  transition: border-color 0.2s ease, background-color 0.2s ease;
-  box-shadow: none;
+  transition: all 0.2s ease;
+  box-shadow: var(--nv-shadow-soft);
 }
 .nv-metric-card:hover {
-  border-color: var(--nv-line-strong);
-  box-shadow: none;
-  transform: none;
-  background: #FCFDFE;
+  border-color: var(--nv-primary);
+  box-shadow: var(--nv-shadow-hover);
+  transform: translateY(-2px);
 }
 .nv-metric-card-title {
   color: var(--nv-muted);
@@ -298,7 +297,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
   background: var(--nv-bg) !important;
-  box-shadow: none !important;
+  box-shadow: var(--nv-shadow-soft) !important;
   border: 1px solid var(--nv-line) !important;
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p {
@@ -353,7 +352,7 @@ div[data-baseweb="select"] > div:focus-within {
 }
 [data-testid="baseButton-primary"]:hover { 
   background-color: #000000 !important; 
-  box-shadow: none !important;
+  box-shadow: var(--nv-shadow-hover) !important;
 }
 
 .sidebar-info-box {
@@ -377,20 +376,6 @@ div[data-baseweb="select"] > div:focus-within {
   color: var(--nv-text);
 }
 .sidebar-info-value span { color: var(--nv-primary); font-weight: 800; }
-
-
-[data-testid="stDataFrame"] {
-  border: 1px solid var(--nv-line) !important;
-  border-radius: 14px !important;
-  overflow: hidden !important;
-  box-shadow: none !important;
-}
-[data-testid="stDataFrame"] [role="grid"] {
-  border: none !important;
-}
-[data-testid="stDataFrame"] [role="columnheader"] {
-  background: #FAFBFC !important;
-}
 
 @media (max-width: 1100px) {
   div.block-container {

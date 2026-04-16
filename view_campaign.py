@@ -104,15 +104,6 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
     return styler
 
 
-def _render_campaign_table(df: pd.DataFrame, first_col: str, *, height=None, show_deltas: bool = False) -> None:
-    if show_deltas:
-        safe_fmt = {k: v for k, v in FMT_DICT.items() if k in df.columns}
-        styled = df.style.format(safe_fmt)
-        styled = _apply_delta_styles(styled, df)
-        st.dataframe(styled, width="stretch", height=height, hide_index=True)
-        return
-    st.dataframe(df, width="stretch", height=height, hide_index=True, column_config=_campaign_fast_col_config(df, first_col))
-
 
 def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) -> dict:
     cfg: dict = {}
@@ -130,14 +121,28 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
         if c in pct_cols or c in diff_pct_cols:
             cfg[c] = st.column_config.NumberColumn(c, format="%.1f %%")
         elif c in currency_cols or c in currency_diff_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%,d 원")
+            cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
         elif c in count_cols or c in count_diff_cols or c == "순위 변화":
-            cfg[c] = st.column_config.NumberColumn(c, format="%,d")
+            cfg[c] = st.column_config.NumberColumn(c, format="%d")
         elif c == "평균순위":
             cfg[c] = st.column_config.TextColumn(c)
     if "지출 비중(%)" in df.columns:
         cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%.1f%%", min_value=0, max_value=100)
     return cfg
+
+
+def _campaign_sticky_cfg(first_col: str | None = None) -> dict:
+    if not first_col:
+        return {}
+    return {first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")}
+
+
+def _render_campaign_sticky_table(df: pd.DataFrame, first_col: str, apply_delta_styles: bool = False):
+    fmt_dict = {k: v for k, v in FMT_DICT.items() if k in df.columns}
+    styled = df.style.format(fmt_dict)
+    if apply_delta_styles:
+        styled = _apply_delta_styles(styled, df)
+    st.dataframe(styled, width="stretch", hide_index=True, column_config=_campaign_sticky_cfg(first_col))
 
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
@@ -905,7 +910,7 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
     base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
     cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
     disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
-    _render_campaign_table(disp_grp, "광고그룹", show_deltas=show_deltas_grp)
+    _render_campaign_sticky_table(disp_grp, "광고그룹", apply_delta_styles=show_deltas_grp)
 
 
 def _compare_mode_columns(show_deltas: bool, show_mode: str) -> list[str]:
@@ -953,7 +958,7 @@ def _render_campaign_compare_tab(view: pd.DataFrame, engine, f: Dict, cids: tupl
             metrics_cols_cmp.append("순위 변화")
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in view_cmp.columns]
     disp_cmp = view_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
-    _render_campaign_table(disp_cmp, "캠페인", height=560, show_deltas=show_deltas)
+    st.dataframe(disp_cmp, width="stretch", height=560, hide_index=True, column_config=_campaign_fast_col_config(disp_cmp, "캠페인"))
 
 
 def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: Dict, cids: tuple) -> None:

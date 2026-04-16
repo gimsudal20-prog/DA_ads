@@ -809,17 +809,19 @@ def process_account(
 
         if recent_fast_skip_dim and callable(list_campaigns_fn) and callable(list_adgroups_fn) and callable(list_keywords_fn) and callable(list_ads_fn) and callable(is_shopping_campaign_obj_fn):
             try:
-                old_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
-                log_fn(f"   🔄 [ {account_name} ] 최근일 fast 보정: dim skip 상태라도 live 구조 재동기화를 시도합니다.")
-                live_bundle = sync_structure_and_collect_targets_fn(
-                    engine,
+                live_bundle = _refresh_live_target_ids_minimal(
                     customer_id=customer_id,
-                    account_name=account_name,
                     collect_sa=collect_sa,
                     collect_device=collect_device,
                     shopping_only=shopping_only,
-                    result=result,
+                    list_campaigns_fn=list_campaigns_fn,
+                    list_adgroups_fn=list_adgroups_fn,
+                    list_keywords_fn=list_keywords_fn,
+                    list_ads_fn=list_ads_fn,
+                    is_shopping_campaign_obj_fn=is_shopping_campaign_obj_fn,
+                    log_fn=log_fn,
                 )
+                old_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
                 target_camp_ids = live_bundle["target_camp_ids"]
                 target_kw_ids = live_bundle["target_kw_ids"]
                 target_ad_ids = live_bundle["target_ad_ids"]
@@ -832,51 +834,13 @@ def process_account(
                 result["ad_targets"] = new_counts[2]
                 result["shopping_campaign_targets"] = len(shopping_campaign_ids)
                 result["live_target_refresh"] = True
-                result["live_dim_sync"] = True
                 if new_counts != old_counts:
                     log_fn(
-                        f"   ✅ [ {account_name} ] 최근일 fast 보정 완료: live 구조 재동기화 적용 "
+                        f"   🔄 [ {account_name} ] 최근일 fast 보정: live target 재확인 적용 "
                         f"(campaign {old_counts[0]}→{new_counts[0]}, keyword {old_counts[1]}→{new_counts[1]}, ad {old_counts[2]}→{new_counts[2]})"
                     )
-                else:
-                    log_fn(f"   ℹ️ [ {account_name} ] 최근일 fast 보정 완료: 구조 개수 변화는 없었지만 live 기준으로 재동기화했습니다.")
             except Exception as e:
-                try:
-                    live_bundle = _refresh_live_target_ids_minimal(
-                        customer_id=customer_id,
-                        collect_sa=collect_sa,
-                        collect_device=collect_device,
-                        shopping_only=shopping_only,
-                        list_campaigns_fn=list_campaigns_fn,
-                        list_adgroups_fn=list_adgroups_fn,
-                        list_keywords_fn=list_keywords_fn,
-                        list_ads_fn=list_ads_fn,
-                        is_shopping_campaign_obj_fn=is_shopping_campaign_obj_fn,
-                        log_fn=log_fn,
-                    )
-                    old_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
-                    target_camp_ids = live_bundle["target_camp_ids"]
-                    target_kw_ids = live_bundle["target_kw_ids"]
-                    target_ad_ids = live_bundle["target_ad_ids"]
-                    shopping_campaign_ids = live_bundle["shopping_campaign_ids"]
-                    shopping_adgroup_ids = live_bundle["shopping_adgroup_ids"]
-                    shopping_keyword_ids = live_bundle["shopping_keyword_ids"]
-                    new_counts = (len(target_camp_ids), len(target_kw_ids), len(target_ad_ids))
-                    result["campaign_targets"] = new_counts[0]
-                    result["keyword_targets"] = new_counts[1]
-                    result["ad_targets"] = new_counts[2]
-                    result["shopping_campaign_targets"] = len(shopping_campaign_ids)
-                    result["live_target_refresh"] = True
-                    result["live_dim_sync"] = False
-                    result["live_dim_sync_error"] = str(e)
-                    if new_counts != old_counts:
-                        log_fn(
-                            f"   ⚠️ [ {account_name} ] 최근일 fast 보정: live 구조 재동기화는 실패했지만 target 재확인으로 대체했습니다 "
-                            f"(campaign {old_counts[0]}→{new_counts[0]}, keyword {old_counts[1]}→{new_counts[1]}, ad {old_counts[2]}→{new_counts[2]})"
-                        )
-                except Exception as inner_e:
-                    log_best_effort_failure_fn("live target refresh", inner_e, ctx=f"customer_id={customer_id} fast_mode={fast_mode} skip_dim={skip_dim}")
-                    log_best_effort_failure_fn("live dim sync", e, ctx=f"customer_id={customer_id} fast_mode={fast_mode} skip_dim={skip_dim}")
+                log_best_effort_failure_fn("live target refresh", e, ctx=f"customer_id={customer_id} fast_mode={fast_mode} skip_dim={skip_dim}")
 
         stage = "build_keyword_lookup"
         result["stage"] = stage

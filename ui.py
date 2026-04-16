@@ -13,18 +13,18 @@ from data import format_currency
 # 🎨 Theme Constants (Sync with styles.py)
 # ==========================================
 THEME = {
-    "primary": "#2563FF",
-    "primary_soft": "#EEF4FF",
-    "bg": "rgba(255,255,255,0.92)",
-    "surface": "#F7F9FC",
-    "line": "rgba(15, 23, 42, 0.10)",
-    "text": "#111827",
-    "muted": "#667085",
-    "success": "#2563FF",
-    "warning": "#D97706",
-    "warning_bg": "#FFF1D6",
-    "danger": "#DC2626",
-    "danger_bg": "#FDE8E8",
+    "primary": "#0528F2",
+    "primary_soft": "#E6E9FF",
+    "bg": "#FFFFFF",
+    "surface": "#F8F9FB",
+    "line": "#DEE2E5",
+    "text": "#19191A",
+    "muted": "#62686F",
+    "success": "#0528F2",
+    "warning": "#F79009",
+    "warning_bg": "#FEF0C7",
+    "danger": "#F04438",
+    "danger_bg": "#FEE4E2",
 }
 
 
@@ -51,10 +51,9 @@ def _ensure_aggrid():
 def render_empty_state(message: str = "조회된 데이터가 없습니다.", height: int = 300) -> None:
     safe_msg = html.escape(message)
     empty_html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; height:{height}px; width:100%; background:linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.84)); border:1px dashed {THEME['line']}; border-radius:20px; color:{THEME['muted']}; text-align:center; backdrop-filter:blur(10px);">
-        <div style="width:42px; height:42px; border-radius:14px; background:{THEME['surface']}; display:flex; align-items:center; justify-content:center; font-size:18px;">⌁</div>
-        <div style="font-size:14px; font-weight:700; color:{THEME['text']};">{safe_msg}</div>
-        <div style="font-size:12px; opacity:0.78;">조건을 변경하거나 동기화를 확인해주세요.</div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: {height}px; width: 100%; background-color: {THEME['bg']}; border: 1px dashed {THEME['line']}; border-radius: 12px; color: {THEME['muted']}; text-align: center;">
+        <div style="font-size: 14px; font-weight: 600;">{safe_msg}</div>
+        <div style="font-size: 12px; margin-top: 4px; opacity: 0.7;">조건을 변경하거나 동기화를 확인해주세요.</div>
     </div>
     """
     st.markdown(empty_html, unsafe_allow_html=True)
@@ -82,12 +81,11 @@ def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = "")
     safe_value = html.escape(str(value))
     safe_desc = html.escape(str(desc))
 
-    desc_html = f'<div class="nv-metric-card-desc">{safe_desc}</div>' if safe_desc else ''
     html_str = f"""
     <div class="nv-metric-card">
         <div class="nv-metric-card-title">{safe_title}</div>
         <div class="nv-metric-card-value">{safe_value}</div>
-        {desc_html}
+        <div class="nv-metric-card-desc">{safe_desc}</div>
     </div>
     """
     st.markdown(html_str, unsafe_allow_html=True)

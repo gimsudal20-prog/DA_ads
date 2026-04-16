@@ -10,8 +10,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, StatementError, InterfaceError
 from sqlalchemy.pool import QueuePool
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date
 
 # ==========================================
 # 1. Database Connection (QueuePool 적용)
@@ -107,7 +106,8 @@ def get_table_columns(_engine, table_name: str) -> list:
         except Exception:
             return []
 
-def _sql_read_impl(_engine, query: str, params: dict | None = None) -> pd.DataFrame:
+@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
+def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
     last_error = None
     for attempt in range(3):
         try:
@@ -116,66 +116,10 @@ def _sql_read_impl(_engine, query: str, params: dict | None = None) -> pd.DataFr
         except Exception as e:
             last_error = e
             time.sleep(1.0)
-
+            
     st.cache_resource.clear()
     st.error(f"DB 연결이 지연되고 있습니다. 잠시 후 새로고침(F5) 해주세요. (사유: {last_error})")
     st.stop()
-
-
-def _today_kst() -> date:
-    try:
-        return datetime.now(ZoneInfo("Asia/Seoul")).date()
-    except Exception:
-        return date.today()
-
-
-def _coerce_to_date(value) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if isinstance(value, datetime):
-        return value.date()
-    text_value = str(value).strip()
-    if not text_value:
-        return None
-    try:
-        return datetime.fromisoformat(text_value[:10]).date()
-    except Exception:
-        return None
-
-
-def _is_hot_date_range(query: str, params: dict | None = None) -> bool:
-    today_kst = _today_kst()
-    hot_start = today_kst - timedelta(days=1)
-
-    candidates = []
-    if isinstance(params, dict):
-        candidates.extend(params.values())
-
-    for value in candidates:
-        parsed = _coerce_to_date(value)
-        if parsed is not None and parsed >= hot_start:
-            return True
-    return False
-
-
-def _recent_cache_bucket(query: str, params: dict | None = None) -> str:
-    if not _is_hot_date_range(query, params):
-        return "stable"
-    now_kst = datetime.now(ZoneInfo("Asia/Seoul")) if ZoneInfo else datetime.now()
-    minute_bucket = (now_kst.minute // 5) * 5
-    return f"hot:{now_kst.strftime('%Y-%m-%d %H')}:{minute_bucket:02d}"
-
-
-@st.cache_data(ttl=43200, max_entries=30, show_spinner=False)
-def _sql_read_cached(_engine, query: str, params: dict | None = None, cache_bucket: str = "stable") -> pd.DataFrame:
-    return _sql_read_impl(_engine, query, params)
-
-
-def sql_read(_engine, query: str, params: dict = None) -> pd.DataFrame:
-    cache_bucket = _recent_cache_bucket(query, params)
-    return _sql_read_cached(_engine, query, params, cache_bucket)
 
 def sql_exec(_engine, query: str, params: dict = None) -> None:
     last_error = None
@@ -833,7 +777,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
     )
 
 @st.cache_data(ttl=43200, max_entries=20, show_spinner=False)
-def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple, _cache_buster: str = "") -> dict:
+def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, type_sel: tuple) -> dict:
     if not table_exists(_engine, f"fact_{entity}_daily"):
         return {}
 
@@ -871,7 +815,7 @@ def get_entity_totals(_engine, entity: str, d1: date, d2: date, cids: tuple, typ
     return _compute_total_ratio_metrics(row)
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, _cache_buster: str = "") -> pd.DataFrame:
+def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -909,7 +853,7 @@ def query_campaign_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tu
     return _finalize_bundle_df(df, "campaign_type")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False, _cache_buster: str = "") -> pd.DataFrame:
+def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, topn_cost: int = 0, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_keyword_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -949,7 +893,7 @@ def query_keyword_bundle(_engine, d1: date, d2: date, cids, type_sel: tuple, top
     return _finalize_bundle_df(df, "campaign_type_label")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False, _cache_buster: str = "") -> pd.DataFrame:
+def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, topn_cost: int = 0, top_k: int = 50, include_dt: bool = False) -> pd.DataFrame:
     if not table_exists(_engine, "fact_ad_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -990,7 +934,7 @@ def query_ad_bundle(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, t
     return _finalize_bundle_df(df, "campaign_type_label")
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple, _cache_buster: str = "") -> pd.DataFrame:
+def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_campaign_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
@@ -1087,7 +1031,7 @@ def query_overview_report_source_cache(_engine, source_kind: str, d1: date, d2: 
     )
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple, _cache_buster: str = "") -> pd.DataFrame:
+def query_shopping_search_terms(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
     if not table_exists(_engine, "fact_shopping_query_daily"):
         return pd.DataFrame()
     cids_tuple = _normalize_filter_values(cids)
