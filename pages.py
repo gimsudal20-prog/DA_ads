@@ -66,7 +66,7 @@ def main():
         if not meta_ready:
             st.error("설정 메뉴에서 동기화를 진행해주세요.")
             return
-        f = build_filters(meta, get_campaign_type_options(load_dim_campaign(engine)), engine)
+        f = build_filters(meta, get_campaign_type_options_cached(engine), engine)
 
     requires_selection_pages = {
         "요약",

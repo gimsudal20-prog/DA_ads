@@ -15,19 +15,35 @@ st.set_page_config(
 
 def clear_cache_daily():
     """
-    ✨ 밤새 누적된 메모리 누수 방지 및 Stale Connection 해결
-    자정이 지나 날짜가 바뀌면 기존에 쌓인 메모리(캐시)와 DB 연결 리소스를 
-    자동으로 완전히 비워주어 아침마다 앱이 뻗는 현상을 차단합니다.
+    날짜가 바뀐 뒤에도 앱이 과하게 무거워지지 않도록 필요한 캐시만 선택적으로 비웁니다.
+
+    이전 구현은 자정이 지나면 session_state 전체를 날려 위젯 상태/선택값까지 모두 초기화했고,
+    첫 진입 시 불필요한 재연산이 연쇄적으로 발생할 수 있었습니다.
+    여기서는 날짜 기준 마커만 갱신하고, 무거운 데이터 캐시/DB 리소스만 정리합니다.
     """
-    if "current_date" not in st.session_state:
-        st.session_state["current_date"] = date.today()
-    
-    # 세션에 기록된 날짜와 현재 날짜가 다르면 (밤이 지났으면)
-    if st.session_state["current_date"] != date.today():
-        st.cache_data.clear()      # 데이터프레임 캐시 초기화 (메모리 확보)
-        st.cache_resource.clear()  # DB 엔진 객체 캐시 초기화 (끊긴 연결 강제 리셋)
-        st.session_state.clear()   # 기타 세션 찌꺼기 정리
-        st.session_state["current_date"] = date.today()
+    today = date.today()
+    previous_date = st.session_state.get("current_date")
+    if previous_date is None:
+        st.session_state["current_date"] = today
+        return
+
+    if previous_date != today:
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+        volatile_prefixes = (
+            "_table_names_cache",
+            "overview_text_kw::",
+            "overview_text_kw_powerlink::",
+        )
+        volatile_exact_keys = {
+            "latest_dates_cache",
+        }
+        for key in list(st.session_state.keys()):
+            if key in volatile_exact_keys or any(str(key).startswith(prefix) for prefix in volatile_prefixes):
+                del st.session_state[key]
+
+        st.session_state["current_date"] = today
 
 clear_cache_daily()
 

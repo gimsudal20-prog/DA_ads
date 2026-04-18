@@ -284,6 +284,22 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     select_str = ", ".join(target_cols) if target_cols else "*"
     return sql_read(_engine, f"SELECT {select_str} FROM dim_campaign")
 
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
+def get_campaign_type_options_cached(_engine) -> list:
+    if not table_exists(_engine, "dim_campaign"):
+        return ["파워링크", "쇼핑검색"]
+
+    cols = get_table_columns(_engine, "dim_campaign")
+    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else ("campaign_type" if "campaign_type" in cols else None))
+    if not cp_col:
+        return ["파워링크", "쇼핑검색"]
+
+    safe_col = _validate_sql_identifier(cp_col, "column name")
+    df = sql_read(_engine, f"SELECT DISTINCT {safe_col} AS campaign_type FROM dim_campaign WHERE {safe_col} IS NOT NULL")
+    if df.empty:
+        return ["파워링크", "쇼핑검색"]
+    return get_campaign_type_options(df.rename(columns={"campaign_type": cp_col}))
+
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty:
         return ["파워링크", "쇼핑검색"]
@@ -304,12 +320,28 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
+    tables = [
+        "fact_campaign_daily",
+        "fact_adgroup_daily",
+        "fact_keyword_daily",
+        "fact_ad_daily",
+        "fact_shopping_query_daily",
+    ]
+    existing_tables = [tbl for tbl in tables if table_exists(_engine, tbl)]
+    if not existing_tables:
+        return {}
+
+    union_sql = " UNION ALL ".join(
+        [f"SELECT '{tbl}' AS table_name, MAX(dt) AS dt FROM {tbl}" for tbl in existing_tables]
+    )
+    df = sql_read(_engine, union_sql)
+    if df.empty:
+        return {}
+
     dates = {}
-    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
-        if table_exists(_engine, tbl):
-            df = sql_read(_engine, f"SELECT MAX(dt) as dt FROM {tbl}")
-            if not df.empty and pd.notna(df.iloc[0]["dt"]):
-                dates[tbl] = df.iloc[0]["dt"]
+    for _, row in df.iterrows():
+        if pd.notna(row.get("dt")):
+            dates[str(row.get("table_name"))] = row.get("dt")
     return dates
 
 # ==========================================
