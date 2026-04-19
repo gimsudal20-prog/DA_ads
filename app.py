@@ -14,36 +14,27 @@ st.set_page_config(
 )
 
 def clear_cache_daily():
-    """
-    날짜가 바뀐 뒤에도 앱이 과하게 무거워지지 않도록 필요한 캐시만 선택적으로 비웁니다.
-
-    이전 구현은 자정이 지나면 session_state 전체를 날려 위젯 상태/선택값까지 모두 초기화했고,
-    첫 진입 시 불필요한 재연산이 연쇄적으로 발생할 수 있었습니다.
-    여기서는 날짜 기준 마커만 갱신하고, 무거운 데이터 캐시/DB 리소스만 정리합니다.
-    """
+    """날짜 변경 시 필요한 캐시만 정리해 아침 첫 진입 재로딩을 줄입니다."""
     today = date.today()
-    previous_date = st.session_state.get("current_date")
-    if previous_date is None:
+    prev_date = st.session_state.get("current_date")
+    if prev_date is None:
         st.session_state["current_date"] = today
         return
 
-    if previous_date != today:
-        st.cache_data.clear()
-        st.cache_resource.clear()
+    if prev_date == today:
+        return
 
-        volatile_prefixes = (
-            "_table_names_cache",
-            "overview_text_kw::",
-            "overview_text_kw_powerlink::",
-        )
-        volatile_exact_keys = {
-            "latest_dates_cache",
-        }
-        for key in list(st.session_state.keys()):
-            if key in volatile_exact_keys or any(str(key).startswith(prefix) for prefix in volatile_prefixes):
-                del st.session_state[key]
+    st.cache_data.clear()
+    st.cache_resource.clear()
 
-        st.session_state["current_date"] = today
+    # session_state 전체 삭제는 첫 화면 렌더링 연쇄를 키워서 피한다.
+    keep_keys = {"nav_page"}
+    preserved = {k: v for k, v in st.session_state.items() if k in keep_keys}
+    for key in list(st.session_state.keys()):
+        if key not in keep_keys:
+            del st.session_state[key]
+    st.session_state.update(preserved)
+    st.session_state["current_date"] = today
 
 clear_cache_daily()
 

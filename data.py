@@ -289,16 +289,28 @@ def get_campaign_type_options_cached(_engine) -> list:
     if not table_exists(_engine, "dim_campaign"):
         return ["파워링크", "쇼핑검색"]
 
-    cols = get_table_columns(_engine, "dim_campaign")
-    cp_col = "campaign_tp" if "campaign_tp" in cols else ("campaign_type_label" if "campaign_type_label" in cols else ("campaign_type" if "campaign_type" in cols else None))
-    if not cp_col:
+    cols = set(get_table_columns(_engine, "dim_campaign"))
+    type_col = next((cand for cand in ("campaign_tp", "campaign_type_label", "campaign_type") if cand in cols), None)
+    if not type_col:
         return ["파워링크", "쇼핑검색"]
 
-    safe_col = _validate_sql_identifier(cp_col, "column name")
-    df = sql_read(_engine, f"SELECT DISTINCT {safe_col} AS campaign_type FROM dim_campaign WHERE {safe_col} IS NOT NULL")
+    df = sql_read(
+        _engine,
+        f'SELECT DISTINCT "{type_col}" AS campaign_type FROM dim_campaign WHERE "{type_col}" IS NOT NULL'
+    )
     if df.empty:
         return ["파워링크", "쇼핑검색"]
-    return get_campaign_type_options(df.rename(columns={"campaign_type": cp_col}))
+
+    mapping = {
+        "WEB_SITE": "파워링크",
+        "SHOPPING": "쇼핑검색",
+        "POWER_CONTENT": "파워컨텐츠",
+        "POWER_CONTENTS": "파워컨텐츠",
+        "BRAND_SEARCH": "브랜드검색",
+        "PLACE": "플레이스",
+    }
+    opts = sorted({mapping.get(str(v).upper(), str(v)) for v in df["campaign_type"].dropna().tolist() if str(v).strip()})
+    return opts if opts else ["파워링크", "쇼핑검색"]
 
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty:
@@ -320,19 +332,19 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
-    tables = [
+    target_tables = [
         "fact_campaign_daily",
         "fact_adgroup_daily",
         "fact_keyword_daily",
         "fact_ad_daily",
         "fact_shopping_query_daily",
     ]
-    existing_tables = [tbl for tbl in tables if table_exists(_engine, tbl)]
+    existing_tables = [tbl for tbl in target_tables if table_exists(_engine, tbl)]
     if not existing_tables:
         return {}
 
     union_sql = " UNION ALL ".join(
-        [f"SELECT '{tbl}' AS table_name, MAX(dt) AS dt FROM {tbl}" for tbl in existing_tables]
+        [f"SELECT '{tbl}'::text AS table_name, MAX(dt) AS dt FROM {tbl}" for tbl in existing_tables]
     )
     df = sql_read(_engine, union_sql)
     if df.empty:
@@ -341,7 +353,7 @@ def get_latest_dates(_engine) -> dict:
     dates = {}
     for _, row in df.iterrows():
         if pd.notna(row.get("dt")):
-            dates[str(row.get("table_name"))] = row.get("dt")
+            dates[str(row["table_name"])] = row["dt"]
     return dates
 
 # ==========================================
