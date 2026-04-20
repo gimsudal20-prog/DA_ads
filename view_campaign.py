@@ -971,7 +971,8 @@ def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: 
     except Exception:
         pass
     off_log = query_campaign_off_log(engine, f["start"], f["end"], cids)
-    if off_log.empty:
+    required_cols = {"dt", "customer_id", "campaign_id", "off_time"}
+    if off_log.empty or not required_cols.issubset(set(off_log.columns)):
         st.info("조회 기간 동안 예산 부족으로 꺼진 기록이 없습니다.")
         return
     dim_camp = load_dim_campaign(engine)

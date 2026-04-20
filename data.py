@@ -284,34 +284,6 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     select_str = ", ".join(target_cols) if target_cols else "*"
     return sql_read(_engine, f"SELECT {select_str} FROM dim_campaign")
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
-def get_campaign_type_options_cached(_engine) -> list:
-    if not table_exists(_engine, "dim_campaign"):
-        return ["파워링크", "쇼핑검색"]
-
-    cols = set(get_table_columns(_engine, "dim_campaign"))
-    type_col = next((cand for cand in ("campaign_tp", "campaign_type_label", "campaign_type") if cand in cols), None)
-    if not type_col:
-        return ["파워링크", "쇼핑검색"]
-
-    df = sql_read(
-        _engine,
-        f'SELECT DISTINCT "{type_col}" AS campaign_type FROM dim_campaign WHERE "{type_col}" IS NOT NULL'
-    )
-    if df.empty:
-        return ["파워링크", "쇼핑검색"]
-
-    mapping = {
-        "WEB_SITE": "파워링크",
-        "SHOPPING": "쇼핑검색",
-        "POWER_CONTENT": "파워컨텐츠",
-        "POWER_CONTENTS": "파워컨텐츠",
-        "BRAND_SEARCH": "브랜드검색",
-        "PLACE": "플레이스",
-    }
-    opts = sorted({mapping.get(str(v).upper(), str(v)) for v in df["campaign_type"].dropna().tolist() if str(v).strip()})
-    return opts if opts else ["파워링크", "쇼핑검색"]
-
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty:
         return ["파워링크", "쇼핑검색"]
@@ -332,28 +304,12 @@ def _map_campaign_types(df: pd.DataFrame, col_name: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_latest_dates(_engine) -> dict:
-    target_tables = [
-        "fact_campaign_daily",
-        "fact_adgroup_daily",
-        "fact_keyword_daily",
-        "fact_ad_daily",
-        "fact_shopping_query_daily",
-    ]
-    existing_tables = [tbl for tbl in target_tables if table_exists(_engine, tbl)]
-    if not existing_tables:
-        return {}
-
-    union_sql = " UNION ALL ".join(
-        [f"SELECT '{tbl}'::text AS table_name, MAX(dt) AS dt FROM {tbl}" for tbl in existing_tables]
-    )
-    df = sql_read(_engine, union_sql)
-    if df.empty:
-        return {}
-
     dates = {}
-    for _, row in df.iterrows():
-        if pd.notna(row.get("dt")):
-            dates[str(row["table_name"])] = row["dt"]
+    for tbl in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily", "fact_shopping_query_daily"]:
+        if table_exists(_engine, tbl):
+            df = sql_read(_engine, f"SELECT MAX(dt) as dt FROM {tbl}")
+            if not df.empty and pd.notna(df.iloc[0]["dt"]):
+                dates[tbl] = df.iloc[0]["dt"]
     return dates
 
 # ==========================================
@@ -816,7 +772,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
     # ✨ 데이터 로드 최적화 (LIMIT 5000)
     return sql_read(
         _engine,
-        f"SELECT customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000",
+        f"SELECT dt, customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000",
         {"d1": str(d1), "d2": str(d2), **cid_params},
     )
 
