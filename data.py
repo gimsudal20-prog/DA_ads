@@ -637,47 +637,50 @@ def _resolve_total_type_join(_engine, entity: str, type_sel: tuple) -> tuple[str
 
 
 def _read_budget_campaign_metrics(_engine, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int, where_cid: str, cid_params: dict) -> pd.DataFrame:
-    if table_exists(_engine, "overview_campaign_daily_cache"):
-        sql = f"""
-            SELECT customer_id,
-                   SUM(CASE WHEN dt BETWEEN :avg_d1 AND :avg_d2 THEN cost ELSE 0 END)/:avg_days as avg_cost,
-                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN cost ELSE 0 END) as current_month_cost,
-                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN COALESCE(tot_sales, sales, 0) ELSE 0 END) as current_month_sales,
-                   SUM(CASE WHEN dt BETWEEN :prev_month_d1 AND :prev_month_d2 THEN cost ELSE 0 END) as prev_month_cost
-            FROM overview_campaign_daily_cache
-            WHERE dt BETWEEN :outer_d1 AND :outer_d2 {where_cid}
-            GROUP BY customer_id
-        """
-    elif table_exists(_engine, "fact_campaign_daily"):
-        sql = f"""
-            SELECT customer_id,
-                   SUM(CASE WHEN dt BETWEEN :avg_d1 AND :avg_d2 THEN cost ELSE 0 END)/:avg_days as avg_cost,
-                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN cost ELSE 0 END) as current_month_cost,
-                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN sales ELSE 0 END) as current_month_sales,
-                   SUM(CASE WHEN dt BETWEEN :prev_month_d1 AND :prev_month_d2 THEN cost ELSE 0 END) as prev_month_cost
-            FROM fact_campaign_daily
-            WHERE dt BETWEEN :outer_d1 AND :outer_d2 {where_cid}
-            GROUP BY customer_id
-        """
-    else:
-        return pd.DataFrame()
+    outer_d1 = min(avg_d1, month_d1, prev_month_d1)
+    outer_d2 = max(avg_d2, month_d2, prev_month_d2)
 
-    return sql_read(
-        _engine,
-        sql,
-        {
-            "avg_d1": str(avg_d1),
-            "avg_d2": str(avg_d2),
-            "month_d1": str(month_d1),
-            "month_d2": str(month_d2),
-            "prev_month_d1": str(prev_month_d1),
-            "prev_month_d2": str(prev_month_d2),
-            "outer_d1": str(min(avg_d1, month_d1, prev_month_d1)),
-            "outer_d2": str(max(avg_d2, month_d2, prev_month_d2)),
-            "avg_days": max(int(avg_days), 1),
-            **cid_params,
-        },
-    )
+    def _run_budget_metric_query(table_name: str, sales_expr: str) -> pd.DataFrame:
+        sql = f"""
+            SELECT customer_id,
+                   SUM(CASE WHEN dt BETWEEN :avg_d1 AND :avg_d2 THEN cost ELSE 0 END)/:avg_days as avg_cost,
+                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN cost ELSE 0 END) as current_month_cost,
+                   SUM(CASE WHEN dt BETWEEN :month_d1 AND :month_d2 THEN {sales_expr} ELSE 0 END) as current_month_sales,
+                   SUM(CASE WHEN dt BETWEEN :prev_month_d1 AND :prev_month_d2 THEN cost ELSE 0 END) as prev_month_cost
+            FROM {table_name}
+            WHERE dt BETWEEN :outer_d1 AND :outer_d2 {where_cid}
+            GROUP BY customer_id
+        """
+        return sql_read(
+            _engine,
+            sql,
+            {
+                "avg_d1": str(avg_d1),
+                "avg_d2": str(avg_d2),
+                "month_d1": str(month_d1),
+                "month_d2": str(month_d2),
+                "prev_month_d1": str(prev_month_d1),
+                "prev_month_d2": str(prev_month_d2),
+                "outer_d1": str(outer_d1),
+                "outer_d2": str(outer_d2),
+                "avg_days": max(int(avg_days), 1),
+                **cid_params,
+            },
+        )
+
+    if table_exists(_engine, "overview_campaign_daily_cache"):
+        latest_cache_df = sql_read(_engine, "SELECT MAX(dt) as dt FROM overview_campaign_daily_cache")
+        latest_cache_dt = None if latest_cache_df.empty else latest_cache_df.iloc[0].get("dt")
+        if pd.notna(latest_cache_dt) and pd.to_datetime(latest_cache_dt).date() >= outer_d2:
+            return _run_budget_metric_query("overview_campaign_daily_cache", "COALESCE(tot_sales, sales, 0)")
+
+    if table_exists(_engine, "fact_campaign_daily"):
+        return _run_budget_metric_query("fact_campaign_daily", "COALESCE(sales, 0)")
+
+    if table_exists(_engine, "overview_campaign_daily_cache"):
+        return _run_budget_metric_query("overview_campaign_daily_cache", "COALESCE(tot_sales, sales, 0)")
+
+    return pd.DataFrame()
 
 def _compute_total_ratio_metrics(row: dict) -> dict:
     imp = row.get("imp", 0) or 0
@@ -772,7 +775,7 @@ def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataF
     # ✨ 데이터 로드 최적화 (LIMIT 5000)
     return sql_read(
         _engine,
-        f"SELECT dt, customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000",
+        f"SELECT customer_id, campaign_id, off_time FROM fact_campaign_off_log WHERE dt BETWEEN :d1 AND :d2 {where_cid} LIMIT 5000",
         {"d1": str(d1), "d2": str(d2), **cid_params},
     )
 

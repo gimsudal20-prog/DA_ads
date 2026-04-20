@@ -119,117 +119,107 @@ def _ensure_budget_input_js_once():
     st.session_state["_budget_input_js_once"] = True
 
 
-def _normalize_budget_input(raw) -> str:
-    digits = ''.join(ch for ch in str(raw or '') if ch.isdigit())
-    if not digits:
-        return ''
-    return f"{int(digits):,}"
+def _resolve_budget_reference_date(engine, fallback_end_dt: date) -> date:
+    latest_dates = get_latest_dates(engine) or {}
+    candidates = []
+    for key in ["fact_campaign_daily", "fact_adgroup_daily", "fact_keyword_daily", "fact_ad_daily"]:
+        dt_val = latest_dates.get(key)
+        if pd.notna(dt_val):
+            try:
+                candidates.append(pd.to_datetime(dt_val).date())
+            except Exception:
+                pass
+    if candidates:
+        return max(candidates)
+    return fallback_end_dt
 
 
 @st.fragment
 def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target_pacing_rate: float):
     prev_month_dt = (end_dt.replace(day=1) - timedelta(days=1))
     prev_m_num = prev_month_dt.month
-
-    budget_view = budget_view.copy().reset_index(drop=True)
+    
     editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
-    editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-    editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-    editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+    
+    editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    
     editor_df = editor_df.rename(columns={
-        "account_name": "업체명",
-        "manager": "담당자",
+        "account_name": "업체명", 
+        "manager": "담당자", 
         "usage_pct": "집행률(%)"
     })
+
+    # ✨ 화면에 보여질 컬럼의 순서를 '월 예산 -> 당월 사용액 -> 전월 사용액 -> 집행률' 순서로 고정
     ordered_cols = [
-        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val",
+        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", # 숨김 처리용
         "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
     ]
     editor_df = editor_df[ordered_cols]
 
-    if "budget_selected_cid" not in st.session_state and not budget_view.empty:
-        st.session_state["budget_selected_cid"] = str(budget_view.iloc[0]["customer_id"])
-
-    selected_cid = str(st.session_state.get("budget_selected_cid", budget_view.iloc[0]["customer_id"] if not budget_view.empty else ''))
-    selected_row = budget_view.loc[budget_view["customer_id"].astype(str) == selected_cid]
-    if selected_row.empty and not budget_view.empty:
-        selected_row = budget_view.iloc[[0]]
-        selected_cid = str(selected_row.iloc[0]["customer_id"])
-        st.session_state["budget_selected_cid"] = selected_cid
-
-    current_budget_val = int(pd.to_numeric(selected_row.iloc[0]["monthly_budget_val"], errors="coerce") if not selected_row.empty else 0)
-    editor_input_key = "budget_edit_value"
-    if st.session_state.get("_budget_edit_cid") != selected_cid:
-        st.session_state[editor_input_key] = f"{current_budget_val:,}" if current_budget_val > 0 else ""
-        st.session_state["_budget_edit_cid"] = selected_cid
-
-    def _live_format_budget_input():
-        st.session_state[editor_input_key] = _normalize_budget_input(st.session_state.get(editor_input_key, ""))
-
-    def _save_selected_budget():
-        raw = ''.join(ch for ch in str(st.session_state.get(editor_input_key, '')) if ch.isdigit())
-        new_budget = int(raw) if raw else 0
-        cid = str(st.session_state.get("budget_selected_cid", ""))
-        if not cid:
-            return
-        update_monthly_budget(engine, cid, new_budget)
-        st.session_state.setdefault("local_budget_overrides", {})[cid] = new_budget
-        st.session_state[editor_input_key] = f"{new_budget:,}" if new_budget > 0 else ""
-        st.toast("예산이 저장되었습니다.")
-        st.rerun()
+    def update_budget_from_table():
+        if "budget_table_editor" in st.session_state:
+            edits = st.session_state["budget_table_editor"].get("edited_rows", {})
+            updated_count = 0
+            
+            if "local_budget_overrides" not in st.session_state:
+                st.session_state["local_budget_overrides"] = {}
+                
+            for row_idx, col_data in edits.items():
+                if "월 예산" in col_data:
+                    raw_input = str(col_data["월 예산"]).replace(",", "").replace("원", "").strip()
+                    if raw_input.isdigit():
+                        new_budget = int(raw_input)
+                        cid = str(editor_df.iloc[row_idx]["customer_id"])
+                        
+                        update_monthly_budget(engine, cid, new_budget)
+                        st.session_state["local_budget_overrides"][cid] = new_budget
+                        updated_count += 1
+            
+            if updated_count > 0:
+                st.toast("예산이 저장되었습니다.")
 
     st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 (현재 권장 소진율: <span style='color:#0528F2;'>{target_pacing_rate*100:.0f}%</span>)</div>", unsafe_allow_html=True)
-    st.caption("표는 조회용으로 유지하고, 아래 전용 입력칸에서 예산을 수정하면 입력 중에도 콤마가 유지됩니다.")
+    st.caption("표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요. 권장 소진율 대비 10% 이상 차이가 나면 과속/과소 상태로 진단됩니다.")
     _ensure_budget_input_js_once()
 
-    options = {
-        str(row["customer_id"]): f"{row['account_name']} · {row.get('manager', '미배정')}"
-        for _, row in budget_view.iterrows()
-    }
-    c1, c2, c3 = st.columns([1.6, 1.0, 0.45])
-    with c1:
-        st.selectbox(
-            "예산 수정 대상",
-            options=list(options.keys()),
-            index=max(list(options.keys()).index(selected_cid), 0) if options else 0,
-            format_func=lambda cid: options.get(cid, cid),
-            key="budget_selected_cid",
-        )
-    with c2:
-        st.text_input(
-            "월 예산(원)",
-            key=editor_input_key,
-            placeholder="예: 1,500,000",
-            on_change=_live_format_budget_input,
-        )
-    with c3:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        st.button("저장", use_container_width=True, on_click=_save_selected_budget)
-
-    st.dataframe(
+    st.data_editor(
         editor_df,
+        key="budget_table_editor",
+        on_change=update_budget_from_table,
         hide_index=True,
         use_container_width=True,
         height=550,
         column_config={
-            "customer_id": None,
-            "monthly_budget_val": None,
+            "customer_id": None, 
+            "monthly_budget_val": None, 
             "prev_month_cost_val": None,
             "current_month_cost_val": None,
-            "업체명": st.column_config.TextColumn("업체명"),
-            "담당자": st.column_config.TextColumn("담당자"),
-            "월 예산": st.column_config.TextColumn("월 예산(원)"),
-            f"{end_dt.month}월 사용액": st.column_config.TextColumn(f"{end_dt.month}월 사용액"),
-            f"{prev_m_num}월 사용액": st.column_config.TextColumn(f"{prev_m_num}월 사용액"),
+            "업체명": st.column_config.TextColumn("업체명", disabled=True),
+            "담당자": st.column_config.TextColumn("담당자", disabled=True),
+            "월 예산": st.column_config.TextColumn(
+                "월 예산(원)", 
+                help="더블클릭하여 예산을 바로 수정하세요.",
+                required=True
+            ),
+            f"{end_dt.month}월 사용액": st.column_config.TextColumn(
+                f"{end_dt.month}월 사용액", 
+                disabled=True
+            ),
+            f"{prev_m_num}월 사용액": st.column_config.TextColumn(
+                f"{prev_m_num}월 사용액", 
+                disabled=True
+            ),
             "집행률(%)": st.column_config.ProgressColumn(
                 "집행률(%)",
                 help="월 예산 대비 현재 사용액 비율",
                 format="%.1f%%",
                 min_value=0,
-                max_value=100,
+                max_value=100
             ),
-            "상태": st.column_config.TextColumn("상태"),
-        },
+            "상태": st.column_config.TextColumn("상태", disabled=True)
+        }
     )
 
 
@@ -274,8 +264,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
     cids = tuple(f.get("selected_customer_ids", []) or [])
     yesterday = date.today() - timedelta(days=1)
-    end_dt = f.get("end") or yesterday
-    avg_d2 = end_dt - timedelta(days=1)
+    fallback_end_dt = f.get("end") or yesterday
+    end_dt = _resolve_budget_reference_date(engine, fallback_end_dt)
+    end_dt = min(end_dt, yesterday)
+    avg_d2 = end_dt
     avg_d1 = avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
 
     month_d1 = end_dt.replace(day=1)
@@ -334,7 +326,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
 
             render_budget_editor(budget_view, engine, end_dt, target_pacing_rate)
     else:
-        alert_avg_d2 = yesterday
+        alert_avg_d2 = end_dt
         alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)
         alert_bundle = _cached_budget_bundle(engine, cids, yesterday, alert_avg_d1, alert_avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
         alert_view = _prepare_alert_view(alert_bundle)
