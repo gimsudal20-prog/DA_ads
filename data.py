@@ -668,19 +668,38 @@ def _read_budget_campaign_metrics(_engine, avg_d1: date, avg_d2: date, month_d1:
             },
         )
 
+    fact_df = pd.DataFrame()
+    cache_df = pd.DataFrame()
+    cache_is_fresh = False
+
+    if table_exists(_engine, "fact_campaign_daily"):
+        fact_df = _run_budget_metric_query("fact_campaign_daily", "COALESCE(sales, 0)")
+
     if table_exists(_engine, "overview_campaign_daily_cache"):
         latest_cache_df = sql_read(_engine, "SELECT MAX(dt) as dt FROM overview_campaign_daily_cache")
         latest_cache_dt = None if latest_cache_df.empty else latest_cache_df.iloc[0].get("dt")
-        if pd.notna(latest_cache_dt) and pd.to_datetime(latest_cache_dt).date() >= outer_d2:
-            return _run_budget_metric_query("overview_campaign_daily_cache", "COALESCE(tot_sales, sales, 0)")
+        if pd.notna(latest_cache_dt):
+            try:
+                cache_is_fresh = pd.to_datetime(latest_cache_dt).date() >= outer_d2
+            except Exception:
+                cache_is_fresh = False
+        cache_df = _run_budget_metric_query("overview_campaign_daily_cache", "COALESCE(tot_sales, sales, 0)")
 
-    if table_exists(_engine, "fact_campaign_daily"):
-        return _run_budget_metric_query("fact_campaign_daily", "COALESCE(sales, 0)")
+    if fact_df.empty and cache_df.empty:
+        return pd.DataFrame()
 
-    if table_exists(_engine, "overview_campaign_daily_cache"):
-        return _run_budget_metric_query("overview_campaign_daily_cache", "COALESCE(tot_sales, sales, 0)")
+    if fact_df.empty:
+        return cache_df
 
-    return pd.DataFrame()
+    if cache_df.empty or not cache_is_fresh:
+        return fact_df
+
+    merged = fact_df.merge(cache_df, on="customer_id", how="outer", suffixes=("_fact", "_cache"))
+    for col in ["avg_cost", "current_month_cost", "current_month_sales", "prev_month_cost"]:
+        cache_col = f"{col}_cache"
+        fact_col = f"{col}_fact"
+        merged[col] = merged[cache_col].where(merged[cache_col].notna(), merged[fact_col])
+    return merged[["customer_id", "avg_cost", "current_month_cost", "current_month_sales", "prev_month_cost"]]
 
 def _compute_total_ratio_metrics(row: dict) -> dict:
     imp = row.get("imp", 0) or 0
@@ -697,7 +716,7 @@ def _compute_total_ratio_metrics(row: dict) -> dict:
     row["wishlist_roas"] = (wishlist_sales / cost * 100) if cost > 0 else 0
     return row
 
-@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=10, show_spinner=False)
 def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, avg_days: int) -> pd.DataFrame:
     meta = get_meta(_engine)
     if meta.empty:
