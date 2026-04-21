@@ -119,17 +119,17 @@ def _campaign_fast_col_config(df: pd.DataFrame, first_col: str | None = None) ->
         if c in cfg:
             continue
         if c == "CTR(%)":
-            cfg[c] = st.column_config.NumberColumn(c, format="%.2f %%")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.2f %%")
         elif c in pct_cols or c in diff_pct_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%d %%")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f %%")
         elif c in currency_cols or c in currency_diff_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f 원")
         elif c in count_cols or c in count_diff_cols or c == "순위 변화":
-            cfg[c] = st.column_config.NumberColumn(c, format="%d")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f")
         elif c == "평균순위":
             cfg[c] = st.column_config.TextColumn(c)
     if "지출 비중(%)" in df.columns:
-        cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%d %%", min_value=0, max_value=100)
+        cfg["지출 비중(%)"] = st.column_config.ProgressColumn("지출 비중(%)", format="%,.0f %%", min_value=0, max_value=100)
     return cfg
 
 
