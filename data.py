@@ -284,6 +284,12 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
     select_str = ", ".join(target_cols) if target_cols else "*"
     return sql_read(_engine, f"SELECT {select_str} FROM dim_campaign")
 
+@st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
+def get_campaign_type_options_cached(_engine) -> list:
+    """엔진 기준으로 캠페인 유형 옵션을 캐시해서 반환한다."""
+    dim_campaign = load_dim_campaign(_engine)
+    return get_campaign_type_options(dim_campaign)
+
 def get_campaign_type_options(dim_campaign: pd.DataFrame) -> list:
     if dim_campaign is None or dim_campaign.empty:
         return ["파워링크", "쇼핑검색"]
