@@ -58,6 +58,13 @@ def _apply_delta_styles(styler, df: pd.DataFrame):
         if neg_cols: styler = styler.applymap(_style_delta_numeric_neg, subset=neg_cols)
     return styler
 
+
+def _build_table_styler(df: pd.DataFrame):
+    fmt_map = {c: FMT_DICT[c] for c in df.columns if c in FMT_DICT}
+    styler = df.style.format(fmt_map, na_rep='-')
+    styler = _apply_delta_styles(styler, df)
+    return styler
+
 def _format_avg_rank(value):
     num = pd.to_numeric(value, errors="coerce")
     if pd.isna(num) or num <= 0: return "미수집"
@@ -240,7 +247,7 @@ def _render_sticky_table(df, first_col: str, height: int = 550, col_config: dict
         calc_height = height
     cfg = col_config.copy() if col_config else {}
     cfg[first_col] = st.column_config.TextColumn(first_col, pinned=True, width="medium")
-    st.dataframe(df, use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
+    st.dataframe(_build_table_styler(df), use_container_width=True, height=calc_height, hide_index=True, column_config=cfg)
 
 
 def _keyword_fast_col_config(df: pd.DataFrame, first_col: str = "키워드") -> dict:
@@ -254,11 +261,12 @@ def _keyword_fast_col_config(df: pd.DataFrame, first_col: str = "키워드") -> 
         if c in cfg:
             continue
         if c in pct_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%.1f %%")
+            decimals = 2 if c in {"CTR(%)", "CVR(%)"} else 1
+            cfg[c] = st.column_config.NumberColumn(c, format=f"%,.{decimals}f %%")
         elif c in currency_cols:
-            cfg[c] = st.column_config.NumberColumn(c, format="%d 원")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f 원")
         elif c in count_cols or c == "순위 변화":
-            cfg[c] = st.column_config.NumberColumn(c, format="%d")
+            cfg[c] = st.column_config.NumberColumn(c, format="%,.0f")
         elif c == "평균순위":
             cfg[c] = st.column_config.TextColumn(c)
     return cfg
@@ -436,7 +444,7 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     disp_final = disp_cmp[final_cols_cmp].sort_values("광고비", ascending=False).head(top_n).copy()
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
-    st.dataframe(disp_final, use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
+    st.dataframe(_build_table_styler(disp_final), use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
