@@ -178,12 +178,175 @@ def _build_overview_timeseries_frames(daily_ts: pd.DataFrame, base_daily_ts: pd.
 
 def _get_top_keyword_report_text(kw_bundle: pd.DataFrame) -> str:
     top_kw_str = "없음"
-    if kw_bundle is not None and not kw_bundle.empty and "keyword" in kw_bundle.columns and "clk" in kw_bundle.columns:
-        kw_agg = kw_bundle.groupby("keyword")["clk"].sum().reset_index()
-        top_kws = kw_agg[kw_agg["clk"] > 0].sort_values("clk", ascending=False).head(5)
-        if not top_kws.empty:
-            top_kw_str = ", ".join([f"{row['keyword']}({int(row['clk']):,}회)" for _, row in top_kws.iterrows()])
+    if kw_bundle is None or kw_bundle.empty:
+        return top_kw_str
+    keyword_col = 'keyword' if 'keyword' in kw_bundle.columns else None
+    if keyword_col is None:
+        return top_kw_str
+    metric_col = 'clk' if 'clk' in kw_bundle.columns else None
+    if metric_col is None:
+        return top_kw_str
+    kw = kw_bundle.copy()
+    try:
+        kw = kw[(kw[keyword_col].notna()) & (kw[keyword_col].astype(str).str.strip() != "")]
+        if kw.empty:
+            return top_kw_str
+        grouped = kw.groupby(keyword_col, dropna=False)[metric_col].sum().sort_values(ascending=False).head(5)
+        if grouped.empty:
+            return top_kw_str
+        top_kw_str = ", ".join([f"{str(k)}({int(v):,}회)" for k, v in grouped.items()])
+    except Exception:
+        return "없음"
     return top_kw_str
+
+
+def _get_campaign_top_keyword_map(kw_bundle: pd.DataFrame, top_n: int = 5) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if kw_bundle is None or kw_bundle.empty:
+        return out
+    if not {'campaign_name', 'keyword', 'clk'}.issubset(set(kw_bundle.columns)):
+        return out
+    kw = kw_bundle.copy()
+    kw = kw[(kw['campaign_name'].notna()) & (kw['keyword'].notna())]
+    if kw.empty:
+        return out
+    kw['campaign_name'] = kw['campaign_name'].astype(str).str.strip()
+    kw['keyword'] = kw['keyword'].astype(str).str.strip()
+    kw = kw[(kw['campaign_name'] != '') & (kw['keyword'] != '')]
+    if kw.empty:
+        return out
+    grouped = (
+        kw.groupby(['campaign_name', 'keyword'], dropna=False)['clk']
+        .sum()
+        .reset_index()
+        .sort_values(['campaign_name', 'clk'], ascending=[True, False])
+    )
+    for campaign_name, sub in grouped.groupby('campaign_name', sort=False):
+        top_rows = sub.head(top_n)
+        if top_rows.empty:
+            continue
+        out[str(campaign_name)] = ", ".join(
+            [f"{str(r['keyword'])}({int(r['clk']):,}회)" for _, r in top_rows.iterrows()]
+        )
+    return out
+
+
+def _get_campaign_top_shopping_query_map(shop_terms: pd.DataFrame, top_n: int = 3) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if shop_terms is None or shop_terms.empty:
+        return out
+    required = {'campaign_name', 'query_text'}
+    if not required.issubset(set(shop_terms.columns)):
+        return out
+    metric_col = 'purchase_conv' if 'purchase_conv' in shop_terms.columns else ('total_conv' if 'total_conv' in shop_terms.columns else None)
+    if metric_col is None:
+        return out
+    qdf = shop_terms.copy()
+    qdf = qdf[(qdf['campaign_name'].notna()) & (qdf['query_text'].notna())]
+    if qdf.empty:
+        return out
+    qdf['campaign_name'] = qdf['campaign_name'].astype(str).str.strip()
+    qdf['query_text'] = qdf['query_text'].astype(str).str.strip()
+    qdf = qdf[(qdf['campaign_name'] != '') & (qdf['query_text'] != '')]
+    if qdf.empty:
+        return out
+    grouped = (
+        qdf.groupby(['campaign_name', 'query_text'], dropna=False)[metric_col]
+        .sum()
+        .reset_index()
+        .sort_values(['campaign_name', metric_col], ascending=[True, False])
+    )
+    grouped = grouped[grouped[metric_col] > 0]
+    if grouped.empty:
+        return out
+    for campaign_name, sub in grouped.groupby('campaign_name', sort=False):
+        top_rows = sub.head(top_n)
+        if top_rows.empty:
+            continue
+        out[str(campaign_name)] = ", ".join(
+            [f"{str(r['query_text'])}({int(r[metric_col]):,}회)" for _, r in top_rows.iterrows()]
+        )
+    return out
+
+
+def _build_campaign_report_text(
+    cur_camp: pd.DataFrame,
+    selected_type_label: str,
+    is_shopping_only: bool,
+    combined_toggle: bool,
+    kpi_mode: str,
+    campaign_top_keyword_map: dict[str, str] | None = None,
+    campaign_top_shopping_query_map: dict[str, str] | None = None,
+) -> str:
+    if cur_camp is None or cur_camp.empty or 'campaign_name' not in cur_camp.columns:
+        return ''
+
+    campaign_top_keyword_map = campaign_top_keyword_map or {}
+    campaign_top_shopping_query_map = campaign_top_shopping_query_map or {}
+
+    cols = ['campaign_name', 'imp', 'clk', 'cost', 'conv', 'sales']
+    work = cur_camp.copy()
+    for col in cols[1:]:
+        if col not in work.columns:
+            work[col] = 0.0
+
+    grouped = work.groupby('campaign_name', dropna=False)[cols[1:]].sum().reset_index()
+    if 'tot_conv' in work.columns:
+        grouped['tot_conv'] = work.groupby('campaign_name', dropna=False)['tot_conv'].sum().values
+    else:
+        grouped['tot_conv'] = grouped['conv']
+    if 'tot_sales' in work.columns:
+        grouped['tot_sales'] = work.groupby('campaign_name', dropna=False)['tot_sales'].sum().values
+    else:
+        grouped['tot_sales'] = grouped['sales']
+    grouped = grouped.sort_values(['cost', 'clk', 'imp'], ascending=[False, False, False])
+
+    sections: list[str] = []
+    for _, row in grouped.iterrows():
+        campaign_name = str(row.get('campaign_name', '') or '').strip()
+        if not campaign_name:
+            continue
+        if is_shopping_only:
+            keyword_text = campaign_top_shopping_query_map.get(campaign_name, '없음')
+            section = "\n".join([
+                f"[ {campaign_name} 성과 요약 ]",
+                _format_report_line("노출수", f"{int(float(row.get('imp', 0))):,}"),
+                _format_report_line("클릭수", f"{int(float(row.get('clk', 0))):,}"),
+                _format_report_line("클릭률", f"{float(_safe_div(float(row.get('clk', 0)), float(row.get('imp', 0)), 100.0)):.1f}%"),
+                _format_report_line("광고 소진비용", f"{int(float(row.get('cost', 0))):,}원"),
+                _format_report_line("구매완료수", f"{float(row.get('conv', 0.0)):.1f}"),
+                _format_report_line("구매완료 매출", f"{int(float(row.get('sales', 0))):,}원"),
+                _format_report_line("구매 ROAS", f"{float(_safe_div(float(row.get('sales', 0)), float(row.get('cost', 0)), 100.0)):.1f}%"),
+                _format_report_line("주요 전환 키워드", keyword_text),
+            ])
+        else:
+            if combined_toggle or kpi_mode != 'shopping_purchase':
+                c_conv_val = row.get('tot_conv', 0)
+                c_sales_val = row.get('tot_sales', 0)
+            else:
+                c_conv_val = row.get('conv', 0)
+                c_sales_val = row.get('sales', 0)
+            c_roas_val = _safe_div(float(c_sales_val), float(row.get('cost', 0)), 100.0)
+            keyword_text = campaign_top_keyword_map.get(campaign_name, '없음')
+            section = "\n".join([
+                f"[ {campaign_name} 성과 요약 ]",
+                _format_report_line("노출수", f"{int(float(row.get('imp', 0))):,}"),
+                _format_report_line("클릭수", f"{int(float(row.get('clk', 0))):,}"),
+                _format_report_line("클릭률", f"{float(_safe_div(float(row.get('clk', 0)), float(row.get('imp', 0)), 100.0)):.1f}%"),
+                _format_report_line("광고 소진비용", f"{int(float(row.get('cost', 0))):,}원"),
+                _format_report_line("전환수", f"{float(c_conv_val):.1f}"),
+                _format_report_line("총전환매출", f"{int(float(c_sales_val)):,}원"),
+                _format_report_line("ROAS", f"{float(c_roas_val):.1f}%"),
+                _format_report_line("주요 유입 키워드", keyword_text),
+            ])
+        sections.append(section)
+
+    if not sections:
+        return ''
+
+    title = f"[ 캠페인별 성과 요약 | {selected_type_label} ]"
+    return "\n\n".join([title, *sections])
+
 
 
 def _is_powerlink_type_label(value) -> bool:
@@ -967,6 +1130,12 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.download_button("통합 엑셀 다운로드", data=excel_buffer.getvalue(), file_name=f"통합_상세_성과보고서_{f['start']}_{f['end']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
     with st.expander("텍스트 보고서 생성", expanded=False):
+        include_campaign_breakdown = st.checkbox(
+            "캠페인별 성과도 함께 생성",
+            key="overview_include_campaign_text_report",
+            value=False,
+            help="기존 요약 아래에 캠페인별 성과 요약을 동일한 형식으로 추가합니다.",
+        )
         generate_text_report = st.button("텍스트 보고서 생성", key="overview_generate_text_report", use_container_width=True)
         top_kw_str = "없음"
         try:
@@ -985,17 +1154,26 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             top_kw_str = "없음"
 
         shop_kw_str = "없음"
+        campaign_top_shopping_query_map: dict[str, str] = {}
         if cids:
             try:
-                from data import sql_read, _sql_in_str_list
-                cid_sql = _sql_in_str_list(list(cids))
-                q = f"SELECT query_text, SUM(purchase_conv) as conv FROM fact_shopping_query_daily WHERE dt BETWEEN '{f['start']}' AND '{f['end']}' AND customer_id IN ({cid_sql}) GROUP BY query_text HAVING SUM(purchase_conv) > 0 ORDER BY SUM(purchase_conv) DESC LIMIT 3"
-                df_shop_q = sql_read(engine, q)
-                if not df_shop_q.empty:
-                    shop_kw_str = ", ".join([f"{r['query_text']}({int(r['conv']):,}회)" for _, r in df_shop_q.iterrows()])
+                shop_terms_df = query_shopping_search_terms(engine, f["start"], f["end"], tuple(cids))
+                if shop_terms_df is not None and not shop_terms_df.empty:
+                    metric_col = "purchase_conv" if "purchase_conv" in shop_terms_df.columns else ("total_conv" if "total_conv" in shop_terms_df.columns else None)
+                    if metric_col is not None:
+                        top_shop_terms = (
+                            shop_terms_df.groupby("query_text", dropna=False)[metric_col]
+                            .sum()
+                            .reset_index()
+                        )
+                        top_shop_terms = top_shop_terms[top_shop_terms[metric_col] > 0].sort_values(metric_col, ascending=False).head(3)
+                        if not top_shop_terms.empty:
+                            shop_kw_str = ", ".join([f"{r['query_text']}({int(r[metric_col]):,}회)" for _, r in top_shop_terms.iterrows()])
+                    campaign_top_shopping_query_map = _get_campaign_top_shopping_query_map(shop_terms_df, top_n=3)
             except Exception:
                 pass
 
+        campaign_top_keyword_map = _get_campaign_top_keyword_map(cur_kw, top_n=5)
         is_shopping_only = ("쇼핑" in selected_type_label and "파워링크" not in selected_type_label and selected_type_label != "전체 유형")
 
         if is_shopping_only:
@@ -1032,6 +1210,19 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("주요 유입 키워드", top_kw_str)
             ])
             
+        if include_campaign_breakdown:
+            campaign_report_text = _build_campaign_report_text(
+                cur_camp=cur_camp,
+                selected_type_label=selected_type_label,
+                is_shopping_only=is_shopping_only,
+                combined_toggle=combined_toggle,
+                kpi_mode=kpi_mode,
+                campaign_top_keyword_map=campaign_top_keyword_map,
+                campaign_top_shopping_query_map=campaign_top_shopping_query_map,
+            )
+            if campaign_report_text:
+                report_text = f"{report_text}\n\n{campaign_report_text}"
+
         st.code(report_text, language="text")
 
     _render_diag_panel(diag, enabled=bool(f.get("show_diagnostics", False)))
