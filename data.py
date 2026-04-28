@@ -199,35 +199,117 @@ def _safe_limit(value, default: int, max_limit: int) -> int:
 # ==========================================
 # 2. Metadata & Dimensions & Seeding
 # ==========================================
+def _normalize_customer_id_value(value) -> str:
+    """Normalize customer_id read from Excel/DB so joins do not fall back to raw IDs.
+
+    accounts.xlsx often stores custom IDs as numeric cells, which pandas can read as
+    1234567.0 when the sheet has blank rows. Keep IDs as clean strings everywhere.
+    """
+    if pd.isna(value):
+        return ""
+    value_str = str(value).strip()
+    if not value_str or value_str.lower() in {"nan", "none", "nat"}:
+        return ""
+
+    # Common Excel/pandas numeric representation: 3469289.0 -> 3469289
+    if re.fullmatch(r"\d+\.0+", value_str):
+        return value_str.split(".", 1)[0]
+
+    # Defensive handling for scientific notation if Excel ever exposes it that way.
+    if re.fullmatch(r"\d+(?:\.\d+)?[eE]\+\d+", value_str):
+        try:
+            as_float = float(value_str)
+            if as_float.is_integer():
+                return str(int(as_float))
+        except Exception:
+            pass
+
+    return value_str
+
+
+def _normalize_customer_id_series(series: pd.Series) -> pd.Series:
+    return series.map(_normalize_customer_id_value)
+
+
+def _prepare_accounts_meta_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize accounts.xlsx columns and remove invalid/blank rows."""
+    if df is None:
+        return pd.DataFrame()
+
+    df = df.copy()
+    rename_map = {}
+    for c in df.columns:
+        c_clean = str(c).replace(" ", "").lower()
+        if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
+            rename_map[c] = "customer_id"
+        elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
+            rename_map[c] = "account_name"
+        elif c_clean in ["담당자", "manager"]:
+            rename_map[c] = "manager"
+
+    df = df.rename(columns=rename_map)
+
+    if "customer_id" not in df.columns or "account_name" not in df.columns:
+        raise ValueError("accounts.xlsx에는 '업체명'과 '커스텀 ID' 컬럼이 필요합니다.")
+
+    df["customer_id"] = _normalize_customer_id_series(df["customer_id"])
+    df["account_name"] = df["account_name"].fillna("").astype(str).str.strip()
+
+    if "manager" in df.columns:
+        df["manager"] = df["manager"].fillna("미배정").astype(str).str.strip()
+        df.loc[df["manager"].isin(["", "nan", "None", "NaN"]), "manager"] = "미배정"
+    else:
+        df["manager"] = "미배정"
+
+    df = df[(df["customer_id"] != "") & (df["account_name"] != "")].copy()
+
+    if "monthly_budget" in df.columns:
+        df["monthly_budget"] = pd.to_numeric(df["monthly_budget"], errors="coerce").fillna(0).astype("int64")
+    else:
+        df["monthly_budget"] = 0
+
+    # Same customer_id can appear more than once after accidental duplicated rows.
+    df = df.drop_duplicates(subset=["customer_id"], keep="last").reset_index(drop=True)
+    return df
+
+
+def _normalize_existing_dim_customer_table(_engine) -> None:
+    """Repair previously synced dim_customer rows such as customer_id='3469289.0'."""
+    if not table_exists(_engine, "dim_customer"):
+        return
+
+    try:
+        df = sql_read(_engine, "SELECT * FROM dim_customer")
+        if df.empty:
+            return
+        fixed_df = _prepare_accounts_meta_df(df)
+        if fixed_df.empty:
+            return
+        fixed_df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
+        if "_table_names_cache" in st.session_state:
+            del st.session_state["_table_names_cache"]
+    except Exception:
+        # Do not block page load; explicit upload sync will still fix the table.
+        pass
+
+
 def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     try:
         if df is None and file_buffer is not None:
             df = pd.read_excel(file_buffer)
         if df is not None:
-            rename_map = {}
-            for c in df.columns:
-                c_clean = str(c).replace(" ", "").lower()
-                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
-                    rename_map[c] = "customer_id"
-                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
-                    rename_map[c] = "account_name"
-                elif c_clean in ["담당자", "manager"]:
-                    rename_map[c] = "manager"
-
-            df = df.rename(columns=rename_map)
+            df = _prepare_accounts_meta_df(df)
 
             if table_exists(engine, "dim_customer"):
                 try:
                     old_df = sql_read(engine, "SELECT * FROM dim_customer")
-                    cid_col = next((c for c in old_df.columns if c in ["customer_id", "고객 ID", "고객 id", "고객ID", "커스텀ID", "커스텀id"]), None)
-                    if cid_col and "monthly_budget" in old_df.columns:
-                        budget_map = dict(zip(old_df[cid_col], old_df["monthly_budget"]))
-                        df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(0)
+                    if not old_df.empty:
+                        old_df = _prepare_accounts_meta_df(old_df)
+                        if "monthly_budget" in old_df.columns:
+                            budget_map = dict(zip(old_df["customer_id"], old_df["monthly_budget"]))
+                            df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(df["monthly_budget"]).astype("int64")
                 except Exception:
                     pass
-
-            if "monthly_budget" not in df.columns:
-                df["monthly_budget"] = 0
 
             df.to_sql("dim_customer", engine, if_exists="replace", index=False)
             if "_table_names_cache" in st.session_state:
@@ -238,6 +320,7 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
     except Exception as e:
         st.error(f"업로드 실패: {e}")
         return {"meta": 0}
+
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_meta(_engine) -> pd.DataFrame:
@@ -266,6 +349,14 @@ def get_meta(_engine) -> pd.DataFrame:
             elif c_clean in ["담당자", "manager"]:
                 rename_map[c] = "manager"
         df = df.rename(columns=rename_map)
+        if "customer_id" in df.columns:
+            df["customer_id"] = _normalize_customer_id_series(df["customer_id"])
+        if "account_name" in df.columns:
+            df["account_name"] = df["account_name"].fillna("").astype(str).str.strip()
+        if "manager" in df.columns:
+            df["manager"] = df["manager"].fillna("미배정").astype(str).str.strip()
+        if "monthly_budget" in df.columns:
+            df["monthly_budget"] = pd.to_numeric(df["monthly_budget"], errors="coerce").fillna(0)
     return df
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
@@ -282,7 +373,10 @@ def load_dim_campaign(_engine) -> pd.DataFrame:
             target_cols.append(f'"{c}"')
             
     select_str = ", ".join(target_cols) if target_cols else "*"
-    return sql_read(_engine, f"SELECT {select_str} FROM dim_campaign")
+    df = sql_read(_engine, f"SELECT {select_str} FROM dim_campaign")
+    if not df.empty and "customer_id" in df.columns:
+        df["customer_id"] = _normalize_customer_id_series(df["customer_id"])
+    return df
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def get_campaign_type_options_cached(_engine) -> list:
@@ -601,10 +695,6 @@ def _finalize_bundle_df(df: pd.DataFrame, campaign_type_col: str) -> pd.DataFram
     return _map_campaign_types(df, campaign_type_col)
 
 
-def _normalize_customer_id_series(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-
-
 def _read_fact_customer_summary(_engine, table: str, select_sql: str, d1: date, d2: date, where_cid: str, cid_params: dict) -> pd.DataFrame:
     sql = f"SELECT customer_id, {select_sql} FROM {table} WHERE dt BETWEEN :d1 AND :d2 {where_cid} GROUP BY customer_id"
     return sql_read(_engine, sql, {"d1": str(d1), "d2": str(d2), **cid_params})
@@ -771,23 +861,17 @@ def update_monthly_budget(_engine, cid: int, val: int):
         cols = get_table_columns(_engine, "dim_customer")
         if "customer_id" not in cols:
             df = sql_read(_engine, "SELECT * FROM dim_customer")
-            rename_map = {}
-            for c in df.columns:
-                c_clean = str(c).replace(" ", "").lower()
-                if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id"]:
-                    rename_map[c] = "customer_id"
-                elif c_clean in ["업체명", "accountname", "account_name", "name", "계정명"]:
-                    rename_map[c] = "account_name"
-                elif c_clean in ["담당자", "manager"]:
-                    rename_map[c] = "manager"
-            df = df.rename(columns=rename_map)
-            if "monthly_budget" not in df.columns:
-                df["monthly_budget"] = 0
+            df = _prepare_accounts_meta_df(df)
             df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
         else:
             if "monthly_budget" not in cols:
                 sql_exec(_engine, "ALTER TABLE dim_customer ADD COLUMN monthly_budget BIGINT DEFAULT 0")
-        sql_exec(_engine, "UPDATE dim_customer SET monthly_budget = :val WHERE customer_id = :cid", {"val": val, "cid": cid})
+        cid_norm = _normalize_customer_id_value(cid)
+        sql_exec(
+            _engine,
+            "UPDATE dim_customer SET monthly_budget = :val WHERE REGEXP_REPLACE(CAST(customer_id AS TEXT), '\\.0+$', '') = :cid",
+            {"val": val, "cid": cid_norm},
+        )
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
 

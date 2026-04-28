@@ -24,7 +24,8 @@ def _cached_roas_campaigns(_engine) -> pd.DataFrame:
             c.target_roas, 
             c.min_roas 
         FROM dim_campaign c
-        LEFT JOIN dim_customer cust ON CAST(c.customer_id AS VARCHAR) = CAST(cust.customer_id AS VARCHAR)
+        LEFT JOIN dim_customer cust 
+          ON REGEXP_REPLACE(CAST(c.customer_id AS TEXT), '\\.0+$', '') = REGEXP_REPLACE(CAST(cust.customer_id AS TEXT), '\\.0+$', '')
     """
     try:
         df = sql_read(_engine, sql)
@@ -168,7 +169,7 @@ def page_settings(engine) -> None:
                             with engine.begin() as conn:
                                 for row in changed_rows:
                                     conn.execute(
-                                        text("UPDATE dim_campaign SET target_roas = :t, min_roas = :m WHERE customer_id = :cid AND campaign_id = :campid"),
+                                        text("UPDATE dim_campaign SET target_roas = :t, min_roas = :m WHERE REGEXP_REPLACE(CAST(customer_id AS TEXT), '\\.0+$', '') = :cid AND campaign_id = :campid"),
                                         {"t": row['target_roas'], "m": row['min_roas'], "cid": row['customer_id'], "campid": row['campaign_id']}
                                     )
                         st.success(f"저장 완료! ({len(changed_rows)}건)", icon=":material/check_circle:")
