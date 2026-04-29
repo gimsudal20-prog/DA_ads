@@ -45,13 +45,30 @@ def _prepare_alert_view(bundle: pd.DataFrame) -> pd.DataFrame:
     return alert_view
 
 
+def _numeric_series(values, default: float = 0.0) -> pd.Series:
+    """Return a numeric series that tolerates comma/currency strings and blanks."""
+    if values is None:
+        return pd.Series(dtype="float64")
+    s = pd.Series(values)
+    cleaned = (
+        s.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("원", "", regex=False)
+        .str.replace(r"[^0-9.\-]", "", regex=True)
+        .replace({"": np.nan, "nan": np.nan, "None": np.nan})
+    )
+    return pd.to_numeric(cleaned, errors="coerce").fillna(default)
+
+
 @st.cache_data(ttl=180, show_spinner=False, max_entries=20)
 def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
     if alert_view is None or alert_view.empty:
         return pd.DataFrame()
 
     df = alert_view.copy()
-    df["_sort_days"] = pd.to_numeric(df.get("days_cover"), errors="coerce").fillna(9999)
+    days_raw = pd.to_numeric(df.get("days_cover"), errors="coerce")
+    df["잔여일수"] = days_raw.where(days_raw < 9999)
+    df["_sort_days"] = days_raw.fillna(9999)
     df = df.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
 
     def get_depletion_date(days_left):
@@ -63,12 +80,12 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
         deplete_date = date.today() + timedelta(days=int(days))
         return deplete_date.strftime("%m월 %d일 (임박)") if days <= 3 else deplete_date.strftime("%m월 %d일")
 
-    df["예상 중단일"] = df["days_cover"].apply(get_depletion_date)
-    df["비즈머니 잔액"] = df["bizmoney_balance"].apply(lambda x: format_currency(x))
+    df["예상 중단일"] = days_raw.apply(get_depletion_date)
+    df["비즈머니 잔액"] = _numeric_series(df.get("bizmoney_balance"), default=0).round(0).astype(int)
     avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
-    df[avg_days_label] = df["avg_cost"].apply(lambda x: format_currency(x))
-    df["담당자"] = df.get("manager", "미배정")
-    df["업체명"] = df.get("account_name", df.get("customer_id", "-"))
+    df[avg_days_label] = _numeric_series(df.get("avg_cost"), default=0).round(0).astype(int)
+    df["담당자"] = df.get("manager", "미배정").fillna("미배정").replace("", "미배정")
+    df["업체명"] = df.get("account_name", df.get("customer_id", "-")).fillna("-").replace("", "-")
     df["알림"] = np.select(
         [
             df["예상 중단일"].astype(str).str.contains("충전 필요", na=False),
@@ -77,7 +94,7 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
         ["🔴", "🟠"],
         default="",
     )
-    return df[["알림", "업체명", "담당자", "비즈머니 잔액", avg_days_label, "예상 중단일"]]
+    return df[["알림", "업체명", "담당자", "비즈머니 잔액", avg_days_label, "잔여일수", "예상 중단일"]]
 
 
 @st.cache_data(ttl=180, show_spinner=False, max_entries=20)
@@ -223,6 +240,59 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
     )
 
 
+def _render_sortable_bizmoney_grid(display_df: pd.DataFrame, avg_days_label: str) -> bool:
+    """Render the bizmoney table with real numeric sorting when st-aggrid is available."""
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, GridUpdateMode, JsCode
+    except Exception:
+        return False
+
+    grid_df = display_df.copy()
+    money_formatter = JsCode("""
+    function(params) {
+        if (params.value === null || params.value === undefined || isNaN(params.value)) return '';
+        return Math.round(params.value).toLocaleString('ko-KR') + '원';
+    }
+    """)
+    day_formatter = JsCode("""
+    function(params) {
+        if (params.value === null || params.value === undefined || isNaN(params.value)) return '';
+        return Number(params.value).toFixed(1).replace(/\\.0$/, '') + '일';
+    }
+    """)
+
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+    gb.configure_default_column(resizable=True, filterable=True, sortable=True)
+    gb.configure_column("알림", header_name=" ", width=72, pinned="left", filter=False)
+    gb.configure_column("업체명", pinned="left", minWidth=160)
+    gb.configure_column("담당자", minWidth=100)
+    gb.configure_column("비즈머니 잔액", type=["numericColumn", "numberColumnFilter"], valueFormatter=money_formatter, minWidth=140)
+    gb.configure_column(avg_days_label, type=["numericColumn", "numberColumnFilter"], valueFormatter=money_formatter, minWidth=160)
+    gb.configure_column("잔여일수", type=["numericColumn", "numberColumnFilter"], valueFormatter=day_formatter, sort="asc", minWidth=110)
+    gb.configure_column("예상 중단일", minWidth=140)
+    gb.configure_grid_options(
+        enableCellTextSelection=True,
+        suppressRowClickSelection=True,
+        rowHeight=34,
+        headerHeight=38,
+        alwaysShowHorizontalScroll=True,
+    )
+    grid_options = gb.build()
+
+    AgGrid(
+        grid_df,
+        gridOptions=grid_options,
+        height=500,
+        width="100%",
+        theme="alpine",
+        update_mode=GridUpdateMode.NO_UPDATE,
+        columns_auto_size_mode=ColumnsAutoSizeMode.FIT_ALL_COLUMNS_TO_VIEW,
+        allow_unsafe_jscode=True,
+        key="aggrid_bizmoney_alert_table",
+    )
+    return True
+
+
 @st.fragment
 def render_alert_table(alert_view: pd.DataFrame):
     display_df = _build_alert_display(alert_view)
@@ -231,6 +301,11 @@ def render_alert_table(alert_view: pd.DataFrame):
         st.info("비즈머니 관리 데이터가 없습니다.")
         return
     avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
+    st.caption("컬럼명을 클릭하면 오름차순/내림차순 정렬할 수 있습니다. 금액과 잔여일수는 숫자 기준으로 정렬됩니다.")
+
+    if _render_sortable_bizmoney_grid(display_df, avg_days_label):
+        return
+
     st.dataframe(
         display_df,
         use_container_width=True,
@@ -240,8 +315,9 @@ def render_alert_table(alert_view: pd.DataFrame):
             "알림": st.column_config.TextColumn(" ", width="small"),
             "업체명": st.column_config.TextColumn("업체명"),
             "담당자": st.column_config.TextColumn("담당자"),
-            "비즈머니 잔액": st.column_config.TextColumn("비즈머니 잔액"),
-            avg_days_label: st.column_config.TextColumn(avg_days_label),
+            "비즈머니 잔액": st.column_config.NumberColumn("비즈머니 잔액", format="localized"),
+            avg_days_label: st.column_config.NumberColumn(avg_days_label, format="localized"),
+            "잔여일수": st.column_config.NumberColumn("잔여일수", format="%.1f일"),
             "예상 중단일": st.column_config.TextColumn("예상 중단일"),
         },
     )
