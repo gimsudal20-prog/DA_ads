@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import textwrap
 import numpy as np
 import pandas as pd
@@ -21,12 +22,49 @@ TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
 TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
 TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
 
+
+def _normalize_customer_id_value_for_page(value) -> str:
+    """Return a clean customer_id string for UI joins and filters.
+
+    Handles values read as 3469289.0 from Excel/DB and safely drops blank/NaN
+    values so pandas never tries to cast NaN directly to int64.
+    """
+    if pd.isna(value):
+        return ""
+    value_str = str(value).strip()
+    if not value_str or value_str.lower() in {"nan", "none", "nat", "<na>"}:
+        return ""
+    if re.fullmatch(r"\d+\.0+", value_str):
+        return value_str.split(".", 1)[0]
+    if re.fullmatch(r"\d+(?:\.\d+)?[eE]\+\d+", value_str):
+        try:
+            as_float = float(value_str)
+            if as_float.is_integer():
+                return str(int(as_float))
+        except Exception:
+            pass
+    return value_str
+
+
+def _normalize_customer_id_series_for_page(series: pd.Series) -> pd.Series:
+    if series is None:
+        return pd.Series(dtype="string")
+    return series.map(_normalize_customer_id_value_for_page).astype("string")
+
+
+def _customer_id_int_series_for_page(series: pd.Series) -> pd.Series:
+    """Normalize customer_id then return valid int64 IDs only."""
+    normalized = _normalize_customer_id_series_for_page(series)
+    numeric = pd.to_numeric(normalized.replace("", pd.NA), errors="coerce").dropna()
+    if numeric.empty:
+        return pd.Series(dtype="int64")
+    return numeric.astype("int64")
+
 def _all_customer_ids(meta: pd.DataFrame) -> list:
     if meta is None or meta.empty or "customer_id" not in meta.columns:
         return []
-    s = pd.to_numeric(meta["customer_id"], errors="coerce").dropna().astype("int64")
+    s = _customer_id_int_series_for_page(meta["customer_id"])
     return sorted(s.drop_duplicates().tolist())
-
 
 @st.cache_data(ttl=43200, max_entries=8, show_spinner=False)
 def _build_filter_maps(meta: pd.DataFrame) -> Dict:
@@ -49,7 +87,7 @@ def _build_filter_maps(meta: pd.DataFrame) -> Dict:
     else:
         work["account_name"] = ""
     if "customer_id" in work.columns:
-        work["customer_id"] = pd.to_numeric(work["customer_id"], errors="coerce")
+        work["customer_id"] = _customer_id_int_series_for_page(work["customer_id"])
         work = work.dropna(subset=["customer_id"]).copy()
         work["customer_id"] = work["customer_id"].astype("int64")
     else:
@@ -69,13 +107,13 @@ def _build_filter_maps(meta: pd.DataFrame) -> Dict:
                 if not key:
                     continue
                 manager_to_accounts[key] = sorted([x for x in grp["account_name"].dropna().unique().tolist() if str(x).strip()])
-                manager_to_cids[key] = sorted(pd.to_numeric(grp["customer_id"], errors="coerce").dropna().astype("int64").drop_duplicates().tolist())
+                manager_to_cids[key] = sorted(_customer_id_int_series_for_page(grp["customer_id"]).drop_duplicates().tolist())
         if "account_name" in work.columns:
             for account, grp in work.groupby("account_name", dropna=False):
                 key = str(account).strip()
                 if not key:
                     continue
-                account_to_cids[key] = sorted(pd.to_numeric(grp["customer_id"], errors="coerce").dropna().astype("int64").drop_duplicates().tolist())
+                account_to_cids[key] = sorted(_customer_id_int_series_for_page(grp["customer_id"]).drop_duplicates().tolist())
 
     return {
         "managers": managers,
@@ -104,7 +142,7 @@ def resolve_customer_ids(meta: pd.DataFrame, manager_sel: list, account_sel: lis
         df = df[df["account_name"].astype(str).str.strip().isin(account_sel)]
     if "customer_id" not in df.columns:
         return []
-    s = pd.to_numeric(df["customer_id"], errors="coerce").dropna().astype("int64")
+    s = _customer_id_int_series_for_page(df["customer_id"])
     return sorted(s.drop_duplicates().tolist())
 
 def ui_multiselect(col, label: str, options, default=None, *, key: str, placeholder: str = "선택"):
@@ -297,15 +335,38 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     }
 
 def _perf_common_merge_meta(df: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty or meta is None or meta.empty: return df
+    if df is None or df.empty or meta is None or meta.empty:
+        return df
+    if "customer_id" not in df.columns or "customer_id" not in meta.columns:
+        return df
+
     out = df.copy()
-    out["customer_id"] = pd.to_numeric(out["customer_id"], errors="coerce").astype("Int64")
+    out["_customer_id_key"] = _normalize_customer_id_series_for_page(out["customer_id"])
+    out = out[out["_customer_id_key"].astype(str).str.strip() != ""].copy()
+
+    # Keep customer_id numeric for existing campaign/keyword/ad page logic,
+    # but do the metadata join on a normalized string key to avoid 3469289 vs 3469289.0 mismatches.
+    out["customer_id"] = pd.to_numeric(out["_customer_id_key"], errors="coerce").astype("Int64")
     out = out.dropna(subset=["customer_id"]).copy()
     out["customer_id"] = out["customer_id"].astype("int64")
-    meta_copy = meta.copy()
-    meta_copy["customer_id"] = pd.to_numeric(meta_copy["customer_id"], errors="coerce").astype("int64")
-    return out.merge(meta_copy[["customer_id", "account_name", "manager"]], on="customer_id", how="left")
 
+    meta_copy = meta.copy()
+    meta_copy["_customer_id_key"] = _normalize_customer_id_series_for_page(meta_copy["customer_id"])
+    meta_copy = meta_copy[meta_copy["_customer_id_key"].astype(str).str.strip() != ""].copy()
+    if meta_copy.empty:
+        return out.drop(columns=["_customer_id_key"], errors="ignore")
+
+    if "account_name" not in meta_copy.columns:
+        meta_copy["account_name"] = ""
+    if "manager" not in meta_copy.columns:
+        meta_copy["manager"] = ""
+
+    meta_view = (
+        meta_copy[["_customer_id_key", "account_name", "manager"]]
+        .drop_duplicates(subset=["_customer_id_key"], keep="last")
+    )
+    merged = out.merge(meta_view, on="_customer_id_key", how="left")
+    return merged.drop(columns=["_customer_id_key"], errors="ignore")
 def append_comparison_data(df_cur: pd.DataFrame, df_prev: pd.DataFrame, join_keys: list) -> pd.DataFrame:
     if df_prev is None or df_prev.empty or df_cur is None or df_cur.empty: return df_cur.copy()
     valid_join_keys = [k for k in join_keys if k in df_cur.columns and k in df_prev.columns]
