@@ -127,12 +127,9 @@ def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float)
     return budget_view
 
 
-
-
 def _ensure_budget_input_js_once():
     if st.session_state.get("_budget_input_js_once"):
         return
-    # no-op guard: legacy hook kept for compatibility, but avoid recursive rerun cost
     st.session_state["_budget_input_js_once"] = True
 
 
@@ -168,9 +165,8 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
         "usage_pct": "집행률(%)"
     })
 
-    # ✨ 화면에 보여질 컬럼의 순서를 '월 예산 -> 당월 사용액 -> 전월 사용액 -> 집행률' 순서로 고정
     ordered_cols = [
-        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", # 숨김 처리용
+        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", 
         "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
     ]
     editor_df = editor_df[ordered_cols]
@@ -240,133 +236,18 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
     )
 
 
-def _render_sortable_bizmoney_grid(display_df: pd.DataFrame, avg_days_label: str) -> bool:
-    """Render the bizmoney table with reliable numeric sorting.
+@st.fragment
+def render_alert_table(alert_view: pd.DataFrame):
+    display_df = _build_alert_display(alert_view)
+    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
+    
+    if display_df.empty:
+        st.info("비즈머니 관리 데이터가 없습니다.")
+        return
+        
+    avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
+    st.caption("컬럼명을 클릭하면 오름차순/내림차순 정렬할 수 있습니다. 금액과 잔여일수는 숫자 기준으로 정렬됩니다.")
 
-    이전 패치에서 일부 환경은 st-aggrid의 세부 enum import가 실패하면서
-    Streamlit 기본 표로 fallback 되었고, 배포본에 남아 있던 문자열 금액값은
-    10,081원 < 122,589원 같은 문자 정렬 문제를 만들 수 있었다.
-    이 함수는 AgGrid import를 최소화하고, 금액 컬럼을 렌더 직전에 숫자로
-    재정규화해서 formatter와 정렬이 모두 숫자 기준으로 동작하게 한다.
-    """
-    try:
-        from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
-    except Exception:
-        return False
-
-    # streamlit-aggrid 버전별로 enum 위치/존재가 달라질 수 있으므로 선택 import 처리
-    try:
-        from st_aggrid import GridUpdateMode  # type: ignore
-    except Exception:
-        GridUpdateMode = None  # type: ignore
-    try:
-        from st_aggrid import ColumnsAutoSizeMode  # type: ignore
-    except Exception:
-        ColumnsAutoSizeMode = None  # type: ignore
-
-    grid_df = display_df.copy()
-
-    # 정렬 기준 컬럼은 반드시 숫자 dtype으로 고정한다.
-    # 이미 "1,234원" 문자열로 넘어온 경우까지 방어한다.
-    for col in ["비즈머니 잔액", avg_days_label]:
-        if col in grid_df.columns:
-            grid_df[col] = _numeric_series(grid_df[col], default=0).round(0).astype("int64")
-    if "잔여일수" in grid_df.columns:
-        grid_df["잔여일수"] = pd.to_numeric(grid_df["잔여일수"], errors="coerce")
-
-    money_formatter = JsCode("""
-    function(params) {
-        if (params.value === null || params.value === undefined || params.value === '') return '';
-        const n = Number(String(params.value).replace(/[^0-9.-]/g, ''));
-        if (!Number.isFinite(n)) return '';
-        return Math.round(n).toLocaleString('ko-KR') + '원';
-    }
-    """)
-    day_formatter = JsCode("""
-    function(params) {
-        if (params.value === null || params.value === undefined || params.value === '') return '';
-        const n = Number(String(params.value).replace(/[^0-9.-]/g, ''));
-        if (!Number.isFinite(n)) return '';
-        return n.toFixed(1).replace(/[.]0$/, '') + '일';
-    }
-    """)
-    number_comparator = JsCode("""
-    function(valueA, valueB) {
-        const a = Number(String(valueA ?? '').replace(/[^0-9.-]/g, ''));
-        const b = Number(String(valueB ?? '').replace(/[^0-9.-]/g, ''));
-        const aa = Number.isFinite(a) ? a : 0;
-        const bb = Number.isFinite(b) ? b : 0;
-        return aa - bb;
-    }
-    """)
-
-    gb = GridOptionsBuilder.from_dataframe(grid_df)
-    gb.configure_default_column(resizable=True, filterable=True, sortable=True)
-    gb.configure_column("알림", header_name=" ", width=72, pinned="left", filter=False, sortable=False)
-    gb.configure_column("업체명", pinned="left", minWidth=160)
-    gb.configure_column("담당자", minWidth=100)
-    gb.configure_column(
-        "비즈머니 잔액",
-        type=["numericColumn", "numberColumnFilter"],
-        valueFormatter=money_formatter,
-        comparator=number_comparator,
-        minWidth=140,
-    )
-    gb.configure_column(
-        avg_days_label,
-        type=["numericColumn", "numberColumnFilter"],
-        valueFormatter=money_formatter,
-        comparator=number_comparator,
-        minWidth=160,
-    )
-    if "잔여일수" in grid_df.columns:
-        gb.configure_column(
-            "잔여일수",
-            type=["numericColumn", "numberColumnFilter"],
-            valueFormatter=day_formatter,
-            comparator=number_comparator,
-            sort="asc",
-            minWidth=110,
-        )
-    gb.configure_column("예상 중단일", minWidth=140)
-    gb.configure_grid_options(
-        enableCellTextSelection=True,
-        suppressRowClickSelection=True,
-        rowHeight=34,
-        headerHeight=38,
-        alwaysShowHorizontalScroll=True,
-    )
-    grid_options = gb.build()
-
-    kwargs = dict(
-        data=grid_df,
-        gridOptions=grid_options,
-        height=500,
-        width="100%",
-        theme="alpine",
-        allow_unsafe_jscode=True,
-        key="aggrid_bizmoney_alert_table_v2",
-    )
-    if GridUpdateMode is not None:
-        kwargs["update_mode"] = GridUpdateMode.NO_UPDATE
-    if ColumnsAutoSizeMode is not None:
-        kwargs["columns_auto_size_mode"] = ColumnsAutoSizeMode.FIT_ALL_COLUMNS_TO_VIEW
-    else:
-        kwargs["fit_columns_on_grid_load"] = True
-
-    try:
-        AgGrid(**kwargs)
-    except TypeError:
-        # 구버전 streamlit-aggrid에서 지원하지 않는 kwargs가 있을 때도 표는 살린다.
-        kwargs.pop("columns_auto_size_mode", None)
-        kwargs.pop("fit_columns_on_grid_load", None)
-        kwargs.pop("update_mode", None)
-        AgGrid(**kwargs)
-    return True
-
-
-def _render_streamlit_bizmoney_table(display_df: pd.DataFrame, avg_days_label: str) -> None:
-    """Fallback table that still keeps money columns numeric for sorting."""
     table_df = display_df.copy()
     for col in ["비즈머니 잔액", avg_days_label]:
         if col in table_df.columns:
@@ -374,6 +255,7 @@ def _render_streamlit_bizmoney_table(display_df: pd.DataFrame, avg_days_label: s
     if "잔여일수" in table_df.columns:
         table_df["잔여일수"] = pd.to_numeric(table_df["잔여일수"], errors="coerce")
 
+    # AgGrid 외부 플러그인을 제거하고 다른 표와 동일한 st.dataframe 사용
     st.dataframe(
         table_df,
         use_container_width=True,
@@ -389,21 +271,6 @@ def _render_streamlit_bizmoney_table(display_df: pd.DataFrame, avg_days_label: s
             "예상 중단일": st.column_config.TextColumn("예상 중단일"),
         },
     )
-
-@st.fragment
-def render_alert_table(alert_view: pd.DataFrame):
-    display_df = _build_alert_display(alert_view)
-    st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>비즈머니 잔액 관리 계정</div>", unsafe_allow_html=True)
-    if display_df.empty:
-        st.info("비즈머니 관리 데이터가 없습니다.")
-        return
-    avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
-    st.caption("컬럼명을 클릭하면 오름차순/내림차순 정렬할 수 있습니다. 금액과 잔여일수는 숫자 기준으로 정렬됩니다.")
-
-    if _render_sortable_bizmoney_grid(display_df, avg_days_label):
-        return
-
-    _render_streamlit_bizmoney_table(display_df, avg_days_label)
 
 
 @st.fragment
