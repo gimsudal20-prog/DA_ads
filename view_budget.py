@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""view_budget.py - Budget and Balance page view (Safely Optimized with Original UI)."""
+"""view_budget.py - Budget and Balance page view (Aligned with other standard tables)."""
 
 from __future__ import annotations
 import pandas as pd
@@ -14,7 +14,7 @@ from data import *
 from ui import *
 from page_helpers import *
 
-# ⚡ 고속 렌더링을 위한 DB 데이터 캐싱 래퍼 함수 (재렌더링 시 DB 조회 생략)
+# ⚡ 고속 렌더링을 위한 DB 데이터 캐싱 래퍼 함수
 @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
 def _cached_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg_d2: date, month_d1: date, month_d2: date, prev_month_d1: date, prev_month_d2: date, topup_avg_days: int) -> pd.DataFrame:
     try:
@@ -46,7 +46,6 @@ def _prepare_alert_view(bundle: pd.DataFrame) -> pd.DataFrame:
 
 
 def _numeric_series(values, default: float = 0.0) -> pd.Series:
-    """Return a numeric series that tolerates comma/currency strings and blanks."""
     if values is None:
         return pd.Series(dtype="float64")
     s = pd.Series(values)
@@ -146,6 +145,19 @@ def _resolve_budget_reference_date(engine, fallback_end_dt: date) -> date:
     if candidates:
         return max(candidates)
     return fallback_end_dt
+
+
+def _build_budget_table_styler(df: pd.DataFrame, avg_days_label: str):
+    """다른 테이블들(overview, campaign 등)과 동일하게 df.style.format을 사용"""
+    fmt_map = {
+        "비즈머니 잔액": "{:,.0f}원",
+        avg_days_label: "{:,.0f}원",
+        "잔여일수": "{:,.1f}일",
+    }
+    # 포맷 맵에 있는 컬럼만 적용
+    fmt_map = {k: v for k, v in fmt_map.items() if k in df.columns}
+    styler = df.style.format(fmt_map, na_rep='-')
+    return styler
 
 
 @st.fragment
@@ -249,27 +261,32 @@ def render_alert_table(alert_view: pd.DataFrame):
     st.caption("컬럼명을 클릭하면 오름차순/내림차순 정렬할 수 있습니다. 금액과 잔여일수는 숫자 기준으로 정렬됩니다.")
 
     table_df = display_df.copy()
+    # 숫자 정렬을 유지하기 위해 float/int로 변환 (표시는 Styler에서 처리)
     for col in ["비즈머니 잔액", avg_days_label]:
         if col in table_df.columns:
-            table_df[col] = _numeric_series(table_df[col], default=0).round(0).astype("int64")
+            table_df[col] = _numeric_series(table_df[col], default=0).round(0).astype("float64")
     if "잔여일수" in table_df.columns:
         table_df["잔여일수"] = pd.to_numeric(table_df["잔여일수"], errors="coerce")
 
-    # AgGrid 외부 플러그인을 제거하고 다른 표와 동일한 st.dataframe 사용
+    # 다른 뷰와 동일하게 Styler 객체를 전달하고, 첫 번째 주요 컬럼("업체명")을 pinned 처리
+    cfg = {
+        "알림": st.column_config.TextColumn(" ", width="small"),
+        "업체명": st.column_config.TextColumn("업체명", pinned=True, width="medium"),
+        "담당자": st.column_config.TextColumn("담당자"),
+        "비즈머니 잔액": st.column_config.NumberColumn("비즈머니 잔액", format="%,.0f 원"),
+        avg_days_label: st.column_config.NumberColumn(avg_days_label, format="%,.0f 원"),
+        "잔여일수": st.column_config.NumberColumn("잔여일수", format="%,.1f 일"),
+        "예상 중단일": st.column_config.TextColumn("예상 중단일"),
+    }
+
+    styled_df = _build_budget_table_styler(table_df, avg_days_label)
+
     st.dataframe(
-        table_df,
+        styled_df,
         use_container_width=True,
         hide_index=True,
-        height=500,
-        column_config={
-            "알림": st.column_config.TextColumn(" ", width="small"),
-            "업체명": st.column_config.TextColumn("업체명"),
-            "담당자": st.column_config.TextColumn("담당자"),
-            "비즈머니 잔액": st.column_config.NumberColumn("비즈머니 잔액", format="%d원"),
-            avg_days_label: st.column_config.NumberColumn(avg_days_label, format="%d원"),
-            "잔여일수": st.column_config.NumberColumn("잔여일수", format="%.1f일"),
-            "예상 중단일": st.column_config.TextColumn("예상 중단일"),
-        },
+        height=550,
+        column_config=cfg,
     )
 
 
