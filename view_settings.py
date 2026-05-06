@@ -9,6 +9,7 @@ import streamlit_antd_components as sac
 from sqlalchemy import text
 
 from data import sql_read, db_ping, seed_from_accounts_xlsx
+from ui import render_toolbar
 
 
 
@@ -78,8 +79,11 @@ def _collect_changed_roas_rows(original_df: pd.DataFrame, edited_df: pd.DataFram
 
 @st.fragment
 def page_settings(engine) -> None:
-    # 🍎 헤더 부분
-    st.markdown("## 설정 및 데이터 관리")
+    render_toolbar(
+        "설정 및 데이터 관리",
+        "계정 동기화, 목표 ROAS, 대시보드 운영 도구를 관리합니다.",
+        [{"label": "관리자", "tone": "primary"}],
+    )
     try: 
         db_ping(engine)
     except Exception as e: 

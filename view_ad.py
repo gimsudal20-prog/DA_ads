@@ -343,7 +343,11 @@ def render_ad_cmp_tab(view, engine, cids, type_sel, top_n, start_dt, end_dt):
 def page_perf_ad(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
     _inject_ad_css()
-    st.markdown("<div class='nv-sec-title'>광고 소재 및 랜딩페이지 분석</div>", unsafe_allow_html=True)
+    render_toolbar(
+        "광고 소재 및 랜딩페이지 분석",
+        "소재 유형, 캠페인, 랜딩 URL을 기준으로 성과와 비교 데이터를 점검합니다.",
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": f"Top {int(f.get('top_n_ad', 100)):,}", "tone": "info"}],
+    )
 
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))

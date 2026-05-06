@@ -294,10 +294,20 @@ def render_alert_table(alert_view: pd.DataFrame):
 def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
     total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
     total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
+    monthly_budget_src = biz_view["monthly_budget"] if "monthly_budget" in biz_view.columns else pd.Series([0] * len(biz_view.index))
+    avg_cost_src = biz_view["avg_cost"] if "avg_cost" in biz_view.columns else pd.Series([0] * len(biz_view.index))
+    total_budget = int(_numeric_series(monthly_budget_src, default=0).sum())
+    usage_pct = (total_month_cost / total_budget * 100.0) if total_budget > 0 else 0.0
+    avg_cost = int(_numeric_series(avg_cost_src, default=0).sum())
 
-    c1, c2 = st.columns(2)
-    with c1: ui_metric_or_stmetric('총 비즈머니 잔액', format_currency(total_balance), key='m_total_balance')
-    with c2: ui_metric_or_stmetric(f"{end_dt.month}월 총 사용액", format_currency(total_month_cost), key='m_month_cost')
+    render_kpi_strip([
+        {"label": "총 비즈머니 잔액", "value": format_currency(total_balance), "sub": "현재 잔액", "tone": "neu"},
+        {"label": f"{end_dt.month}월 총 사용액", "value": format_currency(total_month_cost), "sub": "월 누적", "tone": "neu"},
+        {"label": "월 예산 합계", "value": format_currency(total_budget), "sub": "등록 기준", "tone": "neu"},
+        {"label": "예산 집행률", "value": f"{usage_pct:.1f}%", "sub": "전체 페이스", "tone": "neu"},
+        {"label": f"최근 {TOPUP_AVG_DAYS}일 평균소진", "value": format_currency(avg_cost), "sub": "일 평균", "tone": "neu"},
+        {"label": "관리 계정", "value": f"{len(biz_view.index):,}개", "sub": "현재 필터", "tone": "neu"},
+    ])
 
 
 def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
@@ -331,7 +341,6 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
             st.info("예산 현황 데이터가 없습니다.")
         else:
             render_budget_kpis(biz_view.copy(), end_dt)
-            st.divider()
 
             budget_view = _build_budget_editor_view(biz_view, target_pacing_rate)
 
@@ -367,6 +376,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                     )
                 budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
 
+            status_counts = budget_view["상태"].value_counts().to_dict() if not budget_view.empty and "상태" in budget_view.columns else {}
+            render_ops_cards([
+                {"title": "즉시 점검", "value": f"{int(status_counts.get('예산 초과', 0)):,}개", "note": "월 예산을 초과한 계정", "tone": "danger"},
+                {"title": "과속 소진", "value": f"{int(status_counts.get('과속 소진', 0)):,}개", "note": "권장 페이스보다 빠른 계정", "tone": "warning"},
+                {"title": "정상 페이스", "value": f"{int(status_counts.get('적정 페이스', 0)):,}개", "note": "현재 기준 안정 범위", "tone": "success"},
+            ])
             render_budget_editor(budget_view, engine, end_dt, target_pacing_rate)
     else:
         alert_avg_d2 = end_dt
@@ -376,4 +391,12 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         if alert_view.empty:
             st.info("비즈머니 관리 데이터가 없습니다.")
         else:
+            alert_display = _build_alert_display(alert_view)
+            urgent_count = int(alert_display["예상 중단일"].astype(str).str.contains("충전 필요|임박", na=False).sum()) if not alert_display.empty else 0
+            safe_count = max(len(alert_display.index) - urgent_count, 0) if not alert_display.empty else 0
+            render_ops_cards([
+                {"title": "충전 우선순위", "value": f"{urgent_count:,}개", "note": "즉시 또는 3일 내 확인", "tone": "danger" if urgent_count else "success"},
+                {"title": "안정 계정", "value": f"{safe_count:,}개", "note": "잔여일수 여유", "tone": "success"},
+                {"title": "관리 기준", "value": f"{TOPUP_DAYS_COVER}일", "note": f"최근 {TOPUP_AVG_DAYS}일 평균소진 기준", "tone": "info"},
+            ])
             render_alert_table(alert_view)

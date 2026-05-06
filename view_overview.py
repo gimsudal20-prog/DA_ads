@@ -10,27 +10,31 @@ from typing import Dict
 from datetime import date
 
 from data import *
-from ui import render_echarts_dual_axis
+from ui import render_echarts_dual_axis, render_kpi_strip, render_ops_cards, render_toolbar
 from page_helpers import get_dynamic_cmp_options, period_compare_range
 
 
 def _inject_overview_css():
     st.markdown("""
     <style>
-    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 400; line-height: 1.2; }
+    .ov-chip { background: transparent; color: var(--nv-text); border: 1px solid var(--nv-line); border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; line-height: 1.2; }
     .ov-chip.primary { background: var(--nv-primary-soft); color: var(--nv-primary); border-color: transparent; }
     .ov-chip.muted { color: var(--nv-muted); background: var(--nv-surface); }
-    .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .ov-kpi-panel { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 12px; padding: 16px; }
+    .ov-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .ov-kpi-panel { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 10px; padding: 14px; box-shadow: var(--nv-shadow-soft); }
     .ov-kpi-title { font-size: 13px; font-weight: 700; color: var(--nv-text); margin-bottom: 12px; }
     .ov-kpi-cells { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-    .ov-kpi-cell { background: var(--nv-surface); border-radius: 10px; padding: 12px; min-width: 0; }
+    .ov-kpi-cell { background: var(--nv-surface); border-radius: 8px; padding: 12px; min-width: 0; border: 1px solid var(--nv-line); }
     .ov-kpi-label { font-size: 12px; color: var(--nv-muted); margin-bottom: 6px; }
     .ov-kpi-value { font-size: 20px; font-weight: 800; color: var(--nv-text); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ov-kpi-delta { margin-top: 8px; font-size: 11px; font-weight: 700; display:inline-flex; padding: 4px 8px; border-radius: 999px; }
-    .ov-kpi-delta.pos { background: #E8F0FE; color: #1A73E8; }
-    .ov-kpi-delta.neg { background: #FCE8E6; color: #EA4335; }
+    .ov-kpi-delta.pos { background: var(--nv-success-soft); color: var(--nv-success); }
+    .ov-kpi-delta.neg { background: var(--nv-danger-soft); color: var(--nv-danger); }
     .ov-kpi-delta.neu { background: var(--nv-surface); color: var(--nv-muted); border:1px solid var(--nv-line); }
+    .ov-chart-shell { background: var(--nv-bg); border: 1px solid var(--nv-line); border-radius: 10px; padding: 16px; box-shadow: var(--nv-shadow-soft); }
+    @media (max-width: 1100px) {
+      .ov-kpi-grid { grid-template-columns: 1fr; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -848,17 +852,40 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             {"label": "총 전환매출", "value": _format_compact_currency(cur.get("tot_sales", 0.0)), "cur": cur.get("tot_sales", 0), "base": base.get("tot_sales", 0)},
         ]
 
-    st.markdown(
-        f"<div class='ov-kpi-grid'>"
-        f"{_render_kpi_group('유입 지표', inflow_items)}"
-        f"{_render_kpi_group('비용 지표', cost_items)}"
-        f"{_render_kpi_group('성과 지표', perf_items)}"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    primary_kpis = [
+        {"label": "광고비", "value": _format_compact_currency(cur.get("cost", 0.0)), "cur": cur.get("cost", 0), "base": base.get("cost", 0), "improve_when_up": False},
+        {"label": "클릭", "value": format_number_commas(cur.get("clk", 0.0)), "cur": cur.get("clk", 0), "base": base.get("clk", 0)},
+        {"label": "CPC", "value": format_currency(cur.get("cpc", 0.0)), "cur": cur.get("cpc", 0), "base": base.get("cpc", 0), "improve_when_up": False},
+        {"label": perf_items[1]["label"], "value": perf_items[1]["value"], "cur": perf_items[1]["cur"], "base": perf_items[1]["base"]},
+        {"label": perf_items[2]["label"], "value": perf_items[2]["value"], "cur": perf_items[2]["cur"], "base": perf_items[2]["base"]},
+        {"label": perf_items[0]["label"], "value": perf_items[0]["value"], "cur": perf_items[0]["cur"], "base": perf_items[0]["base"]},
+    ]
+    render_kpi_strip(primary_kpis)
+
+    campaign_count = 0 if cur_camp is None or cur_camp.empty else int(cur_camp.get("campaign_name", pd.Series(dtype=object)).nunique())
+    keyword_count = 0 if cur_kw is None or cur_kw.empty else int(cur_kw.get("keyword", pd.Series(dtype=object)).nunique()) if "keyword" in cur_kw.columns else len(cur_kw.index)
+    roas_now = float((perf_items[0].get("cur") or 0))
+    roas_base = float((perf_items[0].get("base") or 0))
+    cost_now = float(cur.get("cost", 0) or 0)
+    cost_base = float(base.get("cost", 0) or 0)
+    cost_diff_txt = "비교비 없음"
+    if cost_base > 0:
+        cost_diff_txt = f"{((cost_now - cost_base) / cost_base) * 100:+.1f}%"
+    roas_gap_txt = "비교비 없음"
+    if roas_base > 0:
+        roas_gap_txt = f"{roas_now - roas_base:+.1f}p"
+    render_ops_cards([
+        {"title": "분석 대상", "value": f"{campaign_count:,}개 캠페인", "note": f"키워드/소재 후보 {keyword_count:,}건", "tone": "info"},
+        {"title": "비용 변화", "value": cost_diff_txt, "note": f"비교 기간 {b1} ~ {b2}", "tone": "warning" if cost_now > cost_base and cost_base > 0 else "success"},
+        {"title": "ROAS 변화", "value": roas_gap_txt, "note": "성과 지표 기준 전기 대비", "tone": "success" if roas_now >= roas_base else "danger"},
+    ])
 
     with st.container(border=True):
-        st.markdown("<div class='nv-sec-title' style='margin-top:0;'>일자별 성과 추이</div>", unsafe_allow_html=True)
+        render_toolbar(
+            "일자별 성과 추이",
+            "광고비와 매출, 유입 지표를 빠르게 전환해 확인합니다.",
+            [{"label": selected_type_label, "tone": "primary"}, {"label": cmp_mode, "tone": "info"}],
+        )
         if daily_ts is not None and not daily_ts.empty:
             expected_cols = ['imp', 'clk', 'cost', 'conv', 'sales', 'tot_sales', 'tot_conv']
             for c in expected_cols:
@@ -968,7 +995,11 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
     # ====================================================
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     
-    st.markdown("<div style='font-size:15px; font-weight:700; margin-bottom:8px;'>세부 성과 표</div>", unsafe_allow_html=True)
+    render_toolbar(
+        "세부 성과 표",
+        "업체, 유형, 기간, 캠페인, 키워드 단위로 같은 KPI 묶음을 비교합니다.",
+        [{"label": "절대값/증감 전환", "tone": "primary"}, {"label": f"최대 {f.get('top_n_campaign', 200):,}행", "tone": "info"}],
+    )
     show_deltas = st.toggle("증감율 보기", value=False, key="ov_abs_toggle")
 
     def get_funnel_cols(show_deltas):

@@ -8,8 +8,9 @@ import streamlit as st
 from typing import Dict
 from datetime import date
 
-from data import query_keyword_bundle, query_ad_bundle
+from data import query_keyword_bundle, query_ad_bundle, format_currency
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search
+from ui import render_kpi_strip, render_toolbar
 
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
@@ -448,8 +449,11 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
 
 def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False): return
-    st.markdown("<div class='nv-sec-title'>키워드/소재(쇼핑) 상세 분석</div>", unsafe_allow_html=True)
-    st.caption("파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.")
+    render_toolbar(
+        "키워드/소재 성과",
+        "파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.",
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": f"Top {int(f.get('top_n_keyword', 150)):,}", "tone": "info"}],
+    )
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_keyword", 150))
@@ -498,6 +502,22 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
         )
 
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
+    if view is not None and not view.empty:
+        item_col = "키워드" if "키워드" in view.columns else ("항목명" if "항목명" in view.columns else view.columns[0])
+        total_cost = float(pd.to_numeric(view.get("광고비", 0), errors="coerce").fillna(0).sum())
+        total_clk = float(pd.to_numeric(view.get("클릭", 0), errors="coerce").fillna(0).sum())
+        total_conv = float(pd.to_numeric(view.get("전환", view.get("구매완료수", 0)), errors="coerce").fillna(0).sum())
+        total_sales = float(pd.to_numeric(view.get("전환매출", view.get("구매완료 매출", 0)), errors="coerce").fillna(0).sum())
+        total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
+        total_cpc = (total_cost / total_clk) if total_clk > 0 else 0.0
+        render_kpi_strip([
+            {"label": "분석 항목", "value": f"{view[item_col].nunique():,}개", "sub": "현재 필터", "tone": "neu"},
+            {"label": "광고비", "value": format_currency(total_cost), "sub": "집행 합계", "tone": "neu"},
+            {"label": "클릭", "value": f"{total_clk:,.0f}", "sub": "유입 합계", "tone": "neu"},
+            {"label": "CPC", "value": format_currency(total_cpc), "sub": "평균 비용", "tone": "neu"},
+            {"label": "전환", "value": f"{total_conv:,.0f}", "sub": "전환 합계", "tone": "neu"},
+            {"label": "ROAS", "value": f"{total_roas:,.1f}%", "sub": "수익성", "tone": "neu"},
+        ])
 
     if selected_tab == "종합 성과":
         render_keyword_main(view, top_n)

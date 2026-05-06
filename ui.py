@@ -14,17 +14,20 @@ from data import format_currency
 # ==========================================
 THEME = {
     "primary": "#0528F2",
-    "primary_soft": "#E6E9FF",
+    "primary_soft": "#EEF2FF",
     "bg": "#FFFFFF",
-    "surface": "#F8F9FB",
-    "line": "#DEE2E5",
-    "text": "#19191A",
-    "muted": "#62686F",
-    "success": "#0528F2",
-    "warning": "#F79009",
-    "warning_bg": "#FEF0C7",
-    "danger": "#F04438",
-    "danger_bg": "#FEE4E2",
+    "surface": "#F8FAFC",
+    "line": "#E5E7EB",
+    "text": "#0F172A",
+    "muted": "#64748B",
+    "success": "#16A34A",
+    "success_bg": "#DCFCE7",
+    "warning": "#F59E0B",
+    "warning_bg": "#FEF3C7",
+    "danger": "#DC2626",
+    "danger_bg": "#FEE2E2",
+    "info": "#0891B2",
+    "info_bg": "#E0F2FE",
 }
 
 
@@ -74,6 +77,85 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
         <div class='sidebar-info-value'>최근 수집: <span>{safe_dt}</span></div>
     </div>
     """, unsafe_allow_html=True)
+
+
+def _delta_class_and_text(cur_val, base_val, improve_when_up: bool = True) -> tuple[str, str]:
+    try:
+        cur = float(cur_val or 0)
+        base = float(base_val or 0)
+    except Exception:
+        return "neu", "비교 없음"
+    if base == 0:
+        diff = 100.0 if cur > 0 else 0.0
+    else:
+        diff = ((cur - base) / abs(base)) * 100.0
+    if abs(diff) < 3:
+        return "neu", f"{diff:+.1f}%"
+    improved = diff > 0 if improve_when_up else diff < 0
+    return ("pos" if improved else "neg"), f"{diff:+.1f}%"
+
+
+def render_kpi_strip(items: list[dict]) -> None:
+    """Render a dense top-line KPI strip for ad operation pages."""
+    cells = []
+    for item in items:
+        label = html.escape(str(item.get("label", "")))
+        value = html.escape(str(item.get("value", "-")))
+        cls = str(item.get("tone", "") or "")
+        sub = item.get("sub")
+        if sub is None and "cur" in item and "base" in item:
+            cls, sub = _delta_class_and_text(item.get("cur"), item.get("base"), bool(item.get("improve_when_up", True)))
+        sub = html.escape(str(sub or ""))
+        cls = html.escape(cls if cls in {"pos", "neg", "neu"} else "neu")
+        cells.append(
+            "<div class='nv-kpi-item'>"
+            f"<div class='nv-kpi-item-label'>{label}</div>"
+            f"<div class='nv-kpi-item-value' title='{value}'>{value}</div>"
+            f"<div class='nv-kpi-item-sub {cls}'>{sub}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='nv-kpi-strip'>{''.join(cells)}</div>", unsafe_allow_html=True)
+
+
+def render_ops_cards(items: list[dict]) -> None:
+    """Render compact status/action cards for budget and campaign triage."""
+    cards = []
+    for item in items:
+        tone = str(item.get("tone", "") or "")
+        tone_cls = tone if tone in {"primary", "success", "warning", "danger", "info"} else ""
+        title = html.escape(str(item.get("title", "")))
+        value = html.escape(str(item.get("value", "-")))
+        note = html.escape(str(item.get("note", "")))
+        cards.append(
+            f"<div class='nv-op-card {tone_cls}'>"
+            f"<div class='nv-op-card-title'>{title}</div>"
+            f"<div class='nv-op-card-value'>{value}</div>"
+            f"<div class='nv-op-card-note'>{note}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='nv-op-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def render_toolbar(title: str, subtitle: str = "", chips: list[dict] | None = None) -> None:
+    chips = chips or []
+    chip_html = []
+    for chip in chips:
+        label = html.escape(str(chip.get("label", "")))
+        tone = str(chip.get("tone", "") or "")
+        tone_cls = tone if tone in {"primary", "success", "warning", "danger", "info"} else ""
+        chip_html.append(f"<span class='nv-chip {tone_cls}'>{label}</span>")
+    safe_title = html.escape(str(title))
+    safe_sub = html.escape(str(subtitle))
+    st.markdown(
+        "<div class='nv-toolbar'>"
+        "<div>"
+        f"<div class='nv-toolbar-title'>{safe_title}</div>"
+        f"<div class='nv-toolbar-sub'>{safe_sub}</div>"
+        "</div>"
+        f"<div class='nv-toolbar-actions'>{''.join(chip_html)}</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def ui_metric_or_stmetric(title: str, value: str, desc: str = "", key: str = ""):

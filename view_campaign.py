@@ -19,8 +19,10 @@ from data import (
     table_exists,
     get_table_columns,
     _sql_in_str_list,
+    format_currency,
 )
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta
+from ui import render_kpi_strip, render_toolbar
 
 def _campaign_fetch_limit(top_n: int) -> int:
     try:
@@ -815,6 +817,11 @@ def _render_campaign_summary_tab(view: pd.DataFrame, engine, f: Dict, diag: list
     final_cols = [c for c in base_cols + all_metrics_cols if c in disp_main.columns]
     disp_main_src = disp_main.sort_values("광고비", ascending=False).head(top_n).reset_index(drop=True)
     disp_main_show = disp_main_src[final_cols].copy()
+    render_toolbar(
+        "캠페인별 성과",
+        "행을 선택하면 하위 그룹, 키워드, 소재 상세를 아래에서 확인할 수 있습니다.",
+        [{"label": f"{len(disp_main_show):,}행 표시", "tone": "info"}, {"label": "선택 상세", "tone": "primary"}],
+    )
     event = st.dataframe(disp_main_show, width="stretch", hide_index=True, selection_mode="single-row", on_select="rerun", column_config=_campaign_fast_col_config(disp_main_show, "캠페인"))
     selected_rows = event.selection.rows
     if not selected_rows:
@@ -1003,7 +1010,11 @@ def _render_campaign_off_tab(view: pd.DataFrame, meta: pd.DataFrame, engine, f: 
 def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
-    st.markdown("<div class='nv-sec-title'>캠페인 상세 분석</div>", unsafe_allow_html=True)
+    render_toolbar(
+        "캠페인 운영 테이블",
+        "캠페인을 선택하면 하위 키워드와 소재 성과까지 같은 화면에서 이어서 확인합니다.",
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": f"Top {int(f.get('top_n_campaign', 200)):,}", "tone": "info"}],
+    )
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
     top_n = int(f.get("top_n_campaign", 200))
@@ -1033,6 +1044,20 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             view = _add_perf_metrics(view)
             if "avg_rank" in view.columns:
                 view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+            total_cost = float(pd.to_numeric(view.get("광고비", 0), errors="coerce").fillna(0).sum())
+            total_clk = float(pd.to_numeric(view.get("클릭", 0), errors="coerce").fillna(0).sum())
+            total_sales = float(pd.to_numeric(view.get("총 전환매출", view.get("구매완료 매출", 0)), errors="coerce").fillna(0).sum())
+            total_conv = float(pd.to_numeric(view.get("총 전환수", view.get("구매완료수", 0)), errors="coerce").fillna(0).sum())
+            total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
+            total_cpc = (total_cost / total_clk) if total_clk > 0 else 0.0
+            render_kpi_strip([
+                {"label": "캠페인", "value": f"{view['캠페인'].nunique():,}개", "sub": "현재 필터", "tone": "neu"},
+                {"label": "광고비", "value": format_currency(total_cost), "sub": "집행 합계", "tone": "neu"},
+                {"label": "클릭", "value": f"{total_clk:,.0f}", "sub": "유입 합계", "tone": "neu"},
+                {"label": "CPC", "value": format_currency(total_cpc), "sub": "평균 비용", "tone": "neu"},
+                {"label": "총 전환", "value": f"{total_conv:,.0f}", "sub": "전환 합계", "tone": "neu"},
+                {"label": "통합 ROAS", "value": f"{total_roas:,.1f}%", "sub": "수익성", "tone": "neu"},
+            ])
     else:
         _diag_add(diag, '캠페인집계', 'warn', 0, 'lazy_skip', '선택 탭에서는 요약 bundle 조회를 생략했습니다.')
 

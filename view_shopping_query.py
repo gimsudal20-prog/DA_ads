@@ -12,6 +12,7 @@ import streamlit as st
 
 from data import query_shopping_search_terms
 from page_helpers import _perf_common_merge_meta, period_compare_range
+from ui import render_toolbar
 
 
 # ✨ 숫자 콤마 및 기호 포맷팅 딕셔너리
@@ -173,8 +174,11 @@ def page_perf_shopping_query(meta: pd.DataFrame, engine, f: Dict) -> None:
     if not f.get("ready", False):
         return
 
-    st.markdown("<div class='nv-sec-title'>쇼핑 검색어 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>다른 성과 분석 페이지와 동일한 카드/섹션/표 스타일로 실제 검색어 기준 퍼널 성과를 확인합니다.</div>", unsafe_allow_html=True)
+    render_toolbar(
+        "쇼핑 검색어 분석",
+        "실제 검색어 기준으로 구매, 장바구니, 총 전환 퍼널 성과를 확인합니다.",
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": "검색어 퍼널", "tone": "info"}],
+    )
 
     cids = tuple(f.get("selected_customer_ids", []))
     patch_date = date(2026, 3, 11)

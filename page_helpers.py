@@ -227,7 +227,7 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
     accounts = filter_maps.get("accounts", [])
 
     with st.sidebar:
-        st.markdown("<div class='nav-sidebar-title'>Filters</div>", unsafe_allow_html=True)
+        st.markdown("<div class='nav-sidebar-title'>Global Filters</div>", unsafe_allow_html=True)
 
         st.markdown("<div style='font-size:13px; font-weight:600; color:var(--nv-muted); margin-bottom:8px;'>기간 선택</div>", unsafe_allow_html=True)
         
@@ -295,6 +295,20 @@ def build_filters(meta: pd.DataFrame, type_opts: List[str], engine=None) -> Dict
 
         prev_acc = [a for a in (sv.get("account", []) or []) if a in accounts_by_mgr]
         account_sel = ui_multiselect(st, "광고주(계정)", accounts_by_mgr, default=prev_acc, key="f_account", placeholder="전체 계정")
+
+        selected_scope = "전체 계정"
+        if account_sel:
+            selected_scope = f"계정 {len(account_sel):,}개 선택"
+        elif manager_sel:
+            selected_scope = f"담당자 {len(manager_sel):,}명 선택"
+        st.markdown(
+            f"<div style='display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px solid var(--nv-line); border-radius:10px; background:var(--nv-bg); margin-top:12px;'>"
+            f"<div style='font-size:11px; color:var(--nv-muted); font-weight:800;'>현재 범위</div>"
+            f"<div style='font-size:13px; color:var(--nv-text); font-weight:800;'>{selected_scope}</div>"
+            f"<div style='font-size:12px; color:var(--nv-muted);'>{d1} ~ {d2}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
         st.divider()
         

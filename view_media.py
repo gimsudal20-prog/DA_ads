@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from data import sql_read, table_exists, get_table_columns, _sql_in_str_list
+from ui import render_toolbar
 
 _DEVICE_ORDER = ["PC", "MO", "기타"]
 
@@ -279,8 +280,11 @@ def page_media(engine, f):
     type_sel = tuple(f.get("type_sel", []) or ())
     _diag_add(diag, '필터', 'ok', len(cids), 'filters', f"기간={f['start']}~{f['end']} | 유형={', '.join(type_sel) if type_sel else '전체'}")
 
-    st.markdown("<div class='nv-sec-title'>매체 / 기기 효율 분석</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:13px; color:#6B7280; margin-bottom:16px;'>수집된 성과 테이블 기준으로 조회합니다. no_header 리포트로 수집된 매체 코드(숫자)는 확인된 코드부터 한글 지면명으로 변환되어 합산 표출됩니다. 미확인 코드는 코드값 그대로 유지됩니다.</div>", unsafe_allow_html=True)
+    render_toolbar(
+        "매체 / 기기 효율 분석",
+        "수집된 성과 테이블 기준으로 지면명, 기기, 비용 누수 항목을 분리해 확인합니다.",
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": "코드 자동 매핑", "tone": "info"}],
+    )
 
     selected_tab = st.radio('보기', ['지면(매체)', '기기', '비용 누수 항목'], horizontal=True, key='media_view_mode')
 
