@@ -149,6 +149,51 @@ def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     view["ROAS(%)"] = np.where(view["광고비"] > 0, (view["전환매출"] / view["광고비"]) * 100, 0.0)
     return view
 
+
+_KEYWORD_SUM_METRICS = ["노출", "클릭", "광고비", "전환", "전환매출"]
+_KEYWORD_DERIVED_METRICS = ["CTR(%)", "CPC(원)", "CPA(원)", "ROAS(%)"]
+_KEYWORD_PERIOD_GROUP_COLS = [
+    "customer_id", "업체명", "담당자", "캠페인유형",
+    "campaign_id", "캠페인", "adgroup_id", "광고그룹",
+    "keyword_id", "ad_id", "키워드",
+]
+
+
+def _present_unique_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
+    out: list[str] = []
+    for col in cols:
+        if col in df.columns and col not in out:
+            out.append(col)
+    return out
+
+
+def _aggregate_keyword_rows(df: pd.DataFrame, group_cols: list[str], include_rank: bool = True) -> pd.DataFrame:
+    if df is None:
+        return pd.DataFrame()
+    work = df.copy()
+    group_cols = _present_unique_cols(work, group_cols)
+    if not group_cols:
+        group_cols = _present_unique_cols(work, ["customer_id", "업체명", "키워드"])
+    if work.empty:
+        return work
+
+    for metric_col in _KEYWORD_SUM_METRICS:
+        if metric_col not in work.columns:
+            work[metric_col] = 0
+        work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce").fillna(0)
+
+    agg_dict = {metric_col: "sum" for metric_col in _KEYWORD_SUM_METRICS}
+    if include_rank and "avg_rank" in work.columns:
+        work["avg_rank"] = pd.to_numeric(work["avg_rank"], errors="coerce")
+        agg_dict["avg_rank"] = "mean"
+
+    grouped = work.groupby(group_cols, as_index=False, dropna=False).agg(agg_dict)
+    grouped = _add_perf_metrics(grouped)
+    if "avg_rank" in grouped.columns:
+        grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
+    return grouped
+
+
 def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
     if view_df.empty: return view_df
     for k in merge_keys:
@@ -158,8 +203,8 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
     agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
     if 'avg_rank' in base_df.columns: agg_dict['avg_rank'] = 'mean'
         
-    if not base_df.empty:
-        base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+    if not base_df.empty and merge_keys:
+        base_agg = base_df.groupby(merge_keys, dropna=False).agg(agg_dict).reset_index()
         base_agg = base_agg.rename(columns={'imp': 'b_imp', 'clk': 'b_clk', 'cost': 'b_cost', 'conv': 'b_conv', 'sales': 'b_sales', 'avg_rank': 'b_avg_rank'})
         merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
     else: merged = view_df.copy()
@@ -315,23 +360,16 @@ def render_keyword_main(view, top_n):
 
     # 기간 합산(Agg) 처리
     if agg_period and "일자" in disp.columns:
-        grp_cols_period = [c for c in disp.columns if c not in ["일자", "노출", "클릭", "광고비", "전환", "전환매출", "CTR(%)", "CPC(원)", "CPA(원)", "ROAS(%)", "avg_rank", "평균순위"]]
-        agg_dict_period = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
-        if "avg_rank" in disp.columns: agg_dict_period["avg_rank"] = "mean"
-        disp = disp.groupby(grp_cols_period, as_index=False).agg(agg_dict_period)
-        disp = _add_perf_metrics(disp)
-        if "avg_rank" in disp.columns: disp["평균순위"] = disp["avg_rank"].apply(_format_avg_rank)
+        disp = _aggregate_keyword_rows(disp, _KEYWORD_PERIOD_GROUP_COLS, include_rank=True)
         if "일자" in base_cols: base_cols.remove("일자")
 
     # 키워드 합산(Agg) 처리
     if agg_kw:
-        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
         grp_cols = ["업체명", "키워드"]
         if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
         if "일자" in disp.columns: grp_cols.insert(1, "일자")
         
-        disp = disp.groupby(grp_cols, as_index=False).agg(agg_dict)
-        disp = _add_perf_metrics(disp)
+        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=False)
         base_cols = ["일자", "키워드", "업체명"] if "일자" in disp.columns else ["키워드", "업체명"]
 
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
@@ -346,12 +384,7 @@ def render_keyword_main(view, top_n):
 def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_dt):
     # 기간 비교 시, 일자가 포함되어 있으면 키워드/그룹 단위 비교가 흩어지므로 다시 묶어줍니다.
     if "일자" in view_orig.columns:
-        grp_cols = [c for c in view_orig.columns if c not in ["일자", "노출", "클릭", "광고비", "전환", "전환매출", "CTR(%)", "CPC(원)", "CPA(원)", "ROAS(%)", "avg_rank", "평균순위"]]
-        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
-        if "avg_rank" in view_orig.columns: agg_dict["avg_rank"] = "mean"
-        view = view_orig.groupby(grp_cols, as_index=False).agg(agg_dict)
-        view = _add_perf_metrics(view)
-        if "avg_rank" in view.columns: view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
+        view = _aggregate_keyword_rows(view_orig, _KEYWORD_PERIOD_GROUP_COLS, include_rank=True)
     else:
         view = view_orig.copy()
 
@@ -402,18 +435,16 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
 
     if agg_kw_cmp:
         # 1. 대상 기간 합산
-        agg_dict = {"노출":"sum", "클릭":"sum", "광고비":"sum", "전환":"sum", "전환매출":"sum"}
         grp_cols = ["업체명", "키워드"]
         if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
-        disp = disp.groupby(grp_cols, as_index=False).agg(agg_dict)
-        disp = _add_perf_metrics(disp)
+        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=False)
 
         # 2. 비교 기간(base) 합산
         if not base_bundle.empty:
             base_grp_cols = ["키워드"]
             if "customer_id" in base_bundle.columns: base_grp_cols.insert(0, "customer_id")
             base_agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
-            base_bundle = base_bundle.groupby(base_grp_cols, as_index=False).agg(base_agg_dict)
+            base_bundle = base_bundle.groupby(base_grp_cols, as_index=False, dropna=False).agg(base_agg_dict)
         
         valid_keys = [k for k in ["customer_id", "키워드"] if k in disp.columns and k in base_bundle.columns]
         base_cols_cmp = ["키워드", "업체명"]
