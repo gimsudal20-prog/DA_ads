@@ -752,6 +752,15 @@ def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
             return f"COALESCE({picked[0]}, 0)"
         return f"COALESCE({', '.join(picked)}, 0)"
 
+    def max_expr(candidates: list[str]) -> str:
+        picked = [f"{prefix}{col}" for col in candidates if col in fact_col_set]
+        if not picked:
+            return "0"
+        if len(picked) == 1:
+            return f"COALESCE({picked[0]}, 0)"
+        safe_picked = [f"COALESCE({col}, 0)" for col in picked]
+        return f"GREATEST({', '.join(safe_picked)})"
+
     return {
         "purchase_conv_expr": pick_expr(["primary_conv", "purchase_conv", "conv"]),
         "purchase_sales_expr": pick_expr(["primary_sales", "purchase_sales", "sales"]),
@@ -759,8 +768,8 @@ def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
         "cart_sales_expr": f"COALESCE({prefix}cart_sales, 0)" if has_cart else "0",
         "wish_conv_expr": f"COALESCE({prefix}wishlist_conv, 0)" if has_wish else "0",
         "wish_sales_expr": f"COALESCE({prefix}wishlist_sales, 0)" if has_wish else "0",
-        "total_conv_expr": pick_expr(["conv", "primary_conv", "purchase_conv"]),
-        "total_sales_expr": pick_expr(["sales", "primary_sales", "purchase_sales"]),
+        "total_conv_expr": max_expr(["conv", "primary_conv", "purchase_conv"]),
+        "total_sales_expr": max_expr(["sales", "primary_sales", "purchase_sales"]),
     }
 
 

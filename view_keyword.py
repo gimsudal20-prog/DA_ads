@@ -28,14 +28,9 @@ FMT_DICT = {
 
 
 def _keyword_fetch_limit(top_n: int, daily_breakdown: bool = False) -> int:
-    try:
-        top_n = int(top_n or 0)
-    except Exception:
-        top_n = 0
-    top_n = max(top_n, 1)
-    if daily_breakdown:
-        return min(max(top_n * 2, 250), 700)
-    return min(max(top_n * 2, 300), 1000)
+    # Fetch broadly, then apply Top N only at display time. A small DB-side cost
+    # limit drops low-cost keywords/search terms that still have conversions.
+    return 10000
 
 def _style_delta_numeric(val):
     try: v = float(val)
@@ -268,6 +263,113 @@ def _build_shopping_terms_base_bundle(shop_terms: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _conversion_metric_cols(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    if df is None or df.empty:
+        return None, None
+    conv_col = "전환" if "전환" in df.columns else ("conv" if "conv" in df.columns else None)
+    sales_col = "전환매출" if "전환매출" in df.columns else ("sales" if "sales" in df.columns else None)
+    return conv_col, sales_col
+
+
+def _shopping_residual_group_cols(base: pd.DataFrame, detail: pd.DataFrame) -> list[str]:
+    candidates = [
+        "customer_id",
+        "업체명",
+        "account_name",
+        "캠페인",
+        "campaign_name",
+        "광고그룹",
+        "adgroup_name",
+    ]
+    return [col for col in candidates if col in base.columns and col in detail.columns]
+
+
+def _residualize_shopping_fact_conversions(base: pd.DataFrame, detail: pd.DataFrame) -> pd.DataFrame:
+    """Keep fact cost/clicks, but only leave conversion residuals not covered by search terms."""
+    if base is None or base.empty or detail is None or detail.empty:
+        return pd.DataFrame() if base is None else base
+    out = base.copy()
+    type_col = "캠페인유형" if "캠페인유형" in out.columns else ("campaign_type_label" if "campaign_type_label" in out.columns else None)
+    if not type_col:
+        return out
+
+    base_conv_col, base_sales_col = _conversion_metric_cols(out)
+    detail_conv_col, detail_sales_col = _conversion_metric_cols(detail)
+    if not base_conv_col and not base_sales_col:
+        return out
+
+    shopping_mask = _is_shopping_campaign_type(out[type_col])
+    if not shopping_mask.any():
+        return out
+
+    group_cols = _shopping_residual_group_cols(out, detail)
+    if not group_cols:
+        group_cols = ["__shopping_all__"]
+        out[group_cols[0]] = "all"
+        detail = detail.copy()
+        detail[group_cols[0]] = "all"
+
+    def _apply_metric_residual(metric_col: str | None, detail_metric_col: str | None) -> None:
+        if not metric_col:
+            return
+        out[metric_col] = pd.to_numeric(out[metric_col], errors="coerce").fillna(0)
+        base_part = out.loc[shopping_mask, group_cols + [metric_col]].copy()
+        if base_part.empty:
+            return
+
+        base_sum = (
+            base_part.groupby(group_cols, dropna=False)[metric_col]
+            .sum()
+            .rename("__base_sum__")
+            .reset_index()
+        )
+        if detail_metric_col and detail_metric_col in detail.columns:
+            detail_work = detail[group_cols + [detail_metric_col]].copy()
+            detail_work[detail_metric_col] = pd.to_numeric(detail_work[detail_metric_col], errors="coerce").fillna(0)
+            detail_sum = (
+                detail_work.groupby(group_cols, dropna=False)[detail_metric_col]
+                .sum()
+                .rename("__detail_sum__")
+                .reset_index()
+            )
+        else:
+            detail_sum = base_sum[group_cols].copy()
+            detail_sum["__detail_sum__"] = 0.0
+
+        ratios = base_sum.merge(detail_sum, on=group_cols, how="left")
+        ratios["__detail_sum__"] = pd.to_numeric(ratios["__detail_sum__"], errors="coerce").fillna(0)
+        ratios["__residual__"] = (ratios["__base_sum__"] - ratios["__detail_sum__"]).clip(lower=0)
+        ratios["__ratio__"] = np.where(ratios["__base_sum__"] > 0, ratios["__residual__"] / ratios["__base_sum__"], 0.0)
+        ratios = ratios[group_cols + ["__ratio__"]]
+
+        indexed = out.loc[shopping_mask, group_cols + [metric_col]].merge(ratios, on=group_cols, how="left")
+        out.loc[shopping_mask, metric_col] = (
+            pd.to_numeric(indexed[metric_col], errors="coerce").fillna(0)
+            * pd.to_numeric(indexed["__ratio__"], errors="coerce").fillna(1.0)
+        ).values
+
+    _apply_metric_residual(base_conv_col, detail_conv_col)
+    _apply_metric_residual(base_sales_col, detail_sales_col)
+
+    if group_cols == ["__shopping_all__"] and "__shopping_all__" in out.columns:
+        out = out.drop(columns=["__shopping_all__"])
+    return out
+
+
+def _zero_shopping_fact_conversions(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    out = df.copy()
+    type_col = "캠페인유형" if "캠페인유형" in out.columns else ("campaign_type_label" if "campaign_type_label" in out.columns else None)
+    if not type_col:
+        return out
+    shopping_mask = _is_shopping_campaign_type(out[type_col])
+    for col in ["전환", "전환매출", "conv", "sales", "tot_conv", "tot_sales"]:
+        if col in out.columns:
+            out.loc[shopping_mask, col] = 0
+    return out
+
+
 def _merge_keyword_view_with_shopping_terms(view: pd.DataFrame, shop_view: pd.DataFrame) -> pd.DataFrame:
     if shop_view is None or shop_view.empty:
         return view
@@ -276,8 +378,7 @@ def _merge_keyword_view_with_shopping_terms(view: pd.DataFrame, shop_view: pd.Da
     base = view.copy()
     if "구분" not in base.columns:
         base["구분"] = "키워드/소재"
-    if "캠페인유형" in base.columns:
-        base = base[~_is_shopping_campaign_type(base["캠페인유형"])].copy()
+    base = _residualize_shopping_fact_conversions(base, shop_view)
     return pd.concat([base, shop_view], ignore_index=True, sort=False)
 
 
@@ -346,6 +447,7 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         rename_dict = {"account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹", "keyword": "키워드", "imp": "노출", "clk": "클릭", "cost": "광고비", "conv": "전환", "sales": "전환매출"}
         if "dt" in df_kw.columns: rename_dict["dt"] = "일자"
         view_kw = df_kw.rename(columns=rename_dict)
+        view_kw["구분"] = "키워드"
         if "일자" in view_kw.columns: view_kw["일자"] = pd.to_datetime(view_kw["일자"]).dt.strftime('%Y-%m-%d')
         
     if not df_ad.empty:
@@ -353,6 +455,10 @@ def compute_keyword_view(kw_bundle, ad_bundle, meta):
         if "dt" in df_ad.columns: rename_dict["dt"] = "일자"
         view_ad = df_ad.rename(columns=rename_dict)
         view_ad = _filter_shopping_general_ads(view_ad, allow_unknown_type=True)
+        if "캠페인유형" in view_ad.columns:
+            view_ad["구분"] = np.where(_is_shopping_campaign_type(view_ad["캠페인유형"]), "쇼핑 소재", "소재")
+        else:
+            view_ad["구분"] = "소재"
         if "일자" in view_ad.columns: view_ad["일자"] = pd.to_datetime(view_ad["일자"]).dt.strftime('%Y-%m-%d')
         
     if view_kw.empty and view_ad.empty: return pd.DataFrame()
@@ -524,6 +630,8 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     if _includes_shopping_type(type_sel):
         base_shop_terms = _cached_keyword_shopping_terms(engine, b1, b2, tuple(cids))
         base_shop_bundle = _build_shopping_terms_base_bundle(base_shop_terms)
+        base_kw_bundle = _residualize_shopping_fact_conversions(base_kw_bundle, base_shop_bundle)
+        base_ad_bundle = _residualize_shopping_fact_conversions(base_ad_bundle, base_shop_bundle)
 
     base_kw = base_kw_bundle.rename(columns={"keyword": "키워드"}) if not base_kw_bundle.empty else pd.DataFrame()
     base_ad = base_ad_bundle.rename(columns={"ad_name": "키워드"}) if not base_ad_bundle.empty else pd.DataFrame()
