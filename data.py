@@ -740,19 +740,27 @@ def update_campaign_target_roas(_engine, cid, campaign_id, target_val, min_val):
 
 def _strict_conv_selects(fact_cols: list, alias: str = "") -> dict:
     prefix = f"{alias}." if alias else ""
-    has_purchase = "purchase_conv" in fact_cols
-    has_cart = "cart_conv" in fact_cols
-    has_wish = "wishlist_conv" in fact_cols
+    fact_col_set = set(fact_cols or [])
+    has_cart = "cart_conv" in fact_col_set
+    has_wish = "wishlist_conv" in fact_col_set
+
+    def pick_expr(candidates: list[str]) -> str:
+        picked = [f"{prefix}{col}" for col in candidates if col in fact_col_set]
+        if not picked:
+            return "0"
+        if len(picked) == 1:
+            return f"COALESCE({picked[0]}, 0)"
+        return f"COALESCE({', '.join(picked)}, 0)"
 
     return {
-        "purchase_conv_expr": f"COALESCE({prefix}purchase_conv, 0)" if has_purchase else "0",
-        "purchase_sales_expr": f"COALESCE({prefix}purchase_sales, 0)" if has_purchase else "0",
+        "purchase_conv_expr": pick_expr(["primary_conv", "purchase_conv", "conv"]),
+        "purchase_sales_expr": pick_expr(["primary_sales", "purchase_sales", "sales"]),
         "cart_conv_expr": f"COALESCE({prefix}cart_conv, 0)" if has_cart else "0",
         "cart_sales_expr": f"COALESCE({prefix}cart_sales, 0)" if has_cart else "0",
         "wish_conv_expr": f"COALESCE({prefix}wishlist_conv, 0)" if has_wish else "0",
         "wish_sales_expr": f"COALESCE({prefix}wishlist_sales, 0)" if has_wish else "0",
-        "total_conv_expr": f"COALESCE({prefix}conv, 0)",
-        "total_sales_expr": f"COALESCE({prefix}sales, 0)",
+        "total_conv_expr": pick_expr(["conv", "primary_conv", "purchase_conv"]),
+        "total_sales_expr": pick_expr(["sales", "primary_sales", "purchase_sales"]),
     }
 
 
