@@ -7,7 +7,6 @@ import numpy as np
 import streamlit as st
 import streamlit_compat  # noqa: F401
 import streamlit.components.v1 as components
-import calendar
 from typing import Dict
 from datetime import date, timedelta
 
@@ -125,6 +124,7 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
 
 
 WEEKDAY_LABELS = [("월", 0), ("화", 1), ("수", 2), ("목", 3), ("금", 4), ("토", 5), ("일", 6)]
+WEEKDAY_INDEX_TO_LABEL = {idx: label for label, idx in WEEKDAY_LABELS}
 
 
 def _count_operating_days(start_dt: date, end_dt: date, weekdays: list[int]) -> int:
@@ -140,85 +140,103 @@ def _count_operating_days(start_dt: date, end_dt: date, weekdays: list[int]) -> 
     return count
 
 
-def _render_operating_day_controls(month_d1: date, month_d2: date, end_dt: date) -> tuple[list[int], int, int, str]:
-    with st.expander("일평균 권장 소진액 계산 기준", expanded=False):
-        st.caption("월 예산을 어떤 운영일에 나눠 쓸지 정합니다. 선택한 요일은 권장 소진율과 일평균 권장 소진액 계산에 반영됩니다.")
-        preset = st.segmented_control(
-            "운영 요일",
-            ["매일 운영", "평일 운영", "직접 선택"],
-            default=st.session_state.get("budget_operating_preset", "매일 운영"),
-            key="budget_operating_preset",
-        )
-        if preset == "평일 운영":
-            selected = [0, 1, 2, 3, 4]
-            label = "평일 운영"
-        elif preset == "직접 선택":
-            selected = []
-            cols = st.columns(7)
-            for idx, (label_txt, weekday_idx) in enumerate(WEEKDAY_LABELS):
-                checked = cols[idx].checkbox(
-                    label_txt,
-                    value=bool(st.session_state.get(f"budget_weekday_{weekday_idx}", weekday_idx < 5)),
-                    key=f"budget_weekday_{weekday_idx}",
-                )
-                if checked:
-                    selected.append(weekday_idx)
-            if not selected:
-                st.warning("운영 요일을 1개 이상 선택해야 합니다. 임시로 매일 운영 기준을 적용합니다.")
-                selected = list(range(7))
-            label = ", ".join(label_txt for label_txt, weekday_idx in WEEKDAY_LABELS if weekday_idx in selected)
-        else:
-            selected = list(range(7))
-            label = "매일 운영"
-
-        elapsed_end = min(end_dt, month_d2)
-        elapsed_days = _count_operating_days(month_d1, elapsed_end, selected)
-        total_days = _count_operating_days(month_d1, month_d2, selected)
-        st.markdown(
-            f"<div style='font-size:12px; color:var(--nv-muted); margin-top:6px;'>"
-            f"운영 경과일 <b>{elapsed_days:,}일</b> / 월 운영일 <b>{total_days:,}일</b> 기준으로 계산합니다."
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-        return selected, elapsed_days, total_days, label
+def _normalize_weekday_csv(value) -> str:
+    fallback = globals().get("DEFAULT_OPERATING_WEEKDAYS", "0,1,2,3,4,5,6")
+    try:
+        return normalize_operating_weekdays(value)
+    except Exception:
+        return fallback
 
 
-@st.cache_data(ttl=180, show_spinner=False, max_entries=20)
-def _build_budget_editor_view(
-    biz_view: pd.DataFrame,
-    target_pacing_rate: float,
-    elapsed_operating_days: int | None = None,
-    total_operating_days: int | None = None,
+def _parse_operating_weekdays(value) -> list[int]:
+    normalized = _normalize_weekday_csv(value)
+    selected: list[int] = []
+    for part in str(normalized).split(","):
+        try:
+            day = int(str(part).strip())
+        except Exception:
+            continue
+        if 0 <= day <= 6:
+            selected.append(day)
+    selected = sorted(set(selected))
+    return selected or list(range(7))
+
+
+def _format_operating_weekdays(value) -> str:
+    selected = _parse_operating_weekdays(value)
+    if selected == list(range(7)):
+        return "매일"
+    if selected == [0, 1, 2, 3, 4]:
+        return "평일"
+    if selected == [5, 6]:
+        return "주말"
+    return ", ".join(WEEKDAY_INDEX_TO_LABEL.get(day, str(day)) for day in selected)
+
+
+def _recompute_operating_day_fields(
+    budget_view: pd.DataFrame,
+    month_d1: date,
+    month_d2: date,
+    end_dt: date,
 ) -> pd.DataFrame:
-    if biz_view is None or biz_view.empty:
+    if budget_view is None or budget_view.empty:
         return pd.DataFrame()
-    for col in ["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]:
-        if col not in biz_view.columns:
-            biz_view[col] = "" if col in {"customer_id", "account_name", "manager"} else 0
-    budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]].copy()
-    budget_view["monthly_budget_val"] = safe_numeric_col(budget_view, "monthly_budget").astype(int)
-    budget_view["prev_month_cost_val"] = safe_numeric_col(budget_view, "prev_month_cost").astype(int)
-    budget_view["current_month_cost_val"] = safe_numeric_col(budget_view, "current_month_cost").astype(int)
-    days_in_month = max(1.0, float(total_operating_days or ((1.0 / target_pacing_rate) if target_pacing_rate > 0 else 30.0)))
-    current_day = max(1.0, float(elapsed_operating_days or min(days_in_month, round(days_in_month * target_pacing_rate))))
-    budget_view["current_daily_avg_val"] = np.where(
-        current_day > 0,
-        budget_view["current_month_cost_val"] / current_day,
-        0.0,
-    ).round(0).astype(int)
+    if "operating_weekdays" not in budget_view.columns:
+        budget_view["operating_weekdays"] = globals().get("DEFAULT_OPERATING_WEEKDAYS", "0,1,2,3,4,5,6")
+
+    elapsed_end = min(end_dt, month_d2)
+    budget_view["operating_weekdays"] = budget_view["operating_weekdays"].apply(_normalize_weekday_csv)
+    budget_view["operating_label"] = budget_view["operating_weekdays"].apply(_format_operating_weekdays)
+    budget_view["_elapsed_operating_days"] = budget_view["operating_weekdays"].apply(
+        lambda value: _count_operating_days(month_d1, elapsed_end, _parse_operating_weekdays(value))
+    )
+    budget_view["_total_operating_days"] = budget_view["operating_weekdays"].apply(
+        lambda value: _count_operating_days(month_d1, month_d2, _parse_operating_weekdays(value))
+    )
+    total_days = safe_numeric_col(budget_view, "_total_operating_days")
+    elapsed_days = safe_numeric_col(budget_view, "_elapsed_operating_days")
+    budget_view["_target_pacing_rate"] = np.where(total_days > 0, elapsed_days / total_days, 0.0)
+    budget_view["operating_days_label"] = (
+        safe_numeric_col(budget_view, "_elapsed_operating_days").round(0).astype(int).astype(str)
+        + " / "
+        + safe_numeric_col(budget_view, "_total_operating_days").round(0).astype(int).astype(str)
+        + "일"
+    )
+    return budget_view
+
+
+def _recalculate_budget_metrics(budget_view: pd.DataFrame) -> pd.DataFrame:
+    if budget_view is None or budget_view.empty:
+        return pd.DataFrame()
+
+    budget_view["monthly_budget_val"] = safe_numeric_col(budget_view, "monthly_budget_val").round(0).astype(int)
+    budget_view["prev_month_cost_val"] = safe_numeric_col(budget_view, "prev_month_cost_val").round(0).astype(int)
+    budget_view["current_month_cost_val"] = safe_numeric_col(budget_view, "current_month_cost_val").round(0).astype(int)
+
+    elapsed_days = safe_numeric_col(budget_view, "_elapsed_operating_days").where(lambda s: s > 0, 1.0)
+    total_days = safe_numeric_col(budget_view, "_total_operating_days").where(lambda s: s > 0, 1.0)
+    current_cost = safe_numeric_col(budget_view, "current_month_cost_val")
+    monthly_budget = safe_numeric_col(budget_view, "monthly_budget_val")
+
+    budget_view["current_daily_avg_val"] = (current_cost / elapsed_days).fillna(0).round(0).astype(int)
     budget_view["recommended_daily_avg_val"] = np.where(
-        budget_view["monthly_budget_val"] > 0,
-        budget_view["monthly_budget_val"] / days_in_month,
+        monthly_budget > 0,
+        monthly_budget / total_days,
         0.0,
     ).round(0).astype(int)
     budget_view["usage_rate"] = 0.0
     m2 = budget_view["monthly_budget_val"] > 0
-    budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
-    budget_view["usage_pct"] = (budget_view["usage_rate"] * 100.0).fillna(0.0)
+    budget_view.loc[m2, "usage_rate"] = (
+        safe_numeric_col(budget_view.loc[m2], "current_month_cost_val")
+        / safe_numeric_col(budget_view.loc[m2], "monthly_budget_val")
+    )
+    budget_view["usage_pct"] = (safe_numeric_col(budget_view, "usage_rate") * 100.0).fillna(0.0)
+
+    target_rate = safe_numeric_col(budget_view, "_target_pacing_rate")
     cond_zero = budget_view["monthly_budget_val"] == 0
     cond_over = budget_view["usage_rate"] >= 1.0
-    cond_fast = budget_view["usage_rate"] > target_pacing_rate + 0.1
-    cond_slow = budget_view["usage_rate"] < target_pacing_rate - 0.1
+    cond_fast = budget_view["usage_rate"] > target_rate + 0.1
+    cond_slow = budget_view["usage_rate"] < target_rate - 0.1
     budget_view["상태"] = np.select(
         [cond_zero, cond_over, cond_fast, cond_slow],
         ["미설정", "예산 초과", "과속 소진", "과소 소진"],
@@ -229,8 +247,36 @@ def _build_budget_editor_view(
         [4, 0, 1, 3],
         default=2,
     )
-    budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
     return budget_view
+
+
+def _sort_budget_view(budget_view: pd.DataFrame) -> pd.DataFrame:
+    if budget_view is None or budget_view.empty:
+        return pd.DataFrame()
+    return budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=180, show_spinner=False, max_entries=20)
+def _build_budget_editor_view(
+    biz_view: pd.DataFrame,
+    month_d1: date,
+    month_d2: date,
+    end_dt: date,
+) -> pd.DataFrame:
+    if biz_view is None or biz_view.empty:
+        return pd.DataFrame()
+    for col in ["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost", "operating_weekdays"]:
+        if col not in biz_view.columns:
+            biz_view[col] = "" if col in {"customer_id", "account_name", "manager"} else 0
+    budget_view = biz_view[[
+        "customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost", "operating_weekdays"
+    ]].copy()
+    budget_view["monthly_budget_val"] = safe_numeric_col(budget_view, "monthly_budget").astype(int)
+    budget_view["prev_month_cost_val"] = safe_numeric_col(budget_view, "prev_month_cost").astype(int)
+    budget_view["current_month_cost_val"] = safe_numeric_col(budget_view, "current_month_cost").astype(int)
+    budget_view = _recompute_operating_day_fields(budget_view, month_d1, month_d2, end_dt)
+    budget_view = _recalculate_budget_metrics(budget_view)
+    return _sort_budget_view(budget_view)
 
 
 def _ensure_budget_input_js_once():
@@ -283,25 +329,92 @@ def _build_budget_table_styler(df: pd.DataFrame, avg_days_label: str):
     return styler
 
 
+def _trigger_rerun():
+    try:
+        st.rerun()
+    except AttributeError:
+        st.experimental_rerun()
+
+
+@st.fragment
+def render_operating_weekday_editor(budget_view: pd.DataFrame, engine):
+    if budget_view is None or budget_view.empty:
+        return
+
+    with st.expander("업체별 운영 요일 설정", expanded=False):
+        st.caption("각 업체의 실제 광고 운영 요일을 체크해두면 현재 일평균, 권장 일평균, 권장 소진 페이스가 업체별로 다시 계산됩니다.")
+        weekday_df = budget_view[["customer_id", "account_name", "manager", "operating_weekdays"]].drop_duplicates("customer_id").copy()
+        weekday_df["operating_weekdays"] = weekday_df["operating_weekdays"].apply(_normalize_weekday_csv)
+        weekday_df["업체명"] = weekday_df["account_name"].fillna("").replace("", "-")
+        weekday_df["담당자"] = weekday_df["manager"].fillna("미배정").replace("", "미배정")
+
+        for label, weekday_idx in WEEKDAY_LABELS:
+            weekday_df[label] = weekday_df["operating_weekdays"].apply(lambda value, idx=weekday_idx: idx in _parse_operating_weekdays(value))
+
+        original_map = dict(zip(weekday_df["customer_id"].astype(str), weekday_df["operating_weekdays"]))
+        editor_input = weekday_df[["customer_id", "업체명", "담당자"] + [label for label, _ in WEEKDAY_LABELS]]
+        editor_height = min(420, max(180, 72 + len(editor_input.index) * 36))
+
+        edited_weekdays = st.data_editor(
+            editor_input,
+            key="budget_operating_weekday_editor",
+            hide_index=True,
+            use_container_width=True,
+            height=editor_height,
+            column_config={
+                "customer_id": None,
+                "업체명": st.column_config.TextColumn("업체명", disabled=True, pinned=True),
+                "담당자": st.column_config.TextColumn("담당자", disabled=True, width="small"),
+                **{
+                    label: st.column_config.CheckboxColumn(label, width="small")
+                    for label, _ in WEEKDAY_LABELS
+                },
+            },
+        )
+
+        if st.button("운영 요일 저장", type="primary", key="save_budget_operating_weekdays"):
+            updated_count = 0
+            invalid_accounts: list[str] = []
+            if "local_operating_weekday_overrides" not in st.session_state:
+                st.session_state["local_operating_weekday_overrides"] = {}
+
+            for _, row in edited_weekdays.iterrows():
+                cid = str(row.get("customer_id", "")).strip()
+                selected = [weekday_idx for label, weekday_idx in WEEKDAY_LABELS if bool(row.get(label, False))]
+                if not selected:
+                    invalid_accounts.append(str(row.get("업체명", cid)))
+                    continue
+                weekdays_csv = ",".join(str(day) for day in selected)
+                if cid and weekdays_csv != original_map.get(cid):
+                    update_customer_operating_weekdays(engine, cid, weekdays_csv)
+                    st.session_state["local_operating_weekday_overrides"][cid] = weekdays_csv
+                    updated_count += 1
+
+            if invalid_accounts:
+                st.warning(f"운영 요일은 업체당 1개 이상 필요합니다: {', '.join(invalid_accounts[:5])}")
+            if updated_count:
+                _cached_budget_bundle.clear()
+                _build_budget_editor_view.clear()
+                st.toast(f"운영 요일 {updated_count:,}건이 저장되었습니다.")
+                _trigger_rerun()
+
+
 @st.fragment
 def render_budget_editor(
     budget_view: pd.DataFrame,
     engine,
     end_dt: date,
-    target_pacing_rate: float,
-    elapsed_operating_days: int,
-    total_operating_days: int,
-    operating_label: str,
 ):
     prev_month_dt = (end_dt.replace(day=1) - timedelta(days=1))
     prev_m_num = prev_month_dt.month
     
-    for col in ["current_daily_avg_val", "recommended_daily_avg_val"]:
+    for col in ["current_daily_avg_val", "recommended_daily_avg_val", "operating_label", "operating_days_label"]:
         if col not in budget_view.columns:
-            budget_view[col] = 0
+            budget_view[col] = 0 if col.endswith("_val") else "-"
     editor_df = budget_view[[
-        "customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val",
-        "current_month_cost_val", "current_daily_avg_val", "recommended_daily_avg_val", "usage_pct", "상태"
+        "customer_id", "account_name", "manager", "operating_label", "operating_days_label",
+        "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val",
+        "current_daily_avg_val", "recommended_daily_avg_val", "usage_pct", "상태"
     ]].copy()
     
     editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
@@ -313,13 +426,15 @@ def render_budget_editor(
     editor_df = editor_df.rename(columns={
         "account_name": "업체명", 
         "manager": "담당자", 
+        "operating_label": "운영 요일",
+        "operating_days_label": "운영일 기준",
         "usage_pct": "집행률(%)"
     })
 
     ordered_cols = [
         "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val",
         "current_daily_avg_val", "recommended_daily_avg_val",
-        "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액",
+        "업체명", "담당자", "운영 요일", "운영일 기준", "월 예산", f"{end_dt.month}월 사용액",
         "현재 일평균 소진액", "일 평균 권장 소진액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
     ]
     editor_df = editor_df[ordered_cols]
@@ -344,12 +459,14 @@ def render_budget_editor(
                         updated_count += 1
             
             if updated_count > 0:
+                _cached_budget_bundle.clear()
+                _build_budget_editor_view.clear()
                 st.toast("예산이 저장되었습니다.")
 
-    st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률 (현재 권장 소진율: <span style='color:#0528F2;'>{target_pacing_rate*100:.0f}%</span>)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>{end_dt.strftime('%Y년 %m월')} 예산 집행률</div>", unsafe_allow_html=True)
     st.caption(
-        f"표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요. 현재 일평균은 이번 달 사용액 ÷ 운영 경과일({elapsed_operating_days}일), "
-        f"권장 일평균은 월 예산 ÷ 월 운영일({total_operating_days}일)로 계산합니다. 운영 기준: {operating_label}"
+        "표의 '월 예산(원)' 칸을 더블클릭하여 수정하세요. 현재 일평균은 이번 달 사용액 ÷ 업체별 운영 경과일, "
+        "권장 일평균은 월 예산 ÷ 업체별 월 운영일로 계산합니다."
     )
     _ensure_budget_input_js_once()
 
@@ -369,6 +486,13 @@ def render_budget_editor(
             "recommended_daily_avg_val": None,
             "업체명": st.column_config.TextColumn("업체명", disabled=True),
             "담당자": st.column_config.TextColumn("담당자", disabled=True),
+            "운영 요일": st.column_config.TextColumn("운영 요일", disabled=True, width="small"),
+            "운영일 기준": st.column_config.TextColumn(
+                "운영일 기준",
+                disabled=True,
+                width="small",
+                help="현재 운영 경과일 / 해당 월 전체 운영일"
+            ),
             "월 예산": st.column_config.TextColumn(
                 "월 예산(원)", 
                 help="더블클릭하여 예산을 바로 수정하세요.",
@@ -382,13 +506,13 @@ def render_budget_editor(
                 "현재 일평균 소진액",
                 disabled=True,
                 format="%,.0f 원",
-                help="이번 달 누적 사용액을 현재 기준일의 일수로 나눈 값입니다."
+                help="이번 달 누적 사용액을 업체별 운영 경과일로 나눈 값입니다."
             ),
             "일 평균 권장 소진액": st.column_config.NumberColumn(
                 "일 평균 권장 소진액",
                 disabled=True,
                 format="%,.0f 원",
-                help="월 예산을 해당 월 전체 일수로 나눈 권장 일평균입니다."
+                help="월 예산을 업체별 월 운영일로 나눈 권장 일평균입니다."
             ),
             f"{prev_m_num}월 사용액": st.column_config.TextColumn(
                 f"{prev_m_num}월 사용액", 
@@ -489,13 +613,7 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
     prev_month_d1 = prev_month_last_day.replace(day=1)
     prev_month_d2 = prev_month_last_day
 
-    _, days_in_month = calendar.monthrange(end_dt.year, end_dt.month)
-    current_day = end_dt.day
-    target_pacing_rate = current_day / days_in_month
-
     if selected_view == "월 예산 현황":
-        _, elapsed_operating_days, total_operating_days, operating_label = _render_operating_day_controls(month_d1, month_d2, end_dt)
-        target_pacing_rate = (elapsed_operating_days / total_operating_days) if total_operating_days > 0 else (current_day / days_in_month)
         bundle = _cached_budget_bundle(engine, cids, yesterday, avg_d1, avg_d2, month_d1, month_d2, prev_month_d1, prev_month_d2, TOPUP_AVG_DAYS)
         biz_view = _prepare_biz_view(bundle)
         if biz_view.empty:
@@ -503,43 +621,22 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
         else:
             render_budget_kpis(biz_view.copy(), end_dt)
 
-            budget_view = _build_budget_editor_view(biz_view, target_pacing_rate, elapsed_operating_days, total_operating_days)
+            if "local_operating_weekday_overrides" in st.session_state and not biz_view.empty:
+                if "operating_weekdays" not in biz_view.columns:
+                    biz_view["operating_weekdays"] = globals().get("DEFAULT_OPERATING_WEEKDAYS", "0,1,2,3,4,5,6")
+                for cid, weekdays in st.session_state["local_operating_weekday_overrides"].items():
+                    m_cid = biz_view["customer_id"].astype(str) == str(cid)
+                    biz_view.loc[m_cid, "operating_weekdays"] = _normalize_weekday_csv(weekdays)
+
+            budget_view = _build_budget_editor_view(biz_view, month_d1, month_d2, end_dt)
 
             if "local_budget_overrides" in st.session_state and not budget_view.empty:
                 for cid, new_val in st.session_state["local_budget_overrides"].items():
                     m_cid = budget_view["customer_id"].astype(str) == str(cid)
                     budget_view.loc[m_cid, "monthly_budget"] = new_val
                     budget_view.loc[m_cid, "monthly_budget_val"] = int(new_val)
-                    current_cost = pd.to_numeric(budget_view.loc[m_cid, "current_month_cost_val"], errors="coerce").fillna(0)
-                    new_budget_float = float(new_val) if float(new_val) > 0 else 0.0
-                    usage_rate = (current_cost / new_budget_float) if new_budget_float > 0 else 0.0
-                    budget_view.loc[m_cid, "usage_rate"] = usage_rate
-                    budget_view.loc[m_cid, "usage_pct"] = usage_rate * 100.0
-                    budget_view.loc[m_cid, "recommended_daily_avg_val"] = round(new_budget_float / max(total_operating_days, 1)) if new_budget_float > 0 else 0
-                    budget_view.loc[m_cid, "current_daily_avg_val"] = (
-                        current_cost / max(elapsed_operating_days, 1)
-                    ).round(0).astype(int)
-                    budget_view.loc[m_cid, "상태"] = np.select(
-                        [
-                            budget_view.loc[m_cid, "monthly_budget_val"] == 0,
-                            budget_view.loc[m_cid, "usage_rate"] >= 1.0,
-                            budget_view.loc[m_cid, "usage_rate"] > target_pacing_rate + 0.1,
-                            budget_view.loc[m_cid, "usage_rate"] < target_pacing_rate - 0.1,
-                        ],
-                        ["미설정", "예산 초과", "과속 소진", "과소 소진"],
-                        default="적정 페이스",
-                    )
-                    budget_view.loc[m_cid, "_rank"] = np.select(
-                        [
-                            budget_view.loc[m_cid, "monthly_budget_val"] == 0,
-                            budget_view.loc[m_cid, "usage_rate"] >= 1.0,
-                            budget_view.loc[m_cid, "usage_rate"] > target_pacing_rate + 0.1,
-                            budget_view.loc[m_cid, "usage_rate"] < target_pacing_rate - 0.1,
-                        ],
-                        [4, 0, 1, 3],
-                        default=2,
-                    )
-                budget_view = budget_view.sort_values(["_rank", "usage_rate", "account_name"], ascending=[True, False, True]).reset_index(drop=True)
+                budget_view = _recalculate_budget_metrics(budget_view)
+                budget_view = _sort_budget_view(budget_view)
 
             status_counts = budget_view["상태"].value_counts().to_dict() if not budget_view.empty and "상태" in budget_view.columns else {}
             render_ops_cards([
@@ -547,7 +644,8 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                 {"title": "과속 소진", "value": f"{int(status_counts.get('과속 소진', 0)):,}개", "note": "권장 페이스보다 빠른 계정", "tone": "warning"},
                 {"title": "정상 페이스", "value": f"{int(status_counts.get('적정 페이스', 0)):,}개", "note": "현재 기준 안정 범위", "tone": "success"},
             ])
-            render_budget_editor(budget_view, engine, end_dt, target_pacing_rate, elapsed_operating_days, total_operating_days, operating_label)
+            render_operating_weekday_editor(budget_view, engine)
+            render_budget_editor(budget_view, engine, end_dt)
     else:
         alert_avg_d2 = end_dt
         alert_avg_d1 = alert_avg_d2 - timedelta(days=max(TOPUP_AVG_DAYS, 1) - 1)

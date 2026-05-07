@@ -209,6 +209,89 @@ def _safe_limit(value, default: int, max_limit: int) -> int:
 # ==========================================
 # 2. Metadata & Dimensions & Seeding
 # ==========================================
+DEFAULT_OPERATING_WEEKDAYS = "0,1,2,3,4,5,6"
+_WEEKDAY_NAME_TO_INDEX = {
+    "월": 0,
+    "mon": 0,
+    "monday": 0,
+    "화": 1,
+    "tue": 1,
+    "tuesday": 1,
+    "수": 2,
+    "wed": 2,
+    "wednesday": 2,
+    "목": 3,
+    "thu": 3,
+    "thursday": 3,
+    "금": 4,
+    "fri": 4,
+    "friday": 4,
+    "토": 5,
+    "sat": 5,
+    "saturday": 5,
+    "일": 6,
+    "sun": 6,
+    "sunday": 6,
+}
+
+
+def normalize_operating_weekdays(value) -> str:
+    """Normalize operating weekdays to a stable CSV string such as '0,1,2,3,4'."""
+    if isinstance(value, (list, tuple, set)):
+        raw_parts = list(value)
+    else:
+        try:
+            if pd.isna(value):
+                return DEFAULT_OPERATING_WEEKDAYS
+        except Exception:
+            pass
+        text_value = str(value or "").strip()
+        if not text_value or text_value.lower() in {"nan", "none", "nat"}:
+            return DEFAULT_OPERATING_WEEKDAYS
+        compact = text_value.replace(" ", "").lower()
+        if compact in {"all", "daily", "everyday", "매일", "매일운영", "전체", "전체요일"}:
+            return DEFAULT_OPERATING_WEEKDAYS
+        if compact in {"weekday", "weekdays", "평일", "평일운영"}:
+            return "0,1,2,3,4"
+        if compact in {"weekend", "weekends", "주말", "주말운영"}:
+            return "5,6"
+        raw_parts = [part for part in re.split(r"[,/|;·\s]+", text_value.replace("요일", "")) if part]
+
+    selected: list[int] = []
+    for part in raw_parts:
+        token = str(part).strip().lower()
+        if token in {"", "nan", "none", "nat"}:
+            continue
+        if re.fullmatch(r"[0-6]", token):
+            selected.append(int(token))
+            continue
+        if token in _WEEKDAY_NAME_TO_INDEX:
+            selected.append(_WEEKDAY_NAME_TO_INDEX[token])
+            continue
+        for weekday_name, weekday_idx in _WEEKDAY_NAME_TO_INDEX.items():
+            if len(weekday_name) == 1 and weekday_name in token:
+                selected.append(weekday_idx)
+
+    selected = sorted({day for day in selected if 0 <= int(day) <= 6})
+    if not selected:
+        return DEFAULT_OPERATING_WEEKDAYS
+    return ",".join(str(day) for day in selected)
+
+
+def _is_operating_weekdays_column(c_clean: str) -> bool:
+    return c_clean in [
+        "operating_weekdays",
+        "operatingweekdays",
+        "operatingdays",
+        "businessdays",
+        "budget_operating_weekdays",
+        "운영요일",
+        "운영기준요일",
+        "운영일",
+        "예산운영요일",
+    ]
+
+
 def _normalize_customer_id_value(value) -> str:
     """Normalize customer_id read from Excel/DB so joins do not fall back to raw IDs.
 
@@ -256,6 +339,8 @@ def _prepare_accounts_meta_df(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[c] = "account_name"
         elif c_clean in ["담당자", "manager"]:
             rename_map[c] = "manager"
+        elif _is_operating_weekdays_column(c_clean):
+            rename_map[c] = "operating_weekdays"
 
     df = df.rename(columns=rename_map)
 
@@ -277,6 +362,11 @@ def _prepare_accounts_meta_df(df: pd.DataFrame) -> pd.DataFrame:
         df["monthly_budget"] = pd.to_numeric(df["monthly_budget"], errors="coerce").fillna(0).astype("int64")
     else:
         df["monthly_budget"] = 0
+
+    if "operating_weekdays" in df.columns:
+        df["operating_weekdays"] = df["operating_weekdays"].apply(normalize_operating_weekdays)
+    else:
+        df["operating_weekdays"] = DEFAULT_OPERATING_WEEKDAYS
 
     # Same customer_id can appear more than once after accidental duplicated rows.
     df = df.drop_duplicates(subset=["customer_id"], keep="last").reset_index(drop=True)
@@ -318,6 +408,14 @@ def seed_from_accounts_xlsx(engine, df=None, file_buffer=None):
                         if "monthly_budget" in old_df.columns:
                             budget_map = dict(zip(old_df["customer_id"], old_df["monthly_budget"]))
                             df["monthly_budget"] = df["customer_id"].map(budget_map).fillna(df["monthly_budget"]).astype("int64")
+                        if "operating_weekdays" in old_df.columns:
+                            weekdays_map = dict(zip(old_df["customer_id"], old_df["operating_weekdays"]))
+                            df["operating_weekdays"] = (
+                                df["customer_id"]
+                                .map(weekdays_map)
+                                .fillna(df["operating_weekdays"])
+                                .apply(normalize_operating_weekdays)
+                            )
                 except Exception:
                     pass
 
@@ -342,7 +440,7 @@ def get_meta(_engine) -> pd.DataFrame:
     target_cols = []
     for c in cols:
         c_clean = str(c).replace(" ", "").lower()
-        if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id", "업체명", "accountname", "account_name", "name", "계정명", "담당자", "manager", "monthly_budget"]:
+        if c_clean in ["커스텀id", "customerid", "customer_id", "id", "고객id", "업체명", "accountname", "account_name", "name", "계정명", "담당자", "manager", "monthly_budget"] or _is_operating_weekdays_column(c_clean):
             target_cols.append(f'"{c}"')
             
     select_str = ", ".join(target_cols) if target_cols else "*"
@@ -358,6 +456,8 @@ def get_meta(_engine) -> pd.DataFrame:
                 rename_map[c] = "account_name"
             elif c_clean in ["담당자", "manager"]:
                 rename_map[c] = "manager"
+            elif _is_operating_weekdays_column(c_clean):
+                rename_map[c] = "operating_weekdays"
         df = df.rename(columns=rename_map)
         if "customer_id" in df.columns:
             df["customer_id"] = _normalize_customer_id_series(df["customer_id"])
@@ -367,6 +467,12 @@ def get_meta(_engine) -> pd.DataFrame:
             df["manager"] = df["manager"].fillna("미배정").astype(str).str.strip()
         if "monthly_budget" in df.columns:
             df["monthly_budget"] = pd.to_numeric(df["monthly_budget"], errors="coerce").fillna(0)
+        else:
+            df["monthly_budget"] = 0
+        if "operating_weekdays" in df.columns:
+            df["operating_weekdays"] = df["operating_weekdays"].apply(normalize_operating_weekdays)
+        else:
+            df["operating_weekdays"] = DEFAULT_OPERATING_WEEKDAYS
     return df
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
@@ -895,8 +1001,39 @@ def update_monthly_budget(_engine, cid: int, val: int):
             "UPDATE dim_customer SET monthly_budget = :val WHERE REGEXP_REPLACE(CAST(customer_id AS TEXT), '\\.0+$', '') = :cid",
             {"val": val, "cid": cid_norm},
         )
+        get_table_columns.clear()
+        get_meta.clear()
+        query_budget_bundle.clear()
     except Exception as e:
         st.error(f"예산 업데이트 실패: {e}")
+
+
+def update_customer_operating_weekdays(_engine, cid: int, weekdays: str):
+    try:
+        weekdays_norm = normalize_operating_weekdays(weekdays)
+        cols = get_table_columns(_engine, "dim_customer")
+        if "customer_id" not in cols:
+            df = sql_read(_engine, "SELECT * FROM dim_customer")
+            df = _prepare_accounts_meta_df(df)
+            df.to_sql("dim_customer", _engine, if_exists="replace", index=False)
+        else:
+            if "operating_weekdays" not in cols:
+                sql_exec(
+                    _engine,
+                    f"ALTER TABLE dim_customer ADD COLUMN operating_weekdays TEXT DEFAULT '{DEFAULT_OPERATING_WEEKDAYS}'",
+                )
+        cid_norm = _normalize_customer_id_value(cid)
+        sql_exec(
+            _engine,
+            "UPDATE dim_customer SET operating_weekdays = :weekdays WHERE REGEXP_REPLACE(CAST(customer_id AS TEXT), '\\.0+$', '') = :cid",
+            {"weekdays": weekdays_norm, "cid": cid_norm},
+        )
+        get_table_columns.clear()
+        get_meta.clear()
+        query_budget_bundle.clear()
+    except Exception as e:
+        st.error(f"운영 요일 업데이트 실패: {e}")
+
 
 @st.cache_data(ttl=43200, max_entries=10, show_spinner=False)
 def query_campaign_off_log(_engine, d1: date, d2: date, cids: tuple) -> pd.DataFrame:
