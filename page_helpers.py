@@ -17,10 +17,17 @@ from data import *
 from ui import *
 from data import pct_change, pct_to_arrow
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except Exception:
+        return default
+
+
 BUILD_TAG = os.getenv("APP_BUILD", "")
-TOPUP_STATIC_THRESHOLD = int(os.getenv("TOPUP_STATIC_THRESHOLD", "50000"))
-TOPUP_AVG_DAYS = int(os.getenv("TOPUP_AVG_DAYS", "3"))
-TOPUP_DAYS_COVER = int(os.getenv("TOPUP_DAYS_COVER", "2"))
+TOPUP_STATIC_THRESHOLD = _env_int("TOPUP_STATIC_THRESHOLD", 50000)
+TOPUP_AVG_DAYS = _env_int("TOPUP_AVG_DAYS", 3)
+TOPUP_DAYS_COVER = _env_int("TOPUP_DAYS_COVER", 2)
 
 
 def _normalize_customer_id_value_for_page(value) -> str:

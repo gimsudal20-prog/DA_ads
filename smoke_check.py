@@ -27,6 +27,7 @@ KEY_FILES = [
     'pages.py',
     'data.py',
     'page_helpers.py',
+    'streamlit_compat.py',
     'view_campaign.py',
     'view_overview.py',
     'view_media.py',

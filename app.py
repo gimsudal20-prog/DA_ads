@@ -13,6 +13,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from streamlit_compat import apply_streamlit_compat  # noqa: E402
+apply_streamlit_compat()
+
+try:  # noqa: E402
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except Exception:
+    pass
+
 def clear_cache_daily():
     """날짜 변경 시 필요한 캐시만 정리해 아침 첫 진입 재로딩을 줄입니다."""
     today = date.today()

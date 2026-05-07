@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit_compat  # noqa: F401
 from typing import Dict
 from datetime import date
 from html import escape
@@ -22,7 +23,7 @@ from data import (
     format_currency,
 )
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta
-from ui import render_kpi_strip, render_toolbar
+from ui import render_kpi_strip, render_toolbar, safe_numeric_col
 
 def _campaign_fetch_limit(top_n: int) -> int:
     try:
@@ -154,22 +155,23 @@ def _format_avg_rank(value):
     return f"{num:.0f}위"
 
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
+    has_total_cols = {"tot_conv", "tot_sales"}.issubset(set(view.columns))
     for c in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "tot_conv", "tot_sales"]:
-        if c in view.columns: view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0)
+        view[c] = safe_numeric_col(view, c) if c in view.columns else pd.Series([0.0] * len(view.index))
 
-    if "tot_conv" in view.columns:
+    if has_total_cols:
         view["총 전환수"] = view["tot_conv"]
         view["총 전환매출"] = view["tot_sales"]
     else:
-        view["총 전환수"] = view.get("구매완료수", 0) + view.get("장바구니수", 0) + view.get("위시리스트수", 0)
-        view["총 전환매출"] = view.get("구매완료 매출", 0) + view.get("장바구니 매출액", 0) + view.get("위시리스트 매출액", 0)
+        view["총 전환수"] = safe_numeric_col(view, "구매완료수") + safe_numeric_col(view, "장바구니수") + safe_numeric_col(view, "위시리스트수")
+        view["총 전환매출"] = safe_numeric_col(view, "구매완료 매출") + safe_numeric_col(view, "장바구니 매출액") + safe_numeric_col(view, "위시리스트 매출액")
 
     view["CTR(%)"] = np.where(view["노출"] > 0, (view["클릭"] / view["노출"]) * 100, 0.0)
     view["CPC(원)"] = np.where(view["클릭"] > 0, view["광고비"] / view["클릭"], 0.0)
     
-    view["구매 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("구매완료 매출", 0) / view["광고비"]) * 100, 0.0)
-    view["장바구니 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("장바구니 매출액", 0) / view["광고비"]) * 100, 0.0)
-    view["위시리스트 ROAS(%)"] = np.where(view["광고비"] > 0, (view.get("위시리스트 매출액", 0) / view["광고비"]) * 100, 0.0)
+    view["구매 ROAS(%)"] = np.where(view["광고비"] > 0, (safe_numeric_col(view, "구매완료 매출") / view["광고비"]) * 100, 0.0)
+    view["장바구니 ROAS(%)"] = np.where(view["광고비"] > 0, (safe_numeric_col(view, "장바구니 매출액") / view["광고비"]) * 100, 0.0)
+    view["위시리스트 ROAS(%)"] = np.where(view["광고비"] > 0, (safe_numeric_col(view, "위시리스트 매출액") / view["광고비"]) * 100, 0.0)
     view["통합 ROAS(%)"] = np.where(view["광고비"] > 0, (view["총 전환매출"] / view["광고비"]) * 100, 0.0)
     return view
 
@@ -258,8 +260,8 @@ def _keyword_rank_by_keys(detail_bundle: pd.DataFrame, keys: list[str]) -> pd.Da
     if detail_bundle is None or detail_bundle.empty or "avg_rank" not in detail_bundle.columns:
         return pd.DataFrame(columns=keys + ["avg_rank"])
     tmp = detail_bundle.copy()
-    tmp["imp"] = pd.to_numeric(tmp.get("imp", 0), errors="coerce").fillna(0.0)
-    tmp["avg_rank"] = pd.to_numeric(tmp.get("avg_rank", np.nan), errors="coerce")
+    tmp["imp"] = safe_numeric_col(tmp, "imp", default=0.0)
+    tmp["avg_rank"] = safe_numeric_col(tmp, "avg_rank", default=np.nan)
     tmp["_rank_imp"] = tmp["avg_rank"].fillna(0.0) * tmp["imp"]
     grp = tmp.groupby(keys, as_index=False)[["_rank_imp", "imp"]].sum()
     grp["avg_rank"] = np.where(grp["imp"] > 0, grp["_rank_imp"] / grp["imp"], np.nan)
@@ -1044,10 +1046,12 @@ def page_perf_campaign(meta: pd.DataFrame, engine, f: Dict) -> None:
             view = _add_perf_metrics(view)
             if "avg_rank" in view.columns:
                 view["평균순위"] = view["avg_rank"].apply(_format_avg_rank)
-            total_cost = float(pd.to_numeric(view.get("광고비", 0), errors="coerce").fillna(0).sum())
-            total_clk = float(pd.to_numeric(view.get("클릭", 0), errors="coerce").fillna(0).sum())
-            total_sales = float(pd.to_numeric(view.get("총 전환매출", view.get("구매완료 매출", 0)), errors="coerce").fillna(0).sum())
-            total_conv = float(pd.to_numeric(view.get("총 전환수", view.get("구매완료수", 0)), errors="coerce").fillna(0).sum())
+            total_cost = float(safe_numeric_col(view, "광고비").sum())
+            total_clk = float(safe_numeric_col(view, "클릭").sum())
+            total_sales_col = "총 전환매출" if "총 전환매출" in view.columns else "구매완료 매출"
+            total_conv_col = "총 전환수" if "총 전환수" in view.columns else "구매완료수"
+            total_sales = float(safe_numeric_col(view, total_sales_col).sum())
+            total_conv = float(safe_numeric_col(view, total_conv_col).sum())
             total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
             total_cpc = (total_cost / total_clk) if total_clk > 0 else 0.0
             render_kpi_strip([

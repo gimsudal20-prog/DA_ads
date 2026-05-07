@@ -9,10 +9,11 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit_compat  # noqa: F401
 
 from data import query_shopping_search_terms
 from page_helpers import _perf_common_merge_meta, period_compare_range
-from ui import render_toolbar
+from ui import render_toolbar, safe_numeric_col, safe_numeric_series
 
 
 # ✨ 숫자 콤마 및 기호 포맷팅 딕셔너리
@@ -67,8 +68,9 @@ def _to_num(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 
 def _pct_change(cur, base):
-    cur = pd.to_numeric(cur, errors="coerce").fillna(0)
-    base = pd.to_numeric(base, errors="coerce").fillna(0)
+    length = len(cur.index) if isinstance(cur, pd.Series) else (len(base.index) if isinstance(base, pd.Series) else None)
+    cur = safe_numeric_series(cur, length=length, default=0)
+    base = safe_numeric_series(base, length=length, default=0)
     diff = cur - base
     safe_base = np.where(base == 0, 1, base)
     pct = np.where(base == 0, np.where(cur > 0, 100.0, 0.0), (diff / safe_base) * 100.0)
@@ -100,18 +102,18 @@ def _merge_compare(cur: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
             out[bx] = 0
         out[bx] = pd.to_numeric(out[bx], errors="coerce").fillna(0)
 
-    out["구매완료수 증감"], out["구매완료수 차이"] = _pct_change(out.get("purchase_conv", 0), out.get("b_purchase_conv", 0))
-    out["구매완료 매출 증감"], out["구매완료 매출 차이"] = _pct_change(out.get("purchase_sales", 0), out.get("b_purchase_sales", 0))
-    out["총 전환수 증감"], out["총 전환수 차이"] = _pct_change(out.get("total_conv", 0), out.get("b_total_conv", 0))
-    out["총 전환매출 증감"], out["총 전환매출 차이"] = _pct_change(out.get("total_sales", 0), out.get("b_total_sales", 0))
+    out["구매완료수 증감"], out["구매완료수 차이"] = _pct_change(safe_numeric_col(out, "purchase_conv"), safe_numeric_col(out, "b_purchase_conv"))
+    out["구매완료 매출 증감"], out["구매완료 매출 차이"] = _pct_change(safe_numeric_col(out, "purchase_sales"), safe_numeric_col(out, "b_purchase_sales"))
+    out["총 전환수 증감"], out["총 전환수 차이"] = _pct_change(safe_numeric_col(out, "total_conv"), safe_numeric_col(out, "b_total_conv"))
+    out["총 전환매출 증감"], out["총 전환매출 차이"] = _pct_change(safe_numeric_col(out, "total_sales"), safe_numeric_col(out, "b_total_sales"))
 
     return out
 
 
 def _render_top_cards(view: pd.DataFrame, cmp_mode: str):
     q_cnt = int(len(view))
-    purchase_cnt = int((pd.to_numeric(view.get("구매완료수", 0), errors="coerce").fillna(0) > 0).sum())
-    cart_cnt = int((pd.to_numeric(view.get("장바구니수", 0), errors="coerce").fillna(0) > 0).sum())
+    purchase_cnt = int((safe_numeric_col(view, "구매완료수") > 0).sum())
+    cart_cnt = int((safe_numeric_col(view, "장바구니수") > 0).sum())
 
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit_compat  # noqa: F401
 
 from data import sql_read, table_exists, get_table_columns, _sql_in_str_list
 from ui import render_toolbar

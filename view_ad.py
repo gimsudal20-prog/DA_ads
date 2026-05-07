@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit_compat  # noqa: F401
 from typing import Dict
 from datetime import date
 

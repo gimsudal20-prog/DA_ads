@@ -5,12 +5,13 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit_compat  # noqa: F401
 from typing import Dict
 from datetime import date
 
 from data import query_keyword_bundle, query_ad_bundle, format_currency
 from page_helpers import get_dynamic_cmp_options, period_compare_range, _perf_common_merge_meta, render_item_comparison_search
-from ui import render_kpi_strip, render_toolbar
+from ui import render_kpi_strip, render_toolbar, safe_numeric_col
 
 FMT_DICT = {
     "노출": "{:,.0f}", "노출 증감": "{:+.1f}%", "노출 차이": "{:+,.0f}",
@@ -504,10 +505,12 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     view = compute_keyword_view(kw_bundle, ad_bundle, meta)
     if view is not None and not view.empty:
         item_col = "키워드" if "키워드" in view.columns else ("항목명" if "항목명" in view.columns else view.columns[0])
-        total_cost = float(pd.to_numeric(view.get("광고비", 0), errors="coerce").fillna(0).sum())
-        total_clk = float(pd.to_numeric(view.get("클릭", 0), errors="coerce").fillna(0).sum())
-        total_conv = float(pd.to_numeric(view.get("전환", view.get("구매완료수", 0)), errors="coerce").fillna(0).sum())
-        total_sales = float(pd.to_numeric(view.get("전환매출", view.get("구매완료 매출", 0)), errors="coerce").fillna(0).sum())
+        total_cost = float(safe_numeric_col(view, "광고비").sum())
+        total_clk = float(safe_numeric_col(view, "클릭").sum())
+        total_conv_col = "전환" if "전환" in view.columns else "구매완료수"
+        total_sales_col = "전환매출" if "전환매출" in view.columns else "구매완료 매출"
+        total_conv = float(safe_numeric_col(view, total_conv_col).sum())
+        total_sales = float(safe_numeric_col(view, total_sales_col).sum())
         total_roas = (total_sales / total_cost * 100.0) if total_cost > 0 else 0.0
         total_cpc = (total_cost / total_clk) if total_clk > 0 else 0.0
         render_kpi_strip([

@@ -5,12 +5,13 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit_compat  # noqa: F401
 import io
 from typing import Dict
 from datetime import date
 
 from data import *
-from ui import render_echarts_dual_axis, render_kpi_strip, render_ops_cards, render_toolbar
+from ui import render_echarts_dual_axis, render_kpi_strip, render_ops_cards, render_toolbar, safe_numeric_col, safe_numeric_series
 from page_helpers import get_dynamic_cmp_options, period_compare_range
 
 
@@ -631,7 +632,7 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
             c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
-            b_val = pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+            b_val = safe_numeric_series(merged.get(base_col), length=len(merged.index), default=0)
             
             diff = c_val - b_val
             safe_b = np.where(b_val == 0, 1, b_val)
@@ -651,7 +652,7 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
         if cur_col in merged.columns:
             base_col = f"{cur_col}_base"
             c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
-            b_val = pd.to_numeric(merged.get(base_col, 0), errors="coerce").fillna(0)
+            b_val = safe_numeric_series(merged.get(base_col), length=len(merged.index), default=0)
             merged[diff_col] = c_val - b_val
 
     if align_mode == "sequence" and "_seq" in merged.columns:
@@ -920,9 +921,9 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
             target_df = target_df[(target_df["target_roas"] > 0) | (target_df["min_roas"] > 0)]
             
             if not target_df.empty:
-                target_df["cost"] = pd.to_numeric(target_df.get("cost", 0), errors="coerce").fillna(0.0)
-                target_df["sales"] = pd.to_numeric(target_df.get("sales", 0), errors="coerce").fillna(0.0)
-                target_df["conv"] = pd.to_numeric(target_df.get("conv", 0), errors="coerce").fillna(0.0)
+                target_df["cost"] = safe_numeric_col(target_df, "cost")
+                target_df["sales"] = safe_numeric_col(target_df, "sales")
+                target_df["conv"] = safe_numeric_col(target_df, "conv")
 
                 target_df["base_roas"] = np.where(target_df["target_roas"] > 0, target_df["target_roas"], target_df["min_roas"])
                 target_df["c_roas_purch"] = _safe_div(target_df["sales"], target_df["cost"], 100.0)

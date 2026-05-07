@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import pandas as pd
 import streamlit as st
+import streamlit_compat  # noqa: F401
 import streamlit_antd_components as sac
 from sqlalchemy import text
 

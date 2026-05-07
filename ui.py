@@ -47,6 +47,38 @@ def _ensure_aggrid():
         return None
 
 
+def safe_numeric_series(values, *, length: int | None = None, default: float = 0.0) -> pd.Series:
+    """Return a numeric Series even when callers pass a scalar fallback."""
+    if isinstance(values, pd.Series):
+        source = values
+    elif values is None:
+        source = pd.Series([default] * int(length or 0), dtype="float64")
+    elif isinstance(values, (list, tuple, pd.Index)):
+        source = pd.Series(values)
+    else:
+        source = pd.Series([values] * int(length or 1))
+    cleaned = (
+        source.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("원", "", regex=False)
+        .str.replace("%", "", regex=False)
+        .str.replace(r"[^0-9.-]", "", regex=True)
+        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+    )
+    out = pd.to_numeric(cleaned, errors="coerce").fillna(default)
+    if length is not None and len(out.index) != int(length):
+        out = pd.Series([default] * int(length), dtype="float64")
+    return out
+
+
+def safe_numeric_col(df: pd.DataFrame, col: str, *, default: float = 0.0) -> pd.Series:
+    if df is None:
+        return pd.Series(dtype="float64")
+    if col in df.columns:
+        return safe_numeric_series(df[col], length=len(df.index), default=default)
+    return pd.Series([default] * len(df.index), dtype="float64")
+
+
 # ==========================================
 # 🧩 UI Components
 # ==========================================

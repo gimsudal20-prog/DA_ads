@@ -15,6 +15,16 @@ from datetime import date
 # ==========================================
 # 1. Database Connection (QueuePool 적용)
 # ==========================================
+def _env_int(name: str, default: int, min_value: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or default)
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    return value
+
+
 def _require_database_url() -> str:
     db_url = os.getenv("DATABASE_URL", "").strip()
     if not db_url:
@@ -37,10 +47,10 @@ def get_engine():
         "keepalives_count": 5,
     }
 
-    pool_size = max(1, int(os.getenv("DASHBOARD_DB_POOL_SIZE", "5") or 5))
-    max_overflow = max(0, int(os.getenv("DASHBOARD_DB_MAX_OVERFLOW", "10") or 10))
-    pool_timeout = max(5, int(os.getenv("DASHBOARD_DB_POOL_TIMEOUT", "20") or 20))
-    pool_recycle = max(60, int(os.getenv("DASHBOARD_DB_POOL_RECYCLE", "1800") or 1800))
+    pool_size = _env_int("DASHBOARD_DB_POOL_SIZE", 5, min_value=1)
+    max_overflow = _env_int("DASHBOARD_DB_MAX_OVERFLOW", 10, min_value=0)
+    pool_timeout = _env_int("DASHBOARD_DB_POOL_TIMEOUT", 20, min_value=5)
+    pool_recycle = _env_int("DASHBOARD_DB_POOL_RECYCLE", 1800, min_value=60)
 
     return create_engine(
         db_url,

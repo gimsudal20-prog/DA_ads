@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit_compat  # noqa: F401
 import streamlit.components.v1 as components
 import calendar
 from typing import Dict
@@ -65,7 +66,7 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = alert_view.copy()
-    days_raw = pd.to_numeric(df.get("days_cover"), errors="coerce")
+    days_raw = safe_numeric_col(df, "days_cover", default=np.nan)
     df["잔여일수"] = days_raw.where(days_raw < 9999)
     df["_sort_days"] = days_raw.fillna(9999)
     df = df.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
@@ -100,10 +101,13 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
 def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float) -> pd.DataFrame:
     if biz_view is None or biz_view.empty:
         return pd.DataFrame()
+    for col in ["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]:
+        if col not in biz_view.columns:
+            biz_view[col] = "" if col in {"customer_id", "account_name", "manager"} else 0
     budget_view = biz_view[["customer_id", "account_name", "manager", "monthly_budget", "prev_month_cost", "current_month_cost"]].copy()
-    budget_view["monthly_budget_val"] = pd.to_numeric(budget_view.get("monthly_budget", 0), errors="coerce").fillna(0).astype(int)
-    budget_view["prev_month_cost_val"] = pd.to_numeric(budget_view.get("prev_month_cost", 0), errors="coerce").fillna(0).astype(int)
-    budget_view["current_month_cost_val"] = pd.to_numeric(budget_view.get("current_month_cost", 0), errors="coerce").fillna(0).astype(int)
+    budget_view["monthly_budget_val"] = safe_numeric_col(budget_view, "monthly_budget").astype(int)
+    budget_view["prev_month_cost_val"] = safe_numeric_col(budget_view, "prev_month_cost").astype(int)
+    budget_view["current_month_cost_val"] = safe_numeric_col(budget_view, "current_month_cost").astype(int)
     budget_view["usage_rate"] = 0.0
     m2 = budget_view["monthly_budget_val"] > 0
     budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
@@ -292,8 +296,8 @@ def render_alert_table(alert_view: pd.DataFrame):
 
 @st.fragment
 def render_budget_kpis(biz_view: pd.DataFrame, end_dt: date):
-    total_balance = int(pd.to_numeric(biz_view["bizmoney_balance"].astype(str).str.replace(r'[^\d]', '', regex=True), errors="coerce").fillna(0).sum())
-    total_month_cost = int(pd.to_numeric(biz_view["current_month_cost"], errors="coerce").fillna(0).sum())
+    total_balance = int(safe_numeric_col(biz_view, "bizmoney_balance").sum())
+    total_month_cost = int(safe_numeric_col(biz_view, "current_month_cost").sum())
     monthly_budget_src = biz_view["monthly_budget"] if "monthly_budget" in biz_view.columns else pd.Series([0] * len(biz_view.index))
     avg_cost_src = biz_view["avg_cost"] if "avg_cost" in biz_view.columns else pd.Series([0] * len(biz_view.index))
     total_budget = int(_numeric_series(monthly_budget_src, default=0).sum())

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from html import escape
 import streamlit as st
+import streamlit_compat  # noqa: F401
 
 from data import *
 from ui import render_hero
