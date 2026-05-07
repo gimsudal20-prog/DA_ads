@@ -820,6 +820,11 @@ def _resolve_ad_dimension_selects(_engine) -> tuple[str, str, str]:
 
 
 def _bundle_limit_clause(topn_cost: int) -> str:
+    try:
+        if topn_cost is not None and int(topn_cost) < 0:
+            return ""
+    except Exception:
+        pass
     limit_value = _safe_limit(topn_cost, default=10000, max_limit=10000)
     return f" ORDER BY agg.cost DESC LIMIT {limit_value}"
 

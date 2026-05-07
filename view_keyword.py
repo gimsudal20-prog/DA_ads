@@ -28,9 +28,9 @@ FMT_DICT = {
 
 
 def _keyword_fetch_limit(top_n: int, daily_breakdown: bool = False) -> int:
-    # Fetch broadly, then apply Top N only at display time. A small DB-side cost
-    # limit drops low-cost keywords/search terms that still have conversions.
-    return 10000
+    # Keyword tables must receive every matching row; Streamlit column sorting
+    # only works within rows already sent to the browser.
+    return -1
 
 def _style_delta_numeric(val):
     try: v = float(val)
@@ -263,6 +263,15 @@ def _build_shopping_terms_base_bundle(shop_terms: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _limit_display_rows_preserving_conversions(df: pd.DataFrame, sort_cols: list[str], top_n: int) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    work = df.copy()
+    if sort_cols:
+        work = work.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+    return work.reset_index(drop=True)
+
+
 def _conversion_metric_cols(df: pd.DataFrame) -> tuple[str | None, str | None]:
     if df is None or df.empty:
         return None, None
@@ -282,6 +291,73 @@ def _shopping_residual_group_cols(base: pd.DataFrame, detail: pd.DataFrame) -> l
         "adgroup_name",
     ]
     return [col for col in candidates if col in base.columns and col in detail.columns]
+
+
+def _build_shopping_unmapped_conversion_rows(base: pd.DataFrame, detail: pd.DataFrame) -> pd.DataFrame:
+    if base is None or base.empty or detail is None or detail.empty:
+        return pd.DataFrame()
+    type_col = "캠페인유형" if "캠페인유형" in base.columns else ("campaign_type_label" if "campaign_type_label" in base.columns else None)
+    if not type_col:
+        return pd.DataFrame()
+
+    base_conv_col, base_sales_col = _conversion_metric_cols(base)
+    detail_conv_col, detail_sales_col = _conversion_metric_cols(detail)
+    if not base_conv_col and not base_sales_col:
+        return pd.DataFrame()
+
+    shopping_base = base.loc[_is_shopping_campaign_type(base[type_col])].copy()
+    if shopping_base.empty:
+        return pd.DataFrame()
+
+    group_cols = _shopping_residual_group_cols(shopping_base, detail)
+    temp_group = False
+    if not group_cols:
+        group_cols = ["__shopping_all__"]
+        temp_group = True
+        shopping_base[group_cols[0]] = "all"
+        detail = detail.copy()
+        detail[group_cols[0]] = "all"
+
+    def _group_sum(frame: pd.DataFrame, col: str | None, name: str) -> pd.DataFrame:
+        if not col or col not in frame.columns:
+            out = frame[group_cols].drop_duplicates().copy()
+            out[name] = 0.0
+            return out
+        work = frame[group_cols + [col]].copy()
+        work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
+        return work.groupby(group_cols, as_index=False, dropna=False)[col].sum().rename(columns={col: name})
+
+    base_conv = _group_sum(shopping_base, base_conv_col, "__base_conv__")
+    base_sales = _group_sum(shopping_base, base_sales_col, "__base_sales__")
+    detail_conv = _group_sum(detail, detail_conv_col, "__detail_conv__")
+    detail_sales = _group_sum(detail, detail_sales_col, "__detail_sales__")
+
+    first_cols = _present_unique_cols(shopping_base, group_cols + ["customer_id", "업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"])
+    rows = shopping_base[first_cols].groupby(group_cols, as_index=False, dropna=False).first()
+    rows = rows.merge(base_conv, on=group_cols, how="left")
+    rows = rows.merge(base_sales, on=group_cols, how="left")
+    rows = rows.merge(detail_conv, on=group_cols, how="left")
+    rows = rows.merge(detail_sales, on=group_cols, how="left")
+
+    for col in ["__base_conv__", "__base_sales__", "__detail_conv__", "__detail_sales__"]:
+        rows[col] = pd.to_numeric(rows[col], errors="coerce").fillna(0)
+
+    rows["전환"] = (rows["__base_conv__"] - rows["__detail_conv__"]).clip(lower=0)
+    rows["전환매출"] = (rows["__base_sales__"] - rows["__detail_sales__"]).clip(lower=0)
+    rows = rows[(rows["전환"] > 0) | (rows["전환매출"] > 0)].copy()
+    if rows.empty:
+        return pd.DataFrame()
+
+    rows["키워드"] = "(검색어 미매핑 전환)"
+    rows["구분"] = "미매핑 전환"
+    if "캠페인유형" not in rows.columns:
+        rows["캠페인유형"] = "쇼핑검색"
+    for col in ["노출", "클릭", "광고비"]:
+        rows[col] = 0
+    rows = rows.drop(columns=[c for c in ["__base_conv__", "__base_sales__", "__detail_conv__", "__detail_sales__"] if c in rows.columns])
+    if temp_group and "__shopping_all__" in rows.columns:
+        rows = rows.drop(columns=["__shopping_all__"])
+    return _add_perf_metrics(rows)
 
 
 def _residualize_shopping_fact_conversions(base: pd.DataFrame, detail: pd.DataFrame) -> pd.DataFrame:
@@ -378,8 +454,12 @@ def _merge_keyword_view_with_shopping_terms(view: pd.DataFrame, shop_view: pd.Da
     base = view.copy()
     if "구분" not in base.columns:
         base["구분"] = "키워드/소재"
-    base = _residualize_shopping_fact_conversions(base, shop_view)
-    return pd.concat([base, shop_view], ignore_index=True, sort=False)
+    residual_rows = _build_shopping_unmapped_conversion_rows(base, shop_view)
+    base = _zero_shopping_fact_conversions(base)
+    parts = [base, shop_view]
+    if residual_rows is not None and not residual_rows.empty:
+        parts.append(residual_rows)
+    return pd.concat(parts, ignore_index=True, sort=False)
 
 
 def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merge_keys: list) -> pd.DataFrame:
@@ -569,7 +649,7 @@ def render_keyword_main(view, top_n):
 
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     sort_cols = [c for c in ["광고비", "전환매출", "전환"] if c in disp.columns]
-    disp = disp[final_cols].sort_values(sort_cols, ascending=[False] * len(sort_cols)).head(top_n)
+    disp = _limit_display_rows_preserving_conversions(disp[final_cols], sort_cols, top_n)
     
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:20px;'>키워드/소재 종합 성과 데이터</div>", unsafe_allow_html=True)
     
@@ -679,7 +759,7 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
 
     final_cols_cmp = [c for c in base_cols_cmp + metrics_cols_cmp if c in disp_cmp.columns]
     sort_cols_cmp = [c for c in ["광고비", "전환매출", "전환"] if c in disp_cmp.columns]
-    disp_final = disp_cmp[final_cols_cmp].sort_values(sort_cols_cmp, ascending=[False] * len(sort_cols_cmp)).head(top_n).copy()
+    disp_final = _limit_display_rows_preserving_conversions(disp_cmp[final_cols_cmp], sort_cols_cmp, top_n).copy()
 
     st.markdown("<div style='font-size:14px; font-weight:700; margin-bottom:12px; margin-top:8px;'>키워드 기간 비교 표</div>", unsafe_allow_html=True)
     st.dataframe(_build_table_styler(disp_final), use_container_width=True, height=550, hide_index=True, column_config=_keyword_fast_col_config(disp_final, "키워드"))
@@ -689,7 +769,7 @@ def page_perf_keyword(meta: pd.DataFrame, engine, f: Dict) -> None:
     render_toolbar(
         "키워드/소재 성과",
         "파워링크는 키워드 단위, 쇼핑검색은 일반 상품소재 단위 성과를 보여줍니다.",
-        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": f"Top {int(f.get('top_n_keyword', 150)):,}", "tone": "info"}],
+        [{"label": f"{f['start']} ~ {f['end']}", "tone": "primary"}, {"label": "전체 행 정렬", "tone": "info"}],
     )
     cids = tuple(f.get("selected_customer_ids", []))
     type_sel = tuple(f.get("type_sel", []))
