@@ -73,6 +73,15 @@ def _format_report_line(label: str, value: str) -> str:
     return f"{label} : {value}"
 
 
+def _format_report_count(value) -> str:
+    try:
+        if pd.isna(value):
+            return "0"
+        return f"{float(value):,.0f}"
+    except Exception:
+        return "0"
+
+
 def _sticky_cfg(first_col: str):
     return {
         first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")
@@ -319,7 +328,7 @@ def _build_campaign_report_text(
                 _format_report_line("클릭수", f"{int(float(row.get('clk', 0))):,}"),
                 _format_report_line("클릭률", f"{float(_safe_div(float(row.get('clk', 0)), float(row.get('imp', 0)), 100.0)):.1f}%"),
                 _format_report_line("광고 소진비용", f"{int(float(row.get('cost', 0))):,}원"),
-                _format_report_line("구매완료수", f"{float(row.get('conv', 0.0)):.1f}"),
+                _format_report_line("구매완료수", _format_report_count(row.get('conv', 0.0))),
                 _format_report_line("구매완료 매출", f"{int(float(row.get('sales', 0))):,}원"),
                 _format_report_line("구매 ROAS", f"{float(_safe_div(float(row.get('sales', 0)), float(row.get('cost', 0)), 100.0)):.1f}%"),
                 _format_report_line("주요 전환 키워드", keyword_text),
@@ -1215,7 +1224,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
                 _format_report_line("클릭수", f"{int(float(cur.get('clk', 0))):,}"),
                 _format_report_line("클릭률", f"{float(cur.get('ctr', 0)):.1f}%"),
                 _format_report_line("광고 소진비용", f"{int(float(cur.get('cost', 0))):,}원"),
-                _format_report_line("구매완료수", f"{float(cur.get('conv', 0.0)):.1f}"),
+                _format_report_line("구매완료수", _format_report_count(cur.get('conv', 0.0))),
                 _format_report_line("구매완료 매출", f"{int(float(cur.get('sales', 0))):,}원"),
                 _format_report_line("구매 ROAS", f"{float(cur.get('roas', 0)):.1f}%"),
                 _format_report_line("주요 전환 키워드", shop_kw_str)
