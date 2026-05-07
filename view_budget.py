@@ -135,6 +135,18 @@ def _build_budget_editor_view(biz_view: pd.DataFrame, target_pacing_rate: float)
     budget_view["monthly_budget_val"] = safe_numeric_col(budget_view, "monthly_budget").astype(int)
     budget_view["prev_month_cost_val"] = safe_numeric_col(budget_view, "prev_month_cost").astype(int)
     budget_view["current_month_cost_val"] = safe_numeric_col(budget_view, "current_month_cost").astype(int)
+    days_in_month = max(1.0, (1.0 / target_pacing_rate) if target_pacing_rate > 0 else 30.0)
+    current_day = max(1.0, min(days_in_month, round(days_in_month * target_pacing_rate)))
+    budget_view["current_daily_avg_val"] = np.where(
+        current_day > 0,
+        budget_view["current_month_cost_val"] / current_day,
+        0.0,
+    ).round(0).astype(int)
+    budget_view["recommended_daily_avg_val"] = np.where(
+        budget_view["monthly_budget_val"] > 0,
+        budget_view["monthly_budget_val"] / days_in_month,
+        0.0,
+    ).round(0).astype(int)
     budget_view["usage_rate"] = 0.0
     m2 = budget_view["monthly_budget_val"] > 0
     budget_view.loc[m2, "usage_rate"] = budget_view.loc[m2, "current_month_cost_val"] / budget_view.loc[m2, "monthly_budget_val"]
@@ -212,10 +224,18 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
     prev_month_dt = (end_dt.replace(day=1) - timedelta(days=1))
     prev_m_num = prev_month_dt.month
     
-    editor_df = budget_view[["customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", "usage_pct", "상태"]].copy()
+    for col in ["current_daily_avg_val", "recommended_daily_avg_val"]:
+        if col not in budget_view.columns:
+            budget_view[col] = 0
+    editor_df = budget_view[[
+        "customer_id", "account_name", "manager", "monthly_budget_val", "prev_month_cost_val",
+        "current_month_cost_val", "current_daily_avg_val", "recommended_daily_avg_val", "usage_pct", "상태"
+    ]].copy()
     
     editor_df["월 예산"] = editor_df["monthly_budget_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     editor_df[f"{end_dt.month}월 사용액"] = editor_df["current_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df["현재 일평균 소진액"] = editor_df["current_daily_avg_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
+    editor_df["일 평균 권장 소진액"] = editor_df["recommended_daily_avg_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     editor_df[f"{prev_m_num}월 사용액"] = editor_df["prev_month_cost_val"].apply(lambda x: f"{int(x):,}".rjust(15, ' ') if pd.notna(x) else "0".rjust(15, ' '))
     
     editor_df = editor_df.rename(columns={
@@ -225,8 +245,10 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
     })
 
     ordered_cols = [
-        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val", 
-        "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
+        "customer_id", "monthly_budget_val", "prev_month_cost_val", "current_month_cost_val",
+        "current_daily_avg_val", "recommended_daily_avg_val",
+        "업체명", "담당자", "월 예산", f"{end_dt.month}월 사용액",
+        "현재 일평균 소진액", "일 평균 권장 소진액", f"{prev_m_num}월 사용액", "집행률(%)", "상태"
     ]
     editor_df = editor_df[ordered_cols]
 
@@ -268,6 +290,8 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
             "monthly_budget_val": None, 
             "prev_month_cost_val": None,
             "current_month_cost_val": None,
+            "current_daily_avg_val": None,
+            "recommended_daily_avg_val": None,
             "업체명": st.column_config.TextColumn("업체명", disabled=True),
             "담당자": st.column_config.TextColumn("담당자", disabled=True),
             "월 예산": st.column_config.TextColumn(
@@ -278,6 +302,16 @@ def render_budget_editor(budget_view: pd.DataFrame, engine, end_dt: date, target
             f"{end_dt.month}월 사용액": st.column_config.TextColumn(
                 f"{end_dt.month}월 사용액", 
                 disabled=True
+            ),
+            "현재 일평균 소진액": st.column_config.TextColumn(
+                "현재 일평균 소진액",
+                disabled=True,
+                help="이번 달 누적 사용액을 현재 기준일의 일수로 나눈 값입니다."
+            ),
+            "일 평균 권장 소진액": st.column_config.TextColumn(
+                "일 평균 권장 소진액",
+                disabled=True,
+                help="월 예산을 해당 월 전체 일수로 나눈 권장 일평균입니다."
             ),
             f"{prev_m_num}월 사용액": st.column_config.TextColumn(
                 f"{prev_m_num}월 사용액", 
@@ -402,6 +436,10 @@ def page_budget(meta: pd.DataFrame, engine, f: Dict) -> None:
                     usage_rate = (current_cost / new_budget_float) if new_budget_float > 0 else 0.0
                     budget_view.loc[m_cid, "usage_rate"] = usage_rate
                     budget_view.loc[m_cid, "usage_pct"] = usage_rate * 100.0
+                    budget_view.loc[m_cid, "recommended_daily_avg_val"] = round(new_budget_float / days_in_month) if new_budget_float > 0 else 0
+                    budget_view.loc[m_cid, "current_daily_avg_val"] = (
+                        current_cost / max(current_day, 1)
+                    ).round(0).astype(int)
                     budget_view.loc[m_cid, "상태"] = np.select(
                         [
                             budget_view.loc[m_cid, "monthly_budget_val"] == 0,
