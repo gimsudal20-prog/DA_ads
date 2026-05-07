@@ -29,9 +29,10 @@ def _prepare_biz_view(bundle: pd.DataFrame) -> pd.DataFrame:
     if bundle is None or bundle.empty:
         return pd.DataFrame()
     biz_view = bundle.copy()
-    m = biz_view["avg_cost"].astype(float) > 0
-    biz_view.loc[m, "days_cover"] = biz_view.loc[m, "bizmoney_balance"].astype(float) / biz_view.loc[m, "avg_cost"].astype(float)
-    biz_view["threshold"] = (biz_view["avg_cost"].astype(float) * float(TOPUP_DAYS_COVER)).fillna(0.0)
+    balance = safe_numeric_col(biz_view, "bizmoney_balance")
+    avg_cost = safe_numeric_col(biz_view, "avg_cost")
+    biz_view["days_cover"] = np.where(avg_cost > 0, balance / avg_cost, np.nan)
+    biz_view["threshold"] = (avg_cost * float(TOPUP_DAYS_COVER)).fillna(0.0)
     biz_view["threshold"] = biz_view["threshold"].map(lambda x: max(float(x), float(TOPUP_STATIC_THRESHOLD)))
     return biz_view
 
@@ -41,8 +42,9 @@ def _prepare_alert_view(bundle: pd.DataFrame) -> pd.DataFrame:
     if bundle is None or bundle.empty:
         return pd.DataFrame()
     alert_view = bundle.copy()
-    m_alert = alert_view["avg_cost"].astype(float) > 0
-    alert_view.loc[m_alert, "days_cover"] = alert_view.loc[m_alert, "bizmoney_balance"].astype(float) / alert_view.loc[m_alert, "avg_cost"].astype(float)
+    balance = safe_numeric_col(alert_view, "bizmoney_balance")
+    avg_cost = safe_numeric_col(alert_view, "avg_cost")
+    alert_view["days_cover"] = np.where(avg_cost > 0, balance / avg_cost, np.nan)
     return alert_view
 
 
@@ -66,18 +68,36 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = alert_view.copy()
-    days_raw = safe_numeric_col(df, "days_cover", default=np.nan)
+    today = pd.Timestamp.now(tz="Asia/Seoul").date()
+    balance = _numeric_series(df.get("bizmoney_balance"), default=0).round(0).astype(int)
+    avg_cost = _numeric_series(df.get("avg_cost"), default=0).round(0).astype(int)
+    days_raw = pd.Series(np.where(avg_cost > 0, balance / avg_cost, np.nan), index=df.index)
     df["잔여일수"] = days_raw.where(days_raw < 9999)
     df["_sort_days"] = days_raw.fillna(9999)
-    df = df.sort_values(by="_sort_days", ascending=True).reset_index(drop=True)
 
-    def get_depletion_date(days_left):
+    def coerce_base_date(value):
+        try:
+            parsed = pd.to_datetime(value).date()
+        except Exception:
+            return today
+        if parsed > today:
+            return today
+        return parsed
+
+    if "bizmoney_dt" in df.columns:
+        df["_base_date"] = df["bizmoney_dt"].apply(coerce_base_date)
+    else:
+        df["_base_date"] = today
+    df["계산 기준일"] = df["_base_date"].apply(lambda x: x.strftime("%m월 %d일") if pd.notna(x) else "-")
+
+    def get_depletion_date(row):
+        days_left = row.get("잔여일수")
         if pd.isna(days_left) or float(days_left) >= 99:
             return "여유"
         days = float(days_left)
         if days <= 0:
             return "오늘"
-        deplete_date = date.today() + timedelta(days=int(days))
+        deplete_date = row.get("_base_date", today) + timedelta(days=max(1, int(np.ceil(days))))
         return deplete_date.strftime("%m월 %d일")
 
     def get_risk_label(days_left):
@@ -94,14 +114,14 @@ def _build_alert_display(alert_view: pd.DataFrame) -> pd.DataFrame:
 
     df["소진 위험"] = days_raw.apply(get_risk_label)
     df["_risk_rank"] = df["소진 위험"].map({"즉시 충전": 0, "소진 임박": 1, "주의": 2, "여유": 3}).fillna(4)
-    df["예상 소진일"] = days_raw.apply(get_depletion_date)
-    df["비즈머니 잔액"] = _numeric_series(df.get("bizmoney_balance"), default=0).round(0).astype(int)
+    df["예상 소진일"] = df.apply(get_depletion_date, axis=1)
+    df["비즈머니 잔액"] = balance
     avg_days_label = f"최근 {TOPUP_AVG_DAYS}일 평균소진"
-    df[avg_days_label] = _numeric_series(df.get("avg_cost"), default=0).round(0).astype(int)
+    df[avg_days_label] = avg_cost
     df["담당자"] = df.get("manager", "미배정").fillna("미배정").replace("", "미배정")
     df["업체명"] = df.get("account_name", df.get("customer_id", "-")).fillna("-").replace("", "-")
     df = df.sort_values(["_risk_rank", "_sort_days", "업체명"], ascending=[True, True, True]).reset_index(drop=True)
-    return df[["업체명", "소진 위험", "담당자", "비즈머니 잔액", avg_days_label, "잔여일수", "예상 소진일"]]
+    return df[["업체명", "소진 위험", "담당자", "비즈머니 잔액", avg_days_label, "잔여일수", "예상 소진일", "계산 기준일"]]
 
 
 @st.cache_data(ttl=180, show_spinner=False, max_entries=20)
@@ -304,6 +324,7 @@ def render_alert_table(alert_view: pd.DataFrame):
         avg_days_label: st.column_config.NumberColumn(avg_days_label, format="%,.0f 원"),
         "잔여일수": st.column_config.NumberColumn("잔여일수", format="%,.1f 일"),
         "예상 소진일": st.column_config.TextColumn("예상 소진일"),
+        "계산 기준일": st.column_config.TextColumn("계산 기준일", width="small"),
     }
 
     styled_df = _build_budget_table_styler(table_df, avg_days_label)

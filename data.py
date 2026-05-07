@@ -841,14 +841,27 @@ def query_budget_bundle(_engine, cids: tuple, yesterday: date, avg_d1: date, avg
     ]
 
     if table_exists(_engine, "fact_bizmoney_daily"):
-        latest_dt_df = sql_read(_engine, "SELECT MAX(dt) as latest_dt FROM fact_bizmoney_daily")
-        latest_dt = None if latest_dt_df.empty else latest_dt_df.iloc[0].get("latest_dt")
-        bizmoney_dt = latest_dt if pd.notna(latest_dt) else yesterday
         metric_frames.append(
             sql_read(
                 _engine,
-                f"SELECT customer_id, MAX(bizmoney_balance) as bizmoney_balance FROM fact_bizmoney_daily WHERE dt = :d1 {where_cid} GROUP BY customer_id",
-                {"d1": str(bizmoney_dt), **cid_params},
+                f"""
+                WITH latest AS (
+                    SELECT CAST(customer_id AS TEXT) AS customer_id, MAX(dt) AS bizmoney_dt
+                    FROM fact_bizmoney_daily
+                    WHERE 1=1 {where_cid}
+                    GROUP BY CAST(customer_id AS TEXT)
+                )
+                SELECT
+                    CAST(f.customer_id AS TEXT) AS customer_id,
+                    MAX(f.bizmoney_balance) AS bizmoney_balance,
+                    MAX(f.dt) AS bizmoney_dt
+                FROM fact_bizmoney_daily f
+                JOIN latest l
+                  ON CAST(f.customer_id AS TEXT) = l.customer_id
+                 AND f.dt = l.bizmoney_dt
+                GROUP BY CAST(f.customer_id AS TEXT)
+                """,
+                cid_params,
             )
         )
 
