@@ -89,27 +89,23 @@ html, body, [class*="css"] {
 }
 
 [data-testid="stDataFrame"],
-[data-testid="stDataEditor"],
-[data-testid="stDataFrame"] *,
-[data-testid="stDataEditor"] * {
+[data-testid="stDataEditor"] {
   --gdg-bg-cell: #FFFFFF !important;
-  --gdg-bg-cell-medium: #FFFFFF !important;
-  --gdg-bg-header: #FFFFFF !important;
-  --gdg-bg-header-has-focus: #FFFFFF !important;
+  --gdg-bg-cell-medium: #F8FAFC !important;
+  --gdg-bg-header: #F8FAFC !important;
+  --gdg-bg-header-has-focus: #F1F5F9 !important;
   --gdg-bg-bubble: #FFFFFF !important;
-  --gdg-bg-search-result: #FFFFFF !important;
-  --gdg-bg-search-result-current: #FFFFFF !important;
+  --gdg-bg-search-result: #EFF6FF !important;
+  --gdg-bg-search-result-current: #DBEAFE !important;
   --gdg-border-color: var(--nv-line) !important;
   --gdg-horizontal-border-color: var(--nv-line) !important;
-  background-color: #FFFFFF !important;
-}
-
-[data-testid="stDataFrame"] canvas,
-[data-testid="stDataEditor"] canvas,
-[data-testid="stDataFrame"] iframe,
-[data-testid="stDataEditor"] iframe {
-  background: #FFFFFF !important;
-  background-color: #FFFFFF !important;
+  --gdg-text-dark: #0F172A !important;
+  --gdg-text-medium: #334155 !important;
+  --gdg-text-light: #64748B !important;
+  --gdg-text-header: #0F172A !important;
+  --gdg-accent-color: var(--nv-primary) !important;
+  --gdg-accent-fg: #FFFFFF !important;
+  color: var(--nv-text) !important;
 }
 
 h1, h2, h3, h4, h5, h6 {
