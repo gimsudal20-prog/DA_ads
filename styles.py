@@ -91,9 +91,9 @@ html, body, [class*="css"] {
 [data-testid="stDataFrame"],
 [data-testid="stDataEditor"] {
   --gdg-bg-cell: #FFFFFF !important;
-  --gdg-bg-cell-medium: #F8FAFC !important;
-  --gdg-bg-header: #F8FAFC !important;
-  --gdg-bg-header-has-focus: #F1F5F9 !important;
+  --gdg-bg-cell-medium: #FFFFFF !important;
+  --gdg-bg-header: #FFFFFF !important;
+  --gdg-bg-header-has-focus: #FFFFFF !important;
   --gdg-bg-bubble: #FFFFFF !important;
   --gdg-bg-search-result: #EFF6FF !important;
   --gdg-bg-search-result-current: #DBEAFE !important;
