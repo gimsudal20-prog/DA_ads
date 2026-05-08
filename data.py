@@ -1248,9 +1248,11 @@ def query_campaign_timeseries(_engine, d1: date, d2: date, cids: tuple, type_sel
     conv_select_sql = f", SUM({expr['purchase_conv_expr']}) as conv, SUM({expr['purchase_sales_expr']}) as sales, SUM({expr['total_conv_expr']}) as tot_conv, SUM({expr['total_sales_expr']}) as tot_sales"
     cart_select_sql = f", SUM({expr['cart_conv_expr']}) as cart_conv, SUM({expr['cart_sales_expr']}) as cart_sales"
     wish_select_sql = f", SUM({expr['wish_conv_expr']}) as wishlist_conv, SUM({expr['wish_sales_expr']}) as wishlist_sales"
+    rank_col = _resolve_rank_column(_engine, "fact_campaign_daily")
+    rank_select_sql = f", CASE WHEN SUM(f.imp) > 0 THEN SUM(COALESCE(f.{rank_col}, 0) * f.imp) / SUM(f.imp) ELSE NULL END as avg_rank" if rank_col else ""
 
     sql = f"""
-        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}{wish_select_sql}
+        SELECT f.dt, SUM(f.imp) as imp, SUM(f.clk) as clk, SUM(f.cost) as cost{conv_select_sql}{cart_select_sql}{wish_select_sql}{rank_select_sql}
         FROM fact_campaign_daily f
         {type_join_sql}
         WHERE f.dt BETWEEN :d1 AND :d2 {where_cid} {type_where_sql}

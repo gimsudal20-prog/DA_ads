@@ -154,6 +154,22 @@ def _format_avg_rank(value):
     if pd.isna(num) or num <= 0: return "미수집"
     return f"{num:.0f}위"
 
+
+def _weighted_avg_rank_by_keys(df: pd.DataFrame, keys: list[str], imp_col: str = "imp", rank_col: str = "avg_rank") -> pd.DataFrame:
+    if df is None or df.empty or rank_col not in df.columns or not keys:
+        return pd.DataFrame(columns=keys + [rank_col])
+    usable_keys = [k for k in keys if k in df.columns]
+    if not usable_keys:
+        return pd.DataFrame(columns=keys + [rank_col])
+    tmp = df.copy()
+    tmp[imp_col] = safe_numeric_col(tmp, imp_col, default=0.0) if imp_col in tmp.columns else pd.Series([0.0] * len(tmp.index))
+    tmp[rank_col] = pd.to_numeric(tmp[rank_col], errors="coerce")
+    tmp["_rank_imp"] = tmp[rank_col].fillna(0.0) * tmp[imp_col]
+    grp = tmp.groupby(usable_keys, as_index=False, dropna=False)[["_rank_imp", imp_col]].sum()
+    grp[rank_col] = np.where(grp[imp_col] > 0, grp["_rank_imp"] / grp[imp_col], np.nan)
+    return grp[usable_keys + [rank_col]]
+
+
 def _add_perf_metrics(view: pd.DataFrame) -> pd.DataFrame:
     has_total_cols = {"tot_conv", "tot_sales"}.issubset(set(view.columns))
     for c in ["광고비", "구매완료 매출", "장바구니 매출액", "위시리스트 매출액", "노출", "클릭", "구매완료수", "장바구니수", "위시리스트수", "tot_conv", "tot_sales"]:
@@ -187,12 +203,14 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         if c in base_df.columns: base_df[c] = pd.to_numeric(base_df[c], errors='coerce').fillna(0)
 
     agg_dict = {c: 'sum' for c in val_cols if c in base_df.columns}
-    if 'avg_rank' in base_df.columns:
-        agg_dict['avg_rank'] = 'mean'
-        base_df['avg_rank'] = pd.to_numeric(base_df['avg_rank'], errors='coerce')
 
     if not base_df.empty and merge_keys:
         base_agg = base_df.groupby(merge_keys).agg(agg_dict).reset_index()
+        if 'avg_rank' in base_df.columns:
+            rank_agg = _weighted_avg_rank_by_keys(base_df, merge_keys)
+            if not rank_agg.empty:
+                base_agg = base_agg.merge(rank_agg, on=merge_keys, how="left")
+                agg_dict['avg_rank'] = 'weighted'
         base_agg = base_agg.rename(columns={c: f"b_{c}" for c in agg_dict.keys()})
         merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
     else:
@@ -257,15 +275,7 @@ def _normalize_merge_keys(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     return out
 
 def _keyword_rank_by_keys(detail_bundle: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    if detail_bundle is None or detail_bundle.empty or "avg_rank" not in detail_bundle.columns:
-        return pd.DataFrame(columns=keys + ["avg_rank"])
-    tmp = detail_bundle.copy()
-    tmp["imp"] = safe_numeric_col(tmp, "imp", default=0.0)
-    tmp["avg_rank"] = safe_numeric_col(tmp, "avg_rank", default=np.nan)
-    tmp["_rank_imp"] = tmp["avg_rank"].fillna(0.0) * tmp["imp"]
-    grp = tmp.groupby(keys, as_index=False)[["_rank_imp", "imp"]].sum()
-    grp["avg_rank"] = np.where(grp["imp"] > 0, grp["_rank_imp"] / grp["imp"], np.nan)
-    return grp[keys + ["avg_rank"]]
+    return _weighted_avg_rank_by_keys(detail_bundle, keys)
 
 def _compact_df_height(df: pd.DataFrame, min_height: int = 72, max_height: int = 260) -> int:
     try:
@@ -893,6 +903,9 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
         st.info("광고그룹 성과 데이터가 없습니다.")
         return
     grp = detail_bundle_grp.groupby(grp_cols, as_index=False)[val_cols].sum()
+    rank_grp = _keyword_rank_by_keys(detail_bundle_grp, grp_cols)
+    if not rank_grp.empty:
+        grp = grp.merge(rank_grp, on=grp_cols, how="left")
     grp = _perf_common_merge_meta(grp, meta)
     grouped = grp.rename(columns={
         "account_name": "업체명", "manager": "담당자", "campaign_type_label": "캠페인유형", "campaign_name": "캠페인", "adgroup_name": "광고그룹",
@@ -900,11 +913,16 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
         "wishlist_conv": "위시리스트수", "wishlist_sales": "위시리스트 매출액", "conv": "구매완료수", "sales": "구매완료 매출",
     }).copy()
     grouped = _add_perf_metrics(grouped)
+    if "avg_rank" in grouped.columns:
+        grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
     valid_keys_grp = [k for k in ["customer_id", "campaign_id", "adgroup_id"] if k in grouped.columns]
     if show_deltas_grp:
         if not base_detail_bundle_grp.empty and valid_keys_grp:
             b_grp_cols = [c for c in valid_keys_grp if c in base_detail_bundle_grp.columns]
             b_grp = base_detail_bundle_grp.groupby(b_grp_cols, as_index=False)[val_cols].sum()
+            b_rank_grp = _keyword_rank_by_keys(base_detail_bundle_grp, b_grp_cols)
+            if not b_rank_grp.empty:
+                b_grp = b_grp.merge(b_rank_grp, on=b_grp_cols, how="left")
             grouped = _apply_comparison_metrics(grouped, b_grp, valid_keys_grp)
         else:
             grouped = _apply_comparison_metrics(grouped, pd.DataFrame(), valid_keys_grp)
@@ -918,6 +936,10 @@ def _render_campaign_group_tab(meta: pd.DataFrame, engine, f: Dict, cids: tuple,
         st.warning("⚠️ 비교 기간에 3월 11일 이전(네이버 퍼널 분리 패치 전) 데이터가 포함되어 '통합 전환' 기준으로 표시합니다.")
     metrics_cols_grp = _group_mode_columns(show_deltas_grp, show_mode)
     base_cols_grp = ["업체명", "담당자", "캠페인유형", "캠페인", "광고그룹"]
+    if "avg_rank" in grouped.columns or "평균순위" in grouped.columns:
+        base_cols_grp.append("평균순위")
+        if show_deltas_grp:
+            metrics_cols_grp.append("순위 변화")
     cols_grp = [c for c in base_cols_grp + metrics_cols_grp if c in grouped.columns]
     disp_grp = grouped[cols_grp].sort_values("광고비", ascending=False).head(top_n).copy()
     _render_campaign_sticky_table(disp_grp, "광고그룹", apply_delta_styles=show_deltas_grp)

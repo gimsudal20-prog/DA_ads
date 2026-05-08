@@ -17,7 +17,7 @@ GLOBAL_UI_CSS = """
   --nv-primary-line: #B8D0FF;
 
   /* Ad ops neutrals */
-  --nv-app-bg: #EAF4FF;
+  --nv-app-bg: #FFFFFF;
   --nv-bg: #FFFFFF;
   --nv-surface: #F7FAFE;
   --nv-surface-2: #EDF3FA;

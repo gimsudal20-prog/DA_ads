@@ -67,6 +67,22 @@ def _format_avg_rank(value):
     if pd.isna(num) or num <= 0: return "미수집"
     return f"{num:.0f}위"
 
+
+def _weighted_avg_rank_by_keys(df: pd.DataFrame, keys: list[str], imp_col: str = "imp", rank_col: str = "avg_rank") -> pd.DataFrame:
+    if df is None or df.empty or rank_col not in df.columns or not keys:
+        return pd.DataFrame(columns=keys + [rank_col])
+    usable_keys = [k for k in keys if k in df.columns]
+    if not usable_keys:
+        return pd.DataFrame(columns=keys + [rank_col])
+    tmp = df.copy()
+    tmp[imp_col] = pd.to_numeric(tmp[imp_col], errors="coerce").fillna(0.0) if imp_col in tmp.columns else 0.0
+    tmp[rank_col] = pd.to_numeric(tmp[rank_col], errors="coerce")
+    tmp["_rank_imp"] = tmp[rank_col].fillna(0.0) * tmp[imp_col]
+    grp = tmp.groupby(usable_keys, as_index=False, dropna=False)[["_rank_imp", imp_col]].sum()
+    grp[rank_col] = np.where(grp[imp_col] > 0, grp["_rank_imp"] / grp[imp_col], np.nan)
+    return grp[usable_keys + [rank_col]]
+
+
 def _filter_shopping_general_ads(df: pd.DataFrame, allow_unknown_type: bool = False) -> pd.DataFrame:
     if df is None or df.empty: return pd.DataFrame() if df is None else df
     work = df.copy()
@@ -193,11 +209,12 @@ def _aggregate_keyword_rows(df: pd.DataFrame, group_cols: list[str], include_ran
         work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce").fillna(0)
 
     agg_dict = {metric_col: "sum" for metric_col in _KEYWORD_SUM_METRICS}
-    if include_rank and "avg_rank" in work.columns:
-        work["avg_rank"] = pd.to_numeric(work["avg_rank"], errors="coerce")
-        agg_dict["avg_rank"] = "mean"
 
     grouped = work.groupby(group_cols, as_index=False, dropna=False).agg(agg_dict)
+    if include_rank and "avg_rank" in work.columns:
+        rank_grp = _weighted_avg_rank_by_keys(work, group_cols, imp_col="노출")
+        if not rank_grp.empty:
+            grouped = grouped.merge(rank_grp, on=group_cols, how="left")
     grouped = _add_perf_metrics(grouped)
     if "avg_rank" in grouped.columns:
         grouped["평균순위"] = grouped["avg_rank"].apply(_format_avg_rank)
@@ -469,10 +486,13 @@ def _apply_comparison_metrics(view_df: pd.DataFrame, base_df: pd.DataFrame, merg
         if k in base_df.columns: base_df[k] = base_df[k].astype(str)
             
     agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
-    if 'avg_rank' in base_df.columns: agg_dict['avg_rank'] = 'mean'
         
     if not base_df.empty and merge_keys:
         base_agg = base_df.groupby(merge_keys, dropna=False).agg(agg_dict).reset_index()
+        if 'avg_rank' in base_df.columns:
+            rank_agg = _weighted_avg_rank_by_keys(base_df, merge_keys)
+            if not rank_agg.empty:
+                base_agg = base_agg.merge(rank_agg, on=merge_keys, how="left")
         base_agg = base_agg.rename(columns={'imp': 'b_imp', 'clk': 'b_clk', 'cost': 'b_cost', 'conv': 'b_conv', 'sales': 'b_sales', 'avg_rank': 'b_avg_rank'})
         merged = pd.merge(view_df, base_agg, on=merge_keys, how='left')
     else: merged = view_df.copy()
@@ -644,8 +664,10 @@ def render_keyword_main(view, top_n):
         if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
         if "일자" in disp.columns: grp_cols.insert(1, "일자")
         
-        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=False)
+        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=True)
         base_cols = ["일자", "키워드", "구분", "업체명"] if "일자" in disp.columns else ["키워드", "구분", "업체명"]
+        if "평균순위" in disp.columns:
+            base_cols.append("평균순위")
 
     final_cols = [c for c in base_cols + metrics_cols if c in disp.columns]
     sort_cols = [c for c in ["광고비", "전환매출", "전환"] if c in disp.columns]
@@ -721,7 +743,7 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
         # 1. 대상 기간 합산
         grp_cols = ["업체명", "키워드"]
         if "customer_id" in disp.columns: grp_cols.insert(0, "customer_id")
-        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=False)
+        disp = _aggregate_keyword_rows(disp, grp_cols, include_rank=True)
 
         # 2. 비교 기간(base) 합산
         if not base_bundle.empty:
@@ -729,9 +751,14 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
             if "customer_id" in base_bundle.columns: base_grp_cols.insert(0, "customer_id")
             base_agg_dict = {'imp': 'sum', 'clk': 'sum', 'cost': 'sum', 'conv': 'sum', 'sales': 'sum'}
             base_bundle = base_bundle.groupby(base_grp_cols, as_index=False, dropna=False).agg(base_agg_dict)
+            base_rank_grp = _weighted_avg_rank_by_keys(pd.concat([base_kw, base_ad], ignore_index=True, sort=False), base_grp_cols)
+            if not base_rank_grp.empty:
+                base_bundle = base_bundle.merge(base_rank_grp, on=base_grp_cols, how="left")
         
         valid_keys = [k for k in ["customer_id", "키워드"] if k in disp.columns and k in base_bundle.columns]
         base_cols_cmp = ["키워드", "구분", "업체명"]
+        if "평균순위" in disp.columns:
+            base_cols_cmp.append("평균순위")
     else:
         valid_keys = [k for k in ["customer_id", "adgroup_id", "키워드"] if k in disp.columns and k in base_bundle.columns]
         base_cols_cmp = ["키워드", "구분", "캠페인", "광고그룹", "업체명", "담당자", "캠페인유형"]
@@ -752,7 +779,7 @@ def render_keyword_cmp(view_orig, engine, cids, type_sel, top_n, start_dt, end_d
     metrics_cols_cmp.extend(["전환매출", "전환매출 증감", "전환매출 차이"] if show_deltas else ["전환매출"])
     metrics_cols_cmp.extend(["ROAS(%)", "ROAS 증감"] if show_deltas else ["ROAS(%)"])
 
-    if not agg_kw_cmp and show_deltas and ("avg_rank" in disp_cmp.columns or "평균순위" in disp_cmp.columns):
+    if show_deltas and ("avg_rank" in disp_cmp.columns or "평균순위" in disp_cmp.columns):
         metrics_cols_cmp.append("순위 변화")
 
     render_item_comparison_search("키워드/소재", disp_cmp, base_bundle, "키워드", start_dt, end_dt, b1, b2)

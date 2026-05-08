@@ -82,6 +82,28 @@ def _format_report_count(value) -> str:
         return "0"
 
 
+def _format_avg_rank(value) -> str:
+    try:
+        num = pd.to_numeric(value, errors="coerce")
+        if pd.isna(num) or num <= 0:
+            return "미수집"
+        return f"{num:.0f}위"
+    except Exception:
+        return "미수집"
+
+
+def _weighted_avg_rank_by_group(df: pd.DataFrame, group_col: str, rank_col: str = "avg_rank", imp_col: str = "imp") -> pd.DataFrame:
+    if df is None or df.empty or group_col not in df.columns or rank_col not in df.columns:
+        return pd.DataFrame(columns=[group_col, rank_col])
+    tmp = df[[group_col]].copy()
+    tmp[imp_col] = safe_numeric_col(df, imp_col, default=0.0) if imp_col in df.columns else pd.Series([0.0] * len(df.index))
+    tmp[rank_col] = pd.to_numeric(df[rank_col], errors="coerce")
+    tmp["_rank_imp"] = tmp[rank_col].fillna(0.0) * tmp[imp_col]
+    grp = tmp.groupby(group_col, as_index=False, dropna=False)[["_rank_imp", imp_col]].sum()
+    grp[rank_col] = np.where(grp[imp_col] > 0, grp["_rank_imp"] / grp[imp_col], np.nan)
+    return grp[[group_col, rank_col]]
+
+
 def _sticky_cfg(first_col: str):
     return {
         first_col: st.column_config.TextColumn(first_col, pinned=True, width="medium")
@@ -433,7 +455,9 @@ def format_for_csv(df):
     out_df = df.copy()
     for col in out_df.columns:
         if out_df[col].dtype in ['float64', 'int64']:
-            if col in ["노출수", "클릭수", "구매완료수", "총 전환수"]:
+            if col == "순위 변화":
+                out_df[col] = out_df[col].apply(lambda x: f"{x:+.0f}" if pd.notnull(x) else "-")
+            elif col in ["노출수", "클릭수", "구매완료수", "총 전환수"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "0")
             elif col in ["광고비", "구매완료 매출", "총 전환매출", "CPC"]:
                 out_df[col] = out_df[col].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "0원")
@@ -471,7 +495,7 @@ def _apply_overview_delta_styles(styler, df: pd.DataFrame):
         '구매완료 증감', '구매완료 차이', '구매 전환율 증감', '구매완료 매출 증감', '구매완료 매출 차이', '구매완료 ROAS 증감',
         '총 전환 증감', '총 전환 차이', '총 전환율 증감', '총 매출 증감', '총 매출 차이', '통합 ROAS 증감'
     ]
-    negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이']
+    negative_cols = ['광고비 증감', '광고비 차이', 'CPC 증감', 'CPC 차이', '순위 변화']
 
     pos_subset = [c for c in positive_cols if c in df.columns]
     neg_subset = [c for c in negative_cols if c in df.columns]
@@ -491,6 +515,8 @@ def _safe_div(n, d, mult=1.0):
 def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=None):
     if cur_df.empty and base_df.empty: return pd.DataFrame()
 
+    cur_has_rank = not cur_df.empty and 'avg_rank' in cur_df.columns
+    base_has_rank = not base_df.empty and 'avg_rank' in base_df.columns
     base_cols = [group_col, 'imp', 'clk', 'cost', 'conv', 'sales']
     for c in base_cols[1:]:
         if not cur_df.empty and c not in cur_df.columns: cur_df[c] = 0.0
@@ -502,10 +528,16 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     if not cur_df.empty:
         cur_grp['tot_conv'] = cur_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in cur_df.columns else cur_grp['conv']
         cur_grp['tot_sales'] = cur_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in cur_df.columns else cur_grp['sales']
+        cur_rank = _weighted_avg_rank_by_group(cur_df, group_col)
+        if not cur_rank.empty:
+            cur_grp = cur_grp.merge(cur_rank, on=group_col, how="left")
     
     if not base_df.empty:
         base_grp['tot_conv'] = base_df.groupby(group_col)['tot_conv'].sum().values if 'tot_conv' in base_df.columns else base_grp['conv']
         base_grp['tot_sales'] = base_df.groupby(group_col)['tot_sales'].sum().values if 'tot_sales' in base_df.columns else base_grp['sales']
+        base_rank = _weighted_avg_rank_by_group(base_df, group_col)
+        if not base_rank.empty:
+            base_grp = base_grp.merge(base_rank, on=group_col, how="left")
 
     merged = pd.merge(cur_grp, base_grp, on=group_col, how='outer', suffixes=('_cur', '_base')).fillna(0)
 
@@ -516,6 +548,10 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     c_sales, b_sales = merged.get('sales_cur', 0), merged.get('sales_base', 0)
     c_tot_conv, b_tot_conv = merged.get('tot_conv_cur', 0), merged.get('tot_conv_base', 0)
     c_tot_sales, b_tot_sales = merged.get('tot_sales_cur', 0), merged.get('tot_sales_base', 0)
+    cur_rank_col = 'avg_rank_cur' if (cur_has_rank and base_has_rank) else ('avg_rank' if cur_has_rank else None)
+    base_rank_col = 'avg_rank_base' if (cur_has_rank and base_has_rank) else ('avg_rank' if base_has_rank and not cur_has_rank else None)
+    c_rank = pd.to_numeric(merged.get(cur_rank_col), errors="coerce") if cur_rank_col else pd.Series(np.nan, index=merged.index)
+    b_rank = pd.to_numeric(merged.get(base_rank_col), errors="coerce") if base_rank_col else pd.Series(np.nan, index=merged.index)
 
     c_cpc = _safe_div(c_cost, c_clk)
     b_cpc = _safe_div(b_cost, b_clk)
@@ -528,6 +564,9 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['클릭률(%)'] = _safe_div(c_clk, c_imp, 100.0)
     out['광고비'] = c_cost
     out['CPC'] = c_cpc
+    if cur_rank_col:
+        out['avg_rank'] = c_rank
+        out['평균순위'] = c_rank.apply(_format_avg_rank)
     
     out['구매완료수'] = c_conv
     out['구매 전환율(%)'] = _safe_div(c_conv, c_clk, 100.0)
@@ -569,6 +608,8 @@ def _build_comparison_df(cur_df, base_df, group_col, group_label, type_kor_map=N
     out['구매완료 ROAS 증감'] = out['구매완료 ROAS(%)'] - b_roas
     out['총 전환율 증감'] = out['총 전환율(%)'] - b_tcvr
     out['통합 ROAS 증감'] = out['통합 ROAS(%)'] - b_troas
+    if cur_rank_col:
+        out['순위 변화'] = np.where((c_rank > 0) & (b_rank > 0), c_rank - b_rank, np.nan)
 
     return out.sort_values("광고비", ascending=False).reset_index(drop=True)
 
@@ -584,6 +625,9 @@ def _build_ts_df(df, group_col, group_label):
         if c not in df.columns: df[c] = 0.0
 
     grp = df.groupby(group_col)[grp_cols].sum().reset_index()
+    rank_grp = _weighted_avg_rank_by_group(df, group_col)
+    if not rank_grp.empty:
+        grp = grp.merge(rank_grp, on=group_col, how="left")
 
     out = pd.DataFrame()
     out[group_label] = grp[group_col]
@@ -592,6 +636,9 @@ def _build_ts_df(df, group_col, group_label):
     out['클릭률(%)'] = _safe_div(grp['clk'], grp['imp'], 100.0)
     out['광고비'] = grp['cost']
     out['CPC'] = _safe_div(grp['cost'], grp['clk'])
+    if 'avg_rank' in grp.columns:
+        out['avg_rank'] = grp['avg_rank']
+        out['평균순위'] = grp['avg_rank'].apply(_format_avg_rank)
     
     out['구매완료수'] = grp['conv']
     out['구매 전환율(%)'] = _safe_div(grp['conv'], grp['clk'], 100.0)
@@ -663,6 +710,12 @@ def _build_ts_compare_df(cur_df, base_df, group_col, group_label, align_mode="la
             c_val = pd.to_numeric(merged[cur_col], errors="coerce").fillna(0)
             b_val = safe_numeric_series(merged.get(base_col), length=len(merged.index), default=0)
             merged[diff_col] = c_val - b_val
+
+    if "avg_rank" in merged.columns:
+        c_rank = pd.to_numeric(merged["avg_rank"], errors="coerce")
+        b_rank = safe_numeric_series(merged.get("avg_rank_base"), length=len(merged.index), default=np.nan)
+        merged["평균순위"] = c_rank.apply(_format_avg_rank)
+        merged["순위 변화"] = np.where((c_rank > 0) & (b_rank > 0), c_rank - b_rank, np.nan)
 
     if align_mode == "sequence" and "_seq" in merged.columns:
         merged = merged.drop(columns=["_seq"])
@@ -997,7 +1050,8 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         "총 전환수": "{:,.0f}", "총 전환 증감": "{:+.1f}%", "총 전환 차이": "{:+,.0f}",
         "총 전환율(%)": "{:,.2f}%", "총 전환율 증감": "{:+.2f}%",
         "총 전환매출": "{:,.0f}원", "총 매출 증감": "{:+.1f}%", "총 매출 차이": "{:+,.0f}원",
-        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%"
+        "통합 ROAS(%)": "{:,.1f}%", "통합 ROAS 증감": "{:+.1f}%",
+        "순위 변화": lambda x: f"{x:+.0f}" if pd.notna(x) else "-"
     }
 
     # ====================================================
@@ -1019,6 +1073,7 @@ def page_overview(meta: pd.DataFrame, engine, f: Dict) -> None:
         cols.extend(["클릭률(%)", "클릭률 증감"] if show_deltas else ["클릭률(%)"])
         cols.extend(["광고비", "광고비 증감", "광고비 차이"] if show_deltas else ["광고비"])
         cols.extend(["CPC", "CPC 증감", "CPC 차이"] if show_deltas else ["CPC"])
+        cols.extend(["평균순위", "순위 변화"] if show_deltas else ["평균순위"])
         
         cols.extend(["구매완료수", "구매완료 증감", "구매완료 차이"] if show_deltas else ["구매완료수"])
         cols.extend(["구매 전환율(%)", "구매 전환율 증감"] if show_deltas else ["구매 전환율(%)"])
