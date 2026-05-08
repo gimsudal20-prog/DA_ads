@@ -157,6 +157,7 @@ def render_trend_chart(df: pd.DataFrame, datalab_name: str, ad_type_label: str):
         trend_data = df["트렌드지수(%)"].fillna(0).round(1).tolist()
         
         options = {
+            "backgroundColor": "#FFFFFF",
             "tooltip": {
                 "trigger": "axis",
                 "axisPointer": {"type": "cross", "crossStyle": {"color": "#D7DCE5"}},

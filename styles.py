@@ -83,6 +83,35 @@ html, body, [class*="css"] {
   background: #FFFFFF !important;
 }
 
+[data-testid="stVerticalBlockBorderWrapper"] > div,
+[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
+  background: #FFFFFF !important;
+}
+
+[data-testid="stDataFrame"],
+[data-testid="stDataEditor"],
+[data-testid="stDataFrame"] *,
+[data-testid="stDataEditor"] * {
+  --gdg-bg-cell: #FFFFFF !important;
+  --gdg-bg-cell-medium: #FFFFFF !important;
+  --gdg-bg-header: #FFFFFF !important;
+  --gdg-bg-header-has-focus: #FFFFFF !important;
+  --gdg-bg-bubble: #FFFFFF !important;
+  --gdg-bg-search-result: #FFFFFF !important;
+  --gdg-bg-search-result-current: #FFFFFF !important;
+  --gdg-border-color: var(--nv-line) !important;
+  --gdg-horizontal-border-color: var(--nv-line) !important;
+  background-color: #FFFFFF !important;
+}
+
+[data-testid="stDataFrame"] canvas,
+[data-testid="stDataEditor"] canvas,
+[data-testid="stDataFrame"] iframe,
+[data-testid="stDataEditor"] iframe {
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-weight: 700 !important;
   letter-spacing: 0 !important;

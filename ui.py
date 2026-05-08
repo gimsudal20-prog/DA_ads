@@ -16,7 +16,7 @@ THEME = {
     "primary": "#0528F2",
     "primary_soft": "#EEF2FF",
     "bg": "#FFFFFF",
-    "surface": "#F8FAFC",
+    "surface": "#FFFFFF",
     "line": "#E5E7EB",
     "text": "#0F172A",
     "muted": "#64748B",
@@ -323,6 +323,7 @@ def render_echarts_dual_axis(title: str, df: pd.DataFrame, x_col: str, y1_col: s
     y2_data = df[y2_col].fillna(0).tolist()
 
     options = {
+        "backgroundColor": "#FFFFFF",
         "title": {"text": title, "textStyle": {"fontSize": 13, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 4},
         "color": [THEME['primary_soft'], THEME['primary']],
         "tooltip": {
@@ -378,6 +379,7 @@ def render_echarts_single_axis(title: str, df: pd.DataFrame, x_col: str, y_col: 
     y_data = df[y_col].fillna(0).tolist()
 
     options = {
+        "backgroundColor": "#FFFFFF",
         "title": {"text": title, "textStyle": {"fontSize": 13, "color": THEME['text'], "fontWeight": 600}, "left": "left", "top": 4},
         "color": [THEME['primary']],
         "tooltip": {
