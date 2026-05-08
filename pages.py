@@ -24,6 +24,17 @@ PAGE_DESCRIPTIONS = {
     "설정 및 연결": "계정 연결, 동기화, 목표 ROAS 기준을 관리합니다.",
 }
 
+NAV_CONFIG = [
+    ("요약", "대시보드", ":material/dashboard:"),
+    ("예산 및 잔액", "비즈머니", ":material/account_balance_wallet:"),
+    ("매체(지면) 분석", "매체", ":material/hub:"),
+    ("성과 분석 · 캠페인", "캠페인", ":material/campaign:"),
+    ("성과 분석 · 키워드", "키워드", ":material/key:"),
+    ("성과 분석 · 소재", "소재", ":material/ads_click:"),
+    ("쇼핑 검색어 분석", "검색어", ":material/manage_search:"),
+    ("설정 및 연결", "설정", ":material/settings:"),
+]
+
 
 def _render_page_header(nav: str, latest: dict | None, f: dict | None = None) -> None:
     subtitle = PAGE_DESCRIPTIONS.get(nav, "")
@@ -46,15 +57,27 @@ def _render_page_header(nav: str, latest: dict | None, f: dict | None = None) ->
         f"<span class='nv-meta-chip {escape(tone)}'>{escape(label)}</span>"
         for tone, label in chips
     )
+    action_html = "".join([
+        "<span class='nv-action-chip'>스냅샷</span>",
+        "<span class='nv-icon-chip'>↻</span>",
+        "<span class='nv-icon-chip'>↗</span>",
+        "<span class='nv-action-chip primary'>새 광고 만들기</span>",
+    ])
     st.markdown(
         f"""
-        <div class='nv-page-head'>
-            <div class='nv-page-head-left'>
-                <div class='nv-page-eyebrow'>Ad Ops Console</div>
-                <div class='nv-h1'>{escape(nav)}</div>
-                <p class='nv-page-sub'>{escape(subtitle)}</p>
+        <div class='nv-console-head'>
+            <div class='nv-console-top'>
+                <div class='nv-page-head-left'>
+                    <div class='nv-page-eyebrow'>Ad Ops Console</div>
+                    <div class='nv-h1'>{escape(nav)}</div>
+                    <p class='nv-page-sub'>{escape(subtitle)}</p>
+                </div>
+                <div class='nv-console-actions'>{action_html}</div>
             </div>
-            <div class='nv-page-meta'>{chip_html}</div>
+            <div class='nv-filter-bar'>
+                <div class='nv-filter-search'>제목, 채널, 상태로 필터하기</div>
+                <div class='nv-page-meta'>{chip_html}</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -87,18 +110,24 @@ def main():
         if not meta_ready:
             st.warning("동기화가 필요합니다.")
 
-        nav_items = [
-            "요약",
-            "예산 및 잔액",
-            "매체(지면) 분석",
-            "성과 분석 · 캠페인",
-            "성과 분석 · 키워드",
-            "성과 분석 · 소재",
-            "쇼핑 검색어 분석",
-            "설정 및 연결"
-        ] if meta_ready else ["설정 및 연결"]
+        nav_items = [item[0] for item in NAV_CONFIG] if meta_ready else ["설정 및 연결"]
+        if st.session_state.get("nav_page") not in nav_items:
+            st.session_state["nav_page"] = nav_items[0]
 
-        nav = st.radio("menu", nav_items, key="nav_page", label_visibility="collapsed")
+        for page_key, short_label, icon in NAV_CONFIG:
+            if page_key not in nav_items:
+                continue
+            is_active = st.session_state.get("nav_page") == page_key
+            if st.button(
+                short_label,
+                key=f"nav_btn_{page_key}",
+                icon=icon,
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state["nav_page"] = page_key
+
+        nav = st.session_state.get("nav_page", nav_items[0])
 
     f = None
     if nav != "설정 및 연결":

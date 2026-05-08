@@ -102,11 +102,16 @@ def render_hero(latest_dates: dict | None, build_tag: str, dashboard_title: str 
 
     safe_title = html.escape(dashboard_title)
     safe_dt = html.escape(dt_str)
+    safe_tag = html.escape(str(build_tag or "local"))
 
     st.sidebar.markdown(f"""
-    <div class='sidebar-info-box'>
-        <div class='sidebar-info-label'>{safe_title}</div>
-        <div class='sidebar-info-value'>최근 수집: <span>{safe_dt}</span></div>
+    <div class='sidebar-brand-card'>
+        <div class='sidebar-brand-mark'>A</div>
+        <div class='sidebar-brand-copy'>
+            <div class='sidebar-info-label'>{safe_title}</div>
+            <div class='sidebar-info-value'>최근 수집 <span>{safe_dt}</span></div>
+            <div class='sidebar-build-tag'>Build {safe_tag}</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -139,8 +144,10 @@ def render_kpi_strip(items: list[dict]) -> None:
             cls, sub = _delta_class_and_text(item.get("cur"), item.get("base"), bool(item.get("improve_when_up", True)))
         sub = html.escape(str(sub or ""))
         cls = html.escape(cls if cls in {"pos", "neg", "neu"} else "neu")
+        tone = str(item.get("accent", "") or "")
+        tone_cls = tone if tone in {"blue", "green", "amber", "red", "cyan"} else ""
         cells.append(
-            "<div class='nv-kpi-item'>"
+            f"<div class='nv-kpi-item {tone_cls}'>"
             f"<div class='nv-kpi-item-label'>{label}</div>"
             f"<div class='nv-kpi-item-value' title='{value}'>{value}</div>"
             f"<div class='nv-kpi-item-sub {cls}'>{sub}</div>"
@@ -158,8 +165,10 @@ def render_ops_cards(items: list[dict]) -> None:
         title = html.escape(str(item.get("title", "")))
         value = html.escape(str(item.get("value", "-")))
         note = html.escape(str(item.get("note", "")))
+        icon = html.escape(str(item.get("icon", "") or ""))
         cards.append(
             f"<div class='nv-op-card {tone_cls}'>"
+            f"<div class='nv-op-card-icon'>{icon}</div>"
             f"<div class='nv-op-card-title'>{title}</div>"
             f"<div class='nv-op-card-value'>{value}</div>"
             f"<div class='nv-op-card-note'>{note}</div>"
@@ -175,7 +184,8 @@ def render_toolbar(title: str, subtitle: str = "", chips: list[dict] | None = No
         label = html.escape(str(chip.get("label", "")))
         tone = str(chip.get("tone", "") or "")
         tone_cls = tone if tone in {"primary", "success", "warning", "danger", "info"} else ""
-        chip_html.append(f"<span class='nv-chip {tone_cls}'>{label}</span>")
+        icon = html.escape(str(chip.get("icon", "") or ""))
+        chip_html.append(f"<span class='nv-chip {tone_cls}'>{icon}{label}</span>")
     safe_title = html.escape(str(title))
     safe_sub = html.escape(str(subtitle))
     st.markdown(
