@@ -19,9 +19,9 @@ GLOBAL_UI_CSS = """
   /* Ad ops neutrals */
   --nv-app-bg: #FFFFFF;
   --nv-bg: #FFFFFF;
-  --nv-surface: #F7FAFE;
-  --nv-surface-2: #EDF3FA;
-  --nv-surface-3: #E4ECF6;
+  --nv-surface: #FFFFFF;
+  --nv-surface-2: #F8FAFC;
+  --nv-surface-3: #F1F5F9;
   --nv-line: #DDE6F0;
   --nv-line-strong: #B8C7D9;
   --nv-muted-light: #94A3B8;
@@ -43,7 +43,7 @@ GLOBAL_UI_CSS = """
   --nv-radius: 6px;
   --nv-radius-lg: 8px;
   --nv-shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --nv-shadow-hover: 0 10px 24px rgba(7, 71, 217, 0.10);
+  --nv-shadow-hover: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
 /* =========================================
@@ -77,6 +77,12 @@ html, body, [class*="css"] {
   background: transparent !important;
 }
 
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stDataFrame"],
+[data-testid="stDataEditor"] {
+  background: #FFFFFF !important;
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-weight: 700 !important;
   letter-spacing: 0 !important;
@@ -103,7 +109,7 @@ h1, h2, h3, h4, h5, h6 {
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--nv-line);
   border-radius: var(--nv-radius-lg);
-  box-shadow: 0 18px 48px rgba(7, 71, 217, 0.10);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   margin: 0 0 16px;
   overflow: hidden;
 }
@@ -545,7 +551,7 @@ h1, h2, h3, h4, h5, h6 {
    Sidebar & Navigation (Minimalist Radio)
    ========================================= */
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #FFFFFF 0%, #F4F8FD 100%) !important;
+  background: #FFFFFF !important;
   border-right: 1px solid var(--nv-line) !important;
 }
 [data-testid="stSidebar"] .block-container {
@@ -573,7 +579,7 @@ h1, h2, h3, h4, h5, h6 {
   border: 1px solid var(--nv-line);
   border-radius: var(--nv-radius-lg);
   background: var(--nv-bg);
-  box-shadow: 0 10px 28px rgba(7, 71, 217, 0.08);
+  box-shadow: var(--nv-shadow-soft);
 }
 .sidebar-brand-mark {
   width: 42px;
@@ -728,6 +734,7 @@ div[data-baseweb="select"] > div:focus-within {
 [data-testid="stDataEditor"] {
   border-radius: var(--nv-radius-lg);
   overflow: hidden;
+  border: 1px solid var(--nv-line);
 }
 
 [data-testid="stMetric"] {
