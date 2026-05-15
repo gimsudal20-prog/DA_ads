@@ -564,12 +564,15 @@ h1, h2, h3, h4, h5, h6 {
   transition: color 0.2s ease;
 }
 [data-baseweb="tab"]:hover { color: var(--nv-text) !important; }
-[aria-selected="true"] {
-  color: var(--nv-text) !important;
+[data-baseweb="tab"][aria-selected="true"] {
+  color: var(--nv-primary) !important;
   font-weight: 800 !important;
-  border-bottom: 2px solid var(--nv-text) !important;
+  border-bottom: 2px solid var(--nv-primary) !important;
   box-shadow: none !important;
   background: transparent !important;
+}
+[data-baseweb="tab"][aria-selected="true"] * {
+  color: var(--nv-primary) !important;
 }
 
 /* =========================================
@@ -629,10 +632,20 @@ h1, h2, h3, h4, h5, h6 {
 
 [data-testid="stSidebar"] [data-testid="stButton"] button {
   justify-content: flex-start !important;
-  min-height: 38px !important;
+  width: 100% !important;
+  min-height: 42px !important;
+  padding: 0 12px !important;
   border-radius: 6px !important;
   font-weight: 800 !important;
   box-shadow: none !important;
+  position: relative !important;
+  z-index: 1 !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] {
+  margin-bottom: 4px !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] button * {
+  pointer-events: none !important;
 }
 [data-testid="stSidebar"] [data-testid="baseButton-secondary"] {
   color: var(--nv-text-soft) !important;
@@ -647,6 +660,11 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--nv-primary) !important;
   color: #fff !important;
   border: 1px solid var(--nv-primary) !important;
+}
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] *,
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] svg {
+  color: #fff !important;
+  fill: currentColor !important;
 }
 
 [data-testid="stSidebar"] [role="radiogroup"] {
@@ -700,6 +718,17 @@ div[data-baseweb="select"] > div:focus-within {
   border-color: var(--nv-primary) !important;
 }
 
+div[data-baseweb="tag"] {
+  background-color: var(--nv-primary-soft) !important;
+  border-color: var(--nv-primary-line) !important;
+  color: var(--nv-primary) !important;
+}
+div[data-baseweb="tag"] span,
+div[data-baseweb="tag"] svg {
+  color: var(--nv-primary) !important;
+  fill: currentColor !important;
+}
+
 [data-testid="stExpander"] {
   border: 1px solid var(--nv-line) !important;
   border-radius: var(--nv-radius-lg) !important;
@@ -721,11 +750,16 @@ div[data-baseweb="select"] > div:focus-within {
 [data-testid="baseButton-primary"] {
   background-color: var(--nv-primary) !important;
   color: white !important;
-  border: none !important;
+  border: 1px solid var(--nv-primary) !important;
   border-radius: 6px !important;
   font-weight: 700 !important;
   padding: 8px 16px !important;
   box-shadow: var(--nv-shadow-soft) !important;
+}
+[data-testid="baseButton-primary"] *,
+[data-testid="baseButton-primary"] svg {
+  color: white !important;
+  fill: currentColor !important;
 }
 [data-testid="baseButton-primary"]:hover { 
   background-color: var(--nv-primary-hover) !important; 
